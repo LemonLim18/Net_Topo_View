@@ -61,7 +61,7 @@ const TopologyTable: React.FC<TopologyTableProps> = ({ links, onNodeClick }) => 
                 <tr key={`${sourceId}-${targetId}-${index}`} className="hover">
                     <td><a onClick={() => onNodeClick(sourceId)} className="link link-hover text-primary">{sourceId}</a></td>
                     <td>{link.sourceInterface}</td>
-                    <td><a onClick={() => onNodeClick(targetId)} className="link link-hover text-warning">{targetId}</a></td>
+                    <td><a onClick={() => onNodeClick(targetId)} className="link link-hover text-secondary">{targetId}</a></td>
                     <td>{link.targetInterface}</td>
                 </tr>
                 );

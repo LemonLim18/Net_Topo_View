@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useCallback, useEffect } from 'react';
-import { topologyData } from '../constant';
+import { topologyData } from '../constants';
 import type { D3Node, D3Link, NodeData, TopologyData, EdgeLinkInfo } from '../types';
 import NetworkGraph from '../components/NetworkGraph';
 import NodeDetailPanel from '../components/NodeDetailPanel';
@@ -15,16 +15,34 @@ const expandInterfaceName = (abbr: string): string => {
 };
 
 const App: React.FC = () => {
-  const [data] = useState<TopologyData>(topologyData);
+  const [data, setData] = useState<TopologyData | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [panelHeight, setPanelHeight] = useState(window.innerHeight * 0.4);
   const [theme, setTheme] = useState(() => localStorage.getItem('theme') || 'night');
+  const [isGridVisible, setIsGridVisible] = useState(true);
 
   useEffect(() => {
     localStorage.setItem('theme', theme);
   }, [theme]);
 
+  const fetchData = useCallback(async () => {
+    setIsLoading(true);
+    // Simulate an API call to fetch data
+    await new Promise(resolve => setTimeout(resolve, 800));
+    setData(topologyData); // In a real app, this would come from a fetch() call
+    setIsLoading(false);
+  }, []);
+
+  useEffect(() => {
+    fetchData();
+  }, [fetchData]);
+
   const graphData = useMemo(() => {
+    if (!data) {
+      return { nodes: [], links: [] };
+    }
+    
     const nodes: D3Node[] = Object.keys(data.nodes).map(nodeId => ({
       id: nodeId,
       ...data.nodes[nodeId],
@@ -70,10 +88,10 @@ const App: React.FC = () => {
   }, [data]);
   
   const selectedNodeData = useMemo(() => {
-    if (!selectedNodeId) return null;
+    if (!selectedNodeId || !data) return null;
     const node = graphData.nodes.find(n => n.id === selectedNodeId);
     return node ? { id: node.id, ...data.nodes[selectedNodeId] } as NodeData & { id: string } : null;
-  }, [selectedNodeId, data.nodes, graphData.nodes]);
+  }, [selectedNodeId, data, graphData.nodes]);
 
   const handleNodeClick = useCallback((nodeId: string) => {
     setSelectedNodeId(prevId => (prevId === nodeId ? null : nodeId));
@@ -111,14 +129,25 @@ const App: React.FC = () => {
 
   return (
     <div data-theme={theme} className="w-screen h-screen flex flex-col font-sans">
-      <Header theme={theme} setTheme={setTheme} />
+      <Header theme={theme} setTheme={setTheme} onRefresh={fetchData} />
       <main className="grow relative overflow-hidden">
+        {isLoading && (
+            <div className="absolute inset-0 bg-base-300/50 backdrop-blur-sm flex items-center justify-center z-30">
+                <div className="text-center">
+                    <span className="loading loading-spinner loading-lg text-primary"></span>
+                    <p className="mt-2 text-base-content/80">Loading Topology...</p>
+                </div>
+            </div>
+        )}
         <div className="w-full h-full">
             <NetworkGraph 
                 nodes={graphData.nodes} 
                 links={graphData.links}
                 onNodeClick={handleNodeClick}
                 selectedNodeId={selectedNodeId}
+                isGridVisible={isGridVisible}
+                setIsGridVisible={setIsGridVisible}
+                theme={theme}
             />
             <Legend />
         </div>
@@ -128,7 +157,7 @@ const App: React.FC = () => {
           style={{ height: `${panelHeight}px` }}
         >
             <div 
-                className="w-full h-5 shrink-0 cursor-row-resize flex items-center justify-center"
+                className="w-full h-5 flex-shrink-0 cursor-row-resize flex items-center justify-center"
                 onMouseDown={handleMouseDown}
             >
                 <div className="w-12 h-1.5 bg-base-300/70 rounded-full"></div>

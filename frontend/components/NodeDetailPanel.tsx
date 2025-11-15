@@ -30,19 +30,19 @@ const NodeDetailPanel: React.FC<NodeDetailPanelProps> = ({ node, onClose }) => {
 
             <div className="grow overflow-y-auto pr-2 space-y-6">
               <div>
-                <h3 className="text-lg font-semibold text-accent mb-2">Management IP</h3>
-                <div className="bg-base-300 p-3 rounded-md font-mono text-success">{node.mgmt_ip}</div>
+                <h3 className="text-lg font-semibold text-base-content opacity-80 mb-2">Management IP</h3>
+                <div className="bg-base-300 p-3 rounded-md font-mono text-base-content">{node.mgmt_ip}</div>
               </div>
 
               <div>
-                <h3 className="text-lg font-semibold text-accent mb-2">Interfaces</h3>
+                <h3 className="text-lg font-semibold text-base-content opacity-80 mb-2">Interfaces</h3>
                 <div className="space-y-2">
                   {node.interfaceList.map((ifaceGroup, idx) => (
                     <div key={idx} className="bg-base-300 p-3 rounded-md text-sm">
                       {Object.entries(ifaceGroup).map(([name, ip]) => (
                         <div key={name} className="flex justify-between items-center font-mono">
-                          <span className="text-neutral-content/70">{name}</span>
-                          <span className="text-neutral-content">{ip}</span>
+                          <span className="text-base-content/70">{name}</span>
+                          <span className="text-base-content">{ip}</span>
                         </div>
                       ))}
                     </div>
@@ -51,17 +51,17 @@ const NodeDetailPanel: React.FC<NodeDetailPanelProps> = ({ node, onClose }) => {
               </div>
               
               <div>
-                <h3 className="text-lg font-semibold text-accent mb-2">Edge Links</h3>
+                <h3 className="text-lg font-semibold text-base-content opacity-80 mb-2">Edge Links</h3>
                  <div className="space-y-2">
                     {/* FIX: Cast the result of Object.entries to fix type inference for link. */}
                     {(Object.entries(node.edgeLink) as [string, EdgeLinkInfo][]).map(([localIface, link]) => (
                         <div key={localIface} className="card bg-base-300 compact">
                             <div className="card-body">
                                 <p className="font-mono text-sm">
-                                    <span className="text-info">{localIface}</span> &#8594; <span className="text-warning">{link.remote_node}</span>:<span className="text-info">{link.remote_interface}</span>
+                                    <span className="font-semibold text-primary">{localIface}</span> &#8594; <span className="font-semibold text-secondary">{link.remote_node}</span>:<span className="font-semibold text-primary">{link.remote_interface}</span>
                                 </p>
-                                <p className="font-mono text-xs text-neutral-content/70">
-                                    Remote IP: <span className="text-neutral-content">{link.remote_ip}</span>
+                                <p className="font-mono text-xs text-base-content/70">
+                                    Remote IP: <span className="text-base-content">{link.remote_ip}</span>
                                 </p>
                             </div>
                         </div>

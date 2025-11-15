@@ -1,19 +1,21 @@
 import React from 'react';
+import { RefreshCcwIcon } from "lucide-react";
 
 const daisyUIThemes = [
-  "light", "dark", "cupcake", "bumblebee", "emerald", "corporate", "synthwave",
+  "light", "dark", "cupcake", "emerald", "corporate", "synthwave",
   "retro", "cyberpunk", "valentine", "halloween", "garden", "forest", "aqua",
-  "lofi", "fantasy", "black", "luxury", "dracula",
-   "autumn", "business", "night", "coffee", "winter",
-  "dim", "nord"
+  , "pastel", "fantasy", "wireframe", "black", "luxury", "dracula",
+  "cmyk", "autumn", "business", "acid", "lemonade", "night", "coffee", "winter",
+  "dim", "nord", "sunset",
 ];
 
 interface HeaderProps {
     theme: string;
     setTheme: (theme: string) => void;
+    onRefresh: () => void;
 }
 
-const Header: React.FC<HeaderProps> = ({ theme, setTheme }) => {
+const Header: React.FC<HeaderProps> = ({ theme, setTheme, onRefresh }) => {
   return (
     <header className="navbar bg-base-100 shadow-lg z-10">
       <div className="flex-1">
@@ -27,12 +29,19 @@ const Header: React.FC<HeaderProps> = ({ theme, setTheme }) => {
       <div className="flex-none gap-2">
         <div className="badge badge-success badge-outline mr-2">Live</div>
 
+        <button onClick={onRefresh} className="btn btn-ghost btn-circle" aria-label="Refresh data" title="Refresh Data">
+            {/* <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h5M20 20v-5h-5m-1.5-1.5A9 9 0 004.5 9.5M19.5 14.5A9 9 0 009.5 4.5" />
+            </svg> */}
+            <RefreshCcwIcon className="h-5 w-5" />
+        </button>
+
         <div className="dropdown dropdown-end">
             <div tabIndex={0} role="button" className="btn btn-ghost">
                 Theme
                 <svg width="12px" height="12px" className="h-2 w-2 fill-current opacity-60 inline-block" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 2048 2048"><path d="M1799 349l242 241-1017 1017L7 590l242-241 775 775 775-775z"></path></svg>
             </div>
-            <ul tabIndex={0} className="absolute dropdown-content z-1 p-2 shadow-2xl opacity-80 card bg-base-300 backdrop-blur-sm rounded-box w-52 max-h-96 overflow-y-auto">
+            <ul tabIndex={0} className="dropdown-content z-1 p-2 shadow-2xl bg-base-300 rounded-box w-52 max-h-96 overflow-y-auto">
                 {daisyUIThemes.map((item) => (
                     <li key={item}>
                         <input
