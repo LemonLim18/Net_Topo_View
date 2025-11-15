@@ -1,11 +1,12 @@
 import React, { useState, useMemo, useCallback, useEffect } from 'react';
-import { topologyData } from '../constants';
 import type { D3Node, D3Link, NodeData, TopologyData, EdgeLinkInfo } from '../types';
 import NetworkGraph from '../components/NetworkGraph';
 import NodeDetailPanel from '../components/NodeDetailPanel';
 import Header from '../components/Header';
 import TopologyTable from '../components/TopologyTable';
 import Legend from '../components/Legend';
+import { useWebSocket } from './hooks/useWebSocket';
+import { API_CONFIG } from './config';
 
 // Helper to convert abbreviated interface names to full names found in the data
 const expandInterfaceName = (abbr: string): string => {
@@ -15,8 +16,6 @@ const expandInterfaceName = (abbr: string): string => {
 };
 
 const App: React.FC = () => {
-  const [data, setData] = useState<TopologyData | null>(null);
-  const [isLoading, setIsLoading] = useState(true);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [panelHeight, setPanelHeight] = useState(window.innerHeight * 0.4);
   const [theme, setTheme] = useState(() => localStorage.getItem('theme') || 'night');
@@ -26,17 +25,23 @@ const App: React.FC = () => {
     localStorage.setItem('theme', theme);
   }, [theme]);
 
-  const fetchData = useCallback(async () => {
-    setIsLoading(true);
-    // Simulate an API call to fetch data
-    await new Promise(resolve => setTimeout(resolve, 800));
-    setData(topologyData); // In a real app, this would come from a fetch() call
-    setIsLoading(false);
+  const handleTopologyUpdate = useCallback((topology: TopologyData) => {
+    console.log('Topology received:', topology.timestamp);
   }, []);
 
-  useEffect(() => {
-    fetchData();
-  }, [fetchData]);
+  const handleWebSocketError = useCallback((error: Event) => {
+    console.error('WebSocket error:', error);
+  }, []);
+
+  const { status, topology: data, requestTopology } = useWebSocket({
+    url: API_CONFIG.WS_URL,
+    onTopologyUpdate: handleTopologyUpdate,
+    onError: handleWebSocketError,
+    reconnectInterval: 3000,
+    maxReconnectAttempts: 10,
+  });
+
+  const isLoading = status === 'connecting' || (status === 'connected' && !data);
 
   const graphData = useMemo(() => {
     if (!data) {
@@ -127,9 +132,34 @@ const App: React.FC = () => {
   }, [panelHeight]);
 
 
+  const handleManualCrawl = useCallback(async () => {
+    try {
+      const response = await fetch(`${API_CONFIG.API_URL}/crawl`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+      });
+      if (!response.ok) {
+        throw new Error('Failed to trigger crawl');
+      }
+      // Request updated topology after crawl is triggered
+      setTimeout(() => {
+        requestTopology();
+      }, 1000);
+    } catch (error) {
+      console.error('Failed to trigger crawl:', error);
+    }
+  }, [requestTopology]);
+
   return (
     <div data-theme={theme} className="w-screen h-screen flex flex-col font-sans">
-      <Header theme={theme} setTheme={setTheme} onRefresh={fetchData} />
+      <Header 
+        theme={theme} 
+        setTheme={setTheme} 
+        onRefresh={handleManualCrawl}
+        connectionStatus={status}
+      />
       <main className="grow relative overflow-hidden">
         {isLoading && (
             <div className="absolute inset-0 bg-base-300/50 backdrop-blur-sm flex items-center justify-center z-30">
@@ -157,7 +187,7 @@ const App: React.FC = () => {
           style={{ height: `${panelHeight}px` }}
         >
             <div 
-                className="w-full h-5 flex-shrink-0 cursor-row-resize flex items-center justify-center"
+                className="w-full h-5 shrink-0 cursor-row-resize flex items-center justify-center"
                 onMouseDown={handleMouseDown}
             >
                 <div className="w-12 h-1.5 bg-base-300/70 rounded-full"></div>

@@ -1,5 +1,6 @@
 import React from 'react';
 import { RefreshCcwIcon } from "lucide-react";
+import type { ConnectionStatus } from '../src/hooks/useWebSocket';
 
 const daisyUIThemes = [
   "light", "dark", "cupcake", "emerald", "corporate", "synthwave",
@@ -13,9 +14,25 @@ interface HeaderProps {
     theme: string;
     setTheme: (theme: string) => void;
     onRefresh: () => void;
+    connectionStatus: ConnectionStatus;
 }
 
-const Header: React.FC<HeaderProps> = ({ theme, setTheme, onRefresh }) => {
+const Header: React.FC<HeaderProps> = ({ theme, setTheme, onRefresh, connectionStatus }) => {
+  const getStatusBadge = () => {
+    switch (connectionStatus) {
+      case 'connected':
+        return <div className="badge badge-success badge-outline mr-2">Connected</div>;
+      case 'connecting':
+        return <div className="badge badge-warning badge-outline mr-2 animate-pulse">Connecting...</div>;
+      case 'disconnected':
+        return <div className="badge badge-error badge-outline mr-2">Disconnected</div>;
+      case 'error':
+        return <div className="badge badge-error badge-outline mr-2">Error</div>;
+      default:
+        return <div className="badge badge-ghost badge-outline mr-2">Unknown</div>;
+    }
+  };
+
   return (
     <header className="navbar bg-base-100 shadow-lg z-10">
       <div className="flex-1">
@@ -27,9 +44,15 @@ const Header: React.FC<HeaderProps> = ({ theme, setTheme, onRefresh }) => {
         </a>
       </div>
       <div className="flex-none gap-2">
-        <div className="badge badge-success badge-outline mr-2">Live</div>
+        {getStatusBadge()}
 
-        <button onClick={onRefresh} className="btn btn-ghost btn-circle" aria-label="Refresh data" title="Refresh Data">
+        <button 
+          onClick={onRefresh} 
+          className="btn btn-ghost btn-circle" 
+          aria-label="Trigger manual crawl" 
+          title="Trigger Manual Crawl"
+          disabled={connectionStatus !== 'connected'}
+        >
             {/* <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
                 <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h5M20 20v-5h-5m-1.5-1.5A9 9 0 004.5 9.5M19.5 14.5A9 9 0 009.5 4.5" />
             </svg> */}

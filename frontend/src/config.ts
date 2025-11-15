@@ -1,0 +1,7 @@
+// Backend API configuration
+export const API_CONFIG = {
+  // Use environment variable or default to localhost
+  WS_URL: import.meta.env.VITE_WS_URL || 'ws://localhost:8000/ws',
+  API_URL: import.meta.env.VITE_API_URL || 'http://localhost:8000',
+};
+
