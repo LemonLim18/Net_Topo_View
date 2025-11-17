@@ -2,24 +2,29 @@ import React, { useState, useMemo } from 'react';
 import type { D3Link, D3Node } from '../types';
 
 interface TopologyTableProps {
-  nodes: D3Node[];
   links: D3Link[];
   onNodeClick: (nodeId: string) => void;
+  showStatus: boolean;
 }
 
-type SortKey = 'source' | 'target';
+type SortKey = 'source' | 'target' | 'status';
 
-const TopologyTable: React.FC<TopologyTableProps> = ({ links, onNodeClick }) => {
+const TopologyTable: React.FC<TopologyTableProps> = ({ links, onNodeClick, showStatus }) => {
   const [sortKey, setSortKey] = useState<SortKey>('source');
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('asc');
 
   const sortedLinks = useMemo(() => {
     return [...links].sort((a, b) => {
-      const aNode = a[sortKey];
-      const bNode = b[sortKey];
-      
-      const aVal = typeof aNode === 'string' ? aNode : (aNode as D3Node).id;
-      const bVal = typeof bNode === 'string' ? bNode : (bNode as D3Node).id;
+      let aVal, bVal;
+      if (sortKey === 'status') {
+          aVal = a.diffStatus || 'unchanged';
+          bVal = b.diffStatus || 'unchanged';
+      } else {
+          const aNode = a[sortKey as 'source' | 'target'];
+          const bNode = b[sortKey as 'source' | 'target'];
+          aVal = typeof aNode === 'string' ? aNode : (aNode as D3Node).id;
+          bVal = typeof bNode === 'string' ? bNode : (bNode as D3Node).id;
+      }
 
       if (aVal < bVal) return sortOrder === 'asc' ? -1 : 1;
       if (aVal > bVal) return sortOrder === 'asc' ? 1 : -1;
@@ -40,6 +45,15 @@ const TopologyTable: React.FC<TopologyTableProps> = ({ links, onNodeClick }) => 
     if (sortKey !== key) return null;
     return sortOrder === 'asc' ? '▲' : '▼';
   };
+  
+  const statusBadge = (status: D3Link['diffStatus']) => {
+      const statusMap = {
+          added: <div className="badge badge-warning badge-sm">Unplanned</div>,
+          removed: <div className="badge badge-error badge-sm">Missing</div>,
+          unchanged: <div className="badge badge-success badge-sm">OK</div>
+      }
+      return statusMap[status || 'unchanged'];
+  }
 
   return (
     <div className="h-full bg-base-100 p-4 overflow-auto">
@@ -51,6 +65,7 @@ const TopologyTable: React.FC<TopologyTableProps> = ({ links, onNodeClick }) => 
                 <th>Source Interface</th>
                 <th onClick={() => handleSort('target')} className="cursor-pointer">Target Node {renderSortArrow('target')}</th>
                 <th>Target Interface</th>
+                {showStatus && <th onClick={() => handleSort('status')} className="cursor-pointer">Status {renderSortArrow('status')}</th>}
             </tr>
             </thead>
             <tbody>
@@ -63,6 +78,7 @@ const TopologyTable: React.FC<TopologyTableProps> = ({ links, onNodeClick }) => 
                     <td>{link.sourceInterface}</td>
                     <td><a onClick={() => onNodeClick(targetId)} className="link link-hover text-secondary">{targetId}</a></td>
                     <td>{link.targetInterface}</td>
+                    {showStatus && <td>{statusBadge(link.diffStatus)}</td>}
                 </tr>
                 );
             })}

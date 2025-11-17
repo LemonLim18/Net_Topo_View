@@ -13,13 +13,18 @@ interface NetworkGraphProps {
   isGridVisible: boolean;
   setIsGridVisible: (visible: boolean) => void;
   theme: string;
+  // topologyView controls whether diff highlighting is applied
+  topologyView?: 'actual' | 'planned' | 'diff';
 }
 
-const NetworkGraph: React.FC<NetworkGraphProps> = ({ nodes, links, onNodeClick, selectedNodeId, isGridVisible, setIsGridVisible, theme }) => {
+const NetworkGraph: React.FC<NetworkGraphProps> = ({ nodes, links, onNodeClick, selectedNodeId, isGridVisible, setIsGridVisible, theme, topologyView = 'actual' }) => {
   const svgRef = useRef<SVGSVGElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const simulationRef = useRef<d3.Simulation<D3Node, D3Link> | null>(null);
   const zoomRef = useRef<d3.ZoomBehavior<SVGSVGElement, unknown> | null>(null);
+  // Preserve node positions between updates so switching views doesn't
+  // cause the layout to jump. Map node.id -> position/velocity/fixed state.
+  const positionsRef = useRef<Map<string, { x?: number; y?: number; vx?: number; vy?: number; fx?: number | null; fy?: number | null }>>(new Map());
   
   useEffect(() => {
     if (!containerRef.current || !svgRef.current) return;
@@ -70,6 +75,20 @@ const NetworkGraph: React.FC<NetworkGraphProps> = ({ nodes, links, onNodeClick, 
         .force("link", d3.forceLink<D3Node, D3Link>().id(d => d.id).distance(250).strength(0.6));
     }
     const simulation = simulationRef.current;
+
+    // Before applying nodes to the simulation, reapply any previously
+    // remembered positions so existing layout is preserved across view changes.
+    nodes.forEach(n => {
+      const prev = positionsRef.current.get(n.id);
+      if (prev) {
+        if (typeof prev.x === 'number') n.x = prev.x;
+        if (typeof prev.y === 'number') n.y = prev.y;
+        if (typeof prev.vx === 'number') n.vx = prev.vx;
+        if (typeof prev.vy === 'number') n.vy = prev.vy;
+        if (prev.fx !== undefined) n.fx = prev.fx as any;
+        if (prev.fy !== undefined) n.fy = prev.fy as any;
+      }
+    });
 
     simulation
         .nodes(nodes)
@@ -158,7 +177,17 @@ const NetworkGraph: React.FC<NetworkGraphProps> = ({ nodes, links, onNodeClick, 
       })
       .join(enter => {
           const g = enter.append('g').attr('class', 'link-group');
-          g.append('line').attr('class', 'stroke-current text-base-content opacity-80').attr('stroke-width', 2);
+          // line color indicates diff status only when in Diff view
+          g.append('line')
+            .attr('stroke-width', 2)
+            .attr('class', (d: any) => {
+              if (topologyView === 'diff') {
+                const status = d.diffStatus || 'unchanged';
+                if (status === 'added') return 'stroke-warning opacity-90';
+                if (status === 'removed') return 'stroke-error opacity-90';
+              }
+              return 'stroke-current text-base-content opacity-80';
+            });
           
           const sourceLabel = g.append('text').attr('class', 'source-label fill-current text-base-content text-[10px] font-mono select-none');
           sourceLabel.append('tspan').attr('class', 'source-interface font-semibold').attr('x', 0).attr('dy', 0);
@@ -170,10 +199,19 @@ const NetworkGraph: React.FC<NetworkGraphProps> = ({ nodes, links, onNodeClick, 
           return g;
       });
 
+    // Update labels and ensure link stroke classes reflect diffStatus for existing links
     linkG.select('.source-interface').text(d => d.sourceInterface);
     linkG.select('.source-ip').text(d => d.sourceIp);
     linkG.select('.target-interface').text(d => d.targetInterface);
     linkG.select('.target-ip').text(d => d.targetIp);
+    linkG.select('line').attr('class', (d: any) => {
+      if (topologyView === 'diff') {
+        const status = d.diffStatus || 'unchanged';
+        if (status === 'added') return 'stroke-warning opacity-90';
+        if (status === 'removed') return 'stroke-error opacity-90';
+      }
+      return 'stroke-current text-base-content opacity-80';
+    });
 
     const node = nodeGroup
       .selectAll<SVGGElement, D3Node>('g')
@@ -196,7 +234,18 @@ const NetworkGraph: React.FC<NetworkGraphProps> = ({ nodes, links, onNodeClick, 
                 d.fy = null;
               }));
 
-          g.append('circle').attr('r', 30).attr('class', 'stroke-2 transition-all duration-300').style('fill', 'hsl(var(--b1))');
+          // node circle: change stroke color based on diffStatus, but only in Diff view
+          g.append('circle')
+            .attr('r', 30)
+            .attr('class', (d: any) => {
+              if (topologyView === 'diff') {
+                const status = d.diffStatus || 'unchanged';
+                if (status === 'added') return 'stroke-2 stroke-warning transition-all duration-300';
+                if (status === 'removed') return 'stroke-2 stroke-error transition-all duration-300';
+              }
+              return 'stroke-2 stroke-current transition-all duration-300';
+            })
+            .style('fill', 'hsl(var(--b1))');
 
           const iconSize = 30;
           g.append('svg:foreignObject').attr('width', iconSize).attr('height', iconSize).attr('x', -iconSize / 2).attr('y', -iconSize / 2)
@@ -210,6 +259,18 @@ const NetworkGraph: React.FC<NetworkGraphProps> = ({ nodes, links, onNodeClick, 
           return g;
         }
       );
+
+    // Ensure existing node circles update their stroke classes when topologyView
+    // or diffStatus changes (not only on enter). This makes the ring around
+    // nodes reflect added/removed colors in Diff view.
+    node.select('circle').attr('class', (d: any) => {
+      if (topologyView === 'diff') {
+        const status = d.diffStatus || 'unchanged';
+        if (status === 'added') return 'stroke-2 stroke-warning transition-all duration-300';
+        if (status === 'removed') return 'stroke-2 stroke-error transition-all duration-300';
+      }
+      return 'stroke-2 stroke-current transition-all duration-300';
+    });
 
     simulation.on('tick', () => {
       linkG.each(function(d) {
@@ -256,6 +317,12 @@ const NetworkGraph: React.FC<NetworkGraphProps> = ({ nodes, links, onNodeClick, 
       });
 
       node.attr('transform', d => `translate(${d.x},${d.y})`);
+
+      // Remember positions after each tick so we can restore them on next update
+      const simNodes = simulation.nodes();
+      simNodes.forEach(n => {
+        positionsRef.current.set(n.id, { x: n.x, y: n.y, vx: n.vx, vy: n.vy, fx: (n as any).fx ?? null, fy: (n as any).fy ?? null });
+      });
     });
 
     simulation.alpha(1).restart();
@@ -265,7 +332,7 @@ const NetworkGraph: React.FC<NetworkGraphProps> = ({ nodes, links, onNodeClick, 
         gridResizeObserver.disconnect();
       } catch (e) { /* ignore */ }
     };
-  }, [nodes, links, onNodeClick, theme]);
+  }, [nodes, links, onNodeClick, theme, topologyView]);
 
   useEffect(() => {
     if (!svgRef.current) return;
@@ -277,16 +344,40 @@ const NetworkGraph: React.FC<NetworkGraphProps> = ({ nodes, links, onNodeClick, 
     if (!svgRef.current) return;
     const nodeSelection = d3.select(svgRef.current).selectAll<SVGGElement, D3Node>('g.nodes g');
     
-    nodeSelection.select('circle').attr('stroke', d => d.id === selectedNodeId ? 'hsl(var(--p))' : 'hsl(var(--b3))');
+    // Keep selected highlighting while preserving diff-based stroke classes
+    nodeSelection.select('circle').each(function(d: any) {
+      const circle = d3.select(this);
+      const isSelected = d.id === selectedNodeId;
+      if (isSelected) {
+        circle.attr('stroke', 'hsl(var(--p))');
+      } else {
+        // If not selected, let the class-driven stroke color remain; remove inline stroke
+        circle.attr('stroke', null);
+      }
+    });
     
-    nodeSelection.select('foreignObject div').each(function(d) {
+    nodeSelection.select('foreignObject div').each(function(d: any) {
       const div = d3.select(this);
       const isSelected = d.id === selectedNodeId;
-      div.classed('text-accent', !isSelected);
-      div.classed('text-primary', isSelected);
+
+      // Priority: selected > diffStatus coloring (only in Diff view) > default accent
+      if (isSelected) {
+        div.classed('text-primary', true).classed('text-accent text-warning text-error', false);
+      } else if (topologyView === 'diff') {
+        const status = d.diffStatus || 'unchanged';
+        if (status === 'added') {
+          div.classed('text-warning', true).classed('text-accent text-primary text-error', false);
+        } else if (status === 'removed') {
+          div.classed('text-error', true).classed('text-accent text-primary text-warning', false);
+        } else {
+          div.classed('text-accent', true).classed('text-primary text-warning text-error', false);
+        }
+      } else {
+        div.classed('text-accent', true).classed('text-primary text-warning text-error', false);
+      }
     });
 
-  }, [selectedNodeId, theme, nodes]);
+  }, [selectedNodeId, theme, nodes, topologyView]);
 
   const handleZoomIn = useCallback(() => {
     if (!svgRef.current || !zoomRef.current) return;

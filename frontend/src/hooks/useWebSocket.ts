@@ -11,7 +11,7 @@ import type { TopologyData } from '../../types';
 // When enabled the hook will return the mock `topology` immediately
 // and skip creating a real WebSocket connection. This makes UI
 // development faster and deterministic.
-import { topologyData } from '../../constants';
+import { mockTopologyData } from '../../constants';
 
 export type ConnectionStatus = 'connecting' | 'connected' | 'disconnected' | 'error';
 
@@ -193,8 +193,8 @@ export const useWebSocket = ({
       // Seed topology from local constants for quick UI/dev work.
       // eslint-disable-next-line no-console
       console.debug('[useWebSocket] using local topologyData (no WebSocket)');
-      setTopology(topologyData as TopologyData);
-      onTopologyUpdate?.(topologyData as TopologyData);
+      setTopology(mockTopologyData as TopologyData);
+      onTopologyUpdate?.(mockTopologyData as TopologyData);
       setStatus('connected');
       // No WebSocket connection created when using the local topology.
       return () => {

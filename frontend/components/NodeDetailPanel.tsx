@@ -1,87 +1,104 @@
-
 import React from 'react';
-// FIX: Import EdgeLinkInfo for type casting.
-import type { NodeData, EdgeLinkInfo } from '../types';
+import type { D3Node } from '../types';
+import { X } from 'lucide-react';
 
 interface NodeDetailPanelProps {
-  node: (NodeData & { id: string }) | null;
+  node: (D3Node & { id: string }) | null;
   onClose: () => void;
 }
 
 const NodeDetailPanel: React.FC<NodeDetailPanelProps> = ({ node, onClose }) => {
-  const panelVisible = !!node;
+  if (!node) {
+    return null;
+  }
+
+  // Use a transition for the panel visibility
+  const panelClasses = `absolute top-0 right-0 h-full w-96 bg-base-100/90 backdrop-blur-sm shadow-2xl z-20 transform transition-transform duration-300 ease-in-out ${
+    node ? 'translate-x-0' : 'translate-x-full'
+  }`;
 
   return (
-    <div className={`
-      absolute top-0 right-0 h-full bg-base-100/90 backdrop-blur-sm shadow-2xl 
-      transition-transform duration-500 ease-in-out z-20 
-      w-full sm:w-96 md:w-[450px]
-      ${panelVisible ? 'translate-x-0' : 'translate-x-full'}
-    `}>
-      <div className="p-4 flex flex-col h-full">
-        {node ? (
-          <>
-            <div className="flex justify-between items-center mb-6">
-              <h2 className="text-2xl font-bold text-primary">{node.id}</h2>
-              <button onClick={onClose} className="btn btn-ghost btn-sm btn-circle">
-                <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12" /></svg>
-              </button>
-            </div>
+    <aside className={panelClasses}>
+      <div className="p-4 h-full flex flex-col">
+        <div className="flex justify-between items-center mb-4 pb-2 border-b border-base-300 flex-shrink-0">
+          <h2 className="text-xl font-bold">Node Details</h2>
+          <button className="btn btn-ghost btn-sm btn-square" onClick={onClose}>
+            <X className="h-5 w-5" />
+          </button>
+        </div>
 
-            <div className="grow overflow-y-auto pr-2 space-y-6">
-              <div>
-                <h3 className="text-lg font-semibold text-base-content opacity-80 mb-2">Management IP</h3>
-                <div className="bg-base-300 p-3 rounded-md font-mono text-base-content">{node.mgmt_ip}</div>
-              </div>
-
-              <div>
-                <h3 className="text-lg font-semibold text-base-content opacity-80 mb-2">Interfaces</h3>
-                <div className="space-y-2">
-                  {node.interfaceList.map((ifaceGroup, idx) => (
-                    <div key={idx} className="bg-base-300 p-3 rounded-md text-sm">
-                      {Object.entries(ifaceGroup).map(([name, ip]) => (
-                        <div key={name} className="flex justify-between items-center font-mono">
-                          <span className="text-base-content/70">{name}</span>
-                          <span className="text-base-content">{ip}</span>
-                        </div>
-                      ))}
-                    </div>
-                  ))}
-                </div>
-              </div>
-              
-              <div>
-                <h3 className="text-lg font-semibold text-base-content opacity-80 mb-2">Edge Links</h3>
-                 <div className="space-y-2">
-                    {/* FIX: Cast the result of Object.entries to fix type inference for link. */}
-                    {(Object.entries(node.edgeLink) as [string, EdgeLinkInfo][]).map(([localIface, link]) => (
-                        <div key={localIface} className="card bg-base-300 compact">
-                            <div className="card-body">
-                                <p className="font-mono text-sm">
-                                    <span className="font-semibold text-primary">{localIface}</span> &#8594; <span className="font-semibold text-secondary">{link.remote_node}</span>:<span className="font-semibold text-primary">{link.remote_interface}</span>
-                                </p>
-                                <p className="font-mono text-xs text-base-content/70">
-                                    Remote IP: <span className="text-base-content">{link.remote_ip}</span>
-                                </p>
-                            </div>
-                        </div>
-                    ))}
-                </div>
-              </div>
-            </div>
-          </>
-        ) : (
-          <div className="flex items-center justify-center h-full">
-            <div className="text-center text-neutral-content/60">
-              <svg xmlns="http://www.w3.org/2000/svg" className="h-12 w-12 mx-auto mb-2" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-              </svg>
-              <p>Select a node to see details</p>
-            </div>
+        <div className="overflow-y-auto flex-grow pr-2 space-y-4">
+          <div>
+            <p className="text-sm text-base-content/70">Node ID</p>
+            <p className="font-mono text-lg">{node.id}</p>
           </div>
-        )}
+          <div>
+            <p className="text-sm text-base-content/70">Management IP</p>
+            <p className="font-mono">{node.mgmt_ip}</p>
+          </div>
+          
+          {node.diffStatus && (
+            <div>
+              <p className="text-sm text-base-content/70">Status</p>
+              <div className={`badge capitalize ${
+                {
+                  added: 'badge-warning',
+                  removed: 'badge-error',
+                  unchanged: 'badge-success'
+                }[node.diffStatus]
+              }`}>{
+                {
+                  added: 'Unplanned',
+                  removed: 'Missing',
+                  unchanged: 'OK'
+                }[node.diffStatus]
+              }</div>
+            </div>
+          )}
+
+          <div>
+            <p className="text-sm text-base-content/70 mb-1">Interfaces</p>
+              {Array.isArray(node.interfaceList) && node.interfaceList.length > 0 ? (
+                <ul className="list-none space-y-1 text-sm font-mono bg-base-200 p-2 rounded-box">
+                  {node.interfaceList.map((ifaceObj, objIndex) => (
+                    // Each ifaceObj may contain multiple interface entries; render them all
+                    Object.entries(ifaceObj).map(([ifaceName, ipAddress]) => {
+                      // collapse full names like 'Ethernet0/1' -> 'Et0/1', 'Loopback1' -> 'Lo1'
+                      const collapse = (full: string) => {
+                        if (!full) return full;
+                        if (full.startsWith('Ethernet')) return 'Et' + full.replace('Ethernet', '');
+                        if (full.startsWith('Loopback')) return 'Lo' + full.replace('Loopback', '');
+                        return full;
+                      };
+
+                      const displayName = collapse(ifaceName);
+                      return (
+                        <li key={`${objIndex}-${ifaceName}`} className="flex justify-between">
+                          <span>{displayName}</span>
+                          <span>{ipAddress}</span>
+                        </li>
+                      );
+                    })
+                  ))}
+                </ul>
+              ) : (
+                <p className="text-sm text-base-content/50 italic">No interface information available.</p>
+              )}
+          </div>
+          
+          <div>
+            <p className="text-sm text-base-content/70 mb-1">Connected Nodes</p>
+            {node.connectedNode && node.connectedNode.length > 0 ? (
+              <ul className="list-none space-y-1 text-sm font-mono bg-base-200 p-2 rounded-box">
+                {node.connectedNode.map((connected, index) => <li key={index}>{connected}</li>)}
+              </ul>
+            ) : (
+              <p className="text-sm text-base-content/50 italic">No direct connections.</p>
+            )}
+          </div>
+        </div>
       </div>
-    </div>
+    </aside>
   );
 };
 

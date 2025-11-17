@@ -28,9 +28,12 @@ export interface TopologyData {
   };
 }
 
+export type DiffStatus = 'added' | 'removed' | 'unchanged';
+
 // D3 specific types
 export interface D3Node extends d3.SimulationNodeDatum, NodeData {
     id: string;
+    diffStatus?: DiffStatus;
 }
 
 // FIX: Remove incorrect 'source' and 'target' type overrides. D3's force
@@ -43,4 +46,5 @@ export interface D3Link extends d3.SimulationLinkDatum<D3Node> {
     targetInterface: string;
     sourceIp: string;
     targetIp: string;
+    diffStatus?: DiffStatus;
 }
