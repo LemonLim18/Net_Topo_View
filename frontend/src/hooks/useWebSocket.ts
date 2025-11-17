@@ -1,5 +1,17 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import type { TopologyData } from '../../types';
+// For temporary local development you can seed topology from the sample
+// data in `frontend/constants.ts` instead of connecting to the real
+// WebSocket. To enable, set `VITE_USE_LOCAL_TOPOLOGY=true` in a Vite
+// `.env` file or rely on `import.meta.env.MODE === 'development'.
+//
+// Example `.env` entry (project root):
+// VITE_USE_LOCAL_TOPOLOGY=true
+//
+// When enabled the hook will return the mock `topology` immediately
+// and skip creating a real WebSocket connection. This makes UI
+// development faster and deterministic.
+import { topologyData } from '../../constants';
 
 export type ConnectionStatus = 'connecting' | 'connected' | 'disconnected' | 'error';
 
@@ -26,12 +38,27 @@ export const useWebSocket = ({
   const [status, setStatus] = useState<ConnectionStatus>('disconnected');
   const [topology, setTopology] = useState<TopologyData | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
-  const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const reconnectAttemptsRef = useRef(0);
-  const pingIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const pingIntervalRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isManualCloseRef = useRef(false);
 
+  // Toggle to use local sample topology for development.
+  // If `VITE_USE_LOCAL_TOPOLOGY` is set to 'true' in the environment,
+  // the hook will seed `topology` from local `topologyData` and avoid
+  // creating a WebSocket connection. You can also enable this by
+  // running Vite in `development` mode — change the condition below
+  // if you prefer a different behavior.
+  const USE_LOCAL_TOPOLOGY = (import.meta.env?.VITE_USE_LOCAL_TOPOLOGY === 'true');
+  // Debug info: will be removed after troubleshooting
+  // Shows the resolved boolean and the raw env values injected by Vite
+  // (check browser console when running `npm run dev`).
+  // eslint-disable-next-line no-console
+  console.debug('[useWebSocket] USE_LOCAL_TOPOLOGY=', USE_LOCAL_TOPOLOGY, 'raw=', import.meta.env?.VITE_USE_LOCAL_TOPOLOGY, 'MODE=', import.meta.env?.MODE);
+
   const connect = useCallback(() => {
+    // eslint-disable-next-line no-console
+    console.debug('[useWebSocket] connect() url=', url);
     if (wsRef.current?.readyState === WebSocket.OPEN) {
       return;
     }
@@ -162,6 +189,21 @@ export const useWebSocket = ({
   }, []);
 
   useEffect(() => {
+    if (USE_LOCAL_TOPOLOGY) {
+      // Seed topology from local constants for quick UI/dev work.
+      // eslint-disable-next-line no-console
+      console.debug('[useWebSocket] using local topologyData (no WebSocket)');
+      setTopology(topologyData as TopologyData);
+      onTopologyUpdate?.(topologyData as TopologyData);
+      setStatus('connected');
+      // No WebSocket connection created when using the local topology.
+      return () => {
+        /* no-op cleanup for local topology */
+      };
+    }
+
+    // eslint-disable-next-line no-console
+    console.debug('[useWebSocket] USE_LOCAL_TOPOLOGY is false; attempting WebSocket connect');
     connect();
     return () => {
       disconnect();

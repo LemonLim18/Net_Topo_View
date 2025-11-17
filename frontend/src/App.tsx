@@ -1,3 +1,4 @@
+
 import React, { useState, useMemo, useCallback, useEffect } from 'react';
 import type { D3Node, D3Link, NodeData, TopologyData, EdgeLinkInfo } from '../types';
 import NetworkGraph from '../components/NetworkGraph';
@@ -5,6 +6,7 @@ import NodeDetailPanel from '../components/NodeDetailPanel';
 import Header from '../components/Header';
 import TopologyTable from '../components/TopologyTable';
 import Legend from '../components/Legend';
+import { CONTROLLER_NODE_ID, CONTROLLER_NODE_DATA, topologyData } from '../constants';
 import { useWebSocket } from './hooks/useWebSocket';
 import { API_CONFIG } from './config';
 
@@ -15,7 +17,13 @@ const expandInterfaceName = (abbr: string): string => {
   return abbr;
 };
 
+type ConnectionStatus = 'connecting' | 'connected' | 'disconnected';
+
 const App: React.FC = () => {
+  // const [data, setData] = useState<TopologyData | null>(topologyData);
+  // const [isLoading, setIsLoading] = useState(false);
+  const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('connected');
+  
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [panelHeight, setPanelHeight] = useState(window.innerHeight * 0.4);
   const [theme, setTheme] = useState(() => localStorage.getItem('theme') || 'night');
@@ -24,6 +32,10 @@ const App: React.FC = () => {
   useEffect(() => {
     localStorage.setItem('theme', theme);
   }, [theme]);
+
+  const handleRefresh = useCallback(async () => {
+    console.log("Refresh requested, but application is in static data mode.");
+  }, []);
 
   const handleTopologyUpdate = useCallback((topology: TopologyData) => {
     console.log('Topology received:', topology.timestamp);
@@ -89,11 +101,54 @@ const App: React.FC = () => {
       }
     });
 
+    // --- Add Server Controller Node and Link ---
+    const seedIp = data.seeds && data.seeds.length > 0 ? data.seeds[0] : null;
+
+    // Find the node that owns the seed IP address
+    const entryNode = seedIp 
+      ? nodes.find(node => 
+          node.interfaceList.some(ifaceGroup => 
+            Object.values(ifaceGroup).includes(seedIp)
+          )
+        ) 
+      : null;
+
+    if (entryNode) {
+      // Add the controller node to the graph
+      nodes.push({ ...CONTROLLER_NODE_DATA });
+
+      // Create a link from the controller to the entry/seed node
+      const controllerLink: D3Link = {
+        source: CONTROLLER_NODE_ID,
+        target: entryNode.id,
+        sourceInterface: 'eth0',
+        targetInterface: 'WAN', // Placeholder interface on the router
+        sourceIp: CONTROLLER_NODE_DATA.mgmt_ip,
+        targetIp: entryNode.mgmt_ip,
+        info: { // Dummy info to satisfy the type
+            remote_node: entryNode.id,
+            remote_interface: 'WAN',
+            remote_ip: entryNode.mgmt_ip,
+        },
+      };
+      links.push(controllerLink);
+      linkSet.add(`${CONTROLLER_NODE_ID}-${entryNode.id}`);
+    }
+    // --- End of modification ---
+
     return { nodes, links };
   }, [data]);
   
   const selectedNodeData = useMemo(() => {
-    if (!selectedNodeId || !data) return null;
+    if (!selectedNodeId) return null;
+
+    // Handle the controller node separately
+    if (selectedNodeId === CONTROLLER_NODE_ID) {
+      return CONTROLLER_NODE_DATA as NodeData & { id: string };
+    }
+    
+    // Original logic for nodes from API data
+    if (!data) return null;
     const node = graphData.nodes.find(n => n.id === selectedNodeId);
     return node ? { id: node.id, ...data.nodes[selectedNodeId] } as NodeData & { id: string } : null;
   }, [selectedNodeId, data, graphData.nodes]);
@@ -131,41 +186,15 @@ const App: React.FC = () => {
     document.addEventListener('mouseup', handleMouseUp);
   }, [panelHeight]);
 
-
-  const handleManualCrawl = useCallback(async () => {
-    try {
-      const response = await fetch(`${API_CONFIG.API_URL}/crawl`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-      });
-      if (!response.ok) {
-        throw new Error('Failed to trigger crawl');
-      }
-      // Request updated topology after crawl is triggered
-      setTimeout(() => {
-        requestTopology();
-      }, 1000);
-    } catch (error) {
-      console.error('Failed to trigger crawl:', error);
-    }
-  }, [requestTopology]);
-
   return (
     <div data-theme={theme} className="w-screen h-screen flex flex-col font-sans">
-      <Header 
-        theme={theme} 
-        setTheme={setTheme} 
-        onRefresh={handleManualCrawl}
-        connectionStatus={status}
-      />
-      <main className="grow relative overflow-hidden">
+      <Header theme={theme} setTheme={setTheme} onRefresh={handleRefresh} connectionStatus={connectionStatus} />
+      <main className="flex-grow relative overflow-hidden">
         {isLoading && (
             <div className="absolute inset-0 bg-base-300/50 backdrop-blur-sm flex items-center justify-center z-30">
                 <div className="text-center">
                     <span className="loading loading-spinner loading-lg text-primary"></span>
-                    <p className="mt-2 text-base-content/80">Loading Topology...</p>
+                    <p className="mt-2 text-base-content/80">Loading...</p>
                 </div>
             </div>
         )}
@@ -187,7 +216,7 @@ const App: React.FC = () => {
           style={{ height: `${panelHeight}px` }}
         >
             <div 
-                className="w-full h-5 shrink-0 cursor-row-resize flex items-center justify-center"
+                className="w-full h-5 flex-shrink-0 cursor-row-resize flex items-center justify-center"
                 onMouseDown={handleMouseDown}
             >
                 <div className="w-12 h-1.5 bg-base-300/70 rounded-full"></div>

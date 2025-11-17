@@ -2,6 +2,8 @@ import React, { useRef, useEffect, useCallback } from 'react';
 import * as d3 from 'd3';
 import type { D3Node, D3Link } from '../types';
 import RouterIcon from './icons/RouterIcon';
+import ServerIcon from './icons/ServerIcon';
+import { CONTROLLER_NODE_ID } from '../constants';
 
 interface NetworkGraphProps {
   nodes: D3Node[];
@@ -198,7 +200,7 @@ const NetworkGraph: React.FC<NetworkGraphProps> = ({ nodes, links, onNodeClick, 
 
           const iconSize = 30;
           g.append('svg:foreignObject').attr('width', iconSize).attr('height', iconSize).attr('x', -iconSize / 2).attr('y', -iconSize / 2)
-            .append('xhtml:div').attr('class', 'w-[30px] h-[30px]').html(RouterIcon);
+            .append('xhtml:div').attr('class', 'w-[30px] h-[30px]').html(d => d.id === CONTROLLER_NODE_ID ? ServerIcon : RouterIcon);
 
           g.append('text').attr('dy', '3.1em').attr('text-anchor', 'middle').attr('class', 'fill-current text-base-content text-sm font-semibold select-none').text(d => d.id);
           
