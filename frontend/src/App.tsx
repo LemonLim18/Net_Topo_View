@@ -9,7 +9,14 @@ type View = 'dashboard' | 'configuration' | 'ai_assistant';
 
 const App: React.FC = () => {
   const [theme, setTheme] = useState(() => localStorage.getItem('theme') || 'night');
-  const [view, setView] = useState<View>('dashboard');
+  const [view, setView] = useState<View>(() => {
+    try {
+      const v = localStorage.getItem('currentView') as View | null;
+      return v || 'dashboard';
+    } catch (e) {
+      return 'dashboard';
+    }
+  });
 
   useEffect(() => {
     localStorage.setItem('theme', theme);
@@ -29,12 +36,20 @@ const App: React.FC = () => {
     }
   };
 
+  useEffect(() => {
+    try {
+      localStorage.setItem('currentView', view);
+    } catch (e) {
+      // ignore storage errors
+    }
+  }, [view]);
+
   return (
     <div data-theme={theme} className="w-screen h-screen flex flex-col font-sans">
       <Header theme={theme} setTheme={setTheme} />
-      <div className="flex flex-grow overflow-hidden">
+      <div className="flex grow overflow-hidden">
         <Sidebar currentView={view} setView={setView} />
-        <main className="flex-grow relative overflow-hidden bg-base-200">
+        <main className="grow relative overflow-hidden bg-base-200">
           {renderView()}
         </main>
       </div>

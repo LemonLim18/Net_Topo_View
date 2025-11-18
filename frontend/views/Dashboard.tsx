@@ -227,14 +227,14 @@ const Dashboard: React.FC = () => {
     return (
         <div className="w-full h-full flex flex-col">
              {isLoading && (
-                <div className="absolute inset-0 bg-base-300/50 backdrop-blur-sm flex items-center justify-center z-30" role="status" aria-label="Loading real-time topology">
+                <div className="absolute inset-0 bg-base-300/50 backdrop-blur-sm flex items-center justify-center z-15" role="status" aria-label="Loading real-time topology">
                     <div className="text-center">
                         <span className="loading loading-spinner loading-lg text-primary"></span>
                         <p className="mt-2 text-base-content/80">Loading Real-Time Topology...</p>
                     </div>
                 </div>
             )}
-            <div className="p-2 bg-base-300/80 backdrop-blur-sm flex-shrink-0 z-10 flex items-center justify-between px-4">
+            <div className="p-2 bg-base-300/80 backdrop-blur-sm shrink-0 z-10 flex items-center justify-between px-4">
                 <div className="flex items-center gap-2 text-sm text-base-content/70" aria-live="polite">
                    {statusIndicator[status]}
                 </div>
@@ -249,7 +249,7 @@ const Dashboard: React.FC = () => {
                 </button>
             </div>
 
-            <div className="flex-grow relative overflow-hidden">
+            <div className="grow relative overflow-hidden">
                 <NetworkGraph 
                     nodes={graphData.nodes} 
                     links={graphData.links}
@@ -266,7 +266,7 @@ const Dashboard: React.FC = () => {
                   style={{ height: `${panelHeight}px` }}
                 >
                     <div 
-                        className="w-full h-5 flex-shrink-0 cursor-row-resize flex items-center justify-center"
+                        className="w-full h-5 shrink-0 cursor-row-resize flex items-center justify-center"
                         onMouseDown={handleMouseDown}
                         aria-label="Resize connection list panel"
                         role="separator"

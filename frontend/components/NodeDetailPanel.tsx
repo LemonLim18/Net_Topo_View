@@ -20,14 +20,14 @@ const NodeDetailPanel: React.FC<NodeDetailPanelProps> = ({ node, onClose }) => {
   return (
     <aside className={panelClasses}>
       <div className="p-4 h-full flex flex-col">
-        <div className="flex justify-between items-center mb-4 pb-2 border-b border-base-300 flex-shrink-0">
+        <div className="flex justify-between items-center mb-4 pb-2 border-b border-base-300 shrink-0">
           <h2 className="text-xl font-bold">Node Details</h2>
           <button className="btn btn-ghost btn-sm btn-square" onClick={onClose}>
             <X className="h-5 w-5" />
           </button>
         </div>
 
-        <div className="overflow-y-auto flex-grow pr-2 space-y-4">
+        <div className="overflow-y-auto grow pr-2 space-y-4">
           <div>
             <p className="text-sm text-base-content/70">Node ID</p>
             <p className="font-mono text-lg">{node.id}</p>

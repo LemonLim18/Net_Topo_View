@@ -9,19 +9,19 @@ const Legend: React.FC = () => {
         <h3 className="font-bold mb-2">Legend</h3>
         <ul className="space-y-2">
           <li className="flex items-center">
-            <div className="w-8 h-8 mr-2 flex-shrink-0 flex items-center justify-center bg-base-300 rounded-full">
+            <div className="w-8 h-8 mr-2 shrink-0 flex items-center justify-center bg-base-300 rounded-full">
                 <div className="w-5 h-5" dangerouslySetInnerHTML={{ __html: ServerIcon }} />
             </div>
             <span>Controller</span>
           </li>
           <li className="flex items-center">
-            <div className="w-8 h-8 mr-2 flex-shrink-0 flex items-center justify-center bg-base-300 rounded-full">
+            <div className="w-8 h-8 mr-2 shrink-0 flex items-center justify-center bg-base-300 rounded-full">
                 <div className="w-4 h-4" dangerouslySetInnerHTML={{ __html: RouterIcon }} />
             </div>
             <span>Router Node</span>
           </li>
           <li className="flex items-center">
-             <div className="w-8 h-8 mr-2 flex-shrink-0 flex items-center justify-center">
+             <div className="w-8 h-8 mr-2 shrink-0 flex items-center justify-center">
                 <svg width="24" height="2" viewBox="0 0 24 2" fill="none" xmlns="http://www.w3.org/2000/svg">
                     <line x1="1" y1="1" x2="23" y2="1" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
                 </svg>
@@ -29,7 +29,7 @@ const Legend: React.FC = () => {
             <span>Physical Link</span>
           </li>
           <li className="flex items-center">
-             <div className="w-8 h-8 mr-2 flex-shrink-0 flex items-center justify-center">
+             <div className="w-8 h-8 mr-2 shrink-0 flex items-center justify-center">
                 <svg width="24" height="2" viewBox="0 0 24 2" fill="none" xmlns="http://www.w3.org/2000/svg">
                     <line x1="1" y1="1" x2="23" y2="1" className="stroke-warning" strokeWidth="2" strokeLinecap="round"/>
                 </svg>
@@ -37,7 +37,7 @@ const Legend: React.FC = () => {
             <span>Unplanned Device / Link</span>
           </li>
            <li className="flex items-center">
-             <div className="w-8 h-8 mr-2 flex-shrink-0 flex items-center justify-center">
+             <div className="w-8 h-8 mr-2 shrink-0 flex items-center justify-center">
                 <svg width="24" height="2" viewBox="0 0 24 2" fill="none" xmlns="http://www.w3.org/2000/svg">
                     <line x1="1" y1="1" x2="23" y2="1" className="stroke-error" strokeWidth="2" strokeLinecap="round" strokeDasharray="4 4"/>
                 </svg>

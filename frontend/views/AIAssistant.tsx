@@ -98,7 +98,7 @@ User Request: "${input}"`;
 
   return (
     <div className="flex flex-col h-full p-4 bg-base-300">
-      <div className="flex-grow overflow-y-auto pr-4 space-y-6">
+      <div className="grow overflow-y-auto pr-4 space-y-6">
         {messages.map((msg, index) => (
           <div key={index} className={`chat ${msg.sender === 'user' ? 'chat-end' : 'chat-start'}`}>
             <div className="chat-image avatar">
@@ -133,7 +133,7 @@ User Request: "${input}"`;
         <div ref={messagesEndRef} />
       </div>
 
-      <div className="flex-shrink-0 mt-4">
+      <div className="shrink-0 mt-4">
         <div className="form-control">
           <div className="input-group">
             <input
