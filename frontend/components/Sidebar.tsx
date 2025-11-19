@@ -1,7 +1,7 @@
 import React from 'react';
 import { LayoutDashboard, FileCog, BotMessageSquare } from 'lucide-react';
 
-type View = 'dashboard' | 'configuration' | 'ai_assistant';
+type View = 'dashboard' | 'configuration' | 'ai_assistant' | 'gemini_chat';
 
 interface SidebarProps {
   currentView: View;
@@ -13,6 +13,7 @@ const Sidebar: React.FC<SidebarProps> = ({ currentView, setView }) => {
     { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
     { id: 'configuration', label: 'Configuration', icon: FileCog },
     { id: 'ai_assistant', label: 'AI Assistant', icon: BotMessageSquare },
+    { id: 'gemini_chat', label: 'Gemini Chat', icon: BotMessageSquare },
   ];
 
   return (
