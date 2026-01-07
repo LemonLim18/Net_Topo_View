@@ -47,4 +47,37 @@ export interface D3Link extends d3.SimulationLinkDatum<D3Node> {
     sourceIp: string;
     targetIp: string;
     diffStatus?: DiffStatus;
+    index?: number;
+}
+
+// AAA Types
+export type UserRole = 'admin' | 'operator' | 'auditor';
+
+export interface User {
+    username: string;
+    role: UserRole;
+    lastLogin: string;
+}
+
+// Domain Types
+export type AppDomain = 'network' | 'security';
+export type ViewId = 
+  | 'dashboard' 
+  | 'configuration' 
+  | 'net_perf' 
+  | 'net_chat'
+  | 'sec_events'
+  | 'sec_analysis'
+  | 'sec_chat';
+
+// Notification Types
+export type NotificationType = 'info' | 'success' | 'warning' | 'error';
+
+export interface AppNotification {
+    id: string;
+    title: string;
+    message: string;
+    type: NotificationType;
+    timestamp: number;
+    read: boolean;
 }

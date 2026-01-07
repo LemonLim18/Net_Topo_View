@@ -1,5 +1,7 @@
 import React from 'react';
-import { Bot, Sun, SunDim } from 'lucide-react';
+import { Bell, Check, Trash2, Bot, Sun, SunDim } from 'lucide-react';
+import { useNotification } from '../contexts/NotificationContext';
+import { formatDistanceToNow } from 'date-fns';
 
 const daisyUIThemes = [
   "light", "dark", "cupcake", "emerald", "corporate", "synthwave",
@@ -15,6 +17,18 @@ interface HeaderProps {
 }
 
 const Header: React.FC<HeaderProps> = ({ theme, setTheme }) => {
+  const { notifications, markAsRead, clearAll } = useNotification();
+  const unreadCount = notifications.filter(n => !n.read).length;
+
+  const getIconColor = (type: string) => {
+      switch(type) {
+          case 'error': return 'text-error';
+          case 'warning': return 'text-warning';
+          case 'success': return 'text-success';
+          default: return 'text-info';
+      }
+  };
+
   return (
     <header className="navbar bg-base-100 shadow-lg z-20 shrink-0">
       <div className="flex-1">
@@ -22,10 +36,52 @@ const Header: React.FC<HeaderProps> = ({ theme, setTheme }) => {
           <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
             <path strokeLinecap="round" strokeLinejoin="round" d="M8.684 13.342C8.886 12.938 9 12.482 9 12s-.114-.938-.316-1.342m0 2.684a3 3 0 110-2.684m0 2.684l6.632 3.316m-6.632-6l6.632-3.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 9.316a3 3 0 105.367 2.684 3 3 0 00-5.367-2.684z" />
           </svg>
-          CogniShield: Network Controller
+          <span className="font-bold">CogniShield</span> <span className="text-xs opacity-50 font-normal">Network & Security Controller</span>
         </a>
       </div>
-      <div className="flex-none gap-2">
+      <div className="flex-none gap-4">
+        {/* Notification Bell */}
+        <div className="dropdown dropdown-end">
+            <div tabIndex={0} role="button" className="btn btn-ghost btn-circle">
+                <div className="indicator">
+                    <Bell className="h-5 w-5" />
+                    {unreadCount > 0 && <span className="badge badge-sm badge-error indicator-item">{unreadCount}</span>}
+                </div>
+            </div>
+            <div tabIndex={0} className="mt-3 z-[1] card card-compact dropdown-content w-80 bg-base-100 shadow-xl border border-base-200">
+                <div className="card-body">
+                    <div className="flex justify-between items-center mb-2">
+                        <span className="font-bold text-lg">Notifications</span>
+                        <button onClick={clearAll} className="btn btn-xs btn-ghost text-error" disabled={notifications.length === 0}>
+                            Clear all
+                        </button>
+                    </div>
+                    <div className="max-h-96 overflow-y-auto space-y-2">
+                        {notifications.length === 0 ? (
+                            <div className="text-center py-8 opacity-50 text-sm">No notifications</div>
+                        ) : (
+                            notifications.map(notif => (
+                                <div key={notif.id} className={`p-3 rounded-lg border ${notif.read ? 'bg-base-100 border-base-200 opacity-60' : 'bg-base-200 border-base-300'}`}>
+                                    <div className="flex justify-between items-start gap-2">
+                                        <div className={`font-semibold text-sm ${getIconColor(notif.type)}`}>{notif.title}</div>
+                                        {!notif.read && (
+                                            <button onClick={() => markAsRead(notif.id)} className="btn btn-ghost btn-xs btn-circle" title="Mark as read">
+                                                <Check className="w-3 h-3" />
+                                            </button>
+                                        )}
+                                    </div>
+                                    <p className="text-xs mt-1 leading-relaxed">{notif.message}</p>
+                                    <div className="text-[10px] opacity-40 mt-2 text-right">
+                                        {new Date(notif.timestamp).toLocaleTimeString()}
+                                    </div>
+                                </div>
+                            ))
+                        )}
+                    </div>
+                </div>
+            </div>
+        </div>
+        
         <div className="dropdown dropdown-end">
             <div tabIndex={0} role="button" className="btn btn-ghost">
                 <Sun className="h-5 w-5 stroke-1.5" />

@@ -10,10 +10,16 @@ import { SidebarLLM } from '../components/SidebarLLM';
 import { ChatInput } from '../components/ChatInput';
 import { MessageBubble } from '../components/MessageBubble';
 
+import type { AppDomain } from '../types';
+
 // Mock ID generator if uuid not available in env, though we'll just use random strings
 const generateId = () => Math.random().toString(36).substring(2, 15);
 
-const GeminiChat = () => {
+interface AIChatProps {
+    domain: AppDomain;
+}
+
+const GeminiChat: React.FC<AIChatProps> = ({ domain }) => {
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
   const [input, setInput] = useState('');
   const [messages, setMessages] = useState<Message[]>([]);
@@ -43,15 +49,45 @@ const GeminiChat = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // System Prompt based on domain
+  const getSystemInstruction = (d: AppDomain) => {
+    const common = "You are a senior automated operations assistant. ";
+    const schema = `When the user requests a configuration change or actionable task, you MUST output the command in a JSON block at the end of your response like this:
+\`\`\`json:action
+{
+  "type": "command",
+  "target": "device_or_service_name",
+  "description": "Short summary of action",
+  "code": "actual command or configuration lines"
+}
+\`\`\`
+`;
+    if (d === 'network') {
+        return common + "You specialize in Network Engineering (Cisco/Juniper/Arista). You help configure routers, switches, and analyze topology. " + schema;
+    } else {
+        return common + "You specialize in Cybersecurity (Firewalls, IDS/IPS, SIEM). You help analyze threats, configure ACLs, and block IPs. " + schema;
+    }
+  };
+
   const startNewChat = useCallback(() => {
     const newSessionId = generateId();
     const newChat = createChatSession();
     
     chatInstanceRef.current = newChat;
-    setMessages([]);
+    setMessages([{
+        id: generateId(),
+        role: Role.Model,
+        content: `I am your ${domain === 'network' ? 'Network' : 'Security'} Operations Assistant. How can I help you today?`,
+        timestamp: Date.now()
+    }]);
     setCurrentSessionId(newSessionId);
     setIsSidebarOpen(window.innerWidth > 768); // Open sidebar on desktop by default
-  }, []);
+  }, [domain]);
+
+  // Reset chat when domain changes
+  useEffect(() => {
+     startNewChat();
+  }, [domain, startNewChat]);
 
   const handleSendMessage = async (text: string) => {
     if (!text.trim() || !currentSessionId) return;
