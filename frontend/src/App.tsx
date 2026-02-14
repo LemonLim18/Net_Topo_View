@@ -5,6 +5,7 @@ import Dashboard from '../views/Dashboard';
 import Configuration from '../views/Configuration';
 import AIAssistant from '../views/AIAssistant';
 import GeminiChat from  "../views/AIChat";
+import AIAgentPanel from '../components/AIAgentPanel';
 
 import Login from '../views/Login';
 import NetworkPerformance from '../views/NetworkPerformance';
@@ -12,8 +13,8 @@ import SecurityEvents from '../views/SecurityEvents';
 import SecurityAnalysis from '../views/SecurityAnalysis';
 import { NotificationProvider } from '../contexts/NotificationContext';
 import NotificationToast from '../components/NotificationToast';
+import { Bot } from 'lucide-react';
 
-// type View = 'dashboard' | 'configuration' | 'ai_assistant' | 'gemini_chat';
 import type { ViewId, User, AppDomain } from '../types';
 
 
@@ -21,6 +22,10 @@ const App: React.FC = () => {
   const [theme, setTheme] = useState(() => localStorage.getItem('theme') || 'night');
   const [view, setView] = useState<ViewId>('dashboard');
   const [user, setUser] = useState<User | null>(null);
+  const [aiPanelOpen, setAiPanelOpen] = useState(() => {
+    const saved = localStorage.getItem('aiPanelOpen');
+    return saved !== null ? JSON.parse(saved) : true;
+  });
 
   useEffect(() => {
     localStorage.setItem('theme', theme);
@@ -35,20 +40,16 @@ const App: React.FC = () => {
     }
   }, [view]);
 
-  // const renderView = () => {
-  //   switch (view) {
-  //     case 'dashboard':
-  //       return <Dashboard />;
-  //     case 'configuration':
-  //       return <Configuration />;
-  //     case 'ai_assistant':
-  //       return <AIAssistant />;
-  //     case 'gemini_chat':
-  //       return <GeminiChat />;
-  //     default:
-  //       return <Dashboard />;
-  //   }
-  // };
+  useEffect(() => {
+    localStorage.setItem('aiPanelOpen', JSON.stringify(aiPanelOpen));
+  }, [aiPanelOpen]);
+
+  // Determine domain based on current view
+  const getCurrentDomain = (): AppDomain => {
+    if (view.startsWith('sec_')) return 'security';
+    return 'network';
+  };
+
   const renderView = () => {
     switch (view) {
       // Network Domain
@@ -82,6 +83,11 @@ const App: React.FC = () => {
       );
   }
 
+  const handlePlaybookGenerated = (playbook: any) => {
+    console.log('Playbook generated:', playbook);
+    // In production, this would update a playbook editor/viewer in main area
+  };
+
   return (
     <NotificationProvider>
         <div data-theme={theme} className="w-screen h-screen flex flex-col font-sans">
@@ -93,9 +99,31 @@ const App: React.FC = () => {
                 user={user} 
                 onLogout={() => setUser(null)}
             />
-            <main className="flex-grow relative overflow-hidden bg-base-200">
-            {renderView()}
-            <NotificationToast />
+            <main className="flex-grow relative overflow-hidden bg-base-200 flex">
+              {/* Main Content Area */}
+              <div className="flex-grow overflow-hidden relative">
+                {renderView()}
+                <NotificationToast />
+              </div>
+              
+              {/* AI Agent Panel (Docked Right) */}
+              <AIAgentPanel 
+                isOpen={aiPanelOpen}
+                onToggle={() => setAiPanelOpen(!aiPanelOpen)}
+                domain={getCurrentDomain()}
+                onPlaybookGenerated={handlePlaybookGenerated}
+              />
+              
+              {/* Toggle Button when panel is closed */}
+              {!aiPanelOpen && (
+                <button 
+                  onClick={() => setAiPanelOpen(true)}
+                  className="absolute right-4 bottom-4 btn btn-primary btn-circle shadow-lg z-20"
+                  title="Open AI Agent (Ctrl+Shift+I)"
+                >
+                  <Bot className="w-5 h-5" />
+                </button>
+              )}
             </main>
         </div>
         </div>

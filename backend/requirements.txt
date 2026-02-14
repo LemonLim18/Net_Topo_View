@@ -1,0 +1,10 @@
+fastapi
+uvicorn
+paramiko
+rich
+python-multipart
+cryptography
+bcrypt
+pysnmp>=7.1.22
+websockets
+

@@ -1,0 +1,6 @@
+__pycache__/
+venv/
+.vscode/
+topology_store/
+backup_folder/
+_debug*
