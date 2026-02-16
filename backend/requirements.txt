@@ -7,4 +7,6 @@ cryptography
 bcrypt
 pysnmp>=7.1.22
 websockets
+jinja2
+requests
 

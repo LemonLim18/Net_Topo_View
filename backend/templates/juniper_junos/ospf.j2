@@ -1,0 +1,17 @@
+set protocols ospf router-id {{ router_id }}
+{% for net in networks %}
+{% if net.interface is defined and net.interface %}
+set protocols ospf area {{ net.area }} interface {{ net.interface }}
+{% endif %}
+{% endfor %}
+{% if passive_interfaces is defined and passive_interfaces %}
+{% for intf in passive_interfaces %}
+set protocols ospf area 0 interface {{ intf }} passive
+{% endfor %}
+{% endif %}
+{% if reference_bandwidth is defined and reference_bandwidth %}
+set protocols ospf reference-bandwidth {{ reference_bandwidth }}m
+{% endif %}
+{% if default_information_originate is defined and default_information_originate %}
+set protocols ospf export default-route
+{% endif %}

@@ -1,0 +1,6 @@
+acl name {{ acl_name }} {{ acl_type | default("advance") }}
+{% for rule in rules %}
+ rule {% if rule.seq is defined %}{{ rule.seq }} {% endif %}{{ rule.action }} {% if rule.protocol is defined %}{{ rule.protocol }} {% endif %}source {{ rule.source }}{% if rule.source_wildcard is defined %} {{ rule.source_wildcard }}{% endif %}{% if rule.destination is defined %} destination {{ rule.destination }}{% endif %}{% if rule.dest_wildcard is defined %} {{ rule.dest_wildcard }}{% endif %}{% if rule.port is defined %} destination-port eq {{ rule.port }}{% endif %}{% if rule.log is defined and rule.log %} logging{% endif %}
+
+{% endfor %}
+return

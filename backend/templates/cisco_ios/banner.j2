@@ -1,0 +1,10 @@
+{% if banner_type is defined and banner_type %}
+banner {{ banner_type }} ^
+{{ banner_text }}
+^
+{% else %}
+banner motd ^
+{{ banner_text }}
+^
+{% endif %}
+!

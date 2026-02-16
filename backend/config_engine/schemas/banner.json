@@ -1,0 +1,7 @@
+{
+  "required": ["banner_text"],
+  "properties": {
+    "banner_text": { "type": "string", "description": "Banner message text" },
+    "banner_type": { "type": "string", "description": "motd, login, or exec (Cisco)" }
+  }
+}

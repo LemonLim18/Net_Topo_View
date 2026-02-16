@@ -1,0 +1,7 @@
+{% if timezone is defined and timezone and timezone_offset is defined %}
+clock timezone {{ timezone }} add {{ timezone_offset }}:00:00
+{% endif %}
+{% for server in ntp_servers %}
+ntp-service unicast-server {{ server }}
+{% endfor %}
+return

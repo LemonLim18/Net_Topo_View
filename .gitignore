@@ -20,3 +20,10 @@ Desktop.ini
 Note
 FRONTEND_CONTEXT.md
 _debug*
+backend/venv/
+backend/__pycache__/
+backend/drivers/__pycache__/
+backend/config_engine/__pycache__/
+backend/test_config_engine.py
+*.pyc
+*.pyo

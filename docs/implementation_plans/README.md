@@ -4,9 +4,9 @@ This folder stores the implementation plan for each module as development progre
 
 | Module | File | Status |
 |--------|------|--------|
-| **M1** Multi-Vendor Driver Layer | [M1_MultiVendor_DriverLayer.md](M1_MultiVendor_DriverLayer.md) | 🟡 In Progress |
+| **M1** Multi-Vendor Driver Layer | [M1_MultiVendor_DriverLayer.md](M1_MultiVendor_DriverLayer.md) | ✅ Done |
 | **M2** Topology Crawler | — | 🔴 Not Started |
-| **M3** Configuration Engine | — | 🔴 Not Started |
+| **M3** Configuration Engine | [M3_ConfigurationEngine.md](M3_ConfigurationEngine.md) | 🟡 Planning |
 | **M4** Deployment Pipeline | — | 🔴 Not Started |
 | **M5** LLM Agent | — | 🔴 Not Started |
 | **M6** MCP Server | — | 🔴 Not Started |

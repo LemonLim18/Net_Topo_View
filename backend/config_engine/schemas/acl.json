@@ -1,0 +1,25 @@
+{
+  "required": ["acl_name", "rules"],
+  "properties": {
+    "acl_name": { "type": "string", "description": "ACL name or number" },
+    "acl_type": { "type": "string", "description": "standard or extended (Cisco)" },
+    "rules": {
+      "type": "array",
+      "description": "List of ACL rules",
+      "items": {
+        "type": "object",
+        "properties": {
+          "seq": { "type": "integer", "description": "Sequence number" },
+          "action": { "type": "string", "description": "permit or deny" },
+          "protocol": { "type": "string", "description": "ip, tcp, udp, icmp, etc." },
+          "source": { "type": "string", "description": "Source address/wildcard or 'any'" },
+          "source_wildcard": { "type": "string", "description": "Source wildcard mask" },
+          "destination": { "type": "string", "description": "Destination address/wildcard or 'any'" },
+          "dest_wildcard": { "type": "string", "description": "Destination wildcard mask" },
+          "port": { "type": "string", "description": "Port number or name (e.g. eq 80)" },
+          "log": { "type": "boolean", "description": "Log matches" }
+        }
+      }
+    }
+  }
+}

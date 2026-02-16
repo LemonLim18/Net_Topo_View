@@ -1,0 +1,9 @@
+{% for server in syslog_servers %}
+set system syslog host {{ server }} any {{ trap_level | default("info") }}
+{% if facility is defined and facility %}
+set system syslog host {{ server }} facility-override {{ facility }}
+{% endif %}
+{% endfor %}
+{% if source_interface is defined and source_interface %}
+set system syslog source-address {{ source_interface }}
+{% endif %}

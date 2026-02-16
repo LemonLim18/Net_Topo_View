@@ -1,0 +1,5 @@
+{% for route in routes %}
+ip route {{ route.prefix }} {{ route.mask }} {{ route.next_hop }}{% if route.distance is defined %} {{ route.distance }}{% endif %}{% if route.name is defined %} name {{ route.name }}{% endif %}
+
+{% endfor %}
+!

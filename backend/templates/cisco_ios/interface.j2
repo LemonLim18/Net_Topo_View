@@ -1,0 +1,26 @@
+interface {{ name }}
+{% if description is defined and description %}
+ description {{ description }}
+{% endif %}
+{% if ip_address is defined and ip_address and subnet_mask is defined and subnet_mask %}
+ ip address {{ ip_address }} {{ subnet_mask }}
+{% endif %}
+{% if speed is defined and speed %}
+ speed {{ speed }}
+{% endif %}
+{% if duplex is defined and duplex %}
+ duplex {{ duplex }}
+{% endif %}
+{% if mtu is defined and mtu %}
+ mtu {{ mtu }}
+{% endif %}
+{% if vlan is defined and vlan %}
+ switchport mode access
+ switchport access vlan {{ vlan }}
+{% endif %}
+{% if shutdown is defined and shutdown %}
+ shutdown
+{% else %}
+ no shutdown
+{% endif %}
+!

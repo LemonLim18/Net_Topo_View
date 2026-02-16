@@ -1,0 +1,33 @@
+{% if domain_name is defined and domain_name %}
+ip domain-name {{ domain_name }}
+{% endif %}
+{% if rsa_key_size is defined and rsa_key_size %}
+crypto key generate rsa modulus {{ rsa_key_size }}
+{% endif %}
+{% if ssh_version is defined and ssh_version %}
+ip ssh version {{ ssh_version }}
+{% endif %}
+{% if ssh_timeout is defined and ssh_timeout %}
+ip ssh time-out {{ ssh_timeout }}
+{% endif %}
+{% if ssh_retries is defined and ssh_retries %}
+ip ssh authentication-retries {{ ssh_retries }}
+{% endif %}
+{% if enable_secret is defined and enable_secret %}
+enable secret {{ enable_secret }}
+{% endif %}
+service password-encryption
+!
+line vty 0 15
+ transport input ssh
+{% if disable_telnet is defined and disable_telnet %}
+ transport output ssh
+{% endif %}
+{% if vty_acl is defined and vty_acl %}
+ access-class {{ vty_acl }} in
+{% endif %}
+{% if exec_timeout_minutes is defined %}
+ exec-timeout {{ exec_timeout_minutes }} {{ exec_timeout_seconds | default(0) }}
+{% endif %}
+ login local
+!

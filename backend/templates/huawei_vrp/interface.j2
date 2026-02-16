@@ -1,0 +1,19 @@
+interface {{ name }}
+{% if description is defined and description %}
+ description {{ description }}
+{% endif %}
+{% if ip_address is defined and ip_address and subnet_mask is defined %}
+ ip address {{ ip_address }} {{ subnet_mask }}
+{% endif %}
+{% if speed is defined and speed %}
+ speed {{ speed }}
+{% endif %}
+{% if mtu is defined and mtu %}
+ mtu {{ mtu }}
+{% endif %}
+{% if shutdown is defined and shutdown %}
+ shutdown
+{% else %}
+ undo shutdown
+{% endif %}
+return

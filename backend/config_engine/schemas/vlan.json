@@ -1,0 +1,17 @@
+{
+  "required": ["vlans"],
+  "properties": {
+    "vlans": {
+      "type": "array",
+      "description": "List of VLANs to configure",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "integer", "description": "VLAN ID (1-4094)" },
+          "name": { "type": "string", "description": "VLAN name" },
+          "description": { "type": "string", "description": "VLAN description" }
+        }
+      }
+    }
+  }
+}

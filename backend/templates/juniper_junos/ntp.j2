@@ -1,0 +1,6 @@
+{% if timezone is defined and timezone %}
+set system time-zone {{ timezone }}
+{% endif %}
+{% for server in ntp_servers %}
+set system ntp server {{ server }}
+{% endfor %}

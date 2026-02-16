@@ -1,0 +1,4 @@
+{% for server in ntp_servers %}
+undo ntp-service unicast-server {{ server }}
+{% endfor %}
+return

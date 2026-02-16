@@ -1,0 +1,32 @@
+{
+  "required": ["asn", "router_id", "neighbors"],
+  "properties": {
+    "asn": { "type": "integer", "description": "BGP Autonomous System Number" },
+    "router_id": { "type": "string", "description": "BGP router ID in x.x.x.x format" },
+    "neighbors": {
+      "type": "array",
+      "description": "List of BGP neighbors",
+      "items": {
+        "type": "object",
+        "properties": {
+          "ip": { "type": "string", "description": "Neighbor IP address" },
+          "remote_as": { "type": "integer", "description": "Neighbor AS number" },
+          "description": { "type": "string", "description": "Neighbor description" },
+          "update_source": { "type": "string", "description": "Update source interface" }
+        }
+      }
+    },
+    "networks": {
+      "type": "array",
+      "description": "Networks to advertise in BGP",
+      "items": {
+        "type": "object",
+        "properties": {
+          "prefix": { "type": "string", "description": "Network prefix" },
+          "mask": { "type": "string", "description": "Network mask" }
+        }
+      }
+    },
+    "address_family": { "type": "string", "description": "Address family: ipv4 or ipv6" }
+  }
+}

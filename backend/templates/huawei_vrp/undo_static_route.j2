@@ -1,0 +1,4 @@
+{% for route in routes %}
+undo ip route-static {{ route.prefix }} {{ route.mask }} {{ route.next_hop }}
+{% endfor %}
+return

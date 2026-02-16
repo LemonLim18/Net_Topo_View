@@ -1,0 +1,23 @@
+{
+  "required": ["router_id", "networks"],
+  "properties": {
+    "process_id": { "type": "integer", "description": "OSPF process ID" },
+    "router_id": { "type": "string", "description": "Router ID in x.x.x.x format" },
+    "networks": {
+      "type": "array",
+      "description": "List of networks to advertise",
+      "items": {
+        "type": "object",
+        "properties": {
+          "network": { "type": "string", "description": "Network address" },
+          "wildcard": { "type": "string", "description": "Wildcard mask" },
+          "area": { "type": "integer", "description": "OSPF area ID" },
+          "interface": { "type": "string", "description": "Interface name (Junos)" }
+        }
+      }
+    },
+    "passive_interfaces": { "type": "array", "description": "List of passive interface names" },
+    "default_information_originate": { "type": "boolean", "description": "Redistribute default route" },
+    "reference_bandwidth": { "type": "integer", "description": "Reference bandwidth in Mbps" }
+  }
+}
