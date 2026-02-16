@@ -64,7 +64,7 @@ M16 Scheduler ──────────────────────
 
 | Property | Detail |
 |----------|--------|
-| **Status** | 🟡 Partial (Cisco IOS working, Huawei/Juniper pending) |
+| **Status** | ✅ Done (Full SSH/SDN Drivers + Factory) |
 | **Priority** | P0 — everything depends on this |
 | **Quarter** | Q1 |
 | **Depends on** | Nothing (leaf module) |
