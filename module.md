@@ -135,7 +135,7 @@ class BaseDriver(ABC):
 
 | Property | Detail |
 |----------|--------|
-| **Status** | 🔴 Not started |
+| **Status** | ✅ Done (Full renderer, differ, validator, schemas, and 30 templates) |
 | **Priority** | P0 — core of the automation story |
 | **Quarter** | Q2 |
 | **Depends on** | M1 (Driver Layer) |
@@ -507,7 +507,7 @@ Resources:                              Tools:
 
 | Property | Detail |
 |----------|--------|
-| **Status** | 🟡 Partial (topology JSON files exist) |
+| **Status** | ✅ Done (Schema, Manager, Models, Repositories implemented) |
 | **Priority** | P0 |
 | **Quarter** | Q1 |
 | **Depends on** | Nothing (leaf module) |
