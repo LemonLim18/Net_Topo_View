@@ -92,3 +92,56 @@ CREATE INDEX IF NOT EXISTS idx_links_src           ON links(src_device_id);
 CREATE INDEX IF NOT EXISTS idx_links_dst           ON links(dst_device_id);
 CREATE INDEX IF NOT EXISTS idx_snapshots_device    ON config_snapshots(device_id);
 CREATE INDEX IF NOT EXISTS idx_audit_created       ON audit_log(created_at);
+
+-- -----------------------------------------------------------
+-- 6. Change Management (M4 Deployment Pipeline)
+-- -----------------------------------------------------------
+-- Groups multiple device changes into a single logical request.
+CREATE TABLE IF NOT EXISTS change_requests (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    title           TEXT    NOT NULL,
+    description     TEXT,
+    status          TEXT    DEFAULT 'draft',    -- draft | pending_approval | approved | running | completed | failed | rolled_back
+    requester       TEXT,                       -- user or 'ai_agent'
+    created_at      TEXT    DEFAULT (datetime('now')),
+    updated_at      TEXT    DEFAULT (datetime('now'))
+);
+
+-- -----------------------------------------------------------
+-- 7. Jobs (Device-level execution)
+-- -----------------------------------------------------------
+-- Link a Change Request to a specific Device.
+CREATE TABLE IF NOT EXISTS jobs (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    request_id      INTEGER NOT NULL REFERENCES change_requests(id) ON DELETE CASCADE,
+    device_id       INTEGER NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+    status          TEXT    DEFAULT 'pending',  -- pending | running | success | failed | rolled_back
+    stage           TEXT,                       -- current pipeline stage (e.g. 'snapshot_pre')
+    snapshot_pre_id INTEGER REFERENCES config_snapshots(id),
+    snapshot_post_id INTEGER REFERENCES config_snapshots(id),
+    error_message   TEXT,
+    created_at      TEXT    DEFAULT (datetime('now')),
+    updated_at      TEXT    DEFAULT (datetime('now'))
+);
+
+-- -----------------------------------------------------------
+-- 8. Job Steps (Granular Logs)
+-- -----------------------------------------------------------
+-- Detailed log of every step taken during a job (e.g. "Generating config", "Connecting SSH").
+CREATE TABLE IF NOT EXISTS job_steps (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id          INTEGER NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+    stage           TEXT    NOT NULL,           -- plan | approve | snapshot_pre | apply | verify | commit | rollback
+    status          TEXT    DEFAULT 'running',  -- running | success | failed | skipped
+    details         TEXT,                       -- JSON / massive text output
+    created_at      TEXT    DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_jobs_request        ON jobs(request_id);
+CREATE INDEX IF NOT EXISTS idx_steps_job           ON job_steps(job_id);
+
+-- -----------------------------------------------------------
+-- Migration: Add generated config columns to jobs table
+-- -----------------------------------------------------------
+ALTER TABLE jobs ADD COLUMN generated_config TEXT;
+ALTER TABLE jobs ADD COLUMN rollback_config TEXT;

@@ -84,6 +84,14 @@ class BaseDriver(ABC):
         """Return the full running configuration as text."""
         ...
 
+    @abstractmethod
+    def run_command(self, command: str) -> str:
+        """
+        Run a single CLI command in privileged exec mode.
+        Returns the raw output string.
+        """
+        ...
+
     # ------------------------------------------------------------------
     # Write operations (modifies device — requires caution)
     # ------------------------------------------------------------------

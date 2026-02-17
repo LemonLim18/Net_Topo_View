@@ -257,6 +257,10 @@ class SSHDriver(BaseDriver):
             logger.error(f"Command execution failed on {self.host}: {e}")
             raise
 
+    def run_command(self, command: str) -> str:
+        """Alias for execute_command to satisfy BaseDriver interface."""
+        return self.execute_command(command)
+
     def execute_commands(self, commands: List[str], timeout: int = None) -> str:
         """
         Execute multiple commands in an interactive shell session.
