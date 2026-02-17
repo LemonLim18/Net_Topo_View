@@ -55,7 +55,13 @@ class GeminiProvider(LLMProvider):
 
         self._api_key = api_key or os.getenv("GEMINI_API_KEY", "")
         self._model = model or self.DEFAULT_MODEL
-        self._client = genai.Client(api_key=self._api_key)
+        # Initialize client. standard sync client.
+        if self._api_key:
+            self._client = genai.Client(api_key=self._api_key)
+        else:
+            logger.warning("No Gemini API Key provided.")
+            self._client = None
+            
         logger.info("GeminiProvider initialized (model=%s)", self._model)
 
     def model_name(self) -> str:

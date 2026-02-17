@@ -1,18 +1,16 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Menu, PanelLeftClose, PanelLeftOpen } from 'lucide-react';
-import { GoogleGenAI, Chat } from "@google/genai";
-import { v4 as uuidv4 } from 'uuid';
 
 import { Role } from '../typesLLM';
 import type { Message, ChatSession } from '../typesLLM';
-import { createChatSession, sendMessageStream, generateTitle } from '../services/gemini';
 import { SidebarLLM } from '../components/SidebarLLM';
 import { ChatInput } from '../components/ChatInput';
 import { MessageBubble } from '../components/MessageBubble';
+import { llmApi } from '../services/api';
 
 import type { AppDomain } from '../types';
 
-// Mock ID generator if uuid not available in env, though we'll just use random strings
+// Mock ID generator
 const generateId = () => Math.random().toString(36).substring(2, 15);
 
 interface AIChatProps {
@@ -21,18 +19,13 @@ interface AIChatProps {
 
 const GeminiChat: React.FC<AIChatProps> = ({ domain }) => {
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
-  const [input, setInput] = useState('');
   const [messages, setMessages] = useState<Message[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
   
-  // Refs for chat management
-  const chatInstanceRef = useRef<Chat | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  const abortControllerRef = useRef<AbortController | null>(null);
 
-  // Scroll to bottom on new messages
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   };
@@ -46,34 +39,13 @@ const GeminiChat: React.FC<AIChatProps> = ({ domain }) => {
     if (!currentSessionId) {
         startNewChat();
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-
-  // System Prompt based on domain
-  const getSystemInstruction = (d: AppDomain) => {
-    const common = "You are a senior automated operations assistant. ";
-    const schema = `When the user requests a configuration change or actionable task, you MUST output the command in a JSON block at the end of your response like this:
-\`\`\`json:action
-{
-  "type": "command",
-  "target": "device_or_service_name",
-  "description": "Short summary of action",
-  "code": "actual command or configuration lines"
-}
-\`\`\`
-`;
-    if (d === 'network') {
-        return common + "You specialize in Network Engineering (Cisco/Juniper/Arista). You help configure routers, switches, and analyze topology. " + schema;
-    } else {
-        return common + "You specialize in Cybersecurity (Firewalls, IDS/IPS, SIEM). You help analyze threats, configure ACLs, and block IPs. " + schema;
-    }
-  };
 
   const startNewChat = useCallback(() => {
     const newSessionId = generateId();
-    const newChat = createChatSession();
+    // Clear backend history when starting new chat (if that's desired behavior)
+    // llmApi.clearHistory(); 
     
-    chatInstanceRef.current = newChat;
     setMessages([{
         id: generateId(),
         role: Role.Model,
@@ -81,7 +53,7 @@ const GeminiChat: React.FC<AIChatProps> = ({ domain }) => {
         timestamp: Date.now()
     }]);
     setCurrentSessionId(newSessionId);
-    setIsSidebarOpen(window.innerWidth > 768); // Open sidebar on desktop by default
+    setIsSidebarOpen(window.innerWidth > 768);
   }, [domain]);
 
   // Reset chat when domain changes
@@ -100,7 +72,6 @@ const GeminiChat: React.FC<AIChatProps> = ({ domain }) => {
       timestamp: Date.now()
     };
 
-    // Add User Message
     setMessages(prev => [...prev, userMessage]);
     setIsLoading(true);
 
@@ -115,58 +86,34 @@ const GeminiChat: React.FC<AIChatProps> = ({ domain }) => {
     };
     setMessages(prev => [...prev, aiPlaceholder]);
 
-    // Handle Session Title: add a new session only if it doesn't already exist.
-    // Use functional update to avoid races where multiple sends try to insert the same session.
+    // Handle Session Title (Client side only for now)
     if (currentSessionId) {
       setSessions(prevSessions => {
         const exists = prevSessions.some(s => s.id === currentSessionId);
         if (exists) return prevSessions;
-
-        const newSession: ChatSession = {
+        return [{
           id: currentSessionId,
-          title: "New Chat",
+          title: text.substring(0, 30) + (text.length > 30 ? "..." : ""),
           updatedAt: Date.now()
-        };
-
-        // Kick off title generation (updates the session title when available)
-        generateTitle(text).then(title => {
-          setSessions(prev => prev.map(s => s.id === currentSessionId ? { ...s, title } : s));
-        }).catch(() => {});
-
-        return [newSession, ...prevSessions];
+        }, ...prevSessions];
       });
     }
 
     try {
-      if (!chatInstanceRef.current) {
-        chatInstanceRef.current = createChatSession();
-      }
-
-      const stream = await sendMessageStream(chatInstanceRef.current, text);
+      // Call Backend API
+      const response = await llmApi.chat(text);
       
-      let fullContent = "";
-      
-      for await (const chunk of stream) {
-        fullContent += chunk;
-        setMessages(prev => prev.map(msg => 
-          msg.id === aiMsgId 
-            ? { ...msg, content: fullContent } 
-            : msg
-        ));
-      }
-
-      // Finalize message
       setMessages(prev => prev.map(msg => 
         msg.id === aiMsgId 
-          ? { ...msg, isStreaming: false } 
+          ? { ...msg, isStreaming: false, content: response.content } 
           : msg
       ));
 
-    } catch (error) {
+    } catch (error: any) {
       console.error("Chat error:", error);
       setMessages(prev => prev.map(msg => 
         msg.id === aiMsgId 
-          ? { ...msg, isStreaming: false, isError: true, content: "I encountered an error processing your request. Please try again." } 
+          ? { ...msg, isStreaming: false, isError: true, content: `Error: ${error.message || "Failed to get response"}` } 
           : msg
       ));
     } finally {
@@ -175,19 +122,7 @@ const GeminiChat: React.FC<AIChatProps> = ({ domain }) => {
   };
 
   const handleStopGeneration = () => {
-    // Note: The JS SDK doesn't expose a direct abort method on the stream iterator easily 
-    // without breaking the loop manually. In this implementation, we mostly just stop the UI spinner.
-    // True abort requires AbortController support which might be limited in the high-level `sendMessageStream` 
-    // unless we implement manual chunk reading.
-    // For now, we simulate stop by just ending the loading state.
     setIsLoading(false);
-    setMessages(prev => {
-        const lastMsg = prev[prev.length - 1];
-        if (lastMsg.role === Role.Model && lastMsg.isStreaming) {
-            return prev.map(m => m.id === lastMsg.id ? { ...m, isStreaming: false, content: m.content + " [Stopped]" } : m);
-        }
-        return prev;
-    });
   };
 
   const handleDeleteChat = (id: string) => {
@@ -195,30 +130,22 @@ const GeminiChat: React.FC<AIChatProps> = ({ domain }) => {
     if (currentSessionId === id) {
         startNewChat();
     }
+    // Ideally call backend to clear specific session history if supported
+    llmApi.clearHistory();
   };
 
   const handleSelectChat = (id: string) => {
-      // In a real app, we would fetch history from DB here.
-      // Since this is client-side only with no persistence for this demo,
-      // we just switch the active ID. 
-      // NOTE: Switching back to an old ID in this demo won't restore messages 
-      // because we aren't storing message history per session ID in a global store 
-      // to keep the code concise. We only keep the current active messages.
-      // To fix this, we'd need a `allMessages: Record<string, Message[]>` state.
-      
-      // For this demo, we will just clear messages if switching (simulating a fresh load)
-      // or warn the user. Let's reset for simplicity or the user will be confused.
       if (id !== currentSessionId) {
           setCurrentSessionId(id);
-          setMessages([]); // Reset visible messages as we don't have persistence in this simple demo
-          chatInstanceRef.current = createChatSession(); // Reset context
+          setMessages([]); 
+          llmApi.clearHistory(); // Clear backend context for "new" session feel
+          // detailed history fetching would go here
       }
   };
 
   return (
     <div className="flex h-full bg-base-100 relative overflow-hidden">
       
-      {/* Mobile Overlay */}
       {isSidebarOpen && (
         <div 
           className="fixed inset-0 bg-black/50 z-20 md:hidden"
@@ -226,7 +153,6 @@ const GeminiChat: React.FC<AIChatProps> = ({ domain }) => {
         />
       )}
 
-      {/* Sidebar */}
       <div className={`fixed inset-y-0 left-0 z-30 transform transition-transform duration-300 ease-in-out md:relative md:translate-x-0 ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full'} flex`}>
         <SidebarLLM 
           isOpen={isSidebarOpen}
@@ -239,9 +165,7 @@ const GeminiChat: React.FC<AIChatProps> = ({ domain }) => {
         />
       </div>
 
-      {/* Main Content */}
       <div className="flex-1 flex flex-col h-full relative min-w-0">
-        {/* Header */}
         <header className="h-14 border-b border-base-300 flex items-center justify-between px-4 gap-3 shrink-0 bg-base-100/50 backdrop-blur">
           <div className="flex items-center gap-2">
              <button 
@@ -251,13 +175,12 @@ const GeminiChat: React.FC<AIChatProps> = ({ domain }) => {
               {isSidebarOpen ? <PanelLeftClose size={20} /> : <PanelLeftOpen size={20} />}
             </button>
             <span className="font-medium truncate">
-                {sessions.find(s => s.id === currentSessionId)?.title || 'Gemini Chat'}
+                {sessions.find(s => s.id === currentSessionId)?.title || 'NetTopo Assistant'}
             </span>
           </div>
-          <div className="text-xs text-gray-500 font-mono">Gemini 2.5 Flash</div>
+          <div className="text-xs text-gray-500 font-mono">Backend Agent (M5)</div>
         </header>
 
-        {/* Chat Area */}
         <div className="flex-1 overflow-y-auto scrollbar-thin scrollbar-thumb-gray-800 p-4 sm:p-6 md:p-10 scroll-smooth">
            {messages.length === 0 ? (
              <div className="flex flex-col items-center text-base-content justify-center h-full text-center opacity-50 select-none"> 
@@ -266,7 +189,7 @@ const GeminiChat: React.FC<AIChatProps> = ({ domain }) => {
                 </div>
                 <h2 className="text-lg font-semibold mb-2">How can I help you today?</h2>
                 <p className="max-w-md text-sm text-gray-400">
-                    I'm a large language model, trained by Google.
+                    I have access to your network topology and tools.
                 </p>
              </div>
            ) : (
@@ -279,11 +202,10 @@ const GeminiChat: React.FC<AIChatProps> = ({ domain }) => {
            )}
         </div>
 
-        {/* Input Area */}
         <div className="p-4 bg-base-100 border-t border-base-300 shrink-0">
            <ChatInput 
               onSend={handleSendMessage} 
-              disabled={false} 
+              disabled={isLoading} 
               isGenerating={isLoading}
               onStop={handleStopGeneration}
            />

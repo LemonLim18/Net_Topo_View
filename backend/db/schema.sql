@@ -120,6 +120,8 @@ CREATE TABLE IF NOT EXISTS jobs (
     snapshot_pre_id INTEGER REFERENCES config_snapshots(id),
     snapshot_post_id INTEGER REFERENCES config_snapshots(id),
     error_message   TEXT,
+    generated_config TEXT,
+    rollback_config TEXT,
     created_at      TEXT    DEFAULT (datetime('now')),
     updated_at      TEXT    DEFAULT (datetime('now'))
 );
@@ -139,9 +141,3 @@ CREATE TABLE IF NOT EXISTS job_steps (
 
 CREATE INDEX IF NOT EXISTS idx_jobs_request        ON jobs(request_id);
 CREATE INDEX IF NOT EXISTS idx_steps_job           ON job_steps(job_id);
-
--- -----------------------------------------------------------
--- Migration: Add generated config columns to jobs table
--- -----------------------------------------------------------
-ALTER TABLE jobs ADD COLUMN generated_config TEXT;
-ALTER TABLE jobs ADD COLUMN rollback_config TEXT;

@@ -80,6 +80,11 @@ async def add_job(
     job_id = pipeline.add_job(job.request_id, job.device_id)
     return {"job_id": job_id}
 
+@router.get("/jobs", response_model=List[Dict])
+async def list_jobs(pipeline: DeploymentPipeline = Depends(get_pipeline)):
+    """List all deployment jobs."""
+    return pipeline.get_all_jobs()
+
 @router.post("/jobs/{job_id}/plan")
 async def plan_job(
     job_id: int, 

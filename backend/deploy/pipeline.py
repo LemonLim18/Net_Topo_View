@@ -228,6 +228,11 @@ class DeploymentPipeline:
             if driver:
                 driver.disconnect()
 
+    def get_all_jobs(self) -> List[Dict]:
+        """List all jobs with their status."""
+        # Join with requests to get request title? For now just jobs.
+        return self.repo.list_jobs()
+
     def get_job_logs(self, job_id: int) -> List[Dict]:
         """Fetch logs for a job."""
         with self.db_manager._connect() as conn:
