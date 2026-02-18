@@ -72,6 +72,17 @@ export const llmApi = {
     request<{ history: any[] }>('/llm/chat/history'),
 };
 
+// --- M17: Network Monitor API ---
+export const monitorApi = {
+  updateConfig: () =>
+    request<{ status: string; message: string }>('/monitor/update-config', {
+      method: 'POST',
+    }),
+    
+  getStatus: () =>
+    request<{ status: string; message: string }>('/monitor/status'),
+};
+
 // --- M14: Device Inventory (Using Topology for now) ---
 // Ideally we should have a dedicated /devices endpoint in M14, 
 // allows fallback to topology if needed.

@@ -10,3 +10,4 @@ websockets
 jinja2
 requests
 
+mcp>=1.2.0

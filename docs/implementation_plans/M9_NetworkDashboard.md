@@ -1,4 +1,4 @@
-# M6: Network Topology Dashboard — Implementation Plan
+# M9: Network Topology Dashboard — Implementation Plan
 
 Build the unified frontend dashboard and refactor the backend to integrate M2 (Crawler), M4 (Deployment), and M5 (Agent) into a single application.
 

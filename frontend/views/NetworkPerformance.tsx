@@ -1,206 +1,134 @@
-import React from 'react';
-import { 
-  LineChart, Line, AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, BarChart, Bar, Legend, Cell 
-} from 'recharts';
-import { Activity, Wifi, Globe, ArrowUpRight, ArrowDownRight } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { RefreshCw, Activity, Server, AlertTriangle } from 'lucide-react';
+import { monitorApi } from '../src/services/api';
 
-const generateData = (count: number) => {
-    return Array.from({ length: count }, (_, i) => ({
-        time: `${String(i).padStart(2, '0')}:00`,
-        trafficIn: Math.floor(Math.random() * 500) + 100,
-        trafficOut: Math.floor(Math.random() * 400) + 50,
-        latency: Math.floor(Math.random() * 40) + 10,
-        loss: Math.random() > 0.8 ? Math.floor(Math.random() * 5) : 0
-    }));
-};
-
-const APP_DATA = [
-    { name: 'YouTube/Video', usage: 450, color: 'hsl(var(--p))' },
-    { name: 'MS Teams/Zoom', usage: 320, color: 'hsl(var(--s))' },
-    { name: 'AWS Internal', usage: 280, color: 'hsl(var(--a))' },
-    { name: 'HTTPS (Web)', usage: 210, color: 'hsl(var(--in))' },
-    { name: 'SQL Database', usage: 150, color: 'hsl(var(--wa))' },
-    { name: 'Social Media', usage: 80, color: 'hsl(var(--er))' },
-];
-
-const data = generateData(24);
+// M17: Network Performance Monitoring Dashboard
+// Embeds Grafana panels and provides controls for Telegraf config generation.
 
 const NetworkPerformance: React.FC = () => {
-  // Common style for chart text to ensure visibility in dark mode
-  const axisStyle = { 
-      fontSize: 12, 
-      fill: 'hsl(var(--bc))', // Uses the theme's text color
-      opacity: 0.7
+  const [status, setStatus] = useState<string>("unknown");
+  const [isLoading, setIsLoading] = useState(false);
+  const [lastUpdated, setLastUpdated] = useState<string | null>(null);
+
+  const checkStatus = async () => {
+    try {
+      const res = await monitorApi.getStatus();
+      setStatus(res.status);
+    } catch (e) {
+      console.error("Failed to check status", e);
+      setStatus("error");
+    }
   };
 
-  const axisLineStyle = {
-      stroke: 'hsl(var(--bc))',
-      strokeOpacity: 0.2
+  const handleRegenerateConfig = async () => {
+    setIsLoading(true);
+    try {
+      const res = await monitorApi.updateConfig();
+      setLastUpdated(new Date().toLocaleTimeString());
+      alert(res.message);
+    } catch (e: any) {
+      alert("Failed to update config: " + e.message);
+    } finally {
+      setIsLoading(false);
+    }
   };
 
-  const gridStyle = {
-      stroke: 'hsl(var(--bc))',
-      strokeOpacity: 0.1
-  };
-
-  const tooltipStyle = {
-      backgroundColor: 'hsl(var(--b1))',
-      borderColor: 'hsl(var(--b3))',
-      color: 'hsl(var(--bc))',
-      borderRadius: '8px',
-      boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1)'
-  };
+  useEffect(() => {
+    checkStatus();
+  }, []);
 
   return (
-    <div className="p-6 h-full overflow-y-auto bg-base-200 text-base-content">
-        <div className="flex justify-between items-center mb-6">
-            <div>
-                <h1 className="text-2xl font-bold flex items-center gap-2">
-                    <Activity className="w-6 h-6 text-primary" />
-                    Network Performance
-                </h1>
-                <p className="text-sm opacity-60">Real-time metrics & Application Traffic Analysis</p>
+    <div className="p-6 space-y-6 h-full overflow-y-auto">
+      <div className="flex justify-between items-center">
+        <div>
+          <h1 className="text-3xl font-bold tracking-tight flex items-center gap-2">
+            <Activity className="h-8 w-8 text-primary" />
+            Network Performance
+          </h1>
+          <p className="text-muted-foreground mt-2 opacity-70">
+            Real-time telemetry from SNMP/Telegraf stack.
+          </p>
+        </div>
+        <div className="flex gap-2">
+          <button 
+            className="btn btn-outline"
+            onClick={checkStatus}
+            title="Check Monitoring Stack Status"
+          >
+            <Server className="mr-2 h-4 w-4" />
+            Status: {status}
+          </button>
+          <button 
+            className="btn btn-primary"
+            onClick={handleRegenerateConfig} 
+            disabled={isLoading}
+            title="Regenerate Telegraf Config from Inventory"
+          >
+            <RefreshCw className={`mr-2 h-4 w-4 ${isLoading ? 'animate-spin' : ''}`} />
+            Update Config
+          </button>
+        </div>
+      </div>
+
+      {/* Info Cards */}
+      <div className="grid gap-4 md:grid-cols-3">
+        <div className="card bg-base-100 shadow-xl border border-base-300">
+          <div className="card-body p-6">
+            <div className="flex flex-row items-center justify-between space-y-0 pb-2">
+              <h3 className="tracking-tight text-sm font-medium">Monitoring Stack</h3>
+              <Server className="h-4 w-4 text-muted-foreground opacity-50" />
             </div>
-            <div className="flex gap-2">
-                <select className="select select-sm select-bordered">
-                    <option>Last 24 Hours</option>
-                    <option>Last 7 Days</option>
-                    <option>Last 30 Days</option>
-                </select>
-                <button className="btn btn-sm btn-ghost">Refresh</button>
-            </div>
+            <div className="text-2xl font-bold">Telegraf + InfluxDB</div>
+            <p className="text-xs text-muted-foreground opacity-70">Standard TIG Stack</p>
+          </div>
         </div>
 
-        {/* Key Metrics Rows */}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
-             <div className="stats shadow bg-base-100 text-base-content">
-                <div className="stat">
-                    <div className="stat-figure text-primary">
-                        <Activity className="w-8 h-8" />
-                    </div>
-                    <div className="stat-title opacity-70">Total Throughput</div>
-                    <div className="stat-value text-primary">8.4 Gbps</div>
-                    <div className="stat-desc text-success flex items-center gap-1">
-                        <ArrowUpRight className="w-3 h-3"/> 12% vs last month
-                    </div>
-                </div>
+        <div className="card bg-base-100 shadow-xl border border-base-300">
+          <div className="card-body p-6">
+            <div className="flex flex-row items-center justify-between space-y-0 pb-2">
+              <h3 className="tracking-tight text-sm font-medium">Last Config Update</h3>
+              <RefreshCw className="h-4 w-4 text-muted-foreground opacity-50" />
             </div>
-            <div className="stats shadow bg-base-100 text-base-content">
-                <div className="stat">
-                    <div className="stat-figure text-secondary">
-                        <Wifi className="w-8 h-8" />
-                    </div>
-                    <div className="stat-title opacity-70">Avg Latency</div>
-                    <div className="stat-value text-secondary">24ms</div>
-                    <div className="stat-desc text-success flex items-center gap-1">
-                         <ArrowDownRight className="w-3 h-3"/> 2ms improvement
-                    </div>
-                </div>
-            </div>
-            <div className="stats shadow bg-base-100 text-base-content">
-                <div className="stat">
-                     <div className="stat-figure text-accent">
-                        <Globe className="w-8 h-8" />
-                    </div>
-                    <div className="stat-title opacity-70">Top App Category</div>
-                    <div className="stat-value text-accent">Streaming</div>
-                    <div className="stat-desc opacity-70">45% of total bandwidth</div>
-                </div>
-            </div>
+            <div className="text-2xl font-bold">{lastUpdated || "Never"}</div>
+            <p className="text-xs text-muted-foreground opacity-70">Local Session</p>
+          </div>
         </div>
+      </div>
 
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-            {/* Traffic Chart */}
-            <div className="card bg-base-100 shadow-xl col-span-2 lg:col-span-1">
-                <div className="card-body h-80">
-                    <h2 className="card-title text-sm opacity-70 mb-4">Interface Traffic (Mbps)</h2>
-                    <ResponsiveContainer width="100%" height="100%">
-                        <AreaChart data={data}>
-                            <defs>
-                                <linearGradient id="colorIn" x1="0" y1="0" x2="0" y2="1">
-                                    <stop offset="5%" stopColor="hsl(var(--p))" stopOpacity={0.8}/>
-                                    <stop offset="95%" stopColor="hsl(var(--p))" stopOpacity={0}/>
-                                </linearGradient>
-                                <linearGradient id="colorOut" x1="0" y1="0" x2="0" y2="1">
-                                    <stop offset="5%" stopColor="hsl(var(--s))" stopOpacity={0.8}/>
-                                    <stop offset="95%" stopColor="hsl(var(--s))" stopOpacity={0}/>
-                                </linearGradient>
-                            </defs>
-                            <CartesianGrid strokeDasharray="3 3" {...gridStyle} />
-                            <XAxis dataKey="time" tick={axisStyle} axisLine={axisLineStyle} />
-                            <YAxis tick={axisStyle} axisLine={axisLineStyle} />
-                            <Tooltip contentStyle={tooltipStyle} />
-                            <Area type="monotone" dataKey="trafficIn" stroke="hsl(var(--p))" fillOpacity={1} fill="url(#colorIn)" name="Inbound" />
-                            <Area type="monotone" dataKey="trafficOut" stroke="hsl(var(--s))" fillOpacity={1} fill="url(#colorOut)" name="Outbound" />
-                            <Legend wrapperStyle={{ paddingTop: '10px' }} />
-                        </AreaChart>
-                    </ResponsiveContainer>
-                </div>
+      {/* Grafana Embeds */}
+      <div className="card bg-base-100 shadow-xl border border-base-300 min-h-[600px]">
+        <div className="card-body">
+          <h2 className="card-title">Live Dashboard (Grafana)</h2>
+          
+          <div className="h-[500px] flex items-center justify-center border-2 border-dashed rounded-md bg-base-200/50 mt-4">
+            {/* 
+                In a real deployment, this would be an IFrame to Grafana:
+                <iframe 
+                    src="http://localhost:3000/d-solo/..." 
+                    width="100%" 
+                    height="100%" 
+                    frameBorder="0"
+                />
+            */}
+            <div className="text-center space-y-4 p-6">
+                <Activity className="h-16 w-16 mx-auto text-base-content opacity-20" />
+                <h3 className="text-lg font-semibold">Grafana Dashboard Placeholder</h3>
+                <p className="text-sm opacity-70 max-w-sm mx-auto">
+                    To view live metrics, please ensure Grafana is running on port 3000 and 
+                    configure the dashboard URL in <code>frontend/views/NetworkPerformance.tsx</code>.
+                </p>
+                <a 
+                    href="http://localhost:3000" 
+                    target="_blank" 
+                    rel="noreferrer"
+                    className="btn btn-link"
+                >
+                    Open Grafana Locally
+                </a>
             </div>
-
-            {/* Latency Chart */}
-             <div className="card bg-base-100 shadow-xl col-span-2 lg:col-span-1">
-                <div className="card-body h-80">
-                    <h2 className="card-title text-sm opacity-70 mb-4">Edge Latency (ms)</h2>
-                    <ResponsiveContainer width="100%" height="100%">
-                        <LineChart data={data}>
-                            <CartesianGrid strokeDasharray="3 3" {...gridStyle} />
-                            <XAxis dataKey="time" tick={axisStyle} axisLine={axisLineStyle} />
-                            <YAxis tick={axisStyle} axisLine={axisLineStyle} />
-                            <Tooltip contentStyle={tooltipStyle} />
-                            <Line type="monotone" dataKey="latency" stroke="hsl(var(--wa))" strokeWidth={3} dot={false} name="Latency" />
-                            <Legend wrapperStyle={{ paddingTop: '10px' }} />
-                        </LineChart>
-                    </ResponsiveContainer>
-                </div>
-            </div>
-
-             {/* Application/Website Usage Chart (Horizontal Bar) */}
-             <div className="card bg-base-100 shadow-xl col-span-2 lg:col-span-1">
-                <div className="card-body h-72">
-                    <div className="flex justify-between items-center mb-2">
-                        <h2 className="card-title text-sm opacity-70">Top Application Usage (GB)</h2>
-                        <div className="badge badge-outline text-xs">Layer 7 Analysis</div>
-                    </div>
-                    <ResponsiveContainer width="100%" height="100%">
-                        <BarChart layout="vertical" data={APP_DATA} margin={{ left: 20, right: 20 }}>
-                            <CartesianGrid strokeDasharray="3 3" {...gridStyle} horizontal={false} />
-                            <XAxis type="number" hide />
-                            <YAxis 
-                                dataKey="name" 
-                                type="category" 
-                                width={100} 
-                                tick={{...axisStyle, fontSize: 11}} 
-                                axisLine={axisLineStyle}
-                                interval={0}
-                            />
-                            <Tooltip cursor={{fill: 'hsl(var(--bc))', opacity: 0.1}} contentStyle={tooltipStyle} />
-                            <Bar dataKey="usage" radius={[0, 4, 4, 0]} barSize={20} name="Bandwidth (GB)">
-                                {APP_DATA.map((entry, index) => (
-                                    <Cell key={`cell-${index}`} fill={entry.color} />
-                                ))}
-                            </Bar>
-                        </BarChart>
-                    </ResponsiveContainer>
-                </div>
-            </div>
-
-             {/* Packet Loss Chart */}
-             <div className="card bg-base-100 shadow-xl col-span-2 lg:col-span-1">
-                <div className="card-body h-72">
-                    <h2 className="card-title text-sm opacity-70 mb-4">Packet Loss Events</h2>
-                    <ResponsiveContainer width="100%" height="100%">
-                        <BarChart data={data}>
-                            <CartesianGrid strokeDasharray="3 3" {...gridStyle} />
-                            <XAxis dataKey="time" tick={axisStyle} axisLine={axisLineStyle} />
-                            <YAxis tick={axisStyle} axisLine={axisLineStyle} />
-                            <Tooltip contentStyle={tooltipStyle} cursor={{fill: 'hsl(var(--bc))', opacity: 0.1}} />
-                            <Bar dataKey="loss" fill="hsl(var(--er))" name="Dropped Packets" radius={[4, 4, 0, 0]} />
-                        </BarChart>
-                    </ResponsiveContainer>
-                </div>
-            </div>
+          </div>
         </div>
+      </div>
     </div>
   );
 };
