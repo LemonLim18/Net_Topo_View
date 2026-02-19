@@ -1,6 +1,7 @@
 import React, { useState, useMemo, useCallback } from 'react';
 import type { D3Node, D3Link, TopologyData } from '../types';
 import NetworkGraph from '../components/NetworkGraph';
+import NetworkGraphCytoscape from '../components/NetworkGraphCytoscape';
 import NodeDetailPanel from '../components/NodeDetailPanel';
 import TopologyTable from '../components/TopologyTable';
 import Legend from '../components/Legend';
@@ -119,6 +120,7 @@ const Dashboard: React.FC = () => {
     const [panelHeight, setPanelHeight] = useState(window.innerHeight * 0.4);
     const [isGridVisible, setIsGridVisible] = useState(true);
     const [topologyView, setTopologyView] = useState<TopologyView>('diff');
+    const [vizEngine, setVizEngine] = useState<'d3' | 'cytoscape'>('d3');
     const theme = localStorage.getItem('theme') || 'night';
 
     const { status, topology: realTimeTopology, requestTopology } = useWebSocket({
@@ -243,23 +245,34 @@ const Dashboard: React.FC = () => {
                     <button className={`btn join-item btn-sm ${topologyView === 'actual' ? 'btn-active' : ''}`} onClick={() => setTopologyView('actual')}>Real-Time</button>
                     <button className={`btn join-item btn-sm ${topologyView === 'diff' ? 'btn-active' : ''}`} onClick={() => setTopologyView('diff')}>Diff</button>
                 </div>
-                 <button className="btn btn-sm btn-ghost" onClick={handleManualCrawl} aria-label="Refresh topology data">
-                    <RefreshCw className="h-4 w-4" />
-                    Refresh
-                </button>
+                <div className="join">
+                    <button className={`btn join-item btn-sm ${vizEngine === 'd3' ? 'btn-active' : ''}`} onClick={() => setVizEngine('d3')}>D3.js</button>
+                    <button className={`btn join-item btn-sm ${vizEngine === 'cytoscape' ? 'btn-active' : ''}`} onClick={() => setVizEngine('cytoscape')}>Cytoscape</button>
+                </div>
             </div>
 
             <div className="grow relative overflow-hidden">
-                <NetworkGraph 
-                    nodes={graphData.nodes} 
-                    links={graphData.links}
-                    onNodeClick={handleNodeClick}
-                    selectedNodeId={selectedNodeId}
-                    isGridVisible={isGridVisible}
-                    setIsGridVisible={setIsGridVisible}
-                    theme={theme}
-                    topologyView={topologyView}
-                />
+                {vizEngine === 'd3' ? (
+                    <NetworkGraph 
+                        nodes={graphData.nodes} 
+                        links={graphData.links}
+                        onNodeClick={handleNodeClick}
+                        selectedNodeId={selectedNodeId}
+                        isGridVisible={isGridVisible}
+                        setIsGridVisible={setIsGridVisible}
+                        theme={theme}
+                        topologyView={topologyView}
+                    />
+                ) : (
+                    <NetworkGraphCytoscape
+                        nodes={graphData.nodes} 
+                        links={graphData.links}
+                        onNodeClick={handleNodeClick}
+                        selectedNodeId={selectedNodeId}
+                        theme={theme}
+                        topologyView={topologyView}
+                    />
+                )}
                 <Legend />
                 <div 
                   className="absolute bottom-0 left-0 right-0 flex flex-col bg-base-100/90 backdrop-blur-sm rounded-t-lg shadow-[0_-8px_20px_rgba(0,0,0,0.25)]"
