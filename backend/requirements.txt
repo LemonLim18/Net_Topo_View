@@ -11,3 +11,4 @@ jinja2
 requests
 
 mcp>=1.2.0
+pynetbox>=7.3.3
