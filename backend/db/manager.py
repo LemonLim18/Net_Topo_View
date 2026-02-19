@@ -29,6 +29,7 @@ from .models import (
     AuditLogEntry,
     ConfigSnapshot,
     Device,
+    DriftEvent,
     Interface,
     Link,
     TopologyNode,
@@ -400,6 +401,50 @@ class DatabaseManager:
             )
             for r in rows
         ]
+
+    # =============================================================
+    # DRIFT EVENTS (persistent)
+    # =============================================================
+    def save_drift_event(self, event: DriftEvent) -> int:
+        with self._connect() as conn:
+            cur = conn.execute(
+                """INSERT INTO drift_events (device_id, has_drift, severity, diff_text, timestamp)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (
+                    event.device_id, event.has_drift, event.severity, event.diff_text,
+                    event.timestamp or datetime.now(tz=TZ_UTC8).isoformat(timespec="seconds"),
+                ),
+            )
+            return cur.lastrowid
+
+    def get_drift_events(self, device_id: Optional[int] = None, limit: int = 50) -> List[DriftEvent]:
+        with self._connect() as conn:
+            if device_id:
+                query = "SELECT * FROM drift_events WHERE device_id = ? ORDER BY timestamp DESC LIMIT ?"
+                params = (device_id, limit)
+            else:
+                query = "SELECT * FROM drift_events ORDER BY timestamp DESC LIMIT ?"
+                params = (limit,)
+            
+            rows = conn.execute(query, params).fetchall()
+        
+        events = []
+        for r in rows:
+            # Query hostname if needed for complete model hydration
+            # For efficiency we might want a JOIN in the SQL query instead
+            dev = self.get_device_by_id(r["device_id"])
+            hostname = dev.hostname if dev else "unknown"
+            
+            events.append(DriftEvent(
+                id=r["id"],
+                device_id=r["device_id"],
+                hostname=hostname,
+                has_drift=bool(r["has_drift"]),
+                severity=r["severity"],
+                diff_text=r["diff_text"],
+                timestamp=r["timestamp"]
+            ))
+        return events
 
     # =============================================================
     # Utility

@@ -140,4 +140,20 @@ CREATE TABLE IF NOT EXISTS job_steps (
 );
 
 CREATE INDEX IF NOT EXISTS idx_jobs_request        ON jobs(request_id);
+CREATE INDEX IF NOT EXISTS idx_jobs_request        ON jobs(request_id);
 CREATE INDEX IF NOT EXISTS idx_steps_job           ON job_steps(job_id);
+
+-- -----------------------------------------------------------
+-- 9. Drift Events (M8)
+-- -----------------------------------------------------------
+CREATE TABLE IF NOT EXISTS drift_events (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    device_id       INTEGER NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+    has_drift       BOOLEAN NOT NULL,
+    severity        TEXT,                       -- low | medium | high
+    diff_text       TEXT,
+    timestamp       TEXT    DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_drift_device        ON drift_events(device_id);
+CREATE INDEX IF NOT EXISTS idx_drift_timestamp     ON drift_events(timestamp);
