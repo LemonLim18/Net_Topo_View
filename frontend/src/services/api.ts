@@ -48,7 +48,7 @@ export const deployApi = {
     }),
 
   executeJob: (jobId: number, creds: any) =>
-    request<{ status: string }>('/deploy/jobs/' + jobId + '/execute', {
+    request<{ status: string; message: string }>('/deploy/jobs/' + jobId + '/execute', {
       method: 'POST',
       body: JSON.stringify(creds),
     }),
@@ -81,6 +81,44 @@ export const monitorApi = {
     
   getStatus: () =>
     request<{ status: string; message: string }>('/monitor/status'),
+};
+
+// --- M3: Config Engine API ---
+export const configApi = {
+  listTemplates: (vendor?: string) =>
+    request<{ vendor: string; feature: string; has_undo: boolean; schema_exists: boolean }[]>(
+      vendor ? `/config/templates?vendor=${vendor}` : '/config/templates'
+    ),
+
+  getSchema: (feature: string) =>
+    request<Record<string, any>>(`/config/schemas/${feature}`),
+
+  render: (vendor: string, feature: string, params: Record<string, any>) =>
+    request<{ config: string; undo_config: string | null }>('/config/render', {
+      method: 'POST',
+      body: JSON.stringify({ vendor, feature, params }),
+    }),
+
+  diff: (oldConfig: string, newConfig: string) =>
+    request<{
+      unified: string;
+      additions: number;
+      deletions: number;
+      changes: number;
+      is_identical: boolean;
+      added_lines: string[];
+      removed_lines: string[];
+      summary: string;
+    }>('/config/diff', {
+      method: 'POST',
+      body: JSON.stringify({ old_config: oldConfig, new_config: newConfig }),
+    }),
+
+  validate: (vendor: string, configText: string) =>
+    request<{ valid: boolean; errors: string[] }>('/config/validate', {
+      method: 'POST',
+      body: JSON.stringify({ vendor, config_text: configText }),
+    }),
 };
 
 // --- M14: Device Inventory (Using Topology for now) ---

@@ -15,7 +15,7 @@ from fastapi.responses import JSONResponse
 TOPOLOGY_SAVE_DIR = "topology_store"
 CURRENT_TOPOLOGY_FILE = os.path.join(TOPOLOGY_SAVE_DIR, "current_topo.json")
 
-router = APIRouter(prefix="/api/topology", tags=["Topology (M2)"])
+router = APIRouter(prefix="/topology", tags=["Topology (M2)"])
 logger = logging.getLogger("crawler.api")
 
 # We will inject the crawler runner function from the main app to avoid circular imports

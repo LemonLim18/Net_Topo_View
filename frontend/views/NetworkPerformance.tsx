@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { RefreshCw, Activity, Server, AlertTriangle } from 'lucide-react';
+import { RefreshCw, Activity, Server } from 'lucide-react';
 import { monitorApi } from '../src/services/api';
 
 // M17: Network Performance Monitoring Dashboard

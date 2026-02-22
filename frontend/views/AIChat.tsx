@@ -1,12 +1,12 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Menu, PanelLeftClose, PanelLeftOpen } from 'lucide-react';
+import { PanelLeftClose, PanelLeftOpen } from 'lucide-react';
 
 import { Role } from '../typesLLM';
 import type { Message, ChatSession } from '../typesLLM';
 import { SidebarLLM } from '../components/SidebarLLM';
 import { ChatInput } from '../components/ChatInput';
 import { MessageBubble } from '../components/MessageBubble';
-import { llmApi } from '../services/api';
+import { llmApi } from '../src/services/api';
 
 import type { AppDomain } from '../types';
 

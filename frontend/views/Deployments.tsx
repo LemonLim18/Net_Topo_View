@@ -2,14 +2,11 @@ import React, { useState, useEffect } from 'react';
 import { 
   Play, 
   RotateCcw, 
-  CheckCircle, 
-  AlertTriangle, 
   Clock, 
-  FileText,
   Server,
   Terminal
 } from 'lucide-react';
-import { deployApi } from '../services/api';
+import { deployApi } from '../src/services/api';
 
 interface Job {
   id: number;
@@ -21,12 +18,6 @@ interface Job {
   error_message?: string;
 }
 
-interface Request {
-  id: number;
-  title: string;
-  requester: string;
-  jobs: Job[];
-}
 
 const Deployments: React.FC = () => {
   // In a real app, we'd fetch requests. For this MVP, we might need a "list requests" endpoint 

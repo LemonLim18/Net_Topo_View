@@ -20,7 +20,7 @@ from pydantic import BaseModel, Field
 
 logger = logging.getLogger("llm.api")
 
-router = APIRouter(prefix="/api/chat", tags=["Chat (M5)"])
+router = APIRouter(prefix="/llm/chat", tags=["Chat (M5)"])
 
 
 # -----------------------------------------------------------------------

@@ -15,7 +15,7 @@ from backend.deploy.models import JobStatus, PipelineStage
 
 logger = logging.getLogger("deploy.api")
 
-router = APIRouter(prefix="/api/deploy", tags=["Deployment (M4)"])
+router = APIRouter(prefix="/deploy", tags=["Deployment (M4)"])
 
 # -----------------------------------------------------------------------
 # Dependencies
