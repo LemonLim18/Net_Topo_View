@@ -5,7 +5,7 @@ Each function takes (config_text, vendor) and returns an AuditResult.
 """
 
 import re
-from backend.security.models import AuditResult, SecurityRule
+from security.models import AuditResult, SecurityRule
 
 
 # ---------------------------------------------------------------------------

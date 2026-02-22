@@ -1,8 +1,8 @@
 from mcp.server.fastmcp import FastMCP
-from backend.db.manager import DatabaseManager
-from backend.llm.agent import NetworkAgent
-from backend.llm.tools import ToolRegistry
-from backend.deploy.pipeline import DeploymentPipeline
+from db.manager import DatabaseManager
+from llm.agent import NetworkAgent
+from llm.tools import ToolRegistry
+from deploy.pipeline import DeploymentPipeline
 import logging
 
 # Initialize FastMCP Server
@@ -33,7 +33,7 @@ def run_mcp_server():
 
     # Import and register resources/tools
     # We do this here to avoid circular imports if those modules import 'mcp' object
-    from backend.mcp import resources, tools
+    from mcp import resources, tools
     
     # Run the server
     mcp.run()

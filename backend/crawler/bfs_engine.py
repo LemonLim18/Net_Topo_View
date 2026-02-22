@@ -30,8 +30,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional
 
-from backend.crawler.poll import poll_device
-from backend.crawler.parsers.cisco import normalize_interface_name
+from crawler.poll import poll_device
+from crawler.parsers.cisco import normalize_interface_name
 
 logger = logging.getLogger("crawler.bfs")
 

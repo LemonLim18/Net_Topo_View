@@ -1,7 +1,7 @@
 import logging
 from typing import Optional, List
-from backend.db.manager import DatabaseManager
-from backend.drift.models import DriftEvent
+from db.manager import DatabaseManager
+from drift.models import DriftEvent
 
 logger = logging.getLogger("drift.auto_fix")
 

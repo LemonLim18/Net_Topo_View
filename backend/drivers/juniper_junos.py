@@ -27,8 +27,8 @@ import re
 import logging
 from typing import List, Dict, Tuple, Optional
 
-from backend.drivers.ssh_driver import SSHDriver
-from backend.drivers.models import (
+from drivers.ssh_driver import SSHDriver
+from drivers.models import (
     Interface,
     Neighbor,
     Route,

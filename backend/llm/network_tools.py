@@ -199,7 +199,7 @@ def generate_config(vendor: str, feature: str, params: str) -> str:
         params:  JSON string of template parameters
     """
     try:
-        from backend.config_engine.renderer import TemplateRenderer
+        from config_engine.renderer import TemplateRenderer
 
         renderer = TemplateRenderer()
 
@@ -230,7 +230,7 @@ def generate_rollback(vendor: str, feature: str, params: str) -> str:
         params:  JSON string of template parameters
     """
     try:
-        from backend.config_engine.renderer import TemplateRenderer
+        from config_engine.renderer import TemplateRenderer
 
         renderer = TemplateRenderer()
 
@@ -255,7 +255,7 @@ def list_templates(vendor: str = "") -> str:
     by vendor (e.g. 'cisco_ios').
     """
     try:
-        from backend.config_engine.renderer import TemplateRenderer
+        from config_engine.renderer import TemplateRenderer
 
         renderer = TemplateRenderer()
         templates = renderer.list_templates(vendor=vendor if vendor else None)
@@ -277,7 +277,7 @@ def get_template_schema(feature: str) -> str:
         feature: Template name (e.g. 'vlan', 'ospf', 'interface')
     """
     try:
-        from backend.config_engine.renderer import TemplateRenderer
+        from config_engine.renderer import TemplateRenderer
 
         renderer = TemplateRenderer()
         schema = renderer.get_schema(feature)
@@ -300,7 +300,7 @@ def diff_configs(old_config: str, new_config: str) -> str:
         new_config: The new/proposed configuration text
     """
     try:
-        from backend.config_engine.differ import ConfigDiffer
+        from config_engine.differ import ConfigDiffer
 
         differ = ConfigDiffer()
         diff_result = differ.unified_diff(old_config, new_config)
@@ -357,7 +357,7 @@ def run_security_audit(hostname: str) -> str:
         return json.dumps({"error": "Database not available"})
 
     try:
-        from backend.security.engine import SecurityAuditEngine
+        from security.engine import SecurityAuditEngine
 
         # Find device by hostname
         device = _db_manager.get_device_by_hostname(hostname)
@@ -453,9 +453,9 @@ def analyze_security_alert(event_id: int) -> str:
         return json.dumps({"error": "Database not available"})
 
     try:
-        from backend.security.response.responder import IncidentResponder
-        from backend.security.response.playbooks import PlaybookEngine
-        from backend.security.models import SecurityEvent
+        from security.response.responder import IncidentResponder
+        from security.response.playbooks import PlaybookEngine
+        from security.models import SecurityEvent
 
         with _db_manager._connect() as conn:
             row = conn.execute("SELECT * FROM security_events WHERE id = ?", (event_id,)).fetchone()
@@ -515,8 +515,8 @@ def generate_security_remediation(hostname: str, finding_id: str) -> str:
         return json.dumps({"error": "Database not available"})
 
     try:
-        from backend.security.rules import SECURITY_RULES
-        from backend.security.checks.cisco_ios import CHECK_REGISTRY
+        from security.rules import SECURITY_RULES
+        from security.checks.cisco_ios import CHECK_REGISTRY
 
         device = _db_manager.get_device_by_hostname(hostname)
         if not device:
@@ -581,7 +581,7 @@ def apply_qos_policy(vendor: str, interface: str, direction: str, rules_json: st
         rules_json: JSON string matching the qos.json schema with class_maps and policy_classes
     """
     try:
-        from backend.config_engine.renderer import TemplateRenderer
+        from config_engine.renderer import TemplateRenderer
 
         renderer = TemplateRenderer()
 

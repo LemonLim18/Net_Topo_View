@@ -1,4 +1,4 @@
-from backend.mcp.server import mcp, db
+from mcp.server import mcp, db
 import json
 
 @mcp.resource("network://topology")

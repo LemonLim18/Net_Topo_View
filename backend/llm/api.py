@@ -58,8 +58,8 @@ def setup_agent(agent) -> None:
     Called once at app startup to inject the NetworkAgent instance.
 
     Usage (in backend.py or main.py):
-        from backend.llm.api import router, setup_agent
-        from backend.llm.agent import NetworkAgent
+        from llm.api import router, setup_agent
+        from llm.agent import NetworkAgent
 
         agent = NetworkAgent(db_manager=db)
         setup_agent(agent)

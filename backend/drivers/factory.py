@@ -26,12 +26,12 @@ Usage:
 import logging
 from typing import Optional, List, Dict, Any
 
-from backend.drivers.base import BaseDriver
-from backend.drivers.cisco_ios import CiscoIOSDriver
-from backend.drivers.huawei_vrp import HuaweiVRPDriver
-from backend.drivers.juniper_junos import JuniperJunosDriver
-from backend.drivers.opendaylight import OpenDaylightDriver
-from backend.drivers.onos import ONOSDriver
+from drivers.base import BaseDriver
+from drivers.cisco_ios import CiscoIOSDriver
+from drivers.huawei_vrp import HuaweiVRPDriver
+from drivers.juniper_junos import JuniperJunosDriver
+from drivers.opendaylight import OpenDaylightDriver
+from drivers.onos import ONOSDriver
 
 logger = logging.getLogger("drivers.factory")
 

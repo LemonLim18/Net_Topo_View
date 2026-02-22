@@ -4,7 +4,7 @@ paramiko
 rich
 python-multipart
 cryptography
-bcrypt
+bcrypt==3.2.0
 pysnmp>=7.1.22
 websockets
 jinja2
@@ -13,3 +13,6 @@ requests
 mcp>=1.2.0
 pynetbox>=7.3.3
 apscheduler>=3.10.4
+passlib[bcrypt]
+python-jose[cryptography]
+python-dotenv

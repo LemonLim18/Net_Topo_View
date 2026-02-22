@@ -2,9 +2,9 @@ from fastapi import APIRouter, HTTPException, BackgroundTasks
 from typing import List, Optional
 from datetime import datetime
 
-from backend.db.manager import DatabaseManager
-from backend.drift.comparator import DriftComparator
-from backend.drift.models import DriftEvent
+from db.manager import DatabaseManager
+from drift.comparator import DriftComparator
+from drift.models import DriftEvent
 
 router = APIRouter()
 

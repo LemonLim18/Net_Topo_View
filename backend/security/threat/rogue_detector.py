@@ -18,7 +18,7 @@ Usage::
 import logging
 from typing import Any, Dict, List, Optional, Set
 
-from backend.security.models import SecurityEvent
+from security.models import SecurityEvent
 
 logger = logging.getLogger("security.rogue")
 

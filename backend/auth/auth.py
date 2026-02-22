@@ -12,7 +12,7 @@ Security model:
 
 Usage::
 
-    from backend.auth.auth import get_current_user, create_access_token
+    from auth.auth import get_current_user, create_access_token
 
     @router.get("/protected")
     async def protected(user = Depends(get_current_user)):
@@ -23,6 +23,7 @@ import logging
 import os
 import secrets
 import sqlite3
+import bcrypt
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -48,11 +49,8 @@ def _get_jwt():
 
 
 def _get_pwd_context():
-    global _pwd_context
-    if _pwd_context is None:
-        from passlib.context import CryptContext
-        _pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-    return _pwd_context
+    # Deprecated in favor of direct bcrypt usage
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -102,12 +100,16 @@ SECRET_KEY = _get_secret_key()
 
 def hash_password(plain: str) -> str:
     """Hash a plaintext password using bcrypt."""
-    return _get_pwd_context().hash(plain)
+    salt = bcrypt.gensalt()
+    return bcrypt.hashpw(plain.encode("utf-8"), salt).decode("utf-8")
 
 
 def verify_password(plain: str, hashed: str) -> bool:
     """Verify a password against its bcrypt hash."""
-    return _get_pwd_context().verify(plain, hashed)
+    try:
+        return bcrypt.checkpw(plain.encode("utf-8"), hashed.encode("utf-8"))
+    except Exception:
+        return False
 
 
 # ---------------------------------------------------------------------------

@@ -5,7 +5,7 @@ Currently supports:
     - Cisco IOS / IOS-XE  (cisco.py)
 """
 
-from backend.crawler.parsers.cisco import (  # noqa: F401
+from crawler.parsers.cisco import (  # noqa: F401
     parse_ip_interface_brief,
     parse_lldp_summary,
     parse_lldp_detail_for_mappings,

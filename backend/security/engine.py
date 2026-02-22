@@ -8,9 +8,9 @@ running configuration and computes a security score.
 import logging
 from typing import List, Optional
 
-from backend.security.models import AuditResult, SecurityAudit
-from backend.security.rules import SECURITY_RULES, get_rules_for_vendor
-from backend.security.checks.cisco_ios import CHECK_REGISTRY
+from security.models import AuditResult, SecurityAudit
+from security.rules import SECURITY_RULES, get_rules_for_vendor
+from security.checks.cisco_ios import CHECK_REGISTRY
 
 logger = logging.getLogger("security.engine")
 

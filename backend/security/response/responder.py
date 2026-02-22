@@ -22,7 +22,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
-from backend.security.models import SecurityEvent
+from security.models import SecurityEvent
 
 logger = logging.getLogger("security.responder")
 
@@ -276,7 +276,7 @@ class IncidentResponder:
 
         # Render using M3 Config Engine
         try:
-            from backend.config_engine.renderer import TemplateRenderer
+            from config_engine.renderer import TemplateRenderer
             renderer = TemplateRenderer()
             config = renderer.render(vendor, "qos", qos_params)
         except Exception as e:

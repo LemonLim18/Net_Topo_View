@@ -10,9 +10,9 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from backend.config_engine.renderer import TemplateRenderer
-from backend.config_engine.differ import ConfigDiffer
-from backend.config_engine.validator import SyntaxValidator
+from config_engine.renderer import TemplateRenderer
+from config_engine.differ import ConfigDiffer
+from config_engine.validator import SyntaxValidator
 
 logger = logging.getLogger("config_engine.api")
 

@@ -10,7 +10,7 @@ This is the root of the driver hierarchy:
 from abc import ABC, abstractmethod
 from typing import List, Optional
 
-from backend.drivers.models import (
+from drivers.models import (
     Interface,
     Neighbor,
     Route,

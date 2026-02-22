@@ -16,7 +16,7 @@ from collections import defaultdict
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
 
-from backend.security.models import SecurityEvent
+from security.models import SecurityEvent
 
 logger = logging.getLogger("security.anomaly")
 

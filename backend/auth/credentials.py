@@ -24,7 +24,7 @@ from typing import Any, Dict, List, Optional
 
 from cryptography.fernet import Fernet, InvalidToken
 
-from backend.auth.auth import SECRET_KEY
+from auth.auth import SECRET_KEY
 
 logger = logging.getLogger("auth.credentials")
 

@@ -16,7 +16,7 @@ import logging
 import os
 from typing import Any, Dict, List, Optional
 
-from backend.llm.provider import LLMProvider, LLMMessage, LLMResponse, ToolCall
+from llm.provider import LLMProvider, LLMMessage, LLMResponse, ToolCall
 
 logger = logging.getLogger("llm.gemini")
 

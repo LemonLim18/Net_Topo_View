@@ -24,7 +24,7 @@ import socketserver
 import threading
 from typing import Callable, Optional
 
-from backend.security.models import SecurityEvent
+from security.models import SecurityEvent
 
 logger = logging.getLogger("security.syslog")
 

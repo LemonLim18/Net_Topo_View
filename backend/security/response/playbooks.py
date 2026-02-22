@@ -12,7 +12,7 @@ A playbook can be:
 
 Usage::
 
-    from backend.security.response.playbooks import PlaybookEngine, get_playbook
+    from security.response.playbooks import PlaybookEngine, get_playbook
 
     engine = PlaybookEngine()
     result = engine.execute(playbook_name="brute_force_response", event=event)
@@ -22,8 +22,8 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
-from backend.security.models import SecurityEvent
-from backend.security.response.responder import IncidentResponder, ResponseAction
+from security.models import SecurityEvent
+from security.response.responder import IncidentResponder, ResponseAction
 
 logger = logging.getLogger("security.playbooks")
 

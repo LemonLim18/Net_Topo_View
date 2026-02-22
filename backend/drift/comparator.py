@@ -3,11 +3,11 @@ import difflib
 from datetime import datetime
 from typing import Optional, List
 
-from backend.db.manager import DatabaseManager
-from backend.db.models import Device, ConfigSnapshot
-from backend.config_engine.renderer import TemplateRenderer
-from backend.netbox.client import NetBoxClient
-from backend.drift.models import DriftEvent
+from db.manager import DatabaseManager
+from db.models import Device, ConfigSnapshot
+from config_engine.renderer import TemplateRenderer
+from netbox.client import NetBoxClient
+from drift.models import DriftEvent
 
 logger = logging.getLogger("drift.comparator")
 

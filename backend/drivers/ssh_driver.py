@@ -19,8 +19,8 @@ from typing import List, Optional, Dict, Tuple
 
 import paramiko
 
-from backend.drivers.base import BaseDriver
-from backend.drivers.models import (
+from drivers.base import BaseDriver
+from drivers.models import (
     Interface,
     Neighbor,
     Route,

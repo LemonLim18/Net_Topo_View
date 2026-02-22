@@ -3,8 +3,8 @@ from pydantic import BaseModel
 from typing import List, Optional
 import os
 import logging
-from backend.db.manager import DatabaseManager
-from backend.monitor.telegraf_gen import TelegrafConfigGenerator
+from db.manager import DatabaseManager
+from monitor.telegraf_gen import TelegrafConfigGenerator
 
 router = APIRouter(prefix="/monitor", tags=["monitor"])
 logger = logging.getLogger("api.monitor")

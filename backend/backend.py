@@ -12,28 +12,32 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
+from dotenv import load_dotenv
+
+# Load environment variables from .env
+load_dotenv()
 
 # --- Core Modules ---
-from backend.db.manager import DatabaseManager
-from backend.deploy.pipeline import DeploymentPipeline
-from backend.llm.agent import NetworkAgent
+from db.manager import DatabaseManager
+from deploy.pipeline import DeploymentPipeline
+from llm.agent import NetworkAgent
 
 # --- API Routers ---
-from backend.crawler.api import router as crawler_router, set_crawl_runner
-from backend.deploy.api import router as deploy_router, setup_pipeline
-from backend.llm.api import router as llm_router, setup_agent
-from backend.monitor.api import router as monitor_router
-from backend.netbox.api import router as netbox_api_router
-from backend.netbox.webhook import router as netbox_webhook_router
-from backend.drift.api import router as drift_router
-from backend.config_engine.api import router as config_router
-from backend.security.api import router as security_router
-from backend.auth.api import router as auth_router
-from backend.auth.auth import seed_default_admin
-from backend.scheduler.core import start_scheduler, stop_scheduler
+from crawler.api import router as crawler_router, set_crawl_runner
+from deploy.api import router as deploy_router, setup_pipeline
+from llm.api import router as llm_router, setup_agent
+from monitor.api import router as monitor_router
+from netbox.api import router as netbox_api_router
+from netbox.webhook import router as netbox_webhook_router
+from drift.api import router as drift_router
+from config_engine.api import router as config_router
+from security.api import router as security_router
+from auth.api import router as auth_router
+from auth.auth import seed_default_admin
+from scheduler.core import start_scheduler, stop_scheduler
 
 # --- Crawler Logic (Legacy/Transitional) ---
-import backend.mini_nce as crawler
+import mini_nce as crawler
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("topo-backend")
@@ -221,7 +225,7 @@ async def run_crawl_and_broadcast(trigger: str = "periodic"):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # 1. Initialize Database
-    db = DatabaseManager("net_topo.db")
+    db = DatabaseManager("db/netauto.db")
     db.initialize()
     logger.info("Database initialized")
 
@@ -265,7 +269,7 @@ app = FastAPI(title="CogniShield Backend", lifespan=lifespan)
 # CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

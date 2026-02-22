@@ -1,5 +1,5 @@
-from backend.mcp.server import mcp, db, agent, pipeline
-from backend.deploy.models import ChangeRequest
+from mcp.server import mcp, db, agent, pipeline
+from deploy.models import ChangeRequest
 import json
 
 @mcp.tool()
@@ -38,8 +38,8 @@ def run_command(hostname: str, command: str) -> str:
     # Let's instantiate the tool? Or just use a direct driver call for simplicity here.
     # Actually, `backend.llm.network_tools.RunShowCommand` exists.
     
-    from backend.drivers.factory import DriverFactory
-    from backend.security.credentials import get_credentials # Mock/Real
+    from drivers.factory import DriverFactory
+    from security.credentials import get_credentials # Mock/Real
     
     device = db.get_device_by_hostname(hostname)
     if not device:

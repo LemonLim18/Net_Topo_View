@@ -100,6 +100,21 @@ class AuditLogEntry:
 
 
 # -----------------------------------------------------------
+# Drift Event
+# -----------------------------------------------------------
+@dataclass
+class DriftEvent:
+    """A configuration-drift detection result for a device."""
+    device_id: int
+    has_drift: bool
+    hostname: Optional[str] = None
+    severity: Optional[str] = None          # low | medium | high
+    diff_text: Optional[str] = None
+    timestamp: Optional[str] = None         # ISO-8601
+    id: Optional[int] = None
+
+
+# -----------------------------------------------------------
 # Real-Time Topology Node  (in-memory only, not persisted)
 # -----------------------------------------------------------
 @dataclass

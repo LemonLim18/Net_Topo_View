@@ -14,9 +14,9 @@ import re
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
-from backend.drivers.factory import DriverFactory
-from backend.drivers.base import BaseDriver
-from backend.drivers.models import Neighbor, Interface, ARPEntry
+from drivers.factory import DriverFactory
+from drivers.base import BaseDriver
+from drivers.models import Neighbor, Interface, ARPEntry
 
 logger = logging.getLogger("crawler.poll")
 

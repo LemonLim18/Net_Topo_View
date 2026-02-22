@@ -12,10 +12,10 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import Dict, Optional
 
-from backend.db.manager import DatabaseManager
-from backend.db.models import Device, AuditLogEntry
-from backend.db.repositories.device_repo import DeviceRepository
-from backend.db.repositories.topology_repo import TopologyRepository
+from db.manager import DatabaseManager
+from db.models import Device, AuditLogEntry
+from db.repositories.device_repo import DeviceRepository
+from db.repositories.topology_repo import TopologyRepository
 
 logger = logging.getLogger("crawler.store")
 

@@ -9,9 +9,9 @@ from typing import List, Optional, Dict, Any
 from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 
-from backend.db.manager import DatabaseManager
-from backend.deploy.pipeline import DeploymentPipeline
-from backend.deploy.models import JobStatus, PipelineStage
+from db.manager import DatabaseManager
+from deploy.pipeline import DeploymentPipeline
+from deploy.models import JobStatus, PipelineStage
 
 logger = logging.getLogger("deploy.api")
 

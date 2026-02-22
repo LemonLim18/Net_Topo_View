@@ -7,9 +7,9 @@ Exports:
     SyntaxValidator  — Per-vendor syntax checks
 """
 
-from backend.config_engine.renderer import TemplateRenderer
-from backend.config_engine.differ import ConfigDiffer
-from backend.config_engine.validator import SyntaxValidator
+from config_engine.renderer import TemplateRenderer
+from config_engine.differ import ConfigDiffer
+from config_engine.validator import SyntaxValidator
 
 __all__ = [
     "TemplateRenderer",

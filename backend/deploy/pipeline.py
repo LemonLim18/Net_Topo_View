@@ -16,16 +16,16 @@ import traceback
 from datetime import datetime
 from typing import List, Optional, Dict
 
-from backend.db.manager import DatabaseManager
-from backend.db.models import ConfigSnapshot
-from backend.drivers.factory import DriverFactory
-from backend.drivers.base import BaseDriver
-from backend.llm.network_tools import generate_config, generate_rollback
-from backend.deploy.models import (
+from db.manager import DatabaseManager
+from db.models import ConfigSnapshot
+from drivers.factory import DriverFactory
+from drivers.base import BaseDriver
+from llm.network_tools import generate_config, generate_rollback
+from deploy.models import (
     Job, JobStatus, PipelineStage, ChangeRequest, RequestStatus, 
     DeploymentRepository, JobStep
 )
-from backend.deploy.verifier import Verifier, VerificationCheck, VerificationResult
+from deploy.verifier import Verifier, VerificationCheck, VerificationResult
 
 logger = logging.getLogger("deploy.pipeline")
 

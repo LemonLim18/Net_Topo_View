@@ -24,15 +24,15 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 
-from backend.auth.auth import (
+from auth.auth import (
     create_access_token,
     get_current_user,
     hash_password,
     seed_default_admin,
     verify_password,
 )
-from backend.auth.rbac import require_admin, require_any
-from backend.auth.credentials import CredentialVault
+from auth.rbac import require_admin, require_any
+from auth.credentials import CredentialVault
 
 logger = logging.getLogger("auth.api")
 router = APIRouter(prefix="/auth", tags=["Authentication (M15)"])
@@ -86,7 +86,7 @@ async def login(body: LoginRequest):
     conn = _connect()
     try:
         row = conn.execute(
-            "SELECT id, username, password_hash, role, is_active FROM users WHERE username = ?",
+            "SELECT id, username, password_hash, role, is_active, last_login FROM users WHERE username = ?",
             (body.username,),
         ).fetchone()
 

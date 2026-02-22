@@ -8,15 +8,15 @@ from typing import List, Optional
 from fastapi import APIRouter, HTTPException, BackgroundTasks
 from pydantic import BaseModel
 
-from backend.db.manager import DatabaseManager
-from backend.security.engine import SecurityAuditEngine
-from backend.security.models import SecurityEvent
-from backend.security.threat.suricata import SuricataParser
-from backend.security.threat.anomaly_detector import AnomalyDetector
-from backend.security.threat.rogue_detector import RogueDeviceDetector
-from backend.security.response.responder import IncidentResponder
-from backend.security.response.playbooks import PlaybookEngine
-from backend.security.cve.matcher import CVEMatcher
+from db.manager import DatabaseManager
+from security.engine import SecurityAuditEngine
+from security.models import SecurityEvent
+from security.threat.suricata import SuricataParser
+from security.threat.anomaly_detector import AnomalyDetector
+from security.threat.rogue_detector import RogueDeviceDetector
+from security.response.responder import IncidentResponder
+from security.response.playbooks import PlaybookEngine
+from security.cve.matcher import CVEMatcher
 
 logger = logging.getLogger("security.api")
 

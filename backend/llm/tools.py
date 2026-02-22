@@ -6,7 +6,7 @@ network controller.  Each tool is registered with a JSON-schema
 definition so Gemini knows *what* it can call and *how*.
 
 Usage:
-    from backend.llm.tools import ToolRegistry
+    from llm.tools import ToolRegistry
 
     registry = ToolRegistry()
 

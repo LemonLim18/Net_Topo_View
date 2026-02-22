@@ -12,7 +12,7 @@ from typing import Callable, Awaitable
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 
-from backend.scheduler.jobs import (
+from scheduler.jobs import (
     job_crawl,
     job_drift_check,
     job_security_audit,
@@ -41,7 +41,7 @@ def start_scheduler(crawl_fn: Callable[..., Awaitable]) -> None:
     Create, configure, and start the global scheduler.
 
     Args:
-        crawl_fn: The async crawl-and-broadcast function from backend.py
+        crawl_fn: The async crawl-and-broadcast function from py
                   (injected to avoid circular imports).
     """
     global _scheduler

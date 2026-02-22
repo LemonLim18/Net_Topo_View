@@ -1,8 +1,8 @@
 from datetime import datetime
 import logging
-from backend.db.manager import DatabaseManager
-from backend.db.models import Device
-from backend.netbox.client import NetBoxClient
+from db.manager import DatabaseManager
+from db.models import Device
+from netbox.client import NetBoxClient
 
 logger = logging.getLogger("netbox.sync_devices")
 

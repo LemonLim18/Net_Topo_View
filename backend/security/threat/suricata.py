@@ -13,7 +13,7 @@ This module provides:
 
 Usage::
 
-    from backend.security.threat.suricata import SuricataParser, SuricataWatcher
+    from security.threat.suricata import SuricataParser, SuricataWatcher
 
     # Parse a single alert JSON
     parser = SuricataParser()
@@ -32,7 +32,7 @@ import time
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional
 
-from backend.security.models import SecurityEvent
+from security.models import SecurityEvent
 
 logger = logging.getLogger("security.suricata")
 

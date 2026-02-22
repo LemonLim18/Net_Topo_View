@@ -5,7 +5,7 @@ Defines all security checks organized by category.
 Each rule maps to a check function in the checks/ sub-package.
 """
 
-from backend.security.models import SecurityRule
+from security.models import SecurityRule
 
 # ---------------------------------------------------------------------------
 # Rule Definitions — 10 categories, ~25 checks

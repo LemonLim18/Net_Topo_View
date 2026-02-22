@@ -5,7 +5,7 @@ Provides a natural-language interface that understands network topology,
 generates device configurations, and answers operational questions.
 
 Usage:
-    from backend.llm import NetworkAgent
+    from llm import NetworkAgent
 
     agent = NetworkAgent(db_manager=db)
     response = await agent.chat("Show me the topology summary")
@@ -15,6 +15,6 @@ Supported LLM backends:
     - OpenRouter (DeepSeek, etc.)
 """
 
-from backend.llm.agent import NetworkAgent  # noqa: F401
+from llm.agent import NetworkAgent  # noqa: F401
 
 __all__ = ["NetworkAgent"]

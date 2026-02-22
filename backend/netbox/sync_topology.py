@@ -1,6 +1,6 @@
 import logging
-from backend.db.manager import DatabaseManager
-from backend.netbox.client import NetBoxClient
+from db.manager import DatabaseManager
+from netbox.client import NetBoxClient
 
 logger = logging.getLogger("netbox.sync_topology")
 

@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, BackgroundTasks
-from backend.db.manager import DatabaseManager
-from backend.netbox.sync_devices import DeviceSyncer
-from backend.netbox.sync_topology import TopologySyncer
+from db.manager import DatabaseManager
+from netbox.sync_devices import DeviceSyncer
+from netbox.sync_topology import TopologySyncer
 
 router = APIRouter()
 

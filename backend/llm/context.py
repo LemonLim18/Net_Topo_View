@@ -133,7 +133,7 @@ class ContextBuilder:
     def build_available_templates_context(self) -> str:
         """List available configuration templates from M3."""
         try:
-            from backend.config_engine.renderer import TemplateRenderer
+            from config_engine.renderer import TemplateRenderer
             renderer = TemplateRenderer()
             templates = renderer.list_templates()
 

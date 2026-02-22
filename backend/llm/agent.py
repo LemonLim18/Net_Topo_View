@@ -14,10 +14,10 @@ import json
 import logging
 from typing import Any, Dict, List, Optional
 
-from backend.llm.provider import LLMProvider, LLMMessage, LLMResponse, ToolCall
-from backend.llm.tools import ToolRegistry
-from backend.llm.context import ContextBuilder
-from backend.llm import network_tools
+from llm.provider import LLMProvider, LLMMessage, LLMResponse, ToolCall
+from llm.tools import ToolRegistry
+from llm.context import ContextBuilder
+from llm import network_tools
 
 logger = logging.getLogger("llm.agent")
 
@@ -82,7 +82,7 @@ class NetworkAgent:
         if provider:
             self._provider = provider
         else:
-            from backend.llm.gemini_provider import GeminiProvider
+            from llm.gemini_provider import GeminiProvider
             self._provider = GeminiProvider(api_key=api_key, model=model)
 
         # Initialize context builder

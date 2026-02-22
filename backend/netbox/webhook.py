@@ -6,8 +6,8 @@ from fastapi import APIRouter, HTTPException, Request, Header
 from pydantic import BaseModel
 from typing import Dict, Any, Optional
 
-from backend.db.manager import DatabaseManager
-from backend.netbox.sync_devices import DeviceSyncer
+from db.manager import DatabaseManager
+from netbox.sync_devices import DeviceSyncer
 
 logger = logging.getLogger("netbox.webhook")
 router = APIRouter()

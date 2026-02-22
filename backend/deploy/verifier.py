@@ -10,8 +10,8 @@ import re
 from typing import List, Dict, Optional, Any
 from pydantic import BaseModel
 
-from backend.drivers.factory import DriverFactory
-from backend.drivers.base import BaseDriver
+from drivers.factory import DriverFactory
+from drivers.base import BaseDriver
 
 logger = logging.getLogger("deploy.verifier")
 

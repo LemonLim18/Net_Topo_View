@@ -16,8 +16,8 @@ Key endpoints:
 import logging
 from typing import List, Optional, Dict
 
-from backend.drivers.sdn_driver import SDNControllerDriver
-from backend.drivers.models import (
+from drivers.sdn_driver import SDNControllerDriver
+from drivers.models import (
     Interface,
     Neighbor,
     Route,

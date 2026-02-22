@@ -1,8 +1,8 @@
 import logging
 import os
 from typing import List
-from backend.db.manager import DatabaseManager
-from backend.db.models import Device
+from db.manager import DatabaseManager
+from db.models import Device
 
 logger = logging.getLogger("monitor.telegraf_gen")
 

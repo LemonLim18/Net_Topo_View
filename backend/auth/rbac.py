@@ -10,7 +10,7 @@ Roles (ordered by privilege):
 
 Usage::
 
-    from backend.auth.rbac import require_role
+    from auth.rbac import require_role
 
     @router.post("/deploy")
     async def deploy(user = Depends(require_role("operator", "admin"))):
@@ -21,7 +21,7 @@ from typing import Any, Dict, Tuple
 
 from fastapi import Depends, HTTPException, status
 
-from backend.auth.auth import get_current_user
+from auth.auth import get_current_user
 
 
 def require_role(*allowed_roles: str):
