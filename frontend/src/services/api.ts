@@ -124,3 +124,69 @@ export const configApi = {
 // --- M14: Device Inventory (Using Topology for now) ---
 // Ideally we should have a dedicated /devices endpoint in M14, 
 // allows fallback to topology if needed.
+
+// --- M13: Security Module API ---
+export const securityApi = {
+  runAudit: (deviceId: number) =>
+    request<{
+      device_id: number; score: number; total_checks: number;
+      passed: number; failed: number; critical: number;
+      high: number; medium: number; low: number;
+      findings: { rule_id: string; category: string; severity: string; status: string; description: string; evidence: string; remediation: string }[];
+    }>(`/security/audit/${deviceId}`, { method: 'POST' }),
+
+  runAuditAll: () =>
+    request<{ status: string; message: string }>('/security/audit/all', { method: 'POST' }),
+
+  listAudits: (deviceId?: number) =>
+    request<{ device_id: number; score: number; total_checks: number; passed: number; failed: number; critical: number; high: number; medium: number; low: number }[]>(
+      deviceId ? `/security/audits?device_id=${deviceId}` : '/security/audits'
+    ),
+
+  getFindings: (deviceId: number) =>
+    request<{ rule_id: string; category: string; severity: string; status: string; description: string; evidence: string; remediation: string }[]>(
+      `/security/audits/${deviceId}/findings`
+    ),
+
+  getScore: (deviceId: number) =>
+    request<{ device_id: number; score: number; as_of: string }>(`/security/score/${deviceId}`),
+
+  listEvents: (limit?: number, severity?: string) => {
+    const params = new URLSearchParams();
+    if (limit) params.set('limit', String(limit));
+    if (severity) params.set('severity', severity);
+    const qs = params.toString();
+    return request<{ id: number; event_type: string; severity: string; source_ip: string; dest_ip: string; device_id: number | null; description: string; status: string; created_at: string }[]>(
+      `/security/events${qs ? '?' + qs : ''}`
+    );
+  },
+
+  ingestAlert: (alert: { event_type: string; severity: string; source_ip?: string; dest_ip?: string; description?: string; raw_data?: any }) =>
+    request<{ id: number; event_type: string; severity: string; status: string }>('/security/events', {
+      method: 'POST',
+      body: JSON.stringify(alert),
+    }),
+
+  // --- M13c: Incident Response ---
+  respondToEvent: (eventId: number, vendor?: string) =>
+    request<{ action_type: string; severity: string; description: string; config_snippet: string; vendor: string; requires_approval: boolean }>(
+      `/security/respond/${eventId}${vendor ? '?vendor=' + vendor : ''}`, { method: 'POST' }
+    ),
+
+  executePlaybook: (eventId: number, vendor?: string) =>
+    request<{ playbook_name: string; status: string; steps_executed: any[]; config_snippet: string | null }>(
+      `/security/playbook/${eventId}${vendor ? '?vendor=' + vendor : ''}`, { method: 'POST' }
+    ),
+
+  listPlaybooks: () =>
+    request<{ name: string; description: string; trigger_types: string[]; mode: string; steps: number }[]>('/security/playbooks'),
+
+  // --- M13d: CVE Correlation ---
+  getDeviceCves: (deviceId: number) =>
+    request<{ device_id: number; hostname: string; vendor: string; os_version: string; cve_count: number; cves: { id: string; severity: string; cvss: number; description: string; remediation: string }[] }>(
+      `/security/cve/${deviceId}`
+    ),
+
+  getCveStats: () =>
+    request<{ total_cves: number; by_severity: Record<string, number>; by_vendor: Record<string, number> }>('/security/cve'),
+};

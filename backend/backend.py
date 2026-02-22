@@ -27,6 +27,7 @@ from backend.netbox.api import router as netbox_api_router
 from backend.netbox.webhook import router as netbox_webhook_router
 from backend.drift.api import router as drift_router
 from backend.config_engine.api import router as config_router
+from backend.security.api import router as security_router
 
 # --- Crawler Logic (Legacy/Transitional) ---
 import backend.mini_nce as crawler
@@ -285,6 +286,7 @@ app.include_router(netbox_api_router, prefix="/api/v1/netbox", tags=["NetBox"])
 app.include_router(netbox_webhook_router, prefix="/api/v1/netbox", tags=["NetBox"])
 app.include_router(drift_router, prefix="/api/v1", tags=["Drift"])
 app.include_router(config_router, prefix="/api/v1", tags=["Config Engine"])
+app.include_router(security_router, prefix="/api/v1", tags=["Security"])
 
 # WebSocket Endpoint (Streamlined)
 @app.websocket("/ws")

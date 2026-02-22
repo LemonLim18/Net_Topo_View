@@ -157,3 +157,60 @@ CREATE TABLE IF NOT EXISTS drift_events (
 
 CREATE INDEX IF NOT EXISTS idx_drift_device        ON drift_events(device_id);
 CREATE INDEX IF NOT EXISTS idx_drift_timestamp     ON drift_events(timestamp);
+
+-- -----------------------------------------------------------
+-- 10. Security Audits (M13a)
+-- -----------------------------------------------------------
+CREATE TABLE IF NOT EXISTS security_audits (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    device_id       INTEGER NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+    score           REAL    NOT NULL,           -- 0.0–100.0
+    total_checks    INTEGER NOT NULL,
+    passed          INTEGER NOT NULL,
+    failed          INTEGER NOT NULL,
+    critical        INTEGER DEFAULT 0,
+    high            INTEGER DEFAULT 0,
+    medium          INTEGER DEFAULT 0,
+    low             INTEGER DEFAULT 0,
+    created_at      TEXT    DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_security_audits_device ON security_audits(device_id);
+
+-- -----------------------------------------------------------
+-- 11. Audit Findings (M13a — individual check results)
+-- -----------------------------------------------------------
+CREATE TABLE IF NOT EXISTS audit_findings (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    audit_id        INTEGER NOT NULL REFERENCES security_audits(id) ON DELETE CASCADE,
+    rule_id         TEXT    NOT NULL,           -- e.g. 'CIS-1.1.1'
+    category        TEXT    NOT NULL,           -- e.g. 'access_control'
+    severity        TEXT    NOT NULL,           -- critical | high | medium | low
+    status          TEXT    NOT NULL,           -- pass | fail | error | skip
+    description     TEXT,
+    evidence        TEXT,                       -- config snippet showing the issue
+    remediation     TEXT                        -- suggested fix command
+);
+
+CREATE INDEX IF NOT EXISTS idx_findings_audit ON audit_findings(audit_id);
+
+-- -----------------------------------------------------------
+-- 12. Security Events (M13b — threats / alerts)
+-- -----------------------------------------------------------
+CREATE TABLE IF NOT EXISTS security_events (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_type      TEXT    NOT NULL,           -- brute_force | port_scan | malware | anomaly | rogue_device | suricata
+    severity        TEXT    NOT NULL,           -- critical | high | medium | low | info
+    source_ip       TEXT,
+    dest_ip         TEXT,
+    device_id       INTEGER REFERENCES devices(id),
+    description     TEXT,
+    raw_data        TEXT,                       -- JSON blob of original alert
+    status          TEXT    DEFAULT 'new',      -- new | investigating | mitigated | false_positive
+    created_at      TEXT    DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_security_events_type     ON security_events(event_type);
+CREATE INDEX IF NOT EXISTS idx_security_events_severity ON security_events(severity);
+CREATE INDEX IF NOT EXISTS idx_security_events_created  ON security_events(created_at);
+
