@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import type { User } from '../types';
 import { Lock, User as UserIcon, Shield } from 'lucide-react';
+import { authApi } from '../src/services/api';
 
 interface LoginProps {
     onLogin: (user: User) => void;
@@ -12,30 +13,28 @@ const Login: React.FC<LoginProps> = ({ onLogin }) => {
     const [error, setError] = useState('');
     const [loading, setLoading] = useState(false);
 
-    const handleLogin = (e: React.FormEvent) => {
+    const handleLogin = async (e: React.FormEvent) => {
         e.preventDefault();
         setLoading(true);
         setError('');
 
-        // Mock Authentication Logic
-        setTimeout(() => {
-            if (username === 'admin' && password === 'admin') {
-                onLogin({
-                    username: 'admin',
-                    role: 'admin',
-                    lastLogin: new Date().toISOString()
-                });
-            } else if (username === 'operator' && password === 'op') {
-                onLogin({
-                    username: 'operator',
-                    role: 'operator',
-                    lastLogin: new Date().toISOString()
-                });
-            } else {
-                setError('Invalid credentials. Try admin/admin');
-                setLoading(false);
-            }
-        }, 800);
+        try {
+            const response = await authApi.login(username, password);
+
+            // Store JWT token in localStorage
+            localStorage.setItem('auth_token', response.access_token);
+
+            // Pass user to the app
+            onLogin({
+                id: response.user.id,
+                username: response.user.username,
+                role: response.user.role as User['role'],
+                lastLogin: response.user.lastLogin || new Date().toISOString(),
+            });
+        } catch (err: any) {
+            setError(err.message || 'Invalid credentials');
+            setLoading(false);
+        }
     };
 
     return (

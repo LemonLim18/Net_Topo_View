@@ -5,10 +5,12 @@ const BASE_URL = API_CONFIG.API_URL;
 // Generic fetch wrapper
 async function request<T>(endpoint: string, options?: RequestInit): Promise<T> {
   const url = `${BASE_URL}/api/v1${endpoint}`;
+  const token = localStorage.getItem('auth_token');
   const response = await fetch(url, {
     ...options,
     headers: {
       'Content-Type': 'application/json',
+      ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
       ...options?.headers,
     },
   });
@@ -189,4 +191,49 @@ export const securityApi = {
 
   getCveStats: () =>
     request<{ total_cves: number; by_severity: Record<string, number>; by_vendor: Record<string, number> }>('/security/cve'),
+};
+
+// --- M15: Auth API ---
+export const authApi = {
+  login: (username: string, password: string) =>
+    request<{ access_token: string; token_type: string; user: { id: number; username: string; role: string; lastLogin: string } }>('/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({ username, password }),
+    }),
+
+  me: () =>
+    request<{ id: number; username: string; role: string; lastLogin: string; createdAt: string }>('/auth/me'),
+
+  listUsers: () =>
+    request<{ id: number; username: string; role: string; is_active: boolean; last_login: string; created_at: string }[]>('/auth/users'),
+
+  createUser: (username: string, password: string, role: string = 'auditor') =>
+    request<{ id: number; username: string; role: string }>('/auth/users', {
+      method: 'POST',
+      body: JSON.stringify({ username, password, role }),
+    }),
+
+  updateRole: (userId: number, role: string) =>
+    request<{ id: number; role: string }>(`/auth/users/${userId}/role`, {
+      method: 'PUT',
+      body: JSON.stringify({ role }),
+    }),
+
+  deleteUser: (userId: number) =>
+    request<{ deleted: number }>(`/auth/users/${userId}`, { method: 'DELETE' }),
+
+  // Credential vault
+  storeCredential: (deviceId: number, username: string, password: string, label: string = 'SSH') =>
+    request<{ id: number; device_id: number; label: string }>('/auth/credentials', {
+      method: 'POST',
+      body: JSON.stringify({ device_id: deviceId, label, username, password }),
+    }),
+
+  listCredentials: (deviceId: number) =>
+    request<{ id: number; device_id: number; label: string; created_at: string; updated_at: string }[]>(
+      `/auth/credentials/${deviceId}`
+    ),
+
+  deleteCredential: (deviceId: number, label: string) =>
+    request<{ deleted: boolean }>(`/auth/credentials/${deviceId}/${label}`, { method: 'DELETE' }),
 };

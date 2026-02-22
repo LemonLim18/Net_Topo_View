@@ -214,3 +214,34 @@ CREATE INDEX IF NOT EXISTS idx_security_events_type     ON security_events(event
 CREATE INDEX IF NOT EXISTS idx_security_events_severity ON security_events(severity);
 CREATE INDEX IF NOT EXISTS idx_security_events_created  ON security_events(created_at);
 
+-- -----------------------------------------------------------
+-- 13. Users (M15 Authentication)
+-- -----------------------------------------------------------
+CREATE TABLE IF NOT EXISTS users (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    username      TEXT    NOT NULL UNIQUE,
+    password_hash TEXT    NOT NULL,
+    role          TEXT    DEFAULT 'auditor',   -- admin | operator | auditor
+    is_active     BOOLEAN DEFAULT 1,
+    created_at    TEXT    DEFAULT (datetime('now')),
+    last_login    TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);
+
+-- -----------------------------------------------------------
+-- 14. Device Credentials (M15 Credential Vault)
+-- -----------------------------------------------------------
+CREATE TABLE IF NOT EXISTS device_credentials (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    device_id     INTEGER REFERENCES devices(id) ON DELETE CASCADE,
+    label         TEXT,                          -- e.g. "SSH", "SNMP", "Enable"
+    username_enc  TEXT    NOT NULL,              -- Fernet-encrypted
+    password_enc  TEXT    NOT NULL,              -- Fernet-encrypted
+    created_at    TEXT    DEFAULT (datetime('now')),
+    updated_at    TEXT    DEFAULT (datetime('now')),
+    UNIQUE(device_id, label)
+);
+
+CREATE INDEX IF NOT EXISTS idx_credentials_device ON device_credentials(device_id);
+

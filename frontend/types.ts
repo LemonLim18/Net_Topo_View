@@ -54,6 +54,7 @@ export interface D3Link extends d3.SimulationLinkDatum<D3Node> {
 export type UserRole = 'admin' | 'operator' | 'auditor';
 
 export interface User {
+    id?: number;
     username: string;
     role: UserRole;
     lastLogin: string;

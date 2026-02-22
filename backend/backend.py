@@ -28,6 +28,8 @@ from backend.netbox.webhook import router as netbox_webhook_router
 from backend.drift.api import router as drift_router
 from backend.config_engine.api import router as config_router
 from backend.security.api import router as security_router
+from backend.auth.api import router as auth_router
+from backend.auth.auth import seed_default_admin
 
 # --- Crawler Logic (Legacy/Transitional) ---
 import backend.mini_nce as crawler
@@ -230,6 +232,9 @@ async def lifespan(app: FastAPI):
     db.initialize()
     logger.info("Database initialized")
 
+    # 1b. Seed default admin user (M15)
+    seed_default_admin()
+
     # 2. Initialize Core Systems
     pipeline = DeploymentPipeline(db)
     agent = NetworkAgent(db)
@@ -287,6 +292,7 @@ app.include_router(netbox_webhook_router, prefix="/api/v1/netbox", tags=["NetBox
 app.include_router(drift_router, prefix="/api/v1", tags=["Drift"])
 app.include_router(config_router, prefix="/api/v1", tags=["Config Engine"])
 app.include_router(security_router, prefix="/api/v1", tags=["Security"])
+app.include_router(auth_router, prefix="/api/v1", tags=["Authentication"])
 
 # WebSocket Endpoint (Streamlined)
 @app.websocket("/ws")
