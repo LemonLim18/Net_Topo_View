@@ -30,6 +30,7 @@ from backend.config_engine.api import router as config_router
 from backend.security.api import router as security_router
 from backend.auth.api import router as auth_router
 from backend.auth.auth import seed_default_admin
+from backend.scheduler.core import start_scheduler, stop_scheduler
 
 # --- Crawler Logic (Legacy/Transitional) ---
 import backend.mini_nce as crawler
@@ -212,15 +213,7 @@ async def run_crawl_and_broadcast(trigger: str = "periodic"):
         else:
             logger.info("Topology unchanged. Not broadcasting.")
 
-async def periodic_crawler():
-    while True:
-        try:
-            await run_crawl_and_broadcast(trigger="periodic")
-        except asyncio.CancelledError:
-            break
-        except Exception:
-            logger.exception("Error in periodic crawl")
-        await asyncio.sleep(CRAWL_INTERVAL_SECONDS)
+# (periodic_crawler removed — now managed by M16 scheduler)
 
 # ----------------------
 # Lifespan & App Setup
@@ -258,18 +251,14 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"Failed to load initial topology: {e}")
 
-    # 5. Start Background Tasks
-    crawl_task = asyncio.create_task(periodic_crawler())
-    logger.info("Background tasks started")
+    # 5. Start M16 Scheduler (replaces old periodic_crawler loop)
+    start_scheduler(run_crawl_and_broadcast)
+    logger.info("Background scheduler started")
 
     yield
 
     # Cleanup
-    crawl_task.cancel()
-    try:
-        await crawl_task
-    except asyncio.CancelledError:
-        pass
+    stop_scheduler()
 
 app = FastAPI(title="CogniShield Backend", lifespan=lifespan)
 

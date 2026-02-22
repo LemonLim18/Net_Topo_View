@@ -177,7 +177,7 @@ class BaseDriver(ABC):
 
 | Property | Detail |
 |----------|--------|
-| **Status** | 🔴 Not started |
+| **Status** | ✅ Done (6-stage pipeline, approvals, snapshots, rollback) |
 | **Priority** | P1 |
 | **Quarter** | Q3 |
 | **Depends on** | M1 (Driver), M3 (Config Engine), M14 (Database), M15 (Credentials) |
@@ -254,7 +254,7 @@ class BaseDriver(ABC):
 
 | Property | Detail |
 |----------|--------|
-| **Status** | 🔴 Not started |
+| **Status** | ✅ Done (MCP server, resources, and tools exposed) |
 | **Priority** | P1 — impressive for thesis, enables multi-LLM support |
 | **Quarter** | Q2 |
 | **Depends on** | M2, M3, M4, M5, M13 |
@@ -293,7 +293,7 @@ Resources:                              Tools:
 
 | Property | Detail |
 |----------|--------|
-| **Status** | 🔴 Not started |
+| **Status** | ✅ Done (NetBox sync, IPAM, topology, devices) |
 | **Priority** | P1 |
 | **Quarter** | Q1–Q2 |
 | **Depends on** | M14 (Database) |
@@ -319,7 +319,7 @@ Resources:                              Tools:
 
 | Property | Detail |
 |----------|--------|
-| **Status** | 🔴 Not started |
+| **Status** | ✅ Done (Comparators, severity classification, alerts) |
 | **Priority** | P1 — key differentiator from commercial tools |
 | **Quarter** | Q2–Q3 |
 | **Depends on** | M2 (Crawler), M3 (Config Engine), M7 (NetBox), M14 (DB), M16 (Scheduler) |
@@ -453,7 +453,7 @@ Resources:                              Tools:
 
 | Property | Detail |
 |----------|--------|
-| **Status** | 🔴 Not started |
+| **Status** | ✅ Done (Audits, threat detection, playbooks, CVE matching) |
 | **Priority** | P0–P2 (phased) |
 | **Quarter** | Q2–Q4 |
 | **Depends on** | M1 (Drivers), M2 (Topology), M3 (Templates), M4 (Deploy), M14 (DB), M16 (Scheduler) |
@@ -574,7 +574,7 @@ Resources:                              Tools:
 
 | Property | Detail |
 |----------|--------|
-| **Status** | 🔴 Not started |
+| **Status** | ✅ Done (APScheduler — crawl 15m, drift 30m, audit 6h, CVE 24h) |
 | **Priority** | P1 |
 | **Quarter** | Q2–Q3 |
 | **Depends on** | M2, M8, M13 |
