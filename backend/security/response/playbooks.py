@@ -32,7 +32,7 @@ logger = logging.getLogger("security.playbooks")
 class PlaybookStep:
     """A single step in a response playbook."""
     order: int
-    action: str         # log | alert | generate_acl | block_ip | isolate_port | notify | escalate
+    action: str         # log | alert | generate_acl | block_ip | isolate_port | notify | escalate | generate_qos | apply_qos
     description: str
     auto_execute: bool = False
     config: str = ""    # generated config if applicable
@@ -148,6 +148,29 @@ PLAYBOOKS: Dict[str, Playbook] = {
             PlaybookStep(4, "escalate", "Rollback via M4 pipeline (manual approval required)", auto_execute=False),
         ],
     ),
+
+    "qos_remediation_response": Playbook(
+        name="qos_remediation_response",
+        description=(
+            "Auto-remediate bandwidth congestion by deploying a 5-step QoS policy: "
+            "Classify traffic → Mark with DSCP → Police/Shape heavy flows → "
+            "Queue by priority → Schedule with LLQ for VoIP"
+        ),
+        trigger_event_types=["anomaly"],
+        severity_threshold="high",
+        mode="semi_auto",
+        steps=[
+            PlaybookStep(1, "log", "Log severe traffic anomaly (bandwidth spike)", auto_execute=True),
+            PlaybookStep(2, "alert", "Alert Network Engineering: congestion detected on interface", auto_execute=True),
+            PlaybookStep(3, "generate_qos",
+                         "Generate 5-step QoS policy — protect VoIP (EF/LLQ), "
+                         "prioritize Video (AF41), police Downloads (CS1, 50Mbps cap)",
+                         auto_execute=True),
+            PlaybookStep(4, "apply_qos",
+                         "Deploy QoS policy to congested interface via M4 Deployment Pipeline (requires approval)",
+                         auto_execute=False),
+        ],
+    ),
 }
 
 
@@ -202,6 +225,9 @@ class PlaybookEngine:
                 # If this step generates config, use the responder
                 if step.action in ("generate_acl", "block_ip", "isolate_port"):
                     response_action = self._responder.respond(event, vendor)
+                    step_result["config_generated"] = bool(response_action.config_snippet)
+                elif step.action == "generate_qos":
+                    response_action = self._responder.respond_qos(event, vendor)
                     step_result["config_generated"] = bool(response_action.config_snippet)
             else:
                 step_result["status"] = "pending_approval"

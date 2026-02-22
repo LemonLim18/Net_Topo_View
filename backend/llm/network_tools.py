@@ -559,6 +559,58 @@ def generate_security_remediation(hostname: str, finding_id: str) -> str:
 
 
 # -----------------------------------------------------------------------
+# QoS Tools (M18 integration)
+# -----------------------------------------------------------------------
+
+def apply_qos_policy(vendor: str, interface: str, direction: str, rules_json: str) -> str:
+    """
+    Generate a 5-step QoS policy (Classify, Mark, Police/Shape, Queue, Schedule)
+    for a specific device interface to manage bandwidth allocation.
+
+    The 5 QoS steps are:
+      1. Classification — identify traffic type (VoIP, Video, Web, Downloads)
+      2. Marking — tag with DSCP value (EF, AF41, BE, CS1)
+      3. Policing/Shaping — rate-limit or smooth bursty traffic
+      4. Queuing — place packets in priority queues
+      5. Scheduling — determine which queue is served first (LLQ, WFQ)
+
+    Args:
+        vendor:     Device vendor: cisco_ios, huawei_vrp, or juniper_junos
+        interface:  Interface to apply QoS (e.g. GigabitEthernet0/1)
+        direction:  input or output
+        rules_json: JSON string matching the qos.json schema with class_maps and policy_classes
+    """
+    try:
+        from backend.config_engine.renderer import TemplateRenderer
+
+        renderer = TemplateRenderer()
+
+        # Parse rules from JSON string
+        if isinstance(rules_json, str):
+            params = json.loads(rules_json)
+        else:
+            params = rules_json
+
+        # Ensure interface and direction are set
+        params["interface"] = interface
+        params["direction"] = direction
+        if "policy_name" not in params:
+            params["policy_name"] = "AI_QOS_POLICY"
+
+        config = renderer.render(vendor, "qos", params)
+        return json.dumps({
+            "vendor": vendor,
+            "interface": interface,
+            "direction": direction,
+            "qos_config": config,
+            "line_count": len(config.strip().splitlines()),
+            "note": "QoS policy generated. Submit via deployment pipeline for approval.",
+        })
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+# -----------------------------------------------------------------------
 # Tool registration helper
 # -----------------------------------------------------------------------
 
@@ -655,6 +707,26 @@ def register_all_tools(registry) -> None:
         param_descriptions={
             "hostname": "Device hostname",
             "finding_id": "CIS rule ID (e.g. 'CIS-1.1.1', 'CIS-7.1.1')",
+        },
+    )
+
+    # QoS tools (M18)
+    registry.register(
+        apply_qos_policy,
+        description=(
+            "Generate a 5-step QoS policy (Classify, Mark, Police/Shape, Queue, Schedule) "
+            "for a device interface. Use this to prioritize VoIP, throttle downloads, "
+            "or remediate bandwidth congestion."
+        ),
+        param_descriptions={
+            "vendor": "Device vendor: cisco_ios, huawei_vrp, or juniper_junos",
+            "interface": "Interface to apply QoS (e.g. GigabitEthernet0/1)",
+            "direction": "Direction: input or output",
+            "rules_json": (
+                'JSON string with policy_name, class_maps (name + matches), '
+                'and policy_classes (class_name, dscp, priority_percent, bandwidth_percent, '
+                'police_rate, shape_average). Use get_template_schema(\"qos\") to see full schema.'
+            ),
         },
     )
 

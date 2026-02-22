@@ -1,0 +1,44 @@
+{
+  "required": ["policy_name", "interface", "direction", "class_maps", "policy_classes"],
+  "properties": {
+    "policy_name": { "type": "string", "description": "Name of the QoS policy (e.g. CAMPUS_QOS)" },
+    "interface": { "type": "string", "description": "Interface to apply the policy (e.g. GigabitEthernet0/1)" },
+    "direction": { "type": "string", "description": "Direction: input or output" },
+    "class_maps": {
+      "type": "array",
+      "description": "Step 1 — Classification: define traffic classes",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": { "type": "string", "description": "Class-map name (e.g. VOICE, VIDEO, BULK)" },
+          "matches": {
+            "type": "array",
+            "description": "Match criteria for this class",
+            "items": {
+              "type": "object",
+              "properties": {
+                "type": { "type": "string", "description": "Match type: protocol, dscp, access-group, ip precedence" },
+                "value": { "type": "string", "description": "Match value (e.g. rtp, sip, ef, 101)" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "policy_classes": {
+      "type": "array",
+      "description": "Steps 2-5 — Marking, Policing/Shaping, Queuing, Scheduling per class",
+      "items": {
+        "type": "object",
+        "properties": {
+          "class_name": { "type": "string", "description": "Must match a class_map name" },
+          "dscp": { "type": "string", "description": "Step 2 — DSCP marking value: ef, af41, af21, cs1, be (0)" },
+          "priority_percent": { "type": "number", "description": "Step 5 — LLQ strict priority bandwidth % (for voice)" },
+          "bandwidth_percent": { "type": "number", "description": "Step 4 — CBWFQ guaranteed bandwidth % (for video/data)" },
+          "police_rate": { "type": "number", "description": "Step 3 — Policing rate in bps (drop excess)" },
+          "shape_average": { "type": "number", "description": "Step 3 — Shaping rate in bps (buffer excess)" }
+        }
+      }
+    }
+  }
+}

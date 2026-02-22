@@ -237,6 +237,65 @@ class IncidentResponder:
             event_id=event.id,
         )
 
+    def respond_qos(self, event: SecurityEvent, vendor: str = "cisco_ios") -> ResponseAction:
+        """
+        Generate a 5-step QoS policy to remediate a traffic anomaly.
+
+        Uses the M3 Config Engine to render the qos.j2 template with a
+        campus-standard traffic profile:
+          - VoIP  → DSCP EF,  LLQ priority 10%
+          - Video → DSCP AF41, bandwidth 30%
+          - Web   → DSCP BE (0), bandwidth 25%
+          - Bulk  → DSCP CS1, policed to 50 Mbps
+        """
+        # Extract interface from event raw_data if available
+        interface = "GigabitEthernet0/1"  # default
+        if event.raw_data and isinstance(event.raw_data, dict):
+            interface = event.raw_data.get("interface", interface)
+
+        qos_params = {
+            "policy_name": "CAMPUS_QOS_REMEDIATION",
+            "interface": interface,
+            "direction": "output",
+            "class_maps": [
+                {"name": "VOICE",     "matches": [{"type": "protocol", "value": "rtp"},
+                                                   {"type": "protocol", "value": "sip"}]},
+                {"name": "VIDEO",     "matches": [{"type": "dscp",     "value": "af41"}]},
+                {"name": "WEB",       "matches": [{"type": "protocol", "value": "http"},
+                                                   {"type": "protocol", "value": "https"}]},
+                {"name": "BULK",      "matches": [{"type": "protocol", "value": "ftp"},
+                                                   {"type": "protocol", "value": "bittorrent"}]},
+            ],
+            "policy_classes": [
+                {"class_name": "VOICE", "dscp": "ef",   "priority_percent": 10},
+                {"class_name": "VIDEO", "dscp": "af41", "bandwidth_percent": 30},
+                {"class_name": "WEB",   "dscp": "0",    "bandwidth_percent": 25},
+                {"class_name": "BULK",  "dscp": "cs1",  "police_rate": 50000000},
+            ],
+        }
+
+        # Render using M3 Config Engine
+        try:
+            from backend.config_engine.renderer import TemplateRenderer
+            renderer = TemplateRenderer()
+            config = renderer.render(vendor, "qos", qos_params)
+        except Exception as e:
+            logger.error("Failed to render QoS template: %s", e)
+            config = f"! ERROR: Could not render QoS template for {vendor}: {e}"
+
+        return ResponseAction(
+            action_type="apply_qos",
+            severity=event.severity,
+            description=(
+                f"5-step QoS remediation for {interface}: "
+                f"VoIP=EF/LLQ10%, Video=AF41/30%, Web=BE/25%, Bulk=CS1/50Mbps cap"
+            ),
+            config_snippet=config,
+            vendor=vendor,
+            requires_approval=True,
+            event_id=event.id,
+        )
+
     # Dispatch map
     _RESPONSE_MAP = {
         "brute_force": _respond_brute_force,
@@ -245,6 +304,7 @@ class IncidentResponder:
         "malware": _respond_malware,
         "suricata": _respond_suricata,
         "config_change": _respond_config_change,
+        "anomaly": respond_qos,
     }
 
     def get_supported_types(self) -> List[str]:
