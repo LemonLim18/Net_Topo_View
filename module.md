@@ -427,7 +427,7 @@ Resources:                              Tools:
 
 | Property | Detail |
 |----------|--------|
-| **Status** | 🔴 Not started |
+| **Status** | ✅ Done (SecurityDashboard view, score cards, hardening progress, CVE chart, timeline) |
 | **Priority** | P2 |
 | **Quarter** | Q4 |
 | **Depends on** | M13 (Security Module APIs) |
@@ -549,7 +549,7 @@ Resources:                              Tools:
 
 | Property | Detail |
 |----------|--------|
-| **Status** | 🔴 Not started |
+| **Status** | ✅ Done (JWT auth, RBAC, Fernet credential vault, auth API) |
 | **Priority** | P1 |
 | **Quarter** | Q1–Q2 |
 | **Depends on** | M14 (Database) |

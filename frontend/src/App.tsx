@@ -12,6 +12,7 @@ import Login from '../views/Login';
 import NetworkPerformance from '../views/NetworkPerformance';
 import SecurityEvents from '../views/SecurityEvents';
 import SecurityAnalysis from '../views/SecurityAnalysis';
+import SecurityDashboard from '../views/SecurityDashboard';
 import { NotificationProvider } from '../contexts/NotificationContext';
 import NotificationToast from '../components/NotificationToast';
 import { Bot } from 'lucide-react';
@@ -66,6 +67,8 @@ const App: React.FC = () => {
         return <GeminiChat domain="network" />;
       
       // Security Domain
+      case 'sec_dashboard':
+        return <SecurityDashboard />;
       case 'sec_events':
         return <SecurityEvents />;
       case 'sec_chat':

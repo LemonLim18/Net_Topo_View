@@ -67,6 +67,7 @@ export type ViewId =
   | 'configuration' 
   | 'net_perf' 
   | 'net_chat'
+  | 'sec_dashboard'
   | 'sec_events'
   | 'sec_analysis'
   | 'sec_chat'

@@ -9,7 +9,8 @@ import {
   ChevronDown, 
   ChevronRight,
   LogOut,
-  ScanSearch
+  ScanSearch,
+  Gauge
 } from 'lucide-react';
 import type { ViewId, User } from '../types';
 
@@ -80,6 +81,7 @@ const Sidebar: React.FC<SidebarProps> = ({ currentView, setView, user, onLogout 
               Security Domain
             </summary>
             <ul>
+                <MenuItem id="sec_dashboard" label="Security Dashboard" icon={Gauge} />
                 <MenuItem id="sec_events" label="SIEM & Events" icon={ShieldAlert} />
                 <MenuItem id="sec_analysis" label="Threat Analysis" icon={ScanSearch} />
                 <MenuItem id="sec_chat" label="Security Copilot" icon={BotMessageSquare} />
