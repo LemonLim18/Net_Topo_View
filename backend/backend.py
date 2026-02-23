@@ -236,9 +236,13 @@ async def lifespan(app: FastAPI):
     pipeline = DeploymentPipeline(db)
     agent = NetworkAgent(db)
 
-    # 3. Setup Dependencies
+    # 3. Initialize Credential Vault (M15)
+    from auth.credentials import CredentialVault
+    vault = CredentialVault()
+
+    # 4. Setup Dependencies
     setup_pipeline(db)           # Inject global pipeline
-    setup_agent(agent)           # Inject global agent
+    setup_agent(agent, pipeline=pipeline, vault=vault)  # Inject agent + M4/M15
     set_crawl_runner(run_crawl_and_broadcast) # Inject crawl runner to API
 
     # 4. Load Saved Topology

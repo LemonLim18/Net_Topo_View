@@ -62,7 +62,7 @@ export const deployApi = {
 // --- M5: LLM Agent API ---
 export const llmApi = {
   chat: (message: string) =>
-    request<{ role: string; content: string; model: string }>('/llm/chat', {
+    request<{ role: string; content: string; model: string; type: string; proposal: any | null }>('/llm/chat', {
       method: 'POST',
       body: JSON.stringify({ message }),
     }),
@@ -72,6 +72,32 @@ export const llmApi = {
     
   getHistory: () =>
     request<{ history: any[] }>('/llm/chat/history'),
+};
+
+// --- M19: Proposal API (Agentic Workflow) ---
+export const proposalApi = {
+  list: (status?: string) =>
+    request<{ proposals: any[] }>(
+      status ? `/llm/chat/proposals?status=${status}` : '/llm/chat/proposals'
+    ),
+
+  get: (id: string) =>
+    request<any>(`/llm/chat/proposals/${id}`),
+
+  approve: (id: string) =>
+    request<{ status: string; message: string; job_id?: number; proposal: any }>(
+      `/llm/chat/proposals/${id}/approve`, { method: 'POST' }
+    ),
+
+  reject: (id: string) =>
+    request<{ status: string; message: string; proposal: any }>(
+      `/llm/chat/proposals/${id}/reject`, { method: 'POST' }
+    ),
+
+  rollback: (id: string) =>
+    request<{ status: string; message: string; rollback_config?: string; proposal: any }>(
+      `/llm/chat/proposals/${id}/rollback`, { method: 'POST' }
+    ),
 };
 
 // --- M17: Network Monitor API ---

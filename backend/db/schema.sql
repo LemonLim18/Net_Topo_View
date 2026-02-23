@@ -245,3 +245,28 @@ CREATE TABLE IF NOT EXISTS device_credentials (
 
 CREATE INDEX IF NOT EXISTS idx_credentials_device ON device_credentials(device_id);
 
+-- -----------------------------------------------------------
+-- 15. Config Proposals (M19 Agentic Workflow)
+-- -----------------------------------------------------------
+CREATE TABLE IF NOT EXISTS config_proposals (
+    id              TEXT PRIMARY KEY,              -- UUID
+    status          TEXT DEFAULT 'pending',         -- pending|approved|rejected|deployed|rolled_back
+    user_prompt     TEXT NOT NULL,
+    target_device   TEXT NOT NULL,
+    target_device_id INTEGER,
+    vendor          TEXT NOT NULL,
+    feature         TEXT NOT NULL,
+    params          TEXT,                           -- JSON blob
+    generated_config TEXT NOT NULL,
+    rollback_config  TEXT,
+    diff_text       TEXT,
+    risk_level      TEXT DEFAULT 'medium',
+    ai_explanation  TEXT,
+    job_id          INTEGER REFERENCES jobs(id),
+    request_id      INTEGER REFERENCES change_requests(id),
+    created_at      TEXT DEFAULT (datetime('now')),
+    updated_at      TEXT DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_proposals_status ON config_proposals(status);
+

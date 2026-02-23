@@ -14,36 +14,35 @@ import {
   Network,
   Shield,
   Zap,
-  Edit3
+  Edit3,
+  RotateCcw,
+  ClipboardList
 } from 'lucide-react';
+import { llmApi, proposalApi } from '../src/services/api';
 import type { AppDomain } from '../types';
 
 // ==================== TYPES ====================
 
-type AgentMode = 'idle' | 'planning' | 'awaiting_confirmation' | 'generating' | 'playbook_ready';
+type AgentMode = 'idle' | 'planning' | 'awaiting_confirmation' | 'generating' | 'deploying' | 'deployed' | 'playbook_ready';
 
-interface ContextSummary {
-  topology: string;
-  currentState: string;
-  affectedDevices: string[];
-}
-
-interface ExpectedOutcomes {
-  positive: string[];
-  warnings: string[];
-}
-
-interface PlanningResponse {
-  contextSummary: ContextSummary;
-  proposedActions: string[];
-  expectedOutcomes: ExpectedOutcomes;
-  riskLevel: 'low' | 'medium' | 'high';
-}
-
-interface AnsiblePlaybook {
-  name: string;
-  filename: string;
-  content: string;
+interface ConfigProposal {
+  id: string;
+  status: string;
+  user_prompt: string;
+  target_device: string;
+  target_device_id: number;
+  vendor: string;
+  feature: string;
+  params: Record<string, any>;
+  generated_config: string;
+  rollback_config: string;
+  diff_text: string;
+  risk_level: 'low' | 'medium' | 'high';
+  ai_explanation: string;
+  job_id?: number;
+  request_id?: number;
+  created_at?: string;
+  updated_at?: string;
 }
 
 interface Message {
@@ -51,8 +50,8 @@ interface Message {
   role: 'user' | 'agent';
   content: string;
   timestamp: number;
-  planning?: PlanningResponse;
-  playbook?: AnsiblePlaybook;
+  proposal?: ConfigProposal;
+  deployResult?: { status: string; message: string; job_id?: number };
   mode?: AgentMode;
 }
 
@@ -60,80 +59,8 @@ interface AIAgentPanelProps {
   isOpen: boolean;
   onToggle: () => void;
   domain: AppDomain;
-  onPlaybookGenerated?: (playbook: AnsiblePlaybook) => void;
+  onPlaybookGenerated?: (playbook: any) => void;
 }
-
-// ==================== MOCK DATA ====================
-
-const MOCK_PLANNING_RESPONSE: PlanningResponse = {
-  contextSummary: {
-    topology: "R1 ↔ R2 connected via Ethernet0/2 (192.168.2.0/24)",
-    currentState: "No OSPF configured on either device",
-    affectedDevices: ["R1 (10.0.0.1)", "R2 (10.0.0.2)"]
-  },
-  proposedActions: [
-    "Enable OSPF process 1 on R1",
-    "Enable OSPF process 1 on R2", 
-    "Advertise Loopback and interconnect networks in Area 0",
-    "Verify neighbor adjacency"
-  ],
-  expectedOutcomes: {
-    positive: [
-      "R1 and R2 will form OSPF adjacency (FULL state)",
-      "Routes 10.0.0.1/32 and 10.0.0.2/32 will be exchanged"
-    ],
-    warnings: [
-      "Brief traffic interruption (~2-5 sec) during SPF calculation"
-    ]
-  },
-  riskLevel: 'medium'
-};
-
-const MOCK_PLAYBOOK: AnsiblePlaybook = {
-  name: "Configure OSPF on Backbone Routers",
-  filename: "ospf_backbone_config.yml",
-  content: `---
-- name: Configure OSPF on Backbone Routers
-  hosts: backbone_routers
-  gather_facts: no
-  
-  vars:
-    ospf_process_id: 1
-    ospf_area: 0
-    
-  tasks:
-    - name: Enable OSPF Process on R1
-      ios_config:
-        lines:
-          - router ospf {{ ospf_process_id }}
-          - router-id 10.0.0.1
-          - network 10.0.0.0 0.0.0.255 area {{ ospf_area }}
-          - network 192.168.2.0 0.0.0.255 area {{ ospf_area }}
-          - passive-interface default
-          - no passive-interface Ethernet0/2
-      when: inventory_hostname == "R1"
-      
-    - name: Enable OSPF Process on R2
-      ios_config:
-        lines:
-          - router ospf {{ ospf_process_id }}
-          - router-id 10.0.0.2
-          - network 10.0.0.0 0.0.0.255 area {{ ospf_area }}
-          - network 192.168.2.0 0.0.0.255 area {{ ospf_area }}
-          - passive-interface default
-          - no passive-interface Ethernet0/2
-      when: inventory_hostname == "R2"
-      
-    - name: Verify OSPF Neighbor Adjacency
-      ios_command:
-        commands:
-          - show ip ospf neighbor
-      register: ospf_neighbors
-      
-    - name: Display OSPF Status
-      debug:
-        var: ospf_neighbors.stdout_lines`
-};
 
 // ==================== SUB-COMPONENTS ====================
 
@@ -147,141 +74,183 @@ const RiskBadge: React.FC<{ level: 'low' | 'medium' | 'high' }> = ({ level }) =>
   return <span className={`badge ${color} gap-1`}>{icon} {label}</span>;
 };
 
-const PlanningResponseCard: React.FC<{ 
-  planning: PlanningResponse; 
-  onProceed: () => void;
+// ---- ProposalCard: Shows config, rollback, diff, and action buttons ----
+const ProposalCard: React.FC<{ 
+  proposal: ConfigProposal; 
+  onAccept: () => void;
   onRevise: () => void;
-  onCancel: () => void;
-}> = ({ planning, onProceed, onRevise, onCancel }) => {
+  onReject: () => void;
+  isDeploying: boolean;
+}> = ({ proposal, onAccept, onRevise, onReject, isDeploying }) => {
+  const [showRollback, setShowRollback] = useState(false);
+  const [showDiff, setShowDiff] = useState(false);
+
   return (
-    <div className="space-y-4">
-      {/* Context Summary */}
-      <div className="bg-base-200 rounded-lg p-4">
-        <h4 className="font-semibold text-sm flex items-center gap-2 mb-3">
-          <Network className="w-4 h-4 text-primary" /> Context Summary
-        </h4>
-        <div className="space-y-2 text-sm">
-          <div className="flex gap-2">
-            <span className="text-base-content/60 min-w-[80px]">Topology:</span>
-            <span>{planning.contextSummary.topology}</span>
-          </div>
-          <div className="flex gap-2">
-            <span className="text-base-content/60 min-w-[80px]">State:</span>
-            <span>{planning.contextSummary.currentState}</span>
-          </div>
-          <div className="flex gap-2">
-            <span className="text-base-content/60 min-w-[80px]">Devices:</span>
-            <span>{planning.contextSummary.affectedDevices.join(', ')}</span>
-          </div>
-        </div>
-      </div>
-
-      {/* Proposed Actions */}
-      <div className="bg-base-200 rounded-lg p-4">
-        <h4 className="font-semibold text-sm flex items-center gap-2 mb-3">
-          <FileCode className="w-4 h-4 text-secondary" /> Proposed Actions
-        </h4>
-        <ol className="list-decimal list-inside space-y-1 text-sm">
-          {planning.proposedActions.map((action, i) => (
-            <li key={i}>{action}</li>
-          ))}
-        </ol>
-      </div>
-
-      {/* Expected Outcomes */}
-      <div className="bg-base-200 rounded-lg p-4">
-        <h4 className="font-semibold text-sm flex items-center gap-2 mb-3">
-          <Zap className="w-4 h-4 text-warning" /> Expected Outcomes
-        </h4>
-        <div className="space-y-2 text-sm">
-          {planning.expectedOutcomes.positive.map((outcome, i) => (
-            <div key={i} className="flex items-start gap-2">
-              <CheckCircle className="w-4 h-4 text-success shrink-0 mt-0.5" />
-              <span>{outcome}</span>
-            </div>
-          ))}
-          {planning.expectedOutcomes.warnings.map((warning, i) => (
-            <div key={i} className="flex items-start gap-2">
-              <AlertTriangle className="w-4 h-4 text-warning shrink-0 mt-0.5" />
-              <span>{warning}</span>
-            </div>
-          ))}
-        </div>
-      </div>
-
-      {/* Risk Level */}
+    <div className="space-y-3">
+      {/* Header */}
       <div className="flex items-center justify-between">
-        <span className="text-sm text-base-content/60">Risk Assessment:</span>
-        <RiskBadge level={planning.riskLevel} />
+        <div className="flex items-center gap-2">
+          <Bot className="w-4 h-4 text-primary" />
+          <span className="font-semibold text-sm">Configuration Proposal</span>
+        </div>
+        <RiskBadge level={proposal.risk_level} />
       </div>
+
+      {/* Target Info */}
+      <div className="bg-base-200 rounded-lg p-3 text-sm space-y-1">
+        <div className="flex gap-2">
+          <span className="text-base-content/60 min-w-[60px]">Target:</span>
+          <span className="font-mono">{proposal.target_device} ({proposal.vendor})</span>
+        </div>
+        <div className="flex gap-2">
+          <span className="text-base-content/60 min-w-[60px]">Feature:</span>
+          <span>{proposal.feature}</span>
+        </div>
+      </div>
+
+      {/* AI Explanation */}
+      {proposal.ai_explanation && (
+        <div className="bg-base-200 rounded-lg p-3">
+          <h4 className="font-semibold text-xs flex items-center gap-1 mb-2">
+            <Zap className="w-3 h-3 text-warning" /> AI Explanation
+          </h4>
+          <p className="text-xs leading-relaxed whitespace-pre-wrap">{proposal.ai_explanation}</p>
+        </div>
+      )}
+
+      {/* Proposed Configuration */}
+      <div className="bg-base-300 rounded-lg overflow-hidden">
+        <div className="flex items-center justify-between px-3 py-2 bg-base-200 border-b border-base-300">
+          <span className="text-xs font-semibold flex items-center gap-1">
+            <FileCode className="w-3 h-3 text-secondary" /> Proposed Config
+          </span>
+          <button 
+            onClick={() => navigator.clipboard.writeText(proposal.generated_config)} 
+            className="btn btn-ghost btn-xs"
+          >
+            <Copy className="w-3 h-3" />
+          </button>
+        </div>
+        <pre className="p-3 text-xs overflow-x-auto max-h-48 overflow-y-auto font-mono">
+          <code>{proposal.generated_config}</code>
+        </pre>
+      </div>
+
+      {/* Rollback Commands (Collapsible) */}
+      {proposal.rollback_config && (
+        <div className="bg-base-300 rounded-lg overflow-hidden">
+          <button 
+            onClick={() => setShowRollback(!showRollback)}
+            className="flex items-center justify-between w-full px-3 py-2 bg-base-200 hover:bg-base-300 transition-colors"
+          >
+            <span className="text-xs font-semibold flex items-center gap-1">
+              <RotateCcw className="w-3 h-3 text-error" /> Rollback Commands
+            </span>
+            <span className="text-xs">{showRollback ? '▲' : '▼'}</span>
+          </button>
+          {showRollback && (
+            <pre className="p-3 text-xs overflow-x-auto max-h-32 overflow-y-auto font-mono">
+              <code>{proposal.rollback_config}</code>
+            </pre>
+          )}
+        </div>
+      )}
+
+      {/* Config Diff (Collapsible) */}
+      {proposal.diff_text && (
+        <div className="bg-base-300 rounded-lg overflow-hidden">
+          <button 
+            onClick={() => setShowDiff(!showDiff)}
+            className="flex items-center justify-between w-full px-3 py-2 bg-base-200 hover:bg-base-300 transition-colors"
+          >
+            <span className="text-xs font-semibold flex items-center gap-1">
+              <ClipboardList className="w-3 h-3 text-info" /> Configuration Diff
+            </span>
+            <span className="text-xs">{showDiff ? '▲' : '▼'}</span>
+          </button>
+          {showDiff && (
+            <pre className="p-3 text-xs overflow-x-auto max-h-48 overflow-y-auto font-mono">
+              <code>{proposal.diff_text}</code>
+            </pre>
+          )}
+        </div>
+      )}
 
       {/* Action Buttons */}
-      <div className="border-t border-base-300 pt-4">
-        <p className="text-sm text-center mb-3 text-base-content/70">
-          Shall I generate the Ansible playbook for this configuration?
-        </p>
-        <div className="flex gap-2 justify-center flex-wrap">
-          <button onClick={onProceed} className="btn btn-primary btn-sm gap-1">
-            <Play className="w-3 h-3" /> Proceed to Generate
-          </button>
-          <button onClick={onRevise} className="btn btn-ghost btn-sm gap-1">
-            <Edit3 className="w-3 h-3" /> Revise Plan
-          </button>
-          <button onClick={onCancel} className="btn btn-ghost btn-sm gap-1 text-error">
-            <X className="w-3 h-3" /> Cancel
-          </button>
+      {proposal.status === 'pending' && (
+        <div className="border-t border-base-300 pt-3">
+          <p className="text-xs text-center mb-2 text-base-content/70">
+            Deploy this configuration to {proposal.target_device}?
+          </p>
+          <div className="flex gap-2 justify-center flex-wrap">
+            <button 
+              onClick={onAccept} 
+              className="btn btn-success btn-sm gap-1"
+              disabled={isDeploying}
+            >
+              {isDeploying ? (
+                <><Loader2 className="w-3 h-3 animate-spin" /> Deploying...</>
+              ) : (
+                <><CheckCircle className="w-3 h-3" /> Accept & Deploy</>
+              )}
+            </button>
+            <button onClick={onRevise} className="btn btn-ghost btn-sm gap-1" disabled={isDeploying}>
+              <Edit3 className="w-3 h-3" /> Revise
+            </button>
+            <button onClick={onReject} className="btn btn-ghost btn-sm gap-1 text-error" disabled={isDeploying}>
+              <X className="w-3 h-3" /> Reject
+            </button>
+          </div>
         </div>
-      </div>
+      )}
     </div>
   );
 };
 
-const PlaybookResponseCard: React.FC<{ 
-  playbook: AnsiblePlaybook;
-  onDryRun: () => void;
-  onApply: () => void;
-  onCopy: () => void;
-}> = ({ playbook, onDryRun, onApply, onCopy }) => {
-  const [copied, setCopied] = useState(false);
-
-  const handleCopy = () => {
-    navigator.clipboard.writeText(playbook.content);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
-    onCopy();
-  };
-
+// ---- DeploymentStatusCard: Shown after successful deployment ----
+const DeploymentStatusCard: React.FC<{
+  result: { status: string; message: string; job_id?: number };
+  proposal: ConfigProposal;
+  onRollback: () => void;
+  isRollingBack: boolean;
+}> = ({ result, proposal, onRollback, isRollingBack }) => {
+  const isSuccess = result.status === 'deployed';
+  
   return (
-    <div className="space-y-4">
+    <div className="space-y-3">
       <div className="flex items-center gap-2">
-        <CheckCircle className="w-5 h-5 text-success" />
-        <span className="font-semibold">Playbook Generated</span>
+        {isSuccess ? (
+          <CheckCircle className="w-5 h-5 text-success" />
+        ) : (
+          <AlertTriangle className="w-5 h-5 text-error" />
+        )}
+        <span className="font-semibold text-sm">
+          {isSuccess ? 'Deployment Successful' : 'Deployment Failed'}
+        </span>
       </div>
-      
-      {/* Playbook Preview */}
-      <div className="bg-base-300 rounded-lg overflow-hidden">
-        <div className="flex items-center justify-between px-3 py-2 bg-base-200 border-b border-base-300">
-          <span className="text-xs font-mono flex items-center gap-2">
-            <FileCode className="w-3 h-3" /> {playbook.filename}
-          </span>
-          <button onClick={handleCopy} className="btn btn-ghost btn-xs">
-            {copied ? <CheckCircle className="w-3 h-3 text-success" /> : <Copy className="w-3 h-3" />}
+
+      <div className="bg-base-200 rounded-lg p-3 text-sm">
+        <p>{result.message}</p>
+        {result.job_id && (
+          <p className="text-xs text-base-content/60 mt-1">Job ID: #{result.job_id}</p>
+        )}
+      </div>
+
+      {isSuccess && proposal.rollback_config && (
+        <div className="flex gap-2 justify-center">
+          <button 
+            onClick={onRollback} 
+            className="btn btn-warning btn-sm gap-1"
+            disabled={isRollingBack}
+          >
+            {isRollingBack ? (
+              <><Loader2 className="w-3 h-3 animate-spin" /> Rolling back...</>
+            ) : (
+              <><RotateCcw className="w-3 h-3" /> Rollback</>
+            )}
           </button>
         </div>
-        <pre className="p-3 text-xs overflow-x-auto max-h-64 overflow-y-auto">
-          <code>{playbook.content}</code>
-        </pre>
-      </div>
-
-      {/* Action Buttons */}
-      <div className="flex gap-2 justify-center flex-wrap">
-        <button onClick={onDryRun} className="btn btn-outline btn-sm gap-1">
-          <Play className="w-3 h-3" /> 🔬 Dry-Run First
-        </button>
-        <button onClick={onApply} className="btn btn-success btn-sm gap-1">
-          <CheckCircle className="w-3 h-3" /> Apply to Devices
-        </button>
-      </div>
+      )}
     </div>
   );
 };
@@ -297,7 +266,9 @@ const AIAgentPanel: React.FC<AIAgentPanelProps> = ({
   const [input, setInput] = useState('');
   const [messages, setMessages] = useState<Message[]>([]);
   const [agentMode, setAgentMode] = useState<AgentMode>('idle');
-  const [currentPlanning, setCurrentPlanning] = useState<PlanningResponse | null>(null);
+  const [currentProposal, setCurrentProposal] = useState<ConfigProposal | null>(null);
+  const [isDeploying, setIsDeploying] = useState(false);
+  const [isRollingBack, setIsRollingBack] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -306,111 +277,176 @@ const AIAgentPanel: React.FC<AIAgentPanelProps> = ({
 
   const generateId = () => Math.random().toString(36).substring(2, 9);
 
-  const handleSend = () => {
+  // ---- Send message to AI agent ----
+  const handleSend = async () => {
     if (!input.trim()) return;
+    const userInput = input;
 
     // Add user message
     const userMsg: Message = {
       id: generateId(),
       role: 'user',
-      content: input,
+      content: userInput,
       timestamp: Date.now()
     };
     setMessages(prev => [...prev, userMsg]);
     setInput('');
     setAgentMode('planning');
 
-    // Simulate AI planning response after delay
-    setTimeout(() => {
-      const planningMsg: Message = {
-        id: generateId(),
-        role: 'agent',
-        content: "I've analyzed the current network state and prepared a plan:",
-        timestamp: Date.now(),
-        planning: MOCK_PLANNING_RESPONSE,
-        mode: 'planning'
-      };
-      setMessages(prev => [...prev, planningMsg]);
-      setCurrentPlanning(MOCK_PLANNING_RESPONSE);
-      setAgentMode('awaiting_confirmation');
-    }, 1500);
-  };
-
-  const handleProceed = () => {
-    setAgentMode('generating');
-    
-    // Add transition message
-    const generatingMsg: Message = {
-      id: generateId(),
+    // Add thinking indicator
+    const thinkingId = generateId();
+    setMessages(prev => [...prev, {
+      id: thinkingId,
       role: 'agent',
-      content: "Generating Ansible playbook...",
+      content: 'Analyzing your request...',
       timestamp: Date.now(),
       mode: 'generating'
-    };
-    setMessages(prev => [...prev, generatingMsg]);
+    }]);
 
-    // Simulate playbook generation
-    setTimeout(() => {
-      const playbookMsg: Message = {
+    try {
+      const result = await llmApi.chat(userInput);
+
+      // Remove thinking indicator
+      setMessages(prev => prev.filter(m => m.id !== thinkingId));
+
+      if (result.type === 'proposal' && result.proposal) {
+        // AI generated a config proposal
+        const proposal = result.proposal as ConfigProposal;
+        setCurrentProposal(proposal);
+        
+        const proposalMsg: Message = {
+          id: generateId(),
+          role: 'agent',
+          content: result.content,
+          timestamp: Date.now(),
+          proposal: proposal,
+          mode: 'awaiting_confirmation'
+        };
+        setMessages(prev => [...prev, proposalMsg]);
+        setAgentMode('awaiting_confirmation');
+      } else {
+        // Normal text response
+        const agentMsg: Message = {
+          id: generateId(),
+          role: 'agent',
+          content: result.content,
+          timestamp: Date.now()
+        };
+        setMessages(prev => [...prev, agentMsg]);
+        setAgentMode('idle');
+      }
+    } catch (error: any) {
+      // Remove thinking indicator and show error
+      setMessages(prev => prev.filter(m => m.id !== thinkingId));
+      const errorMsg: Message = {
         id: generateId(),
         role: 'agent',
-        content: "",
-        timestamp: Date.now(),
-        playbook: MOCK_PLAYBOOK,
-        mode: 'playbook_ready'
+        content: `❌ Error: ${error.message || 'Failed to reach the AI agent.'}`,
+        timestamp: Date.now()
       };
-      setMessages(prev => [...prev.slice(0, -1), playbookMsg]);
-      setAgentMode('playbook_ready');
-      onPlaybookGenerated?.(MOCK_PLAYBOOK);
-    }, 2000);
+      setMessages(prev => [...prev, errorMsg]);
+      setAgentMode('idle');
+    }
   };
 
+  // ---- Accept & Deploy ----
+  const handleAccept = async () => {
+    if (!currentProposal) return;
+    setIsDeploying(true);
+
+    try {
+      const result = await proposalApi.approve(currentProposal.id);
+      
+      const deployMsg: Message = {
+        id: generateId(),
+        role: 'agent',
+        content: '',
+        timestamp: Date.now(),
+        deployResult: { 
+          status: result.status, 
+          message: result.message,
+          job_id: result.job_id 
+        },
+        proposal: result.proposal as ConfigProposal,
+        mode: 'deployed'
+      };
+      setMessages(prev => [...prev, deployMsg]);
+      setCurrentProposal(result.proposal as ConfigProposal);
+      setAgentMode('deployed');
+    } catch (error: any) {
+      const errorMsg: Message = {
+        id: generateId(),
+        role: 'agent',
+        content: `❌ Deployment failed: ${error.message}`,
+        timestamp: Date.now()
+      };
+      setMessages(prev => [...prev, errorMsg]);
+    } finally {
+      setIsDeploying(false);
+    }
+  };
+
+  // ---- Revise plan ----
   const handleRevise = () => {
     const reviseMsg: Message = {
       id: generateId(),
       role: 'agent',
-      content: "What changes would you like to make to the plan?",
+      content: "What changes would you like to make to the plan? I'll regenerate the configuration.",
       timestamp: Date.now()
     };
     setMessages(prev => [...prev, reviseMsg]);
     setAgentMode('idle');
   };
 
-  const handleCancel = () => {
+  // ---- Reject proposal ----
+  const handleReject = async () => {
+    if (!currentProposal) return;
+
+    try {
+      await proposalApi.reject(currentProposal.id);
+    } catch (e) {
+      // Proceed even if API call fails
+    }
+
     const cancelMsg: Message = {
       id: generateId(),
       role: 'agent',
-      content: "Plan cancelled. Let me know if you need anything else.",
+      content: "Proposal rejected. Let me know if you need anything else.",
       timestamp: Date.now()
     };
     setMessages(prev => [...prev, cancelMsg]);
     setAgentMode('idle');
-    setCurrentPlanning(null);
+    setCurrentProposal(null);
   };
 
-  const handleDryRun = () => {
-    const dryRunMsg: Message = {
-      id: generateId(),
-      role: 'agent',
-      content: "🔬 Dry-run completed successfully! No errors detected. The playbook is safe to apply.",
-      timestamp: Date.now()
-    };
-    setMessages(prev => [...prev, dryRunMsg]);
-  };
+  // ---- Rollback deployed config ----
+  const handleRollback = async () => {
+    if (!currentProposal) return;
+    setIsRollingBack(true);
 
-  const handleApply = () => {
-    const applyMsg: Message = {
-      id: generateId(),
-      role: 'agent',
-      content: "✅ Playbook applied successfully to R1 and R2! OSPF adjacency is now FULL.",
-      timestamp: Date.now()
-    };
-    setMessages(prev => [...prev, applyMsg]);
-    setAgentMode('idle');
-  };
+    try {
+      const result = await proposalApi.rollback(currentProposal.id);
 
-  const handleCopy = () => {
-    // Already handled in PlaybookResponseCard
+      const rollbackMsg: Message = {
+        id: generateId(),
+        role: 'agent',
+        content: `↩️ ${result.message}`,
+        timestamp: Date.now()
+      };
+      setMessages(prev => [...prev, rollbackMsg]);
+      setCurrentProposal(result.proposal as ConfigProposal);
+      setAgentMode('idle');
+    } catch (error: any) {
+      const errorMsg: Message = {
+        id: generateId(),
+        role: 'agent',
+        content: `❌ Rollback failed: ${error.message}`,
+        timestamp: Date.now()
+      };
+      setMessages(prev => [...prev, errorMsg]);
+    } finally {
+      setIsRollingBack(false);
+    }
   };
 
   const domainIcon = domain === 'network' ? Network : Shield;
@@ -453,32 +489,33 @@ const AIAgentPanel: React.FC<AIAgentPanelProps> = ({
                 ? 'bg-primary text-primary-content ml-4' 
                 : 'bg-base-200 mr-4'
             }`}>
-              {msg.content && <p className="text-sm">{msg.content}</p>}
+              {msg.content && <p className="text-sm whitespace-pre-wrap">{msg.content}</p>}
               
               {msg.mode === 'generating' && (
                 <div className="flex items-center gap-2 text-sm">
                   <Loader2 className="w-4 h-4 animate-spin" />
-                  <span>Generating...</span>
+                  <span>Analyzing...</span>
                 </div>
               )}
 
-              {msg.planning && (
+              {msg.proposal && !msg.deployResult && (
                 <div className="mt-3">
-                  <PlanningResponseCard 
-                    planning={msg.planning}
-                    onProceed={handleProceed}
+                  <ProposalCard 
+                    proposal={msg.proposal}
+                    onAccept={handleAccept}
                     onRevise={handleRevise}
-                    onCancel={handleCancel}
+                    onReject={handleReject}
+                    isDeploying={isDeploying}
                   />
                 </div>
               )}
 
-              {msg.playbook && (
-                <PlaybookResponseCard 
-                  playbook={msg.playbook}
-                  onDryRun={handleDryRun}
-                  onApply={handleApply}
-                  onCopy={handleCopy}
+              {msg.deployResult && msg.proposal && (
+                <DeploymentStatusCard 
+                  result={msg.deployResult}
+                  proposal={msg.proposal}
+                  onRollback={handleRollback}
+                  isRollingBack={isRollingBack}
                 />
               )}
             </div>
@@ -497,12 +534,12 @@ const AIAgentPanel: React.FC<AIAgentPanelProps> = ({
             value={input}
             onChange={e => setInput(e.target.value)}
             onKeyDown={e => e.key === 'Enter' && handleSend()}
-            disabled={agentMode === 'generating'}
+            disabled={agentMode === 'generating' || agentMode === 'deploying'}
           />
           <button 
             onClick={handleSend} 
             className="btn btn-primary btn-sm btn-square"
-            disabled={!input.trim() || agentMode === 'generating'}
+            disabled={!input.trim() || agentMode === 'generating' || agentMode === 'deploying'}
           >
             <Send className="w-4 h-4" />
           </button>
