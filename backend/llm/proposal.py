@@ -180,7 +180,7 @@ class ProposalManager:
         return self._update_status(proposal_id, "rejected", from_status="pending")
 
     def mark_deployed(
-        self, proposal_id: str, job_id: int, request_id: int
+        self, proposal_id: str, job_id: Optional[int], request_id: Optional[int]
     ) -> Optional[ConfigProposal]:
         """Transition proposal from approved → deployed, linking to the pipeline job."""
         conn = self._connect()
@@ -197,7 +197,7 @@ class ProposalManager:
                 (job_id, request_id, proposal_id),
             )
             conn.commit()
-            logger.info("Proposal %s marked as deployed (job=%d)", proposal_id, job_id)
+            logger.info("Proposal %s marked as deployed (job=%s)", proposal_id, job_id)
             return self.get(proposal_id)
         finally:
             conn.close()

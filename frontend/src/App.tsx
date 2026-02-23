@@ -3,7 +3,6 @@ import Header from '../components/Header';
 import Sidebar from '../components/Sidebar';
 import Dashboard from '../views/Dashboard';
 import Configuration from '../views/Configuration';
-import AIAssistant from '../views/AIAssistant';
 import GeminiChat from  "../views/AIChat";
 import Deployments from '../views/Deployments';
 import AIAgentPanel from '../components/AIAgentPanel';

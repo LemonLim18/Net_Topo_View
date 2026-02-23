@@ -239,7 +239,7 @@ async def approve_proposal(proposal_id: str):
     # 3. Check if pipeline is available
     if not _pipeline:
         # No pipeline — mark as deployed anyway (simulation mode)
-        mgr.mark_deployed(proposal_id, job_id=0, request_id=0)
+        mgr.mark_deployed(proposal_id, job_id=None, request_id=None)
         return {
             "status": "deployed",
             "message": "Proposal approved (no deployment pipeline available — simulated)",
@@ -263,7 +263,21 @@ async def approve_proposal(proposal_id: str):
             "Please store credentials via the Credential Vault before deploying."
         )
 
-    # 5. Execute the deployment pipeline
+    # 5. Resolve SSH host: prefer management IP over plain hostname
+    ssh_host = proposal.target_device  # fallback if lookup fails
+    if proposal.target_device_id > 0:
+        try:
+            dev = _pipeline.db_manager.get_device_by_id(proposal.target_device_id)
+            if dev and dev.management_ip:
+                ssh_host = dev.management_ip
+                logger.info(
+                    "Resolved device '%s' → %s",
+                    proposal.target_device, ssh_host,
+                )
+        except Exception as e:
+            logger.warning("Could not resolve management IP: %s", e)
+
+    # 6. Execute the deployment pipeline
     try:
         # Create change request
         req_id = _pipeline.create_change_request(
@@ -286,7 +300,7 @@ async def approve_proposal(proposal_id: str):
         # Execute stages 3-6 (Snapshot → Apply → Verify → Commit)
         success = _pipeline.execute_job(
             job_id,
-            host=proposal.target_device,
+            host=ssh_host,
             username=creds["username"],
             password=creds["password"],
             driver_type=proposal.vendor,
