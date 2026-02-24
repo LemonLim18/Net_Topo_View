@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { RefreshCw, Activity, Server } from 'lucide-react';
 import { monitorApi } from '../src/services/api';
+import { Toast } from '../src/utils/swal';
 
 // M17: Network Performance Monitoring Dashboard
 // Embeds Grafana panels and provides controls for Telegraf config generation.
@@ -25,9 +26,9 @@ const NetworkPerformance: React.FC = () => {
     try {
       const res = await monitorApi.updateConfig();
       setLastUpdated(new Date().toLocaleTimeString());
-      alert(res.message);
+      Toast.success('Config Updated', res.message);
     } catch (e: any) {
-      alert("Failed to update config: " + e.message);
+      Toast.error('Failed to update config', e.message);
     } finally {
       setIsLoading(false);
     }

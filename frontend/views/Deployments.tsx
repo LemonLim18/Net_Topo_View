@@ -13,6 +13,7 @@ import {
   Loader2
 } from 'lucide-react';
 import { deployApi, proposalApi } from '../src/services/api';
+import { Toast, Confirm } from '../src/utils/swal';
 
 interface Job {
   id: number;
@@ -95,9 +96,9 @@ const Deployments: React.FC = () => {
         username: "admin",
         password: "password"
       });
-      alert("Execution started!");
+      Toast.success('Execution started!');
     } catch (e: any) {
-      alert("Execution failed: " + e.message);
+      Toast.error('Execution failed', e.message);
     } finally {
       setIsLoading(false);
     }
@@ -122,13 +123,18 @@ const Deployments: React.FC = () => {
 
   // --- Proposal Actions ---
   const handleRollbackProposal = async (proposal: Proposal) => {
-    if (!confirm(`Rollback configuration on ${proposal.target_device}?`)) return;
+    const ok = await Confirm.ask(
+      'Rollback Configuration',
+      `Rollback configuration on ${proposal.target_device}?`
+    );
+    if (!ok) return;
     setIsLoading(true);
     try {
       await proposalApi.rollback(proposal.id);
       await fetchProposals();
+      Toast.success('Rollback complete');
     } catch (e: any) {
-      alert("Rollback failed: " + e.message);
+      Toast.error('Rollback failed', e.message);
     } finally {
       setIsLoading(false);
     }

@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { ScanSearch, Sparkles, AlertOctagon, Terminal, ArrowRight, Shield, AlertTriangle, BookOpen, Play, RefreshCw } from 'lucide-react';
-import { useNotification } from '../contexts/NotificationContext';
+import { Toast } from '../src/utils/swal';
 import { securityApi, llmApi } from '../src/services/api';
 
 interface AnalysisResult {
@@ -31,7 +31,6 @@ const SecurityAnalysis: React.FC = () => {
     const [analysis, setAnalysis] = useState<AnalysisResult | null>(null);
     const [playbooks, setPlaybooks] = useState<Playbook[]>([]);
     const [cveStats, setCveStats] = useState<CveStats | null>(null);
-    const { addNotification } = useNotification();
 
     /* Fetch playbooks and CVE stats on mount */
     useEffect(() => {
@@ -94,18 +93,17 @@ ${logInput}`;
             setAnalysis(result);
 
             if (['CRITICAL', 'HIGH'].includes(result.severity.toUpperCase())) {
-                addNotification(
+                Toast.warning(
                     `${result.severity} Threat Detected`,
-                    result.summary.substring(0, 100) + '...',
-                    result.severity.toUpperCase() === 'CRITICAL' ? 'error' : 'warning'
+                    result.summary.substring(0, 100) + '...'
                 );
             } else {
-                addNotification('Analysis Complete', `Log analysis finished with severity: ${result.severity}`, 'success');
+                Toast.success('Analysis Complete', `Severity: ${result.severity}`);
             }
 
         } catch (e) {
             console.error(e);
-            addNotification('Analysis Failed', 'Could not process the security log. Ensure the backend is running.', 'error');
+            Toast.error('Analysis Failed', 'Could not process the security log. Ensure the backend is running.');
         } finally {
             setIsAnalyzing(false);
         }

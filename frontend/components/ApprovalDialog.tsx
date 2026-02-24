@@ -9,6 +9,7 @@ import {
   X
 } from 'lucide-react';
 import { deployApi } from '../src/services/api';
+import { Toast } from '../src/utils/swal';
 
 interface ApprovalDialogProps {
   isOpen: boolean;
@@ -37,20 +38,18 @@ const ApprovalDialog: React.FC<ApprovalDialogProps> = ({
   const [driverType, setDriverType] = useState(vendor || 'cisco_ios');
   const [isDeploying, setIsDeploying] = useState(false);
   const [deployStatus, setDeployStatus] = useState<'idle' | 'success' | 'error'>('idle');
-  const [errorMsg, setErrorMsg] = useState('');
   const [currentStep, setCurrentStep] = useState('');
 
   if (!isOpen) return null;
 
   const handleDeploy = async () => {
     if (!host || !username || !password) {
-      setErrorMsg('All device connection fields are required.');
+      Toast.warning('Missing Fields', 'All device connection fields are required.');
       return;
     }
 
     setIsDeploying(true);
     setDeployStatus('idle');
-    setErrorMsg('');
 
     try {
       // Step 1: Create Change Request
@@ -80,14 +79,15 @@ const ApprovalDialog: React.FC<ApprovalDialogProps> = ({
       if (result.status === 'success') {
         setDeployStatus('success');
         setCurrentStep('Deployment completed successfully!');
+        Toast.success('Deployment Successful');
         onDeploySuccess(job_id);
       } else {
         setDeployStatus('error');
-        setErrorMsg(result.message || 'Deployment failed');
+        Toast.error('Deployment Failed', result.message || 'Deployment failed');
       }
     } catch (err: any) {
       setDeployStatus('error');
-      setErrorMsg(err.message || 'Deployment pipeline error');
+      Toast.error('Pipeline Error', err.message || 'Deployment pipeline error');
     } finally {
       setIsDeploying(false);
     }
@@ -233,12 +233,6 @@ const ApprovalDialog: React.FC<ApprovalDialogProps> = ({
           <div className="alert alert-success mb-4 text-sm">
             <ShieldCheck className="h-4 w-4" />
             <span>{currentStep}</span>
-          </div>
-        )}
-        {errorMsg && (
-          <div className="alert alert-error mb-4 text-sm">
-            <AlertTriangle className="h-4 w-4" />
-            <span>{errorMsg}</span>
           </div>
         )}
 

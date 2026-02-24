@@ -6,7 +6,6 @@ import {
   Search,
   Edit3,
   Trash2,
-  X,
   CheckCircle,
   XCircle,
   HelpCircle,
@@ -15,6 +14,7 @@ import {
   AlertTriangle,
 } from 'lucide-react';
 import { netboxApi, type DeviceRecord } from '../src/services/api';
+import { Toast, Confirm } from '../src/utils/swal';
 
 // ---------------------------------------------------------------------------
 //  Helpers
@@ -85,8 +85,6 @@ const NetBoxDevices: React.FC = () => {
   const [selected, setSelected] = useState<DeviceRecord | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [successMsg, setSuccessMsg] = useState<string | null>(null);
 
   // Search / filter
   const [search, setSearch] = useState('');
@@ -100,22 +98,17 @@ const NetBoxDevices: React.FC = () => {
   const [form, setForm] = useState({ ...EMPTY_FORM });
   const [formError, setFormError] = useState<string | null>(null);
 
-  // Confirm delete
-  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
-  const [deleteTarget, setDeleteTarget] = useState<DeviceRecord | null>(null);
-
   // -----------------------------------------------------------------------
   //  Data fetching
   // -----------------------------------------------------------------------
 
   const fetchDevices = useCallback(async () => {
     setIsLoading(true);
-    setError(null);
     try {
       const res = await netboxApi.listDevices();
       setDevices(res.devices);
     } catch (e: any) {
-      setError(e.message || 'Failed to load devices');
+      Toast.error('Failed to load devices', e.message);
     } finally {
       setIsLoading(false);
     }
@@ -124,14 +117,6 @@ const NetBoxDevices: React.FC = () => {
   useEffect(() => {
     fetchDevices();
   }, [fetchDevices]);
-
-  // Auto-clear success messages
-  useEffect(() => {
-    if (successMsg) {
-      const t = setTimeout(() => setSuccessMsg(null), 4000);
-      return () => clearTimeout(t);
-    }
-  }, [successMsg]);
 
   // -----------------------------------------------------------------------
   //  Filtering
@@ -197,7 +182,7 @@ const NetBoxDevices: React.FC = () => {
           serial_number: form.serial_number || undefined,
           status: form.status,
         });
-        setSuccessMsg(`Device "${updated.hostname}" updated`);
+        Toast.success(`Device "${updated.hostname}" updated`);
         setSelected(updated);
       } else {
         const created = await netboxApi.createDevice({
@@ -209,7 +194,7 @@ const NetBoxDevices: React.FC = () => {
           serial_number: form.serial_number || undefined,
           status: form.status,
         });
-        setSuccessMsg(`Device "${created.hostname}" added (ID ${created.id})`);
+        Toast.success(`Device "${created.hostname}" added`, `ID ${created.id}`);
       }
       setShowModal(false);
       fetchDevices();
@@ -220,24 +205,21 @@ const NetBoxDevices: React.FC = () => {
     }
   };
 
-  const confirmDelete = (d: DeviceRecord) => {
-    setDeleteTarget(d);
-    setShowDeleteConfirm(true);
-  };
+  const confirmDelete = async (d: DeviceRecord) => {
+    const ok = await Confirm.danger(
+      `Delete ${d.hostname}?`,
+      'This action cannot be undone.',
+    );
+    if (!ok) return;
 
-  const handleDelete = async () => {
-    if (!deleteTarget) return;
     setIsLoading(true);
     try {
-      await netboxApi.deleteDevice(deleteTarget.id);
-      setSuccessMsg(`Device "${deleteTarget.hostname}" deleted`);
-      if (selected?.id === deleteTarget.id) setSelected(null);
-      setShowDeleteConfirm(false);
-      setDeleteTarget(null);
+      await netboxApi.deleteDevice(d.id);
+      Toast.success(`Device "${d.hostname}" deleted`);
+      if (selected?.id === d.id) setSelected(null);
       fetchDevices();
     } catch (e: any) {
-      setError(e.message || 'Delete failed');
-      setShowDeleteConfirm(false);
+      Toast.error('Delete failed', e.message);
     } finally {
       setIsLoading(false);
     }
@@ -245,17 +227,16 @@ const NetBoxDevices: React.FC = () => {
 
   const handleSync = async () => {
     setIsSyncing(true);
-    setError(null);
     try {
       const res = await netboxApi.syncFromNetbox();
-      setSuccessMsg(
-        res.status === 'success'
-          ? `Synced ${res.synced_count ?? 0} devices from NetBox`
-          : `Sync skipped — ${(res as any).reason || 'no connection'}`
-      );
+      if (res.status === 'success') {
+        Toast.success(`Synced ${res.synced_count ?? 0} devices from NetBox`);
+      } else {
+        Toast.warning('Sync skipped', (res as any).reason || 'no connection');
+      }
       fetchDevices();
     } catch (e: any) {
-      setError(e.message || 'Sync failed');
+      Toast.error('Sync failed', e.message);
     } finally {
       setIsSyncing(false);
     }
@@ -289,23 +270,6 @@ const NetBoxDevices: React.FC = () => {
           </button>
         </div>
       </div>
-
-      {/* Alerts */}
-      {error && (
-        <div className="alert alert-error mb-4 shrink-0">
-          <AlertTriangle className="w-4 h-4" />
-          <span>{error}</span>
-          <button className="btn btn-ghost btn-xs" onClick={() => setError(null)}>
-            <X className="w-3 h-3" />
-          </button>
-        </div>
-      )}
-      {successMsg && (
-        <div className="alert alert-success mb-4 shrink-0">
-          <CheckCircle className="w-4 h-4" />
-          <span>{successMsg}</span>
-        </div>
-      )}
 
       {/* Search + Filters */}
       <div className="flex flex-wrap gap-3 mb-4 shrink-0">
@@ -590,30 +554,6 @@ const NetBoxDevices: React.FC = () => {
             </div>
           </div>
           <div className="modal-backdrop" onClick={() => setShowModal(false)} />
-        </div>
-      )}
-
-      {/* ─── Delete Confirmation ─── */}
-      {showDeleteConfirm && deleteTarget && (
-        <div className="modal modal-open">
-          <div className="modal-box max-w-sm">
-            <h3 className="font-bold text-lg">Delete Device</h3>
-            <p className="py-4">
-              Are you sure you want to delete{' '}
-              <span className="font-mono font-bold">{deleteTarget.hostname}</span>? This action
-              cannot be undone.
-            </p>
-            <div className="modal-action">
-              <button className="btn btn-ghost" onClick={() => setShowDeleteConfirm(false)}>
-                Cancel
-              </button>
-              <button className="btn btn-error gap-1" onClick={handleDelete} disabled={isLoading}>
-                {isLoading && <Loader2 className="w-4 h-4 animate-spin" />}
-                Delete
-              </button>
-            </div>
-          </div>
-          <div className="modal-backdrop" onClick={() => setShowDeleteConfirm(false)} />
         </div>
       )}
     </div>

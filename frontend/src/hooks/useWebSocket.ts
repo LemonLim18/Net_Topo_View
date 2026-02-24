@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import type { TopologyData } from '../../types';
+import { Toast } from '../utils/swal';
 // For temporary local development you can seed topology from the sample
 // data in `frontend/constants.ts` instead of connecting to the real
 // WebSocket. To enable, set `VITE_USE_LOCAL_TOPOLOGY=true` in a Vite
@@ -151,6 +152,7 @@ export const useWebSocket = ({
           }, reconnectInterval);
         } else if (reconnectAttemptsRef.current >= maxReconnectAttempts) {
           console.error('Max reconnection attempts reached');
+          Toast.error('Connection Lost', 'WebSocket reconnection failed. Please reload the page.');
           setStatus('error');
         }
       };

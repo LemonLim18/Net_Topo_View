@@ -22,6 +22,7 @@ import { SidebarLLM } from '../components/SidebarLLM';
 import { ChatInput } from '../components/ChatInput';
 import { MessageBubble } from '../components/MessageBubble';
 import { llmApi, proposalApi } from '../src/services/api';
+import { Toast } from '../src/utils/swal';
 
 import type { AppDomain } from '../types';
 
@@ -351,6 +352,7 @@ const GeminiChat: React.FC<AIChatProps> = ({ domain }) => {
 
     } catch (error: any) {
       console.error("Chat error:", error);
+      Toast.error('Chat Error', error.message || 'Failed to get response');
       setMessages(prev => prev.map(msg => 
         msg.id === aiMsgId 
           ? { ...msg, isStreaming: false, isError: true, content: `Error: ${error.message || "Failed to get response"}` } 
@@ -395,6 +397,7 @@ const GeminiChat: React.FC<AIChatProps> = ({ domain }) => {
         timestamp: Date.now(),
       };
       setMessages(prev => [...prev, errorMsg]);
+      Toast.error('Deployment Failed', error.message);
     } finally {
       setIsDeploying(false);
     }
@@ -417,7 +420,7 @@ const GeminiChat: React.FC<AIChatProps> = ({ domain }) => {
     try {
       await proposalApi.reject(currentProposal.id);
     } catch {
-      // Proceed even if API call fails
+      Toast.warning('Could not notify server', 'Rejection recorded locally');
     }
 
     const rejectMsg: Message = {
@@ -454,6 +457,7 @@ const GeminiChat: React.FC<AIChatProps> = ({ domain }) => {
         timestamp: Date.now(),
       };
       setMessages(prev => [...prev, errorMsg]);
+      Toast.error('Rollback Failed', error.message);
     } finally {
       setIsRollingBack(false);
     }

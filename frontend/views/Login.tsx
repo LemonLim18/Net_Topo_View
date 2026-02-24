@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import type { User } from '../types';
 import { Lock, User as UserIcon, Shield } from 'lucide-react';
 import { authApi } from '../src/services/api';
+import { Toast } from '../src/utils/swal';
 
 interface LoginProps {
     onLogin: (user: User) => void;
@@ -10,19 +11,19 @@ interface LoginProps {
 const Login: React.FC<LoginProps> = ({ onLogin }) => {
     const [username, setUsername] = useState('admin');
     const [password, setPassword] = useState('');
-    const [error, setError] = useState('');
     const [loading, setLoading] = useState(false);
 
     const handleLogin = async (e: React.FormEvent) => {
         e.preventDefault();
         setLoading(true);
-        setError('');
 
         try {
             const response = await authApi.login(username, password);
 
             // Store JWT token in localStorage
             localStorage.setItem('auth_token', response.access_token);
+
+            Toast.success('Welcome back', response.user.username);
 
             // Pass user to the app
             onLogin({
@@ -32,7 +33,7 @@ const Login: React.FC<LoginProps> = ({ onLogin }) => {
                 lastLogin: response.user.lastLogin || new Date().toISOString(),
             });
         } catch (err: any) {
-            setError(err.message || 'Invalid credentials');
+            Toast.error('Login Failed', err.message || 'Invalid credentials');
             setLoading(false);
         }
     };
@@ -87,13 +88,6 @@ const Login: React.FC<LoginProps> = ({ onLogin }) => {
                             </label>
                         </div>
                         
-                        {error && (
-                            <div className="alert alert-error text-xs py-2 mt-2 rounded-lg">
-                                <svg xmlns="http://www.w3.org/2000/svg" className="stroke-current shrink-0 h-4 w-4" fill="none" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M10 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2m7-2a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
-                                <span>{error}</span>
-                            </div>
-                        )}
-
                         <div className="form-control mt-6">
                             <button type="submit" className="btn btn-primary" disabled={loading}>
                                 {loading ? <span className="loading loading-spinner"></span> : 'Sign In'}

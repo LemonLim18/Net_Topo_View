@@ -9,6 +9,7 @@ import { CONTROLLER_NODE_ID, CONTROLLER_NODE_DATA, mockTopologyData as PLANNED_T
 import { useWebSocket } from '../src/hooks/useWebSocket';
 import { API_CONFIG } from '../src/config';
 import { RefreshCw } from 'lucide-react';
+import { Toast } from '../src/utils/swal';
 
 type TopologyView = 'actual' | 'planned' | 'diff';
 
@@ -212,10 +213,12 @@ const Dashboard: React.FC = () => {
                 method: 'POST',
             });
             if (!response.ok) throw new Error('Crawl trigger failed');
+            Toast.success('Crawl triggered', 'Topology refresh in progress...');
             // Give backend a moment before requesting new data
             setTimeout(() => requestTopology(), 1000);
         } catch (error) {
             console.error('Failed to trigger manual crawl:', error);
+            Toast.error('Crawl failed', 'Could not trigger network discovery');
         }
     }, [requestTopology]);
 

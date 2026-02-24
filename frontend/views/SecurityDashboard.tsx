@@ -7,6 +7,7 @@ import {
     PieChart, Pie, Cell, ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip
 } from 'recharts';
 import { securityApi } from '../src/services/api';
+import { Toast } from '../src/utils/swal';
 
 /* ─── Types ────────────────────────────────────────────── */
 interface SecurityEvent {
@@ -69,6 +70,7 @@ const SecurityDashboard: React.FC = () => {
             setCveStats(cves);
         } catch (e) {
             console.error('SecurityDashboard: fetch failed', e);
+            Toast.error('Failed to load security dashboard');
         } finally {
             setLoading(false);
         }

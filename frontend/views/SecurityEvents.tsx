@@ -4,6 +4,7 @@ import {
     BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, PieChart, Pie, Cell
 } from 'recharts';
 import { securityApi } from '../src/services/api';
+import { Toast } from '../src/utils/swal';
 
 /* ─── Types ────────────────────────────────────────────── */
 interface SecurityEvent {
@@ -57,6 +58,7 @@ const SecurityEvents: React.FC = () => {
             setAudits(auds);
         } catch (e) {
             console.error('Failed to fetch security data:', e);
+            Toast.error('Failed to load security data');
         } finally {
             setLoading(false);
         }
@@ -102,8 +104,10 @@ const SecurityEvents: React.FC = () => {
         try {
             const resp = await securityApi.respondToEvent(eventId);
             setResponseModal(resp);
+            Toast.info('Response generated');
         } catch (e) {
             console.error('Respond failed:', e);
+            Toast.error('Incident response failed');
         } finally {
             setRespondingId(null);
         }
@@ -113,8 +117,10 @@ const SecurityEvents: React.FC = () => {
     const handleAuditAll = async () => {
         try {
             await securityApi.runAuditAll();
+            Toast.success('Audit triggered', 'Network-wide audit started');
         } catch (e) {
             console.error('Audit all failed:', e);
+            Toast.error('Network audit failed');
         }
     };
 
@@ -122,9 +128,11 @@ const SecurityEvents: React.FC = () => {
     const handleAnalyze = async () => {
         try {
             await fetch(`${(window as any).__API_BASE || ''}/api/v1/security/threats/analyze`, { method: 'POST' });
+            Toast.success('Analysis complete', 'Threat analysis finished');
             fetchData();
         } catch (e) {
             console.error('Analyze failed:', e);
+            Toast.error('Threat analysis failed');
         }
     };
 

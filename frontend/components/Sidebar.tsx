@@ -14,6 +14,7 @@ import {
   Server
 } from 'lucide-react';
 import type { ViewId, User } from '../types';
+import { Confirm } from '../src/utils/swal';
 
 interface SidebarProps {
   currentView: ViewId;
@@ -93,7 +94,7 @@ const Sidebar: React.FC<SidebarProps> = ({ currentView, setView, user, onLogout 
       </ul>
 
       <div className="p-4 border-t border-base-200">
-        <button onClick={onLogout} className="btn btn-outline btn-error btn-sm w-full gap-2">
+        <button onClick={async () => { if (await Confirm.ask('Log Out?', 'You will need to sign in again.')) onLogout(); }} className="btn btn-outline btn-error btn-sm w-full gap-2">
             <LogOut className="h-4 w-4" />
             Logout
         </button>

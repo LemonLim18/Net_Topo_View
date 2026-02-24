@@ -19,6 +19,7 @@ import {
   ClipboardList
 } from 'lucide-react';
 import { llmApi, proposalApi } from '../src/services/api';
+import { Toast } from '../src/utils/swal';
 import type { AppDomain } from '../types';
 
 // ==================== TYPES ====================
@@ -346,6 +347,7 @@ const AIAgentPanel: React.FC<AIAgentPanelProps> = ({
       };
       setMessages(prev => [...prev, errorMsg]);
       setAgentMode('idle');
+      Toast.error('Agent Error', error.message || 'Failed to reach the AI agent.');
     }
   };
 
@@ -381,6 +383,7 @@ const AIAgentPanel: React.FC<AIAgentPanelProps> = ({
         timestamp: Date.now()
       };
       setMessages(prev => [...prev, errorMsg]);
+      Toast.error('Deployment Failed', error.message);
     } finally {
       setIsDeploying(false);
     }
@@ -405,7 +408,7 @@ const AIAgentPanel: React.FC<AIAgentPanelProps> = ({
     try {
       await proposalApi.reject(currentProposal.id);
     } catch (e) {
-      // Proceed even if API call fails
+      Toast.warning('Could not notify server');
     }
 
     const cancelMsg: Message = {
@@ -444,6 +447,7 @@ const AIAgentPanel: React.FC<AIAgentPanelProps> = ({
         timestamp: Date.now()
       };
       setMessages(prev => [...prev, errorMsg]);
+      Toast.error('Rollback Failed', error.message);
     } finally {
       setIsRollingBack(false);
     }

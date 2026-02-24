@@ -6,6 +6,7 @@ import * as GoogleGenAI from '@google/generative-ai';
 // Look aftert this when integrating with a backend proxy.
 import { mockTopologyData as REALTIME_TOPOLOGY_DATA } from '../constants';
 import { Send, Bot, User, Copy, Check } from 'lucide-react';
+import { Toast } from '../src/utils/swal';
 
 interface Message {
   sender: 'user' | 'ai';
@@ -67,6 +68,7 @@ const AIAssistant: React.FC = () => {
       if (typeof ai?.models?.generateContent !== 'function') {
         const errorMessage: Message = { sender: 'ai', text: 'AI client is not configured in the browser. Configure `VITE_API_KEY` or use a backend proxy.' };
         setMessages(prev => [...prev, errorMessage]);
+        Toast.warning('AI Not Configured', 'Set VITE_API_KEY or use backend proxy');
         setIsLoading(false);
         return;
       }
@@ -89,6 +91,7 @@ User Request: "${input}"`;
 
     } catch (error) {
       console.error("Error calling Gemini API:", error);
+      Toast.error('AI Error', 'Failed to get response from Gemini');
       const errorMessage: Message = { sender: 'ai', text: 'Sorry, I encountered an error. Please try again.' };
       setMessages(prev => [...prev, errorMessage]);
     } finally {

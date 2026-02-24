@@ -14,7 +14,6 @@ import SecurityEvents from '../views/SecurityEvents';
 import SecurityAnalysis from '../views/SecurityAnalysis';
 import SecurityDashboard from '../views/SecurityDashboard';
 import { NotificationProvider } from '../contexts/NotificationContext';
-import NotificationToast from '../components/NotificationToast';
 import { Bot } from 'lucide-react';
 
 import type { ViewId, User, AppDomain } from '../types';
@@ -111,7 +110,6 @@ const App: React.FC = () => {
               {/* Main Content Area */}
               <div className="flex-grow overflow-hidden relative">
                 {renderView()}
-                <NotificationToast />
               </div>
               
               {/* AI Agent Panel (Docked Right) */}

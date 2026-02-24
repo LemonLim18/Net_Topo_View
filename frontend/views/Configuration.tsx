@@ -17,6 +17,7 @@ import {
 import { configApi, deployApi } from '../src/services/api';
 import ConfigDiff from '../components/ConfigDiff';
 import ApprovalDialog from '../components/ApprovalDialog';
+import { Toast } from '../src/utils/swal';
 
 // ---------- Types ----------
 interface TemplateInfo {
@@ -51,7 +52,6 @@ const Configuration: React.FC = () => {
   const [generatedConfig, setGeneratedConfig] = useState('');
   const [undoConfig, setUndoConfig] = useState<string | null>(null);
   const [isRendering, setIsRendering] = useState(false);
-  const [renderError, setRenderError] = useState('');
 
   // Diff state
   const [existingConfig, setExistingConfig] = useState('');
@@ -86,6 +86,7 @@ const Configuration: React.FC = () => {
       setTemplates(result);
     } catch (err) {
       console.error('Failed to load templates:', err);
+      Toast.error('Failed to load templates');
     } finally {
       setIsLoadingTemplates(false);
     }
@@ -129,6 +130,7 @@ const Configuration: React.FC = () => {
       setParams(initial);
     } catch (err) {
       console.error('Failed to load schema:', err);
+      Toast.error('Failed to load schema', 'Could not load parameter schema for this feature');
       setSchema(null);
     }
   };
@@ -137,13 +139,13 @@ const Configuration: React.FC = () => {
   const handleRender = async () => {
     if (!selectedVendor || !selectedFeature) return;
     setIsRendering(true);
-    setRenderError('');
     try {
       const result = await configApi.render(selectedVendor, selectedFeature, params);
       setGeneratedConfig(result.config);
       setUndoConfig(result.undo_config);
+      Toast.success('Config rendered');
     } catch (err: any) {
-      setRenderError(err.message || 'Rendering failed');
+      Toast.error('Render Failed', err.message || 'Rendering failed');
       setGeneratedConfig('');
       setUndoConfig(null);
     } finally {
@@ -182,6 +184,7 @@ const Configuration: React.FC = () => {
       setJobs(Array.isArray(result.logs) ? result.logs : []);
     } catch (err) {
       console.error('Failed to load jobs:', err);
+      Toast.error('Failed to load deployment history');
       setJobs([]);
     } finally {
       setIsLoadingJobs(false);
@@ -454,14 +457,6 @@ const Configuration: React.FC = () => {
 
             {/* Right: Output */}
             <div className="space-y-4">
-              {/* Error */}
-              {renderError && (
-                <div className="alert alert-error text-sm">
-                  <AlertTriangle className="h-4 w-4" />
-                  <span>{renderError}</span>
-                </div>
-              )}
-
               {/* Generated Config */}
               {generatedConfig && (
                 <div className="card bg-base-100 shadow">
@@ -747,7 +742,7 @@ const Configuration: React.FC = () => {
         undoConfig={undoConfig}
         diffSummary={diffSummary}
         onDeploySuccess={(jobId) => {
-          console.log('Deployed job:', jobId);
+          Toast.success('Deployment Successful', `Job #${jobId} completed`);
           setApprovalOpen(false);
         }}
       />
