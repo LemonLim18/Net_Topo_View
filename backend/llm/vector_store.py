@@ -59,6 +59,7 @@ class KnowledgeVectorStore:
 
     def __init__(self, embedder: "GeminiEmbedder"):
         self._embedder = embedder
+        self._client = None
         self._collection = None
         self._available = False
         self._init_store()
@@ -70,6 +71,7 @@ class KnowledgeVectorStore:
 
             os.makedirs(_CHROMA_PATH, exist_ok=True)
             client = chromadb.PersistentClient(path=_CHROMA_PATH)
+            self._client = client
             self._collection = client.get_or_create_collection(
                 name=_COLLECTION_NAME,
                 metadata={"hnsw:space": "cosine"},
@@ -87,6 +89,26 @@ class KnowledgeVectorStore:
             )
         except Exception as exc:
             logger.error("KnowledgeVectorStore init failed: %s", exc)
+
+    def clear_all(self) -> int:
+        """Delete every chunk in the collection by dropping and re-creating it.
+
+        Returns the number of chunks that were removed.
+        """
+        if not self.available:
+            return 0
+        try:
+            count = self._collection.count()
+            self._client.delete_collection(_COLLECTION_NAME)
+            self._collection = self._client.get_or_create_collection(
+                name=_COLLECTION_NAME,
+                metadata={"hnsw:space": "cosine"},
+            )
+            logger.info("Cleared all %d chunks from knowledge base collection", count)
+            return count
+        except Exception as exc:
+            logger.warning("clear_all failed: %s", exc)
+            return 0
 
     @property
     def available(self) -> bool:

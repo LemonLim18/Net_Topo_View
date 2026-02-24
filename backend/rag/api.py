@@ -57,23 +57,15 @@ def setup_rag(ingester, vector_store) -> None:
 # Auth dependency (re-uses whatever auth scheme is already in the project)
 # ---------------------------------------------------------------------------
 
-def _get_current_user():
-    """
-    Thin re-export of the project's existing auth dependency so this module
-    does not have to import from a hardcoded path.  The actual implementation
-    is injected at the Depends() call-site — this callable is swapped out in
-    backend.py when mounting the router.
-
-    If not overridden, it simply passes (no-auth fallback for dev environments).
-    """
-    return {"username": "anonymous", "role": "admin"}
+# Re-use the project-wide JWT auth dependency (same pattern as ssh_terminal, rbac, etc.).
+try:
+    from auth.auth import get_current_user as _auth_dep  # type: ignore
+except ImportError:  # pragma: no cover — only hit outside the normal app context
+    def _auth_dep():  # type: ignore
+        return {"username": "anonymous", "role": "admin"}
 
 
-# The router uses a module-level reference so backend.py can swap it out.
-_auth_dep = _get_current_user
-
-
-def _require_user(user=Depends(_get_current_user)):
+def _require_user(user=Depends(_auth_dep)):
     return user
 
 
@@ -308,8 +300,9 @@ async def rebuild_knowledge_base(
     if not files:
         return RebuildResponse(files_processed=0, total_chunks=0, errors=["No files found in knowledge_base/"])
 
-    # Optional: clear all existing chunks before rebuild
-    # (Caller must decide — for now we just re-upsert which is idempotent)
+    # Wipe the vector store before rebuilding so chunks for deleted files
+    # do not persist across rebuilds.
+    _vector_store.clear_all()
 
     results: list[dict] = []
     errors: list[str] = []
