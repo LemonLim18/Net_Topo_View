@@ -10,6 +10,7 @@ interface NetworkGraphCytoscapeProps {
   nodes: D3Node[];
   links: D3Link[];
   onNodeClick: (nodeId: string) => void;
+  onNodeContextMenu?: (nodeId: string, x: number, y: number) => void;
   selectedNodeId: string | null;
   theme: string; // 'bumblebee' or 'night' usually
   topologyView?: 'actual' | 'planned' | 'diff';
@@ -18,7 +19,8 @@ interface NetworkGraphCytoscapeProps {
 const NetworkGraphCytoscape: React.FC<NetworkGraphCytoscapeProps> = ({ 
   nodes, 
   links, 
-  onNodeClick, 
+  onNodeClick,
+  onNodeContextMenu,
   selectedNodeId, 
   theme,
   topologyView = 'actual'
@@ -185,6 +187,19 @@ const NetworkGraphCytoscape: React.FC<NetworkGraphCytoscapeProps> = ({
             cy.on('tap', (evt) => {
                 if(evt.target === cy){
                     onNodeClick("");
+                }
+            });
+            cy.on('cxttap', 'node', (evt) => {
+                const node = evt.target;
+                const renderedPos = node.renderedPosition();
+                const container = cy.container();
+                if (container && onNodeContextMenu) {
+                    const rect = container.getBoundingClientRect();
+                    onNodeContextMenu(
+                        node.id(),
+                        rect.left + renderedPos.x,
+                        rect.top + renderedPos.y
+                    );
                 }
             });
         }}

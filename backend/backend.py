@@ -35,6 +35,8 @@ from security.api import router as security_router
 from auth.api import router as auth_router
 from auth.auth import seed_default_admin
 from scheduler.core import start_scheduler, stop_scheduler
+from ssh_terminal.api import router as ssh_router
+from ssh_terminal.session import cleanup_idle_sessions
 
 # --- Crawler Logic (Legacy/Transitional) ---
 import mini_nce as crawler
@@ -263,9 +265,21 @@ async def lifespan(app: FastAPI):
     start_scheduler(run_crawl_and_broadcast)
     logger.info("Background scheduler started")
 
+    # 6. SSH idle-session reaper (every 2 minutes)
+    async def _ssh_reaper():
+        while True:
+            await asyncio.sleep(120)
+            reaped = cleanup_idle_sessions()
+            if reaped:
+                logger.info("SSH reaper closed %d idle session(s)", len(reaped))
+
+    reaper_task = asyncio.create_task(_ssh_reaper())
+    logger.info("SSH idle-session reaper started (interval=120s, timeout=600s)")
+
     yield
 
     # Cleanup
+    reaper_task.cancel()
     stop_scheduler()
 
 app = FastAPI(title="CogniShield Backend", lifespan=lifespan)
@@ -290,6 +304,7 @@ app.include_router(drift_router, prefix="/api/v1", tags=["Drift"])
 app.include_router(config_router, prefix="/api/v1", tags=["Config Engine"])
 app.include_router(security_router, prefix="/api/v1", tags=["Security"])
 app.include_router(auth_router, prefix="/api/v1", tags=["Authentication"])
+app.include_router(ssh_router, prefix="/api/v1", tags=["SSH Terminal"])
 
 # WebSocket Endpoint (Streamlined)
 @app.websocket("/ws")

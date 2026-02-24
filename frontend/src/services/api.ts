@@ -320,3 +320,30 @@ export const authApi = {
   deleteCredential: (deviceId: number, label: string) =>
     request<{ deleted: boolean }>(`/auth/credentials/${deviceId}/${label}`, { method: 'DELETE' }),
 };
+
+// --- SSH Terminal API ---
+export const sshApi = {
+  createSession: (hostname: string, port: number = 22) =>
+    request<{ status: string; session_id: string; host: string; hostname: string }>('/ssh/sessions', {
+      method: 'POST',
+      body: JSON.stringify({ hostname, port }),
+    }),
+
+  connectWithCreds: (hostname: string, username: string, password: string, port: number = 22, saveToVault: boolean = false) =>
+    request<{ status: string; session_id: string; host: string; hostname: string; saved_to_vault: boolean }>('/ssh/sessions/connect', {
+      method: 'POST',
+      body: JSON.stringify({ hostname, port, username, password, save_to_vault: saveToVault }),
+    }),
+
+  listSessions: () =>
+    request<{ session_id: string; host: string; port: number; connected: boolean }[]>('/ssh/sessions'),
+
+  closeSession: (sessionId: string) =>
+    request<{ status: string; session_id: string }>(`/ssh/sessions/${sessionId}`, { method: 'DELETE' }),
+
+  /** Build the WebSocket URL for an SSH session */
+  getWsUrl: (sessionId: string): string => {
+    const wsBase = API_CONFIG.API_URL.replace(/^http/, 'ws');
+    return `${wsBase}/api/v1/ws/ssh/${sessionId}`;
+  },
+};

@@ -9,6 +9,7 @@ interface NetworkGraphProps {
   nodes: D3Node[];
   links: D3Link[];
   onNodeClick: (nodeId: string) => void;
+  onNodeContextMenu?: (nodeId: string, x: number, y: number) => void;
   selectedNodeId: string | null;
   isGridVisible: boolean;
   setIsGridVisible: (visible: boolean) => void;
@@ -17,7 +18,7 @@ interface NetworkGraphProps {
   topologyView?: 'actual' | 'planned' | 'diff';
 }
 
-const NetworkGraph: React.FC<NetworkGraphProps> = ({ nodes, links, onNodeClick, selectedNodeId, isGridVisible, setIsGridVisible, theme, topologyView = 'actual' }) => {
+const NetworkGraph: React.FC<NetworkGraphProps> = ({ nodes, links, onNodeClick, onNodeContextMenu, selectedNodeId, isGridVisible, setIsGridVisible, theme, topologyView = 'actual' }) => {
   const svgRef = useRef<SVGSVGElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const simulationRef = useRef<d3.Simulation<D3Node, D3Link> | null>(null);
@@ -221,6 +222,13 @@ const NetworkGraph: React.FC<NetworkGraphProps> = ({ nodes, links, onNodeClick, 
           const g = enter.append('g')
             .attr('class', 'cursor-pointer')
             .on('click', (_event, d) => onNodeClick(d.id))
+            .on('contextmenu', (event, d) => {
+              event.preventDefault();
+              event.stopPropagation();
+              if (onNodeContextMenu) {
+                onNodeContextMenu(d.id, event.clientX, event.clientY);
+              }
+            })
             .call(d3.drag<SVGGElement, D3Node>()
               .on('start', (event, d) => {
                 if (!event.active) simulation.alphaTarget(0.3).restart();

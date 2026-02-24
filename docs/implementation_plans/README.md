@@ -20,5 +20,9 @@ This folder stores the implementation plan for each module as development progre
 | **M14** Database Layer | — | 🔴 Not Started |
 | **M15** Auth & Credentials | — | 🔴 Not Started |
 | **M16** Task Scheduler | — | 🔴 Not Started |
+| **M17** Network Performance | — | 🔴 Not Started |
+| **M18** QoS Remediation | — | 🔴 Not Started |
+| **M19** Agentic Config Workflow | [M19_AgenticConfigWorkflow.md](M19_AgenticConfigWorkflow.md) | ✅ Done |
+| **M20** SSH Terminal | [M20_SSHTerminal.md](M20_SSHTerminal.md) | ✅ Done |
 
 See [module.md](../../module.md) for the full module architecture.

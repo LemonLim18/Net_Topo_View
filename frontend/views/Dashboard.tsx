@@ -5,11 +5,18 @@ import NetworkGraphCytoscape from '../components/NetworkGraphCytoscape';
 import NodeDetailPanel from '../components/NodeDetailPanel';
 import TopologyTable from '../components/TopologyTable';
 import Legend from '../components/Legend';
+import ContextMenu from '../components/ContextMenu';
+import type { ContextMenuAction } from '../components/ContextMenu';
+import SSHTerminalPanel from '../components/SSHTerminalPanel';
+import type { SSHTab } from '../components/SSHTerminalPanel';
+import type { SSHConnectionState } from '../components/SSHTerminal';
+import SSHConnectModal from '../components/SSHConnectModal';
 import { CONTROLLER_NODE_ID, CONTROLLER_NODE_DATA, mockTopologyData as PLANNED_TOPOLOGY_DATA } from '../constants';
 import { useWebSocket } from '../src/hooks/useWebSocket';
 import { API_CONFIG } from '../src/config';
-import { RefreshCw } from 'lucide-react';
+import { RefreshCw, Terminal, Info } from 'lucide-react';
 import { Toast } from '../src/utils/swal';
+import { sshApi } from '../src/services/api';
 
 type TopologyView = 'actual' | 'planned' | 'diff';
 
@@ -124,6 +131,27 @@ const Dashboard: React.FC = () => {
     const [vizEngine, setVizEngine] = useState<'d3' | 'cytoscape'>('d3');
     const theme = localStorage.getItem('theme') || 'night';
 
+    // --- Context Menu state ---
+    const [contextMenu, setContextMenu] = useState<{
+      nodeId: string;
+      x: number;
+      y: number;
+    } | null>(null);
+
+    // --- SSH Terminal state ---
+    const [sshTabs, setSshTabs] = useState<SSHTab[]>([]);
+    const [activeSSHTab, setActiveSSHTab] = useState<string | null>(null);
+    const [sshPanelHeight, setSshPanelHeight] = useState(300);
+    const [sshMinimized, setSshMinimized] = useState(false);
+    const [tabStates, setTabStates] = useState<Record<string, SSHConnectionState>>({});
+
+    // --- SSH Connect Modal state ---
+    const [sshConnectTarget, setSshConnectTarget] = useState<{
+      hostname: string;
+      host: string;
+      sessionId?: string;
+    } | null>(null);
+
     const { status, topology: realTimeTopology, requestTopology } = useWebSocket({
         url: API_CONFIG.WS_URL,
     });
@@ -222,6 +250,139 @@ const Dashboard: React.FC = () => {
         }
     }, [requestTopology]);
 
+    // --- Context Menu handler ---
+    const handleNodeContextMenu = useCallback((nodeId: string, x: number, y: number) => {
+        setContextMenu({ nodeId, x, y });
+    }, []);
+
+    const closeContextMenu = useCallback(() => setContextMenu(null), []);
+
+    // --- SSH session launcher ---
+    const openSSHTerminal = useCallback(async (hostname: string) => {
+        // Check if we already have a tab for this host
+        const existing = sshTabs.find(t => t.hostname === hostname);
+        if (existing) {
+            setActiveSSHTab(existing.sessionId);
+            setSshMinimized(false);
+            return;
+        }
+
+        try {
+            const result = await sshApi.createSession(hostname);
+
+            if (result.status === 'connected') {
+                // Vault credentials worked — open terminal tab
+                const wsUrl = sshApi.getWsUrl(result.session_id);
+                const newTab: SSHTab = {
+                    sessionId: result.session_id,
+                    hostname: result.hostname,
+                    host: result.host,
+                    wsUrl,
+                };
+                setSshTabs(prev => [...prev, newTab]);
+                setActiveSSHTab(result.session_id);
+                setSshMinimized(false);
+                Toast.success('SSH Connected', `Connected to ${hostname}`);
+            } else if (result.status === 'credentials_required') {
+                // Show credential prompt
+                setSshConnectTarget({
+                    hostname: result.hostname,
+                    host: result.host,
+                });
+            }
+        } catch (err: any) {
+            Toast.error('SSH Error', err.message || 'Failed to create SSH session');
+        }
+    }, [sshTabs]);
+
+    // --- SSH connect with user-provided credentials ---
+    const handleSSHConnect = useCallback(async (username: string, password: string, port: number, saveToVault: boolean) => {
+        if (!sshConnectTarget) return;
+
+        const result = await sshApi.connectWithCreds(
+            sshConnectTarget.hostname,
+            username,
+            password,
+            port,
+            saveToVault,
+        );
+
+        const wsUrl = sshApi.getWsUrl(result.session_id);
+        const newTab: SSHTab = {
+            sessionId: result.session_id,
+            hostname: result.hostname,
+            host: result.host,
+            wsUrl,
+        };
+        setSshTabs(prev => [...prev, newTab]);
+        setActiveSSHTab(result.session_id);
+        setSshMinimized(false);
+        setSshConnectTarget(null);
+        if (result.saved_to_vault) {
+            Toast.success('SSH Connected', `Connected to ${sshConnectTarget.hostname} — credentials saved to vault`);
+        } else {
+            Toast.success('SSH Connected', `Connected to ${sshConnectTarget.hostname}`);
+        }
+    }, [sshConnectTarget]);
+
+    // --- Close SSH tab ---
+    const handleCloseSSHTab = useCallback((sessionId: string) => {
+        setSshTabs(prev => {
+            const remaining = prev.filter(t => t.sessionId !== sessionId);
+            if (activeSSHTab === sessionId) {
+                setActiveSSHTab(remaining.length > 0 ? remaining[remaining.length - 1].sessionId : null);
+            }
+            return remaining;
+        });
+        setTabStates(prev => {
+            const next = { ...prev };
+            delete next[sessionId];
+            return next;
+        });
+    }, [activeSSHTab]);
+
+    // --- Per-tab connection-state change ---
+    const handleTabConnectionChange = useCallback((sessionId: string, state: SSHConnectionState) => {
+        setTabStates(prev => ({ ...prev, [sessionId]: state }));
+    }, []);
+
+    // --- SSH panel resize ---
+    const handleSSHPanelResize = useCallback((e: React.MouseEvent) => {
+        e.preventDefault();
+        const startY = e.clientY;
+        const startHeight = sshPanelHeight;
+
+        const handleMouseMove = (moveEvent: MouseEvent) => {
+            const newHeight = startHeight - (moveEvent.clientY - startY);
+            setSshPanelHeight(Math.max(150, Math.min(newHeight, window.innerHeight - 200)));
+        };
+
+        const handleMouseUp = () => {
+            document.removeEventListener('mousemove', handleMouseMove);
+            document.removeEventListener('mouseup', handleMouseUp);
+        };
+        document.addEventListener('mousemove', handleMouseMove);
+        document.addEventListener('mouseup', handleMouseUp);
+    }, [sshPanelHeight]);
+
+    // --- Context Menu actions ---
+    const contextMenuActions: ContextMenuAction[] = useMemo(() => {
+        if (!contextMenu) return [];
+        return [
+            {
+                label: 'SSH Terminal',
+                icon: <Terminal size={14} />,
+                onClick: () => openSSHTerminal(contextMenu.nodeId),
+                disabled: contextMenu.nodeId === CONTROLLER_NODE_ID,
+            },
+            {
+                label: 'View Details',
+                icon: <Info size={14} />,
+                onClick: () => handleNodeClick(contextMenu.nodeId),
+            },
+        ];
+    }, [contextMenu, openSSHTerminal, handleNodeClick]);
+
     const statusIndicator = {
         connecting: <><span className="loading loading-ring loading-xs"></span> Connecting...</>,
         connected: <><span className="w-2 h-2 rounded-full bg-success animate-pulse"></span> Connected</>,
@@ -260,6 +421,7 @@ const Dashboard: React.FC = () => {
                         nodes={graphData.nodes} 
                         links={graphData.links}
                         onNodeClick={handleNodeClick}
+                        onNodeContextMenu={handleNodeContextMenu}
                         selectedNodeId={selectedNodeId}
                         isGridVisible={isGridVisible}
                         setIsGridVisible={setIsGridVisible}
@@ -271,6 +433,7 @@ const Dashboard: React.FC = () => {
                         nodes={graphData.nodes} 
                         links={graphData.links}
                         onNodeClick={handleNodeClick}
+                        onNodeContextMenu={handleNodeContextMenu}
                         selectedNodeId={selectedNodeId}
                         theme={theme}
                         topologyView={topologyView}
@@ -292,7 +455,40 @@ const Dashboard: React.FC = () => {
                     <TopologyTable links={graphData.links} onNodeClick={handleNodeClick} showStatus={topologyView === 'diff'}/>
                 </div>
                 <NodeDetailPanel node={selectedNodeData} onClose={handlePanelClose} />
+
+                {/* SSH Terminal Panel */}
+                <SSHTerminalPanel
+                    tabs={sshTabs}
+                    activeTabId={activeSSHTab}
+                    onSelectTab={setActiveSSHTab}
+                    onCloseTab={handleCloseSSHTab}
+                    height={sshPanelHeight}
+                    minimized={sshMinimized}
+                    onToggleMinimize={() => setSshMinimized(prev => !prev)}
+                    onMouseDown={handleSSHPanelResize}
+                    tabStates={tabStates}
+                    onConnectionChange={handleTabConnectionChange}
+                />
             </div>
+
+            {/* Context Menu (portal-like, positioned absolute to viewport) */}
+            {contextMenu && (
+                <ContextMenu
+                    x={contextMenu.x}
+                    y={contextMenu.y}
+                    actions={contextMenuActions}
+                    onClose={closeContextMenu}
+                />
+            )}
+
+            {/* SSH Connect Modal */}
+            <SSHConnectModal
+                hostname={sshConnectTarget?.hostname ?? ''}
+                host={sshConnectTarget?.host ?? ''}
+                isOpen={sshConnectTarget !== null}
+                onConnect={handleSSHConnect}
+                onClose={() => setSshConnectTarget(null)}
+            />
         </div>
     );
 };
