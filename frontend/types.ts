@@ -65,6 +65,7 @@ export type AppDomain = 'network' | 'security';
 export type ViewId = 
   | 'dashboard' 
   | 'configuration' 
+  | 'netbox_devices'
   | 'net_perf' 
   | 'net_chat'
   | 'sec_dashboard'

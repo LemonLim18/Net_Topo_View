@@ -5,6 +5,7 @@ import Dashboard from '../views/Dashboard';
 import Configuration from '../views/Configuration';
 import GeminiChat from  "../views/AIChat";
 import Deployments from '../views/Deployments';
+import NetBoxDevices from '../views/NetBoxDevices';
 import AIAgentPanel from '../components/AIAgentPanel';
 
 import Login from '../views/Login';
@@ -58,6 +59,8 @@ const App: React.FC = () => {
         return <Dashboard />;
       case 'configuration':
         return <Configuration />;
+      case 'netbox_devices':
+        return <NetBoxDevices />;
       case 'deployments':
         return <Deployments />;
       case 'net_perf':

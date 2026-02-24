@@ -1,24 +1,199 @@
-from fastapi import APIRouter, Depends, BackgroundTasks
+from fastapi import APIRouter, Depends, BackgroundTasks, HTTPException
+from pydantic import BaseModel
+from typing import Optional
 from db.manager import DatabaseManager
+from db.models import Device
 from netbox.sync_devices import DeviceSyncer
 from netbox.sync_topology import TopologySyncer
+from netbox.client import NetBoxClient
+import logging
+
+logger = logging.getLogger("netbox.api")
 
 router = APIRouter()
 
-def get_db():
-    db = DatabaseManager("net_topo.db")
-    # db.initialize() # Assumed initialized by main app
-    return db
+DB_PATH = "db/netauto.db"
+
+def _db() -> DatabaseManager:
+    return DatabaseManager(DB_PATH)
+
+
+# ---------------------------------------------------------------------------
+#  Pydantic schemas
+# ---------------------------------------------------------------------------
+
+class DeviceCreate(BaseModel):
+    hostname: str
+    management_ip: Optional[str] = None
+    vendor: Optional[str] = None
+    model: Optional[str] = None
+    os_version: Optional[str] = None
+    serial_number: Optional[str] = None
+    status: str = "unknown"
+
+class DeviceUpdate(BaseModel):
+    hostname: Optional[str] = None
+    management_ip: Optional[str] = None
+    vendor: Optional[str] = None
+    model: Optional[str] = None
+    os_version: Optional[str] = None
+    serial_number: Optional[str] = None
+    status: Optional[str] = None
+
+
+# ---------------------------------------------------------------------------
+#  Device CRUD endpoints
+# ---------------------------------------------------------------------------
+
+@router.get("/devices")
+async def list_devices():
+    """Return all devices from the local inventory."""
+    db = _db()
+    devices = db.get_all_devices()
+    return {
+        "devices": [
+            {
+                "id": d.id,
+                "hostname": d.hostname,
+                "management_ip": d.management_ip,
+                "vendor": d.vendor,
+                "model": d.model,
+                "os_version": d.os_version,
+                "serial_number": d.serial_number,
+                "status": d.status,
+                "last_polled": d.last_polled,
+                "created_at": d.created_at,
+                "updated_at": d.updated_at,
+            }
+            for d in devices
+        ]
+    }
+
+
+@router.get("/devices/{device_id}")
+async def get_device(device_id: int):
+    """Get a single device by ID."""
+    db = _db()
+    d = db.get_device_by_id(device_id)
+    if not d:
+        raise HTTPException(404, "Device not found")
+    return {
+        "id": d.id,
+        "hostname": d.hostname,
+        "management_ip": d.management_ip,
+        "vendor": d.vendor,
+        "model": d.model,
+        "os_version": d.os_version,
+        "serial_number": d.serial_number,
+        "status": d.status,
+        "last_polled": d.last_polled,
+        "created_at": d.created_at,
+        "updated_at": d.updated_at,
+    }
+
+
+@router.post("/devices")
+async def create_device(body: DeviceCreate):
+    """Create a new device in the local inventory.
+
+    Best-effort push to NetBox is attempted if the client is available.
+    """
+    db = _db()
+
+    # Check for duplicate hostname
+    existing = db.get_device_by_hostname(body.hostname)
+    if existing:
+        raise HTTPException(409, f"Device with hostname '{body.hostname}' already exists (id={existing.id})")
+
+    device = Device(
+        hostname=body.hostname,
+        management_ip=body.management_ip,
+        vendor=body.vendor,
+        model=body.model,
+        os_version=body.os_version,
+        serial_number=body.serial_number,
+        status=body.status,
+    )
+    device_id = db.upsert_device(device)
+
+    # Best-effort push to NetBox
+    _try_push_to_netbox(body, action="create")
+
+    created = db.get_device_by_id(device_id)
+    return {
+        "id": created.id,
+        "hostname": created.hostname,
+        "management_ip": created.management_ip,
+        "vendor": created.vendor,
+        "model": created.model,
+        "os_version": created.os_version,
+        "serial_number": created.serial_number,
+        "status": created.status,
+        "created_at": created.created_at,
+        "updated_at": created.updated_at,
+    }
+
+
+@router.put("/devices/{device_id}")
+async def update_device(device_id: int, body: DeviceUpdate):
+    """Update an existing device."""
+    db = _db()
+    existing = db.get_device_by_id(device_id)
+    if not existing:
+        raise HTTPException(404, "Device not found")
+
+    # Merge incoming fields over existing values
+    device = Device(
+        id=device_id,
+        hostname=body.hostname if body.hostname is not None else existing.hostname,
+        management_ip=body.management_ip if body.management_ip is not None else existing.management_ip,
+        vendor=body.vendor if body.vendor is not None else existing.vendor,
+        model=body.model if body.model is not None else existing.model,
+        os_version=body.os_version if body.os_version is not None else existing.os_version,
+        serial_number=body.serial_number if body.serial_number is not None else existing.serial_number,
+        status=body.status if body.status is not None else existing.status,
+        last_polled=existing.last_polled,
+    )
+    db.upsert_device(device)
+
+    updated = db.get_device_by_id(device_id)
+    return {
+        "id": updated.id,
+        "hostname": updated.hostname,
+        "management_ip": updated.management_ip,
+        "vendor": updated.vendor,
+        "model": updated.model,
+        "os_version": updated.os_version,
+        "serial_number": updated.serial_number,
+        "status": updated.status,
+        "last_polled": updated.last_polled,
+        "created_at": updated.created_at,
+        "updated_at": updated.updated_at,
+    }
+
+
+@router.delete("/devices/{device_id}")
+async def delete_device(device_id: int):
+    """Delete a device from the local inventory."""
+    db = _db()
+    existing = db.get_device_by_id(device_id)
+    if not existing:
+        raise HTTPException(404, "Device not found")
+    db.delete_device(device_id)
+    return {"deleted": True, "id": device_id, "hostname": existing.hostname}
+
+
+# ---------------------------------------------------------------------------
+#  NetBox sync endpoints (existing, fixed DB path)
+# ---------------------------------------------------------------------------
 
 @router.post("/sync/devices")
 async def sync_devices(background_tasks: BackgroundTasks):
     """
     Triggers a manual sync of all devices from NetBox.
     """
-    db = DatabaseManager("net_topo.db")
+    db = DatabaseManager(DB_PATH)
     syncer = DeviceSyncer(db)
-    
-    # Run synchronously for MVP response, or background task
     result = syncer.sync_all_devices()
     return result
 
@@ -27,7 +202,26 @@ async def sync_topology():
     """
     Triggers a manual sync of topology (cables) from NetBox.
     """
-    db = DatabaseManager("net_topo.db")
+    db = DatabaseManager(DB_PATH)
     syncer = TopologySyncer(db)
     result = syncer.sync_connections()
     return result
+
+
+# ---------------------------------------------------------------------------
+#  Helper — best-effort NetBox push
+# ---------------------------------------------------------------------------
+
+def _try_push_to_netbox(device_data: DeviceCreate, action: str = "create"):
+    """Attempt to push a device to NetBox. Failures are logged, not raised."""
+    try:
+        nb = NetBoxClient.get_client()
+        if nb and nb.api:
+            if action == "create":
+                nb.create_device(
+                    name=device_data.hostname,
+                    mgmt_ip=device_data.management_ip,
+                    platform_slug=device_data.vendor,
+                )
+    except Exception as e:
+        logger.warning("Best-effort NetBox push failed (%s): %s", action, e)

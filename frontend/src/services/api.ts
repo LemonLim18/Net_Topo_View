@@ -149,9 +149,66 @@ export const configApi = {
     }),
 };
 
-// --- M14: Device Inventory (Using Topology for now) ---
-// Ideally we should have a dedicated /devices endpoint in M14, 
-// allows fallback to topology if needed.
+// --- NetBox Device Inventory API ---
+export interface DeviceRecord {
+  id: number;
+  hostname: string;
+  management_ip: string | null;
+  vendor: string | null;
+  model: string | null;
+  os_version: string | null;
+  serial_number: string | null;
+  status: string;
+  last_polled: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+export const netboxApi = {
+  listDevices: () =>
+    request<{ devices: DeviceRecord[] }>('/netbox/devices'),
+
+  getDevice: (id: number) =>
+    request<DeviceRecord>(`/netbox/devices/${id}`),
+
+  createDevice: (device: {
+    hostname: string;
+    management_ip?: string;
+    vendor?: string;
+    model?: string;
+    os_version?: string;
+    serial_number?: string;
+    status?: string;
+  }) =>
+    request<DeviceRecord>('/netbox/devices', {
+      method: 'POST',
+      body: JSON.stringify(device),
+    }),
+
+  updateDevice: (id: number, device: {
+    hostname?: string;
+    management_ip?: string;
+    vendor?: string;
+    model?: string;
+    os_version?: string;
+    serial_number?: string;
+    status?: string;
+  }) =>
+    request<DeviceRecord>(`/netbox/devices/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(device),
+    }),
+
+  deleteDevice: (id: number) =>
+    request<{ deleted: boolean; id: number; hostname: string }>(
+      `/netbox/devices/${id}`, { method: 'DELETE' }
+    ),
+
+  syncFromNetbox: () =>
+    request<{ status: string; synced_count?: number }>('/netbox/sync/devices', {
+      method: 'POST',
+    }),
+};
 
 // --- M13: Security Module API ---
 export const securityApi = {

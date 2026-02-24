@@ -10,7 +10,8 @@ import {
   ChevronRight,
   LogOut,
   ScanSearch,
-  Gauge
+  Gauge,
+  Server
 } from 'lucide-react';
 import type { ViewId, User } from '../types';
 
@@ -67,6 +68,7 @@ const Sidebar: React.FC<SidebarProps> = ({ currentView, setView, user, onLogout 
             <ul>
                 <MenuItem id="dashboard" label="Topology" icon={LayoutDashboard} />
                 <MenuItem id="configuration" label="Configuration" icon={FileCog} />
+                <MenuItem id="netbox_devices" label="Device Inventory" icon={Server} />
                 <MenuItem id="net_perf" label="Performance" icon={Activity} />
                 <MenuItem id="net_chat" label="Network Copilot" icon={BotMessageSquare} />
             </ul>
