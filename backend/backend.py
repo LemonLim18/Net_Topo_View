@@ -37,6 +37,11 @@ from auth.auth import seed_default_admin
 from scheduler.core import start_scheduler, stop_scheduler
 from ssh_terminal.api import router as ssh_router
 from ssh_terminal.session import cleanup_idle_sessions
+from llm.embedder import GeminiEmbedder
+from llm.vector_store import KnowledgeVectorStore
+from llm.retriever import KnowledgeRetriever
+from llm.ingestion import DocumentIngester
+from rag.api import router as rag_router, setup_rag
 
 # --- Crawler Logic (Legacy/Transitional) ---
 import mini_nce as crawler
@@ -66,6 +71,11 @@ _current_topology_dict: Optional[dict] = None
 _current_topology_json: Optional[str] = None
 _previous_topology_dict: Optional[dict] = None
 _topology_lock = asyncio.Lock()
+
+# Shared instances promoted to module scope so run_crawl_and_broadcast
+# can feed every fresh crawl result into the agent's RAG cache.
+_db: Optional[DatabaseManager] = None
+_agent: Optional[NetworkAgent] = None
 
 # ----------------------
 # WebSocket Connection Manager
@@ -198,6 +208,13 @@ async def run_crawl_and_broadcast(trigger: str = "periodic"):
         save_topology_to_file(_current_topology_dict, CURRENT_TOPOLOGY_FILE, sort_keys=True)
         _current_topology_json = json.dumps(_current_topology_dict, sort_keys=True)
 
+        # 2b. Keep the agent's RAG cache in sync with every crawl result
+        if _db is not None:
+            _db.update_topology(new_topo)
+        if _agent is not None:
+            _agent.refresh_context()
+            logger.debug("Agent RAG context refreshed after crawl")
+
         # 3. Detect changes
         previous_canon = canonical_topology(_previous_topology_dict) if _previous_topology_dict else None
         current_canon = canonical_topology(_current_topology_dict) if _current_topology_dict else canonical_topology({})
@@ -236,7 +253,16 @@ async def lifespan(app: FastAPI):
 
     # 2. Initialize Core Systems
     pipeline = DeploymentPipeline(db)
-    agent = NetworkAgent(db)
+
+    # M21 — Vector-Embedded RAG stack
+    embedder = GeminiEmbedder(api_key=os.getenv("GEMINI_API_KEY"))
+    vector_store = KnowledgeVectorStore(embedder)
+    retriever = KnowledgeRetriever(vector_store, embedder)
+    ingester = DocumentIngester(vector_store)
+    logger.info("Vector knowledge store ready (chunks=%d)", vector_store.count())
+    setup_rag(ingester, vector_store)
+
+    agent = NetworkAgent(db, retriever=retriever)
 
     # 3. Initialize Credential Vault (M15)
     from auth.credentials import CredentialVault
@@ -248,13 +274,21 @@ async def lifespan(app: FastAPI):
     set_crawl_runner(run_crawl_and_broadcast) # Inject crawl runner to API
 
     # 4. Load Saved Topology
-    global _current_topology_dict, _current_topology_json, _previous_topology_dict
+    global _current_topology_dict, _current_topology_json, _previous_topology_dict, _db, _agent
+    _db = db
+    _agent = agent
     try:
         os.makedirs(TOPOLOGY_SAVE_DIR, exist_ok=True)
         if os.path.exists(CURRENT_TOPOLOGY_FILE):
              with open(CURRENT_TOPOLOGY_FILE, 'r') as f:
                 _current_topology_dict = json.load(f)
                 _current_topology_json = json.dumps(_current_topology_dict, sort_keys=True)
+                # Seed the agent's RAG cache immediately on startup so it has
+                # network knowledge before the first scheduled crawl fires.
+                db.update_topology(_current_topology_dict)
+                agent.refresh_context()
+                logger.info("Agent RAG context seeded from saved topology (%d nodes)",
+                            len(_current_topology_dict.get("nodes", {})))
         if os.path.exists(PREVIOUS_TOPOLOGY_FILE):
              with open(PREVIOUS_TOPOLOGY_FILE, 'r') as f:
                 _previous_topology_dict = json.load(f)
@@ -305,6 +339,7 @@ app.include_router(config_router, prefix="/api/v1", tags=["Config Engine"])
 app.include_router(security_router, prefix="/api/v1", tags=["Security"])
 app.include_router(auth_router, prefix="/api/v1", tags=["Authentication"])
 app.include_router(ssh_router, prefix="/api/v1", tags=["SSH Terminal"])
+app.include_router(rag_router, prefix="/api/v1", tags=["RAG Knowledge Base"])
 
 # WebSocket Endpoint (Streamlined)
 @app.websocket("/ws")

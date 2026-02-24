@@ -68,6 +68,7 @@ export type ViewId =
   | 'netbox_devices'
   | 'net_perf' 
   | 'net_chat'
+  | 'knowledge_base'
   | 'sec_dashboard'
   | 'sec_events'
   | 'sec_analysis'

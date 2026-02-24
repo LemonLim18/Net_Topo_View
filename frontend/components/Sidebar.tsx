@@ -11,7 +11,8 @@ import {
   LogOut,
   ScanSearch,
   Gauge,
-  Server
+  Server,
+  BookOpen
 } from 'lucide-react';
 import type { ViewId, User } from '../types';
 import { Confirm } from '../src/utils/swal';
@@ -72,6 +73,7 @@ const Sidebar: React.FC<SidebarProps> = ({ currentView, setView, user, onLogout 
                 <MenuItem id="netbox_devices" label="Device Inventory" icon={Server} />
                 <MenuItem id="net_perf" label="Performance" icon={Activity} />
                 <MenuItem id="net_chat" label="Network Copilot" icon={BotMessageSquare} />
+                <MenuItem id="knowledge_base" label="Knowledge Base" icon={BookOpen} />
             </ul>
           </details>
         </li>

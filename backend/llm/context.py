@@ -166,3 +166,24 @@ class ContextBuilder:
             self.build_available_templates_context(),
         ]
         return "\n\n".join(p for p in parts if p)
+
+    def build_knowledge_context(self, query: str, retriever, k: int = 5) -> str:
+        """
+        Retrieve semantically relevant knowledge chunks for *query*.
+
+        Delegates to retriever.retrieve_as_text() and returns a formatted
+        markdown block suitable for per-turn injection into the system prompt.
+        Returns an empty string when the knowledge base is empty or unavailable.
+
+        Args:
+            query:     The user's message (used as the embedding query).
+            retriever: A ``KnowledgeRetriever`` instance (or None → no-op).
+            k:         Maximum number of chunks to return.
+        """
+        if retriever is None:
+            return ""
+        try:
+            return retriever.retrieve_as_text(query, k=k)
+        except Exception as exc:
+            logger.warning("build_knowledge_context failed: %s", exc)
+            return ""

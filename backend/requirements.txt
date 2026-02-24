@@ -16,3 +16,10 @@ apscheduler>=3.10.4
 passlib[bcrypt]
 python-jose[cryptography]
 python-dotenv
+
+# M21 — Vector-Embedded RAG
+chromadb
+pdfplumber
+python-docx
+beautifulsoup4
+lxml

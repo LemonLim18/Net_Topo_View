@@ -82,6 +82,7 @@ class NetworkAgent:
         provider: Optional[LLMProvider] = None,
         api_key: Optional[str] = None,
         model: Optional[str] = None,
+        retriever=None,
     ):
         """
         Args:
@@ -89,6 +90,7 @@ class NetworkAgent:
             provider:    Custom LLMProvider (default: GeminiProvider).
             api_key:     Gemini API key (if using default provider).
             model:       Model name override.
+            retriever:   Optional KnowledgeRetriever for M21 Vector RAG.
         """
         # Initialize LLM provider
         if provider:
@@ -110,6 +112,9 @@ class NetworkAgent:
         self._tools = ToolRegistry()
         network_tools.set_db_manager(db_manager)
         network_tools.register_all_tools(self._tools)
+
+        # M21: optional knowledge retriever for hybrid RAG
+        self._retriever = retriever
 
         # Conversation history (persists across chat() calls)
         self._history: List[LLMMessage] = []
@@ -147,9 +152,24 @@ class NetworkAgent:
         # Add user message to history
         self._history.append(LLMMessage(role="user", content=user_message))
 
+        # --- M21: Hybrid RAG routing ---
+        try:
+            from llm.retriever import route
+            use_live, use_knowledge = route(user_message)
+        except Exception:
+            use_live, use_knowledge = True, False
+
+        per_turn_system = self._system_prompt  # always includes baked live topology
+        if use_knowledge and self._retriever is not None:
+            knowledge_ctx = self._context.build_knowledge_context(
+                user_message, self._retriever
+            )
+            if knowledge_ctx:
+                per_turn_system = self._system_prompt + "\n\n" + knowledge_ctx
+
         # Build full message list (system + history)
         messages = [
-            LLMMessage(role="system", content=self._system_prompt),
+            LLMMessage(role="system", content=per_turn_system),
             *self._history,
         ]
 

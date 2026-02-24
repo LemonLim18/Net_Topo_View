@@ -1,3 +1,4 @@
+/// <reference types="vite/client" />
 import React, { useState, useRef, useEffect } from 'react';
 import * as GoogleGenAI from '@google/generative-ai';
 // Use the application's topology data as the realtime topology source.

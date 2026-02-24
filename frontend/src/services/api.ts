@@ -321,6 +321,57 @@ export const authApi = {
     request<{ deleted: boolean }>(`/auth/credentials/${deviceId}/${label}`, { method: 'DELETE' }),
 };
 
+// --- M21: RAG Knowledge Base API ---
+export interface RagDocument {
+  doc_id: string;
+  doc_name: string;
+  doc_type: string;
+  vendor: string;
+  ingested_at: string;
+  chunk_count: number;
+}
+
+export interface RagStatus {
+  available: boolean;
+  total_chunks: number;
+  total_documents: number;
+  chroma_path: string;
+}
+
+export const ragApi = {
+  getStatus: () =>
+    request<RagStatus>('/rag/status'),
+
+  listDocuments: () =>
+    request<RagDocument[]>('/rag/documents'),
+
+  uploadDocument: (file: File, docType: string, vendor: string, docName?: string) => {
+    const token = localStorage.getItem('auth_token');
+    const form = new FormData();
+    form.append('file', file);
+    form.append('doc_type', docType);
+    form.append('vendor', vendor);
+    if (docName) form.append('doc_name', docName);
+    return fetch(`${BASE_URL}/api/v1/rag/documents/upload`, {
+      method: 'POST',
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+      body: form,
+    }).then(async r => {
+      if (!r.ok) {
+        const e = await r.json().catch(() => ({}));
+        throw new Error(e.detail || `Upload failed: ${r.statusText}`);
+      }
+      return r.json() as Promise<{ doc_id: string; doc_name: string; chunks_stored: number; message: string }>;
+    });
+  },
+
+  deleteDocument: (docId: string) =>
+    request<{ doc_id: string; chunks_deleted: number; message: string }>(`/rag/documents/${docId}`, { method: 'DELETE' }),
+
+  rebuild: () =>
+    request<{ files_processed: number; total_chunks: number; errors: string[] }>('/rag/documents/rebuild', { method: 'POST' }),
+};
+
 // --- SSH Terminal API ---
 export const sshApi = {
   createSession: (hostname: string, port: number = 22) =>

@@ -52,6 +52,7 @@ const Configuration: React.FC = () => {
   const [generatedConfig, setGeneratedConfig] = useState('');
   const [undoConfig, setUndoConfig] = useState<string | null>(null);
   const [isRendering, setIsRendering] = useState(false);
+  const [renderError, setRenderError] = useState<string | null>(null);
 
   // Diff state
   const [existingConfig, setExistingConfig] = useState('');
@@ -62,7 +63,6 @@ const Configuration: React.FC = () => {
   const [diffSummary, setDiffSummary] = useState('');
 
   // Template browser state
-  const [selectedTemplateSource, setSelectedTemplateSource] = useState('');
   const [selectedSchemaSource, setSelectedSchemaSource] = useState<Record<string, any> | null>(null);
   const [browserVendor, setBrowserVendor] = useState('cisco_ios');
   const [browserFeature, setBrowserFeature] = useState('');
@@ -140,12 +140,15 @@ const Configuration: React.FC = () => {
     if (!selectedVendor || !selectedFeature) return;
     setIsRendering(true);
     try {
+      setRenderError(null);
       const result = await configApi.render(selectedVendor, selectedFeature, params);
       setGeneratedConfig(result.config);
       setUndoConfig(result.undo_config);
       Toast.success('Config rendered');
     } catch (err: any) {
-      Toast.error('Render Failed', err.message || 'Rendering failed');
+      const msg = err.message || 'Rendering failed';
+      setRenderError(msg);
+      Toast.error('Render Failed', msg);
       setGeneratedConfig('');
       setUndoConfig(null);
     } finally {
@@ -552,7 +555,6 @@ const Configuration: React.FC = () => {
                     onChange={e => {
                       setBrowserVendor(e.target.value);
                       setBrowserFeature('');
-                      setSelectedTemplateSource('');
                       setSelectedSchemaSource(null);
                     }}
                   >

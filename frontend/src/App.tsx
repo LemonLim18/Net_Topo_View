@@ -7,6 +7,7 @@ import GeminiChat from  "../views/AIChat";
 import Deployments from '../views/Deployments';
 import NetBoxDevices from '../views/NetBoxDevices';
 import AIAgentPanel from '../components/AIAgentPanel';
+import KnowledgeBase from '../views/KnowledgeBase';
 
 import Login from '../views/Login';
 import NetworkPerformance from '../views/NetworkPerformance';
@@ -66,7 +67,9 @@ const App: React.FC = () => {
         return <NetworkPerformance />;
       case 'net_chat':
         return <GeminiChat domain="network" />;
-      
+      case 'knowledge_base':
+        return <KnowledgeBase />;
+
       // Security Domain
       case 'sec_dashboard':
         return <SecurityDashboard />;
