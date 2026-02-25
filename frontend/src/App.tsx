@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import Header from '../components/Header';
 import Sidebar from '../components/Sidebar';
+import OverviewDashboard from '../views/OverviewDashboard';
 import Dashboard from '../views/Dashboard';
 import Configuration from '../views/Configuration';
 import GeminiChat from  "../views/AIChat";
@@ -9,6 +10,7 @@ import NetBoxDevices from '../views/NetBoxDevices';
 import AIAgentPanel from '../components/AIAgentPanel';
 import KnowledgeBase from '../views/KnowledgeBase';
 import AnsibleStudioView from '../views/AnsibleStudioView';
+import DriftView from '../views/DriftView';
 
 import Login from '../views/Login';
 import NetworkPerformance from '../views/NetworkPerformance';
@@ -23,7 +25,8 @@ import type { ViewId, User, AppDomain } from '../types';
 
 const App: React.FC = () => {
   const [theme, setTheme] = useState(() => localStorage.getItem('theme') || 'night');
-  const [view, setView] = useState<ViewId>('dashboard');
+  const [view, setView] = useState<ViewId>('overview');
+  const [selectedDeviceId, setSelectedDeviceId] = useState<number | null>(null);
   const [user, setUser] = useState<User | null>(null);
   const [aiPanelOpen, setAiPanelOpen] = useState(() => {
     const saved = localStorage.getItem('aiPanelOpen');
@@ -56,7 +59,10 @@ const App: React.FC = () => {
   const renderView = () => {
     switch (view) {
       // Network Domain
+      case 'overview':
+        return <OverviewDashboard setView={setView} setSelectedDeviceId={setSelectedDeviceId} />;
       case 'dashboard':
+      case 'topology':
         return <Dashboard />;
       case 'configuration':
         return <Configuration />;
@@ -64,6 +70,10 @@ const App: React.FC = () => {
         return <NetBoxDevices />;
       case 'deployments':
         return <Deployments />;
+      case 'drift':
+        return <DriftView />;
+      case 'device_detail':
+        return <div className="p-6"><h2 className="text-xl font-bold">Device 360 — #{selectedDeviceId ?? '?'}</h2><p className="mt-2 opacity-60">Device detail view — Phase 2.</p></div>;
       case 'net_perf':
         return <NetworkPerformance />;
       case 'net_chat':
@@ -84,7 +94,7 @@ const App: React.FC = () => {
          return <SecurityAnalysis />;
 
       default:
-        return <Dashboard />;
+        return <OverviewDashboard setView={setView} setSelectedDeviceId={setSelectedDeviceId} />;
     }
   };
 
@@ -117,16 +127,18 @@ const App: React.FC = () => {
                 {renderView()}
               </div>
               
-              {/* AI Agent Panel (Docked Right) */}
-              <AIAgentPanel 
-                isOpen={aiPanelOpen}
-                onToggle={() => setAiPanelOpen(!aiPanelOpen)}
-                domain={getCurrentDomain()}
-                onPlaybookGenerated={handlePlaybookGenerated}
-              />
+              {/* AI Agent Panel (Docked Right) — hidden on Ansible Studio which has its own chat */}
+              {view !== 'ansible_studio' && (
+                <AIAgentPanel 
+                  isOpen={aiPanelOpen}
+                  onToggle={() => setAiPanelOpen(!aiPanelOpen)}
+                  domain={getCurrentDomain()}
+                  onPlaybookGenerated={handlePlaybookGenerated}
+                />
+              )}
               
               {/* Toggle Button when panel is closed */}
-              {!aiPanelOpen && (
+              {view !== 'ansible_studio' && !aiPanelOpen && (
                 <button 
                   onClick={() => setAiPanelOpen(true)}
                   className="absolute right-4 bottom-4 btn btn-primary btn-circle shadow-lg z-20"

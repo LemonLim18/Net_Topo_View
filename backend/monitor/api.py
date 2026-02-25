@@ -23,7 +23,7 @@ async def update_telegraf_config():
     """Regenerate Telegraf configuration based on current inventory."""
     try:
         # Re-using the DB connection path
-        db = DatabaseManager("net_topo.db") 
+        db = DatabaseManager("db/netauto.db") 
         gen = TelegrafConfigGenerator(db)
         
         # In a real deployment, we might write to /etc/telegraf/telegraf.conf

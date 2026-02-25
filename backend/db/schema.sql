@@ -150,7 +150,6 @@ CREATE TABLE IF NOT EXISTS job_steps (
 );
 
 CREATE INDEX IF NOT EXISTS idx_jobs_request        ON jobs(request_id);
-CREATE INDEX IF NOT EXISTS idx_jobs_request        ON jobs(request_id);
 CREATE INDEX IF NOT EXISTS idx_steps_job           ON job_steps(job_id);
 
 -- -----------------------------------------------------------
@@ -279,4 +278,30 @@ CREATE TABLE IF NOT EXISTS config_proposals (
 );
 
 CREATE INDEX IF NOT EXISTS idx_proposals_status ON config_proposals(status);
+
+-- -----------------------------------------------------------
+-- 16. Intents (Intent-Based Pipeline — audit trail)
+-- -----------------------------------------------------------
+CREATE TABLE IF NOT EXISTS intents (
+    id              TEXT PRIMARY KEY,              -- short UUID
+    user_prompt     TEXT NOT NULL,
+    intent_type     TEXT NOT NULL,                  -- configure|troubleshoot|query|audit|rollback|deploy
+    action          TEXT,
+    feature         TEXT,
+    vendor          TEXT,
+    parameters      TEXT,                          -- JSON blob
+    scope           TEXT,                          -- JSON blob
+    risk_level      TEXT DEFAULT 'medium',
+    resolved_devices TEXT,                         -- JSON array of hostnames
+    policy_approved BOOLEAN,
+    policy_result   TEXT,                          -- JSON blob (violations, warnings, blast_radius)
+    blast_radius    INTEGER DEFAULT 0,             -- number of devices affected
+    status          TEXT DEFAULT 'parsed',         -- parsed|validated|planned|approved|executed|verified|rejected
+    proposal_id     TEXT REFERENCES config_proposals(id),
+    created_at      TEXT DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_intents_status ON intents(status);
+CREATE INDEX IF NOT EXISTS idx_intents_type   ON intents(intent_type);
+
 

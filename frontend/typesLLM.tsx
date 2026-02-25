@@ -32,6 +32,35 @@ export interface DeployResult {
   job_id?: number;
 }
 
+// M24: Intent pipeline metadata (blast radius, policy, verification)
+export interface PolicyViolation {
+  rule_id: string;
+  severity: 'error' | 'warning';
+  message: string;
+}
+
+export interface BlastRadius {
+  device_count: number;
+  interface_count: number;
+  link_count: number;
+  level: 'low' | 'medium' | 'high' | 'critical';
+}
+
+export interface IntentMeta {
+  pipeline: 'intent';
+  intent_id?: string;
+  intent_type?: string;
+  scope?: Record<string, any>;
+  resolved_devices: string[];
+  blast_radius?: BlastRadius;
+  policy_approved: boolean;
+  policy_violations: PolicyViolation[];
+  policy_warnings: PolicyViolation[];
+  execution_engine?: string;
+  verification_checks: Array<{ command: string; expected: string; description: string }>;
+  device_count: number;
+}
+
 export interface Message {
   id: string;
   role: Role;
@@ -42,6 +71,8 @@ export interface Message {
   // M19: Agentic workflow fields
   proposal?: ConfigProposal;
   deployResult?: DeployResult;
+  // M24: Intent pipeline metadata
+  intentMeta?: IntentMeta;
 }
 
 export interface ChatSession {

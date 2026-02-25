@@ -63,18 +63,22 @@ export interface User {
 // Domain Types
 export type AppDomain = 'network' | 'security';
 export type ViewId = 
-  | 'dashboard' 
+  | 'overview'
+  | 'dashboard'
+  | 'topology'
   | 'configuration' 
   | 'netbox_devices'
+  | 'deployments'
+  | 'drift'
   | 'net_perf' 
   | 'net_chat'
   | 'knowledge_base'
   | 'ansible_studio'
+  | 'device_detail'
   | 'sec_dashboard'
   | 'sec_events'
   | 'sec_analysis'
-  | 'sec_chat'
-  | 'deployments';
+  | 'sec_chat';
 
 // Notification Types
 export type NotificationType = 'info' | 'success' | 'warning' | 'error';

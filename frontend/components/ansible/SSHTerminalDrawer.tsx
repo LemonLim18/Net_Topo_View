@@ -3,6 +3,7 @@ import { Plus, Terminal as TerminalIcon } from 'lucide-react';
 import SSHTerminalPanel, { type SSHTab }   from '../SSHTerminalPanel';
 import SSHConnectModal                       from '../SSHConnectModal';
 import { sshApi }                            from '../../src/services/api';
+import { Toast }                             from '../../src/utils/swal';
 import type { SSHConnectionState }           from '../SSHTerminal';
 
 export type { SSHTab };
@@ -56,13 +57,24 @@ const SSHTerminalDrawer: React.FC<SSHTerminalDrawerProps> = ({
   const handleConnect = useCallback(async (
     username: string, password: string, port: number, saveToVault: boolean,
   ) => {
-    const { session_id } = await sshApi.connectWithCreds(
-      pendingHostname, username, password, port, saveToVault,
-    );
-    const wsUrl = sshApi.getWsUrl(session_id);
-    onTabAdded({ sessionId: session_id, hostname: pendingHostname, host: pendingHost, wsUrl });
-    onCloseModal();
-    if (minimized) onToggleMinimize();
+    try {
+      const { session_id } = await sshApi.connectWithCreds(
+        pendingHostname, username, password, port, saveToVault,
+      );
+      const wsUrl = sshApi.getWsUrl(session_id);
+      onTabAdded({ sessionId: session_id, hostname: pendingHostname, host: pendingHost, wsUrl });
+      onCloseModal();
+      if (minimized) onToggleMinimize();
+    } catch (err: any) {
+      const msg = err.message || 'Failed to connect';
+      const isGateway = msg.includes('502') || msg.toLowerCase().includes('bad gateway');
+      Toast.error(
+        isGateway ? 'SSH Gateway Error' : 'SSH Connection Failed',
+        isGateway
+          ? 'The SSH backend is unreachable (502 Bad Gateway). Ensure the server is running.'
+          : msg,
+      );
+    }
   }, [pendingHostname, pendingHost, onTabAdded, onCloseModal, minimized, onToggleMinimize]);
 
   return (

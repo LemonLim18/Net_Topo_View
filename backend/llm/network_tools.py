@@ -9,6 +9,7 @@ import json
 import logging
 from typing import Any, Dict, List, Optional
 
+
 logger = logging.getLogger("llm.network_tools")
 
 
@@ -611,6 +612,316 @@ def apply_qos_policy(vendor: str, interface: str, direction: str, rules_json: st
 
 
 # -----------------------------------------------------------------------
+# Intent Pipeline Tools  (Stage 1–3)
+# -----------------------------------------------------------------------
+
+# --- Verification mapping: feature → show commands + expected patterns ---
+FEATURE_VERIFICATION_MAP: Dict[str, List[Dict[str, str]]] = {
+    "vlan": [
+        {"name": "VLAN exists", "check_type": "command_output",
+         "command": "show vlan brief", "expected": ""},  # filled at runtime with vlan_id
+    ],
+    "ospf": [
+        {"name": "OSPF neighbor up", "check_type": "command_output",
+         "command": "show ip ospf neighbor", "expected": "FULL"},
+    ],
+    "bgp": [
+        {"name": "BGP peer established", "check_type": "command_output",
+         "command": "show bgp summary", "expected": "Estab"},
+    ],
+    "interface": [
+        {"name": "Interface up/up", "check_type": "interface_up",
+         "command": "", "expected": "up"},
+    ],
+    "acl": [
+        {"name": "ACL present", "check_type": "command_output",
+         "command": "show access-lists", "expected": ""},
+    ],
+    "static_route": [
+        {"name": "Route in table", "check_type": "command_output",
+         "command": "show ip route static", "expected": ""},
+    ],
+    "ntp": [
+        {"name": "NTP synchronized", "check_type": "command_output",
+         "command": "show ntp status", "expected": "synchronized|Clock is synchronized"},
+    ],
+    "ssh_harden": [
+        {"name": "SSH v2 enabled", "check_type": "command_output",
+         "command": "show ip ssh", "expected": "version 2"},
+    ],
+    "logging": [
+        {"name": "Logging active", "check_type": "command_output",
+         "command": "show logging", "expected": "Logging.*enabled"},
+    ],
+}
+
+
+def _build_verification_checks(feature: str, params: dict) -> List[Dict]:
+    """
+    Auto-generate verification checks for a given feature and parameters.
+    Returns a list of dicts compatible with ``VerificationCheck``.
+    """
+    templates = FEATURE_VERIFICATION_MAP.get(feature, [])
+    checks: List[Dict] = []
+
+    for tmpl in templates:
+        check = {
+            "name": tmpl["name"],
+            "check_type": tmpl["check_type"],
+            "target": tmpl.get("command", ""),
+            "expected": tmpl.get("expected", ""),
+        }
+        # Customize expected pattern based on parameters
+        if feature == "vlan":
+            vlans = params.get("vlans", [])
+            if vlans:
+                ids = [str(v.get("id", "")) for v in vlans if v.get("id")]
+                check["expected"] = "|".join(ids) if ids else "."
+        elif feature == "interface":
+            iface = params.get("name", params.get("interface", ""))
+            if iface:
+                check["target"] = iface  # interface_up uses target as the interface name
+        elif feature == "acl":
+            acl_name = params.get("name", "")
+            if acl_name:
+                check["expected"] = acl_name
+        elif feature == "static_route":
+            routes = params.get("routes", [])
+            if routes:
+                dests = [r.get("destination", "") for r in routes if r.get("destination")]
+                check["expected"] = "|".join(dests) if dests else "."
+
+        checks.append(check)
+    return checks
+
+
+def parse_intent(user_message: str) -> str:
+    """
+    Parse a natural-language network request into a structured intent object.
+
+    This is Stage 1 of the intent pipeline.  The LLM extracts:
+    - intent_type (configure/troubleshoot/query/audit/rollback)
+    - action, feature, vendor, parameters
+    - target device scope
+    - risk level
+
+    Returns a JSON-encoded ParsedIntent.
+
+    Args:
+        user_message: The user's natural language request
+    """
+    try:
+        from llm.intent import IntentParser
+        parser = IntentParser(provider=_intent_provider, db_manager=_db_manager)
+        # Build topology context for device resolution
+        topo_ctx = ""
+        if _db_manager:
+            topo = _db_manager.get_topology()
+            if topo and topo.get("nodes"):
+                hosts = list(topo["nodes"].keys())
+                topo_ctx = f"Discovered devices: {', '.join(hosts)}"
+        return parser.parse(user_message, topology_context=topo_ctx)
+    except Exception as e:
+        logger.error("parse_intent failed: %s", e)
+        return json.dumps({"error": str(e)})
+
+
+def validate_intent(intent_json: str, user_role: str = "operator") -> str:
+    """
+    Validate a structured intent against policy rules.
+
+    This is Stage 2 of the intent pipeline.  Checks:
+    - RBAC permissions
+    - Change window
+    - Naming conventions
+    - Blast radius
+    - VLAN/IP conflicts
+    - Device reachability
+
+    Returns a JSON-encoded PolicyResult with approved/violations/warnings.
+
+    Args:
+        intent_json: JSON string of the ParsedIntent from parse_intent
+        user_role: The authenticated user's role (admin/operator/auditor)
+    """
+    try:
+        from llm.policy import PolicyEngine
+        engine = PolicyEngine(db_manager=_db_manager)
+        return engine.validate(intent_json, user_role=user_role)
+    except Exception as e:
+        logger.error("validate_intent failed: %s", e)
+        return json.dumps({"error": str(e)})
+
+
+def plan_change(intent_json: str) -> str:
+    """
+    Generate a complete change plan from a validated intent.
+
+    This is Stage 3 of the intent pipeline.  For each target device:
+    1. Generates CLI config via Jinja2 templates
+    2. Generates rollback/undo commands
+    3. Validates syntax (per-vendor structural checks)
+    4. Computes unified diff
+    5. Auto-generates post-deploy verification checks
+    6. Determines execution engine (Ansible/SSH)
+
+    Returns a JSON-encoded ChangePlan with all artifacts.
+
+    Args:
+        intent_json: JSON string of the ParsedIntent (must have resolved_devices)
+    """
+    try:
+        from config_engine.renderer import TemplateRenderer
+        from config_engine.validator import SyntaxValidator
+        from config_engine.differ import ConfigDiffer
+        from llm.intent import ParsedIntent
+
+        intent = ParsedIntent.model_validate_json(intent_json)
+        renderer = TemplateRenderer()
+        validator = SyntaxValidator()
+        differ = ConfigDiffer()
+
+        if not intent.feature:
+            return json.dumps({"error": "No feature specified in intent. Cannot generate config."})
+
+        if not intent.resolved_devices:
+            return json.dumps({"error": "No target devices resolved. Specify device hostnames."})
+
+        # Determine vendor — from intent or from device inventory
+        vendor = intent.vendor
+        devices_plan: List[Dict[str, Any]] = []
+
+        for hostname in intent.resolved_devices:
+            dev_vendor = vendor
+            if not dev_vendor and _db_manager:
+                device = _db_manager.get_device_by_hostname(hostname)
+                if device and device.vendor:
+                    dev_vendor = device.vendor
+            if not dev_vendor:
+                dev_vendor = "cisco_ios"  # safe default
+
+            # --- Generate config ---
+            try:
+                config = renderer.render(dev_vendor, intent.feature, intent.parameters)
+            except Exception as e:
+                devices_plan.append({
+                    "hostname": hostname,
+                    "vendor": dev_vendor,
+                    "error": f"Config generation failed: {e}",
+                })
+                continue
+
+            # --- Generate rollback ---
+            try:
+                rollback = renderer.render_undo(dev_vendor, intent.feature, intent.parameters)
+            except Exception:
+                rollback = ""
+
+            # --- Syntax validation ---
+            syntax_warnings = validator.validate(dev_vendor, config)
+
+            # --- Diff against empty (new config) ---
+            diff_text = differ.unified_diff("", config)
+
+            # --- Verification checks ---
+            ver_checks = _build_verification_checks(intent.feature, intent.parameters)
+
+            # --- Execution engine routing ---
+            exec_engine = "ssh_fallback"
+            try:
+                from ansible.router import route_execution
+                plan = route_execution(
+                    intent={"vendor": dev_vendor, "feature": intent.feature,
+                            "rendered_commands": config.strip().splitlines()},
+                    device_vars={"nettopo_vendor": dev_vendor},
+                    rag_state_matches=False,
+                )
+                exec_engine = plan.action.value
+            except Exception:
+                pass
+
+            devices_plan.append({
+                "hostname": hostname,
+                "vendor": dev_vendor,
+                "generated_config": config,
+                "rollback_config": rollback,
+                "diff_text": diff_text,
+                "syntax_warnings": syntax_warnings,
+                "execution_engine": exec_engine,
+                "verification_checks": ver_checks,
+                "line_count": len(config.strip().splitlines()),
+            })
+
+        total_blast = len(devices_plan)
+        return json.dumps({
+            "intent_id": intent.id,
+            "action": intent.action,
+            "feature": intent.feature,
+            "risk_level": intent.risk_level,
+            "total_devices": total_blast,
+            "devices": devices_plan,
+            "verification_plan": {
+                "auto_checks": sum(len(d.get("verification_checks", [])) for d in devices_plan),
+                "description": f"Auto-generated {intent.feature} verification for {total_blast} device(s).",
+            },
+        }, default=str)
+
+    except Exception as e:
+        logger.error("plan_change failed: %s", e)
+        return json.dumps({"error": str(e)})
+
+
+def get_device_running_config(hostname: str) -> str:
+    """
+    Retrieve the last known running configuration snapshot for a device.
+
+    This provides context for the LLM to understand what is already
+    configured before proposing changes.
+
+    Args:
+        hostname: Device hostname to look up
+    """
+    if not _db_manager:
+        return json.dumps({"error": "Database not available"})
+
+    try:
+        device = _db_manager.get_device_by_hostname(hostname)
+        if not device:
+            return json.dumps({"error": f"Device '{hostname}' not found"})
+
+        history = _db_manager.get_config_history(device.id, limit=1)
+        if not history:
+            return json.dumps({
+                "hostname": hostname,
+                "config": "(no config snapshot available — device has not been polled yet)",
+                "note": "Run a discovery crawl to capture the running configuration.",
+            })
+
+        config_text = history[0].config_text or ""
+        return json.dumps({
+            "hostname": hostname,
+            "config_length": len(config_text),
+            "config": config_text[:8000],  # cap at 8k chars to avoid token overflow
+            "snapshot_time": str(history[0].captured_at) if hasattr(history[0], 'captured_at') else "unknown",
+            "truncated": len(config_text) > 8000,
+        })
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+# -----------------------------------------------------------------------
+# LLM Provider for intent parsing (set at startup)
+# -----------------------------------------------------------------------
+_intent_provider = None
+
+
+def set_intent_provider(provider) -> None:
+    """Called once at startup to inject the LLM provider for intent parsing."""
+    global _intent_provider
+    _intent_provider = provider
+
+
+# -----------------------------------------------------------------------
 # Tool registration helper
 # -----------------------------------------------------------------------
 
@@ -727,6 +1038,52 @@ def register_all_tools(registry) -> None:
                 'and policy_classes (class_name, dscp, priority_percent, bandwidth_percent, '
                 'police_rate, shape_average). Use get_template_schema(\"qos\") to see full schema.'
             ),
+        },
+    )
+
+    # Intent Pipeline tools (Stage 1-3)
+    registry.register(
+        parse_intent,
+        description=(
+            "Parse a natural-language network request into a structured intent object (JSON). "
+            "This is STAGE 1 of the intent pipeline. Call this FIRST for any configuration request. "
+            "Returns: intent_type, action, feature, vendor, parameters, scope, risk_level, resolved_devices."
+        ),
+        param_descriptions={
+            "user_message": "The user's natural language request to parse into a structured intent",
+        },
+    )
+    registry.register(
+        validate_intent,
+        description=(
+            "Validate a structured intent against policy rules (RBAC, change window, naming, "
+            "blast radius, conflicts, device reachability). This is STAGE 2 — call AFTER parse_intent. "
+            "Returns: approved (bool), violations, warnings, blast_radius."
+        ),
+        param_descriptions={
+            "intent_json": "JSON string of the ParsedIntent from parse_intent",
+            "user_role": "The user's role: admin, operator, or auditor (default: operator)",
+        },
+    )
+    registry.register(
+        plan_change,
+        description=(
+            "Generate a complete change plan from a validated intent. This is STAGE 3 — "
+            "call AFTER validate_intent returns approved=true. Generates CLI config, rollback, "
+            "syntax validation, diff preview, and auto verification checks for each target device."
+        ),
+        param_descriptions={
+            "intent_json": "JSON string of the ParsedIntent (must have resolved_devices)",
+        },
+    )
+    registry.register(
+        get_device_running_config,
+        description=(
+            "Retrieve the last known running-config snapshot for a device. "
+            "Use this to understand what is already configured before proposing changes."
+        ),
+        param_descriptions={
+            "hostname": "Device hostname to look up",
         },
     )
 
