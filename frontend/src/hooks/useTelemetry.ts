@@ -28,7 +28,7 @@ export interface TelemetryMessage {
 
 export function useTelemetry() {
   const wsRef = useRef<WebSocket | null>(null);
-  const reconnectTimer = useRef<ReturnType<typeof setTimeout>>();
+  const reconnectTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const backoff = useRef(1000);
 
   const [isConnected, setIsConnected] = useState(false);
@@ -114,7 +114,9 @@ export function useTelemetry() {
 
     return () => {
       disposed = true;
-      clearTimeout(reconnectTimer.current);
+      if (reconnectTimer.current) {
+        clearTimeout(reconnectTimer.current);
+      }
       wsRef.current?.close();
     };
   }, []);
