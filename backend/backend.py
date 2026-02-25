@@ -42,6 +42,7 @@ from llm.vector_store import KnowledgeVectorStore
 from llm.retriever import KnowledgeRetriever
 from llm.ingestion import DocumentIngester
 from rag.api import router as rag_router, setup_rag
+from dashboard.api import router as dashboard_router, setup_dashboard
 
 # M22 — Ansible-first automation (optional: graceful no-op if ansible-runner absent)
 try:
@@ -53,8 +54,13 @@ except ImportError:
     ansible_router = None   # type: ignore[assignment]
     _ANSIBLE_ENABLED = False
 
+# M25 — Phase-2 Autonomous Agent APIs
+from incidents.api import router as incidents_router
+from agent.api import router as agent_router, setup_agent_api
+
 # --- Crawler Logic (Legacy/Transitional) ---
 import mini_nce as crawler
+from crawler.store import save_crawl_result
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("topo-backend")
@@ -221,6 +227,11 @@ async def run_crawl_and_broadcast(trigger: str = "periodic"):
         # 2b. Keep the agent's RAG cache in sync with every crawl result
         if _db is not None:
             _db.update_topology(new_topo)
+            # Persist devices + links to SQL (enriched with model/version/serial)
+            try:
+                save_crawl_result(_db, new_topo, triggered_by=trigger)
+            except Exception as e:
+                logger.warning("save_crawl_result failed: %s", e)
         if _agent is not None:
             _agent.refresh_context()
             logger.debug("Agent RAG context refreshed after crawl")
@@ -281,14 +292,20 @@ async def lifespan(app: FastAPI):
     # 4. Setup Dependencies
     setup_pipeline(db)           # Inject global pipeline
     setup_agent(agent, pipeline=pipeline, vault=vault)  # Inject agent + M4/M15
+    setup_dashboard(db)            # Inject DB for dashboard summary
     set_crawl_runner(run_crawl_and_broadcast) # Inject crawl runner to API
 
     # M22 — Ansible-first orchestration layer
+    _builder = None
     if _ANSIBLE_ENABLED:
         _provider = _GeminiProvider(api_key=os.getenv("GEMINI_API_KEY"))
         _builder = PlaybookBuilder(_provider)
         setup_ansible(_builder, agent, pipeline, db)
         logger.info("Ansible orchestration layer initialized (M22)")
+
+    # M25 — Phase-2: Agent Plan/Execute and Incidents
+    setup_agent_api(agent, builder=_builder)
+    logger.info("Autonomous Agent Plan/Execute API initialized (M25)")
 
     # 4. Load Saved Topology
     global _current_topology_dict, _current_topology_json, _previous_topology_dict, _db, _agent
@@ -338,7 +355,12 @@ app = FastAPI(title="CogniShield Backend", lifespan=lifespan)
 # CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
+    allow_origins=[
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -357,8 +379,13 @@ app.include_router(security_router, prefix="/api/v1", tags=["Security"])
 app.include_router(auth_router, prefix="/api/v1", tags=["Authentication"])
 app.include_router(ssh_router, prefix="/api/v1", tags=["SSH Terminal"])
 app.include_router(rag_router, prefix="/api/v1", tags=["RAG Knowledge Base"])
+app.include_router(dashboard_router, prefix="/api/v1", tags=["Dashboard"])
 if _ANSIBLE_ENABLED and ansible_router is not None:
     app.include_router(ansible_router, prefix="/api/v1", tags=["Ansible Orchestration (M22)"])
+
+# M25 — Phase-2 Autonomous Agent APIs
+app.include_router(incidents_router, prefix="/api/v1", tags=["Incidents (M25)"])
+app.include_router(agent_router, prefix="/api/v1", tags=["Autonomous Agent (M25)"])
 
 # WebSocket Endpoint (Streamlined)
 @app.websocket("/ws")
@@ -392,3 +419,120 @@ async def websocket_endpoint(websocket: WebSocket):
 @app.get("/")
 async def root():
     return {"status": "ok", "message": "CogniShield Backend is running"}
+
+
+# ---------------------------------------------------------------------------
+# M25: Real-time telemetry WebSocket  (WS /api/telemetry)
+# ---------------------------------------------------------------------------
+# Broadcasts a periodic metrics snapshot to all connected telemetry clients.
+# The anomaly detector and security threat module feed events here so the
+# frontend SecurityAnalysis view can display live anomaly alerts.
+
+_telemetry_clients: Set[WebSocket] = set()
+_telemetry_lock = asyncio.Lock()
+
+
+async def _telemetry_broadcast(payload: dict):
+    """Broadcast JSON payload to all connected telemetry WebSocket clients."""
+    async with _telemetry_lock:
+        clients = list(_telemetry_clients)
+    if not clients:
+        return
+    msg = json.dumps(payload, sort_keys=True)
+    await asyncio.gather(
+        *[_safe_telemetry_send(ws, msg) for ws in clients],
+        return_exceptions=True,
+    )
+
+
+async def _safe_telemetry_send(ws: WebSocket, msg: str):
+    try:
+        await ws.send_text(msg)
+    except Exception:
+        async with _telemetry_lock:
+            _telemetry_clients.discard(ws)
+
+
+@app.websocket("/api/telemetry")
+async def telemetry_ws(websocket: WebSocket):
+    """
+    Real-time telemetry stream (WS /api/telemetry).
+
+    On connect the server sends a welcome with current device count.
+    Every 10 seconds it broadcasts a lightweight metrics snapshot:
+      {type: "metrics", devices: [...], timestamp: "..."}
+
+    Security events / anomaly alerts are pushed immediately as:
+      {type: "anomaly", ...}  or  {type: "security_event", ...}
+    """
+    await websocket.accept()
+    async with _telemetry_lock:
+        _telemetry_clients.add(websocket)
+    logger.info("Telemetry client connected; total=%d", len(_telemetry_clients))
+
+    try:
+        # Send welcome
+        device_count = 0
+        if _db is not None:
+            try:
+                with _db._connect() as conn:
+                    row = conn.execute("SELECT COUNT(*) as n FROM devices").fetchone()
+                    device_count = row["n"] if row else 0
+            except Exception:
+                pass
+
+        await websocket.send_text(json.dumps({
+            "type":         "connected",
+            "device_count": device_count,
+            "message":      "Telemetry stream active",
+        }))
+
+        # Periodic metrics loop
+        tick = 0
+        while True:
+            try:
+                # Short timeout so we can push proactive events quickly
+                msg = await asyncio.wait_for(websocket.receive_text(), timeout=10.0)
+                if msg == "ping":
+                    await websocket.send_text('{"type":"pong"}')
+            except asyncio.TimeoutError:
+                # Push periodic snapshot
+                tick += 1
+                snapshot: dict = {"type": "metrics", "tick": tick,
+                                  "timestamp": datetime.utcnow().isoformat()}
+
+                if _db is not None:
+                    try:
+                        with _db._connect() as conn:
+                            devs = conn.execute(
+                                "SELECT hostname, status, last_polled FROM devices LIMIT 30"
+                            ).fetchall()
+                            snapshot["devices"] = [dict(d) for d in devs]
+
+                            # Latest security events (last 5 minutes)
+                            evts = conn.execute(
+                                "SELECT event_type, severity, source_ip, description, created_at "
+                                "FROM security_events "
+                                "WHERE created_at > datetime('now','-5 minutes') "
+                                "ORDER BY created_at DESC LIMIT 10"
+                            ).fetchall()
+                            snapshot["recent_security_events"] = [dict(e) for e in evts]
+
+                            # Open incidents count
+                            inc_row = conn.execute(
+                                "SELECT COUNT(*) as n FROM incidents WHERE status='open'"
+                            ).fetchone()
+                            snapshot["open_incidents"] = inc_row["n"] if inc_row else 0
+                    except Exception as exc:
+                        logger.debug("Telemetry snapshot error: %s", exc)
+
+                await websocket.send_text(json.dumps(snapshot, default=str))
+
+            except WebSocketDisconnect:
+                break
+    except WebSocketDisconnect:
+        pass
+    finally:
+        async with _telemetry_lock:
+            _telemetry_clients.discard(websocket)
+        logger.info("Telemetry client disconnected; total=%d", len(_telemetry_clients))
