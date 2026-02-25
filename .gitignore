@@ -34,3 +34,7 @@ backend/test_config_engine.py
 .ruff_cache/
 htmlcov/
 .coverage
+
+# ChromaDB runtime data (auto-generated, must not be tracked)
+backend/chroma_db/
+backend/chroma_db/**
