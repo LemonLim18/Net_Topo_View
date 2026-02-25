@@ -32,25 +32,68 @@ MAX_TOOL_ROUNDS = 5
 
 SYSTEM_PROMPT = """\
 You are **NetAutoController AI** — an expert network reliability engineer
-embedded inside a campus network automation controller.
+embedded inside an enterprise-grade campus network automation controller.
 
-## Your Capabilities
-You have access to tools that let you:
-1. **Query the live network topology** — see all devices, interfaces, links, and status.
-2. **Generate device configurations** — create CLI commands for Cisco IOS, Huawei VRP, and Juniper Junos using Jinja2 templates.
-3. **Generate rollback commands** — create undo commands to reverse any configuration change.
-4. **Trace network paths** — find the shortest path between any two devices.
-5. **View audit logs** — see what configuration changes have been made.
+## Architecture — Intent-Based Pipeline
+You operate within a controlled 5-stage translation pipeline:
+
+  Human Language → Structured Intent → Policy Validation → Change Plan → Execution → Verification
+
+**You are responsible for Stages 1–3.  You NEVER execute directly.**
+
+## MANDATORY: Configuration Request Workflow
+For ANY request that involves creating, modifying, or deleting network 
+configuration, you MUST follow this EXACT 3-step sequence:
+
+### Step 1 — Parse Intent
+Call `parse_intent(user_message)` to convert the request into a structured 
+intent object.  This extracts: action, feature, vendor, parameters, target 
+devices, and risk level.  If the intent requires disambiguation (e.g. no 
+target device specified), relay the disambiguation_message to the user.
+
+### Step 2 — Validate Policy
+Call `validate_intent(intent_json, user_role)` with the JSON from Step 1.
+This checks RBAC, change window, naming conventions, blast radius, VLAN/IP 
+conflicts, and device reachability.  If approved=false, explain the 
+violations to the user and do NOT proceed to Step 3.
+
+### Step 3 — Generate Change Plan
+Call `plan_change(intent_json)` with the validated intent.  This generates 
+CLI config, rollback commands, syntax validation, diff preview, execution 
+engine choice, and auto-verification checks for each target device.
+
+**NEVER call `generate_config` directly for user requests.**  It is an 
+internal tool used by the pipeline.  Always go through the 3-step sequence.
+
+## Safety Principle
+- The LLM (you) only outputs structured data and reasoning.
+- The system enforces policy, generates deterministic configs, and executes.
+- You NEVER generate raw CLI for direct execution.
+- You NEVER talk directly to SSH.  All changes go through the approval gate.
+
+## Read-Only & Diagnostic Tools
+For information requests (show topology, list devices, check status, find path, 
+view audit logs, security scans), use the appropriate query tools directly.
+No intent pipeline is needed for read-only operations.
+
+## Available Query Tools
+- `get_topology_summary` — overview of all devices and links
+- `get_device_details(hostname)` — interfaces, neighbors, edge links
+- `list_all_devices` — hostname + status + management IP for every device
+- `find_path(source, destination)` — shortest path between devices
+- `get_device_running_config(hostname)` — last known running-config snapshot
+- `get_audit_log(limit)` — recent configuration change history
+- `run_security_audit(hostname)` — CIS benchmark security scan
+- `get_security_events(limit)` — recent threats and alerts
+- `analyze_security_alert(event_id)` — threat analysis + response plan
+- `get_template_schema(feature)` — see required parameters for a config template
+- `list_templates(vendor)` — available Jinja2 config templates
 
 ## Rules
-- Always use your tools to fetch real data. Never invent device names, IPs, or topology.
-- When generating configs, first check the template schema with `get_template_schema` to understand required parameters.
-- Present configurations in code blocks for readability.
-- If a device is not found, suggest the correct hostname from your tools.
-- Be concise but thorough. Use bullet points and tables when appropriate.
-- If you don't know something, say so. Never hallucinate network state.
-- When asked to configure something, ALWAYS use `generate_config` to create the config AND `generate_rollback` for the undo commands AND `diff_configs` to show changes.
-- After generating config, provide a clear explanation of what the change will do and its risk level (low/medium/high).
+- Always query real data.  Never invent device names, IPs, or topology.
+- Be concise but thorough.  Use bullet points and tables.
+- If you don't know something, say so.  Never hallucinate network state.
+- After generating a change plan, summarize: what changes, which devices, risk level, blast radius.
 
 ## Current Network State
 {network_context}
@@ -111,6 +154,7 @@ class NetworkAgent:
         # Initialize and populate tool registry
         self._tools = ToolRegistry()
         network_tools.set_db_manager(db_manager)
+        network_tools.set_intent_provider(self._provider)
         network_tools.register_all_tools(self._tools)
 
         # M21: optional knowledge retriever for hybrid RAG
@@ -199,12 +243,16 @@ class NetworkAgent:
                     user_message, response.content, tool_results, tool_args
                 )
                 if proposal:
-                    return {
+                    resp = {
                         "role": "assistant",
                         "content": response.content,
                         "type": "proposal",
                         "proposal": proposal.model_dump(),
                     }
+                    if hasattr(proposal, "_intent_meta"):
+                        resp["type"] = "intent_plan"
+                        resp["intent_meta"] = proposal._intent_meta  # type: ignore[attr-defined]
+                    return resp
 
                 return {
                     "role": "assistant",
@@ -261,12 +309,16 @@ class NetworkAgent:
             user_message, final_response.content, tool_results, tool_args
         )
         if proposal:
-            return {
+            resp = {
                 "role": "assistant",
                 "content": final_response.content,
                 "type": "proposal",
                 "proposal": proposal.model_dump(),
             }
+            if hasattr(proposal, "_intent_meta"):
+                resp["type"] = "intent_plan"
+                resp["intent_meta"] = proposal._intent_meta  # type: ignore[attr-defined]
+            return resp
 
         return {
             "role": "assistant",
@@ -286,11 +338,143 @@ class NetworkAgent:
         tool_args: Dict[str, Dict],
     ) -> Optional[ConfigProposal]:
         """
-        If generate_config was called during this chat turn,
+        If the intent pipeline (plan_change) or legacy generate_config was
+        called during this chat turn, package the results into a ConfigProposal.
+
+        Priority: intent pipeline > legacy flow.
+        """
+        # ---- Intent-pipeline path (plan_change) ----
+        if "plan_change" in tool_results:
+            return self._proposal_from_intent_pipeline(
+                user_message, ai_response, tool_results, tool_args
+            )
+
+        # ---- Legacy path (generate_config) ----
+        if "generate_config" in tool_results:
+            return self._proposal_from_legacy(
+                user_message, ai_response, tool_results, tool_args
+            )
+
+        return None
+
+    # ---------- intent-pipeline proposal builder ----------
+
+    def _proposal_from_intent_pipeline(
+        self,
+        user_message: str,
+        ai_response: str,
+        tool_results: Dict[str, Any],
+        tool_args: Dict[str, Dict],
+    ) -> Optional[ConfigProposal]:
+        """Build a rich ConfigProposal from the 3-stage intent pipeline."""
+        try:
+            raw_plan = tool_results["plan_change"]
+            plan = json.loads(raw_plan) if isinstance(raw_plan, str) else raw_plan
+
+            # Extract intent metadata (from parse_intent result if available)
+            intent_data: Dict = {}
+            if "parse_intent" in tool_results:
+                raw_intent = tool_results["parse_intent"]
+                intent_data = json.loads(raw_intent) if isinstance(raw_intent, str) else raw_intent
+
+            # Extract policy result (from validate_intent result if available)
+            policy_data: Dict = {}
+            if "validate_intent" in tool_results:
+                raw_policy = tool_results["validate_intent"]
+                policy_data = json.loads(raw_policy) if isinstance(raw_policy, str) else raw_policy
+
+            # Aggregate configs across all devices in the plan
+            device_plans = plan.get("device_plans", [])
+            if not device_plans:
+                return None
+
+            # Primary device = first device in plan
+            first = device_plans[0]
+            target_device = first.get("hostname", "unknown")
+            vendor = intent_data.get("vendor") or first.get("vendor", "unknown")
+            feature = intent_data.get("feature") or first.get("feature", "unknown")
+
+            # Merge generated configs / rollbacks / diffs for ALL devices
+            config_blocks = []
+            rollback_blocks = []
+            diff_blocks = []
+            for dp in device_plans:
+                hn = dp.get("hostname", "?")
+                config_blocks.append(f"! ----- {hn} -----\n{dp.get('config', '')}")
+                rollback_blocks.append(f"! ----- {hn} -----\n{dp.get('rollback', '')}")
+                if dp.get("diff"):
+                    diff_blocks.append(f"--- {hn} ---\n{dp['diff']}")
+
+            generated_config = "\n\n".join(config_blocks)
+            rollback_config = "\n\n".join(rollback_blocks)
+            diff_text = "\n\n".join(diff_blocks)
+
+            # Params come from intent
+            params = intent_data.get("parameters", {})
+            target_device_id = self._lookup_device_id(target_device)
+
+            # Risk from intent, fallback to heuristic
+            risk_level = intent_data.get("risk_level") or self._assess_risk(feature, vendor)
+
+            # Build extra metadata to attach to the proposal
+            intent_meta = {
+                "pipeline": "intent",
+                "intent_id": intent_data.get("id"),
+                "intent_type": intent_data.get("intent_type"),
+                "scope": intent_data.get("scope"),
+                "resolved_devices": intent_data.get("resolved_devices", []),
+                "blast_radius": policy_data.get("blast_radius"),
+                "policy_approved": policy_data.get("approved", True),
+                "policy_violations": policy_data.get("violations", []),
+                "policy_warnings": policy_data.get("warnings", []),
+                "execution_engine": first.get("execution_engine"),
+                "verification_checks": first.get("verification_checks", []),
+                "device_count": len(device_plans),
+            }
+
+            proposal = self._proposals.create(
+                user_prompt=user_message,
+                target_device=target_device,
+                target_device_id=target_device_id,
+                vendor=vendor,
+                feature=feature,
+                params=params,
+                generated_config=generated_config,
+                rollback_config=rollback_config,
+                diff_text=diff_text,
+                risk_level=risk_level,
+                ai_explanation=ai_response,
+            )
+
+            # Attach intent metadata as extra field (non-Pydantic, OK for dict dump)
+            proposal_dict = proposal.model_dump()
+            proposal_dict["intent_meta"] = intent_meta
+
+            logger.info(
+                "Created intent-pipeline proposal %s: %s/%s on %d device(s)",
+                proposal.id, vendor, feature, len(device_plans),
+            )
+            # Return a thin wrapper so callers get both the proposal + meta
+            proposal._intent_meta = intent_meta  # type: ignore[attr-defined]
+            return proposal
+
+        except Exception as e:
+            logger.error("Failed to create intent-pipeline proposal: %s", e, exc_info=True)
+            return None
+
+    # ---------- legacy proposal builder ----------
+
+    def _proposal_from_legacy(
+        self,
+        user_message: str,
+        ai_response: str,
+        tool_results: Dict[str, Any],
+        tool_args: Dict[str, Dict],
+    ) -> Optional[ConfigProposal]:
+        """
+        Legacy flow: If generate_config was called during this chat turn,
         automatically package the results into a ConfigProposal.
         """
-        if "generate_config" not in tool_results:
-            return None
 
         try:
             config_result = tool_results["generate_config"]

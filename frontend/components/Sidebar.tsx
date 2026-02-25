@@ -1,19 +1,20 @@
 import React, { useState } from 'react';
 import { 
-  LayoutDashboard, 
+  Home,
+  Network,
   FileCog, 
   BotMessageSquare, 
   Activity, 
   ShieldAlert, 
   ShieldCheck, 
-  ChevronDown, 
-  ChevronRight,
   LogOut,
   ScanSearch,
   Gauge,
   Server,
   BookOpen,
-  Workflow
+  Workflow,
+  Rocket,
+  GitCompareArrows
 } from 'lucide-react';
 import type { ViewId, User } from '../types';
 import { Confirm } from '../src/utils/swal';
@@ -59,39 +60,56 @@ const Sidebar: React.FC<SidebarProps> = ({ currentView, setView, user, onLogout 
           </div>
        </div>
 
-      <ul className="menu p-2 w-full flex-grow overflow-y-auto">
+      <ul className="menu p-2 w-full flex-grow overflow-y-auto min-h-0 flex-col flex-nowrap">
+
+        {/* Overview — top-level */}
+        <MenuItem id="overview" label="Dashboard" icon={Home} />
         
-        {/* Network Domain */}
+        {/* Operations */}
         <li>
           <details open={networkOpen}>
             <summary onClick={(e) => { e.preventDefault(); setNetworkOpen(!networkOpen); }}>
               <Activity className="h-4 w-4 text-primary" />
-              Network Domain
+              Operations
             </summary>
             <ul>
-                <MenuItem id="dashboard" label="Topology" icon={LayoutDashboard} />
-                <MenuItem id="configuration" label="Configuration" icon={FileCog} />
+                <MenuItem id="topology" label="Topology Map" icon={Network} />
                 <MenuItem id="netbox_devices" label="Device Inventory" icon={Server} />
+                <MenuItem id="drift" label="Compliance / Drift" icon={GitCompareArrows} />
                 <MenuItem id="net_perf" label="Performance" icon={Activity} />
-                <MenuItem id="net_chat" label="Network Copilot" icon={BotMessageSquare} />
-                <MenuItem id="knowledge_base" label="Knowledge Base" icon={BookOpen} />
-                <MenuItem id="ansible_studio" label="Ansible Studio" icon={Workflow} />
+                <MenuItem id="deployments" label="Deployments" icon={Rocket} />
+                <MenuItem id="configuration" label="Configuration" icon={FileCog} />
             </ul>
           </details>
         </li>
 
-        {/* Security Domain */}
+        {/* Security */}
         <li>
           <details open={securityOpen} className="mt-2">
             <summary onClick={(e) => { e.preventDefault(); setSecurityOpen(!securityOpen); }}>
               <ShieldCheck className="h-4 w-4 text-secondary" />
-              Security Domain
+              Security
             </summary>
             <ul>
                 <MenuItem id="sec_dashboard" label="Security Dashboard" icon={Gauge} />
                 <MenuItem id="sec_events" label="SIEM & Events" icon={ShieldAlert} />
                 <MenuItem id="sec_analysis" label="Threat Analysis" icon={ScanSearch} />
                 <MenuItem id="sec_chat" label="Security Copilot" icon={BotMessageSquare} />
+            </ul>
+          </details>
+        </li>
+
+        {/* Automation & AI */}
+        <li>
+          <details open className="mt-2">
+            <summary>
+              <BotMessageSquare className="h-4 w-4 text-accent" />
+              Automation & AI
+            </summary>
+            <ul>
+                <MenuItem id="net_chat" label="Network Copilot" icon={BotMessageSquare} />
+                <MenuItem id="ansible_studio" label="Ansible Studio" icon={Workflow} />
+                <MenuItem id="knowledge_base" label="Knowledge Base" icon={BookOpen} />
             </ul>
           </details>
         </li>

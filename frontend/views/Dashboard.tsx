@@ -299,29 +299,40 @@ const Dashboard: React.FC = () => {
     const handleSSHConnect = useCallback(async (username: string, password: string, port: number, saveToVault: boolean) => {
         if (!sshConnectTarget) return;
 
-        const result = await sshApi.connectWithCreds(
-            sshConnectTarget.hostname,
-            username,
-            password,
-            port,
-            saveToVault,
-        );
+        try {
+            const result = await sshApi.connectWithCreds(
+                sshConnectTarget.hostname,
+                username,
+                password,
+                port,
+                saveToVault,
+            );
 
-        const wsUrl = sshApi.getWsUrl(result.session_id);
-        const newTab: SSHTab = {
-            sessionId: result.session_id,
-            hostname: result.hostname,
-            host: result.host,
-            wsUrl,
-        };
-        setSshTabs(prev => [...prev, newTab]);
-        setActiveSSHTab(result.session_id);
-        setSshMinimized(false);
-        setSshConnectTarget(null);
-        if (result.saved_to_vault) {
-            Toast.success('SSH Connected', `Connected to ${sshConnectTarget.hostname} — credentials saved to vault`);
-        } else {
-            Toast.success('SSH Connected', `Connected to ${sshConnectTarget.hostname}`);
+            const wsUrl = sshApi.getWsUrl(result.session_id);
+            const newTab: SSHTab = {
+                sessionId: result.session_id,
+                hostname: result.hostname,
+                host: result.host,
+                wsUrl,
+            };
+            setSshTabs(prev => [...prev, newTab]);
+            setActiveSSHTab(result.session_id);
+            setSshMinimized(false);
+            setSshConnectTarget(null);
+            if (result.saved_to_vault) {
+                Toast.success('SSH Connected', `Connected to ${sshConnectTarget.hostname} — credentials saved to vault`);
+            } else {
+                Toast.success('SSH Connected', `Connected to ${sshConnectTarget.hostname}`);
+            }
+        } catch (err: any) {
+            const msg = err.message || 'Failed to connect';
+            const isGateway = msg.includes('502') || msg.toLowerCase().includes('bad gateway');
+            Toast.error(
+                isGateway ? 'SSH Gateway Error' : 'SSH Connection Failed',
+                isGateway
+                    ? 'The SSH backend is unreachable (502 Bad Gateway). Ensure the server is running.'
+                    : msg,
+            );
         }
     }, [sshConnectTarget]);
 

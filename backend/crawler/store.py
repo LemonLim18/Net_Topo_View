@@ -48,17 +48,21 @@ def save_crawl_result(
     for hostname, node_data in nodes.items():
         if not isinstance(node_data, dict):
             continue
-        status = "down" if node_data.get("down") else "up"
+        status = "down" if node_data.get("down") else "active"
         crawl_devices.append(Device(
             hostname=hostname,
             management_ip=node_data.get("mgmt_ip"),
-            vendor="cisco_ios",      # default; can be enriched later
+            vendor=node_data.get("vendor", "cisco_ios"),
+            model=node_data.get("model"),
+            os_version=node_data.get("os_version"),
+            serial_number=node_data.get("serial"),
             status=status,
             last_polled=datetime.now(tz=TZ_UTC8).isoformat(timespec="seconds"),
         ))
 
     if crawl_devices:
-        device_repo.sync_from_crawl(crawl_devices)
+        for dev in crawl_devices:
+            device_repo.save(dev)
         logger.info("Synced %d devices to persistent DB", len(crawl_devices))
 
     # ----- 3. Sync links to persistent SQL -----

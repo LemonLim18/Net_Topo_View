@@ -198,7 +198,7 @@ const AnsibleStudioView: React.FC<AnsibleStudioViewProps> = ({ user }) => {
           />
         </div>
 
-        {/* Centre: Editor + job status */}
+        {/* Centre: Editor + job status + terminal (terminal scoped here, not behind chat) */}
         <div className="flex flex-col grow min-w-0 overflow-hidden">
           <div className="grow min-h-0 overflow-hidden">
             <PlaybookEditor
@@ -223,23 +223,8 @@ const AnsibleStudioView: React.FC<AnsibleStudioViewProps> = ({ user }) => {
             sseLines={sseLines}
             isStreaming={isStreaming}
           />
-        </div>
-
-        {/* Right: AI chat */}
-        <div
-          className="shrink-0 overflow-hidden"
-          style={{ width: '300px' }}
-        >
-          <AnsibleChatPanel
-            onPlaybookReady={handlePlaybookReady}
-            onOpenFile={(path) => handleFileOpen({ path, name: path.split('/').pop() ?? path })}
-            activeJob={job}
-          />
-        </div>
-      </div>
-
-      {/* Bottom: SSH terminal drawer */}
-      <SSHTerminalDrawer
+          {/* SSH terminal — bottom of editor column only */}
+          <SSHTerminalDrawer
         tabs={sshTabs}
         activeTabId={activeSshTab}
         tabStates={sshTabStates}
@@ -261,7 +246,21 @@ const AnsibleStudioView: React.FC<AnsibleStudioViewProps> = ({ user }) => {
           setActiveSshTab(tab.sessionId);
         }}
         onHeightChange={setTerminalHeight}
-      />
+          />
+        </div>
+
+        {/* Right: AI chat — VS Code Copilot style */}
+        <div
+          className="shrink-0 overflow-hidden"
+          style={{ width: '320px' }}
+        >
+          <AnsibleChatPanel
+            onPlaybookReady={handlePlaybookReady}
+            onOpenFile={(path) => handleFileOpen({ path, name: path.split('/').pop() ?? path })}
+            activeJob={job}
+          />
+        </div>
+      </div>
     </div>
   );
 };

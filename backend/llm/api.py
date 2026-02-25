@@ -45,8 +45,9 @@ class ChatResponse(BaseModel):
     role: str = "assistant"
     content: str = ""
     model: str = ""
-    type: str = "text"                     # "text" | "proposal"
+    type: str = "text"                     # "text" | "proposal" | "intent_plan"
     proposal: Optional[Dict[str, Any]] = None  # ConfigProposal dict
+    intent_meta: Optional[Dict[str, Any]] = None  # Intent pipeline metadata
 
 
 class InfoResponse(BaseModel):
@@ -118,6 +119,7 @@ async def chat(request: ChatRequest):
             model=agent.model_name,
             type=result.get("type", "text"),
             proposal=result.get("proposal"),
+            intent_meta=result.get("intent_meta"),
         )
     except Exception as e:
         logger.error("Chat error: %s", e)
@@ -299,14 +301,37 @@ async def approve_proposal(proposal_id: str):
             params=proposal.params,
         )
 
+        # Build verification checks from intent pipeline if available
+        verification_checks = []
+        _intent_meta = getattr(proposal, '_intent_meta', None)
+        if _intent_meta and _intent_meta.get('verification_checks'):
+            from deploy.models import VerificationCheck
+            for vc in _intent_meta['verification_checks']:
+                verification_checks.append(VerificationCheck(
+                    check_type=vc.get('check_type', 'cli_output_match'),
+                    command=vc.get('command', ''),
+                    expected=vc.get('expected', ''),
+                    description=vc.get('description', ''),
+                ))
+            logger.info(
+                "Intent pipeline provided %d auto-verification checks",
+                len(verification_checks),
+            )
+
         # Execute stages 3-6 (Snapshot → Apply → Verify → Commit)
-        success = await run_in_threadpool(
-            _pipeline.execute_job,
-            job_id,
+        execute_kwargs = dict(
+            job_id=job_id,
             host=ssh_host,
             username=creds["username"],
             password=creds["password"],
             driver_type=proposal.vendor,
+        )
+        if verification_checks:
+            execute_kwargs["checks"] = verification_checks
+
+        success = await run_in_threadpool(
+            _pipeline.execute_job,
+            **execute_kwargs,
         )
 
         if success:

@@ -13,11 +13,14 @@ import {
   RotateCcw,
   ClipboardList,
   Zap,
-  Bot
+  Bot,
+  Shield,
+  Activity,
+  Terminal
 } from 'lucide-react';
 
 import { Role } from '../typesLLM';
-import type { Message, ChatSession, ConfigProposal, DeployResult } from '../typesLLM';
+import type { Message, ChatSession, ConfigProposal, DeployResult, IntentMeta } from '../typesLLM';
 import { SidebarLLM } from '../components/SidebarLLM';
 import { ChatInput } from '../components/ChatInput';
 import { MessageBubble } from '../components/MessageBubble';
@@ -183,6 +186,256 @@ const ProposalCard: React.FC<{
   );
 };
 
+// ==================== M24: INTENT PIPELINE CARD ====================
+
+const BlastRadiusBadge: React.FC<{ level: string; count: number }> = ({ level, count }) => {
+  const cfg: Record<string, { color: string; label: string }> = {
+    low:      { color: 'badge-success', label: 'Low' },
+    medium:   { color: 'badge-warning', label: 'Medium' },
+    high:     { color: 'badge-error',   label: 'High' },
+    critical: { color: 'badge-error',   label: 'Critical' },
+  };
+  const { color, label } = cfg[level] || cfg.medium;
+  return (
+    <span className={`badge ${color} gap-1 text-xs`}>
+      <Activity className="w-3 h-3" /> {label} blast — {count} device{count !== 1 ? 's' : ''}
+    </span>
+  );
+};
+
+/** IntentReviewCard — rich card for 3-stage intent pipeline results */
+const IntentReviewCard: React.FC<{
+  proposal: ConfigProposal;
+  intentMeta: IntentMeta;
+  onAccept: () => void;
+  onRevise: () => void;
+  onReject: () => void;
+  isDeploying: boolean;
+}> = ({ proposal, intentMeta, onAccept, onRevise, onReject, isDeploying }) => {
+  const [showConfig, setShowConfig] = useState(false);
+  const [showRollback, setShowRollback] = useState(false);
+  const [showDiff, setShowDiff] = useState(false);
+  const [showVerify, setShowVerify] = useState(false);
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = (text: string) => {
+    navigator.clipboard.writeText(text);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1500);
+  };
+
+  return (
+    <div className="space-y-3 mt-3 border-2 border-primary/30 rounded-xl p-4 bg-base-200/50">
+      {/* Header */}
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        <div className="flex items-center gap-2">
+          <Shield className="w-4 h-4 text-primary" />
+          <span className="font-semibold text-sm">Intent-Based Change Plan</span>
+        </div>
+        <div className="flex gap-2 flex-wrap">
+          <RiskBadge level={proposal.risk_level} />
+          {intentMeta.blast_radius && (
+            <BlastRadiusBadge
+              level={intentMeta.blast_radius.level}
+              count={intentMeta.blast_radius.device_count}
+            />
+          )}
+        </div>
+      </div>
+
+      {/* Intent Summary */}
+      <div className="bg-base-300 rounded-lg p-3 text-sm space-y-1">
+        <div className="flex gap-2">
+          <span className="text-base-content/60 min-w-20">Action:</span>
+          <span className="font-semibold capitalize">{intentMeta.intent_type || proposal.feature}</span>
+        </div>
+        <div className="flex gap-2">
+          <span className="text-base-content/60 min-w-20">Feature:</span>
+          <span>{proposal.feature}</span>
+        </div>
+        <div className="flex gap-2">
+          <span className="text-base-content/60 min-w-20">Vendor:</span>
+          <span className="font-mono">{proposal.vendor}</span>
+        </div>
+        <div className="flex gap-2">
+          <span className="text-base-content/60 min-w-20">Devices:</span>
+          <span className="font-mono">
+            {intentMeta.resolved_devices?.join(', ') || proposal.target_device}
+            {intentMeta.device_count > 1 && ` (${intentMeta.device_count} total)`}
+          </span>
+        </div>
+        {intentMeta.execution_engine && (
+          <div className="flex gap-2">
+            <span className="text-base-content/60 min-w-20">Engine:</span>
+            <span className="badge badge-outline badge-xs">{intentMeta.execution_engine}</span>
+          </div>
+        )}
+      </div>
+
+      {/* Policy Checks */}
+      <div className="bg-base-300 rounded-lg p-3">
+        <h4 className="font-semibold text-xs flex items-center gap-1 mb-2">
+          <Shield className="w-3 h-3 text-info" /> Policy Validation
+        </h4>
+        <div className="space-y-1">
+          {intentMeta.policy_approved ? (
+            <div className="flex items-center gap-1 text-xs text-success">
+              <CheckCircle className="w-3 h-3" /> All policy checks passed
+            </div>
+          ) : (
+            intentMeta.policy_violations.map((v, i) => (
+              <div key={i} className="flex items-center gap-1 text-xs text-error">
+                <AlertTriangle className="w-3 h-3" /> [{v.rule_id}] {v.message}
+              </div>
+            ))
+          )}
+          {intentMeta.policy_warnings.map((w, i) => (
+            <div key={`w-${i}`} className="flex items-center gap-1 text-xs text-warning">
+              <AlertTriangle className="w-3 h-3" /> {w.message}
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* AI Explanation */}
+      {proposal.ai_explanation && (
+        <div className="bg-base-300 rounded-lg p-3">
+          <h4 className="font-semibold text-xs flex items-center gap-1 mb-2">
+            <Zap className="w-3 h-3 text-warning" /> AI Summary
+          </h4>
+          <p className="text-xs leading-relaxed whitespace-pre-wrap max-h-32 overflow-y-auto">
+            {proposal.ai_explanation}
+          </p>
+        </div>
+      )}
+
+      {/* Proposed Configuration (Collapsible) */}
+      {proposal.generated_config && (
+        <div className="bg-base-300 rounded-lg overflow-hidden">
+          <button
+            onClick={() => setShowConfig(!showConfig)}
+            className="flex items-center justify-between w-full px-3 py-2 bg-base-200 hover:bg-base-300 transition-colors"
+          >
+            <span className="text-xs font-semibold flex items-center gap-1">
+              <FileCode className="w-3 h-3 text-secondary" /> Generated Config ({intentMeta.device_count} device{intentMeta.device_count !== 1 ? 's' : ''})
+            </span>
+            <div className="flex items-center gap-1">
+              {showConfig && (
+                <button onClick={(e) => { e.stopPropagation(); handleCopy(proposal.generated_config); }} className="btn btn-ghost btn-xs">
+                  {copied ? <Check className="w-3 h-3 text-success" /> : <Copy className="w-3 h-3" />}
+                </button>
+              )}
+              <span className="text-xs">{showConfig ? '▲' : '▼'}</span>
+            </div>
+          </button>
+          {showConfig && (
+            <pre className="p-3 text-xs overflow-x-auto max-h-64 overflow-y-auto font-mono bg-neutral-800 text-green-400">
+              <code>{proposal.generated_config}</code>
+            </pre>
+          )}
+        </div>
+      )}
+
+      {/* Rollback Commands (Collapsible) */}
+      {proposal.rollback_config && (
+        <div className="bg-base-300 rounded-lg overflow-hidden">
+          <button
+            onClick={() => setShowRollback(!showRollback)}
+            className="flex items-center justify-between w-full px-3 py-2 bg-base-200 hover:bg-base-300 transition-colors"
+          >
+            <span className="text-xs font-semibold flex items-center gap-1">
+              <RotateCcw className="w-3 h-3 text-error" /> Rollback Commands
+            </span>
+            <span className="text-xs">{showRollback ? '▲' : '▼'}</span>
+          </button>
+          {showRollback && (
+            <pre className="p-3 text-xs overflow-x-auto max-h-32 overflow-y-auto font-mono bg-neutral-800 text-yellow-400">
+              <code>{proposal.rollback_config}</code>
+            </pre>
+          )}
+        </div>
+      )}
+
+      {/* Config Diff (Collapsible) */}
+      {proposal.diff_text && (
+        <div className="bg-base-300 rounded-lg overflow-hidden">
+          <button
+            onClick={() => setShowDiff(!showDiff)}
+            className="flex items-center justify-between w-full px-3 py-2 bg-base-200 hover:bg-base-300 transition-colors"
+          >
+            <span className="text-xs font-semibold flex items-center gap-1">
+              <ClipboardList className="w-3 h-3 text-info" /> Configuration Diff
+            </span>
+            <span className="text-xs">{showDiff ? '▲' : '▼'}</span>
+          </button>
+          {showDiff && (
+            <pre className="p-3 text-xs overflow-x-auto max-h-48 overflow-y-auto font-mono bg-neutral-800 text-sky-300">
+              <code>{proposal.diff_text}</code>
+            </pre>
+          )}
+        </div>
+      )}
+
+      {/* Auto-Verification Checks (Collapsible) */}
+      {intentMeta.verification_checks?.length > 0 && (
+        <div className="bg-base-300 rounded-lg overflow-hidden">
+          <button
+            onClick={() => setShowVerify(!showVerify)}
+            className="flex items-center justify-between w-full px-3 py-2 bg-base-200 hover:bg-base-300 transition-colors"
+          >
+            <span className="text-xs font-semibold flex items-center gap-1">
+              <Terminal className="w-3 h-3 text-accent" /> Auto-Verification ({intentMeta.verification_checks.length} checks)
+            </span>
+            <span className="text-xs">{showVerify ? '▲' : '▼'}</span>
+          </button>
+          {showVerify && (
+            <div className="p-3 space-y-2">
+              {intentMeta.verification_checks.map((vc, i) => (
+                <div key={i} className="bg-base-200 rounded p-2 text-xs">
+                  <div className="font-semibold text-accent">{vc.description}</div>
+                  <div className="font-mono text-base-content/70 mt-1">$ {vc.command}</div>
+                  <div className="font-mono text-success/70">expect: {vc.expected}</div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Action Buttons */}
+      {proposal.status === 'pending' && (
+        <div className="border-t border-base-300 pt-3">
+          <p className="text-xs text-center mb-2 text-base-content/70">
+            Deploy to {intentMeta.device_count} device{intentMeta.device_count !== 1 ? 's' : ''}?
+            {!intentMeta.policy_approved && (
+              <span className="text-error font-semibold ml-1">(Policy violated — deploy blocked)</span>
+            )}
+          </p>
+          <div className="flex gap-2 justify-center flex-wrap">
+            <button
+              onClick={onAccept}
+              className="btn btn-success btn-sm gap-1"
+              disabled={isDeploying || !intentMeta.policy_approved}
+            >
+              {isDeploying ? (
+                <><Loader2 className="w-3 h-3 animate-spin" /> Deploying...</>
+              ) : (
+                <><CheckCircle className="w-3 h-3" /> Approve &amp; Deploy</>
+              )}
+            </button>
+            <button onClick={onRevise} className="btn btn-ghost btn-sm gap-1" disabled={isDeploying}>
+              <Edit3 className="w-3 h-3" /> Revise
+            </button>
+            <button onClick={onReject} className="btn btn-ghost btn-sm gap-1 text-error" disabled={isDeploying}>
+              <X className="w-3 h-3" /> Reject
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
 /** DeploymentStatusCard — shown after approval or failure */
 const DeploymentStatusCard: React.FC<{
   result: DeployResult;
@@ -326,9 +579,12 @@ const GeminiChat: React.FC<AIChatProps> = ({ domain }) => {
       // Call Backend API
       const response = await llmApi.chat(text);
 
-      if (response.type === 'proposal' && response.proposal) {
-        // M19: AI generated a config proposal → show ProposalCard
+      if ((response.type === 'proposal' || response.type === 'intent_plan') && response.proposal) {
+        // M19/M24: AI generated a config proposal → show ProposalCard or IntentReviewCard
         const proposal = response.proposal as ConfigProposal;
+        const intentMeta = response.type === 'intent_plan' && response.intent_meta
+          ? response.intent_meta as IntentMeta
+          : undefined;
         setCurrentProposal(proposal);
 
         setMessages(prev => prev.map(msg =>
@@ -338,6 +594,7 @@ const GeminiChat: React.FC<AIChatProps> = ({ domain }) => {
                 isStreaming: false,
                 content: response.content,
                 proposal: proposal,
+                intentMeta: intentMeta,
               }
             : msg
         ));
@@ -554,8 +811,26 @@ const GeminiChat: React.FC<AIChatProps> = ({ domain }) => {
                      <>
                        {/* Normal text bubble */}
                        <MessageBubble message={msg} />
-                       {/* M19: Proposal card attached below the AI message */}
-                       {msg.proposal && !msg.deployResult && (
+                       {/* M24: Intent pipeline card (3-stage) */}
+                       {msg.proposal && msg.intentMeta && !msg.deployResult && (
+                         <div className="chat chat-start mb-4 -mt-2">
+                           <div className="chat-image avatar hidden sm:block">
+                             <div className="w-10" />
+                           </div>
+                           <div className="chat-bubble chat-bubble-neutral max-w-[85%] sm:max-w-[75%] p-0 overflow-visible bg-transparent shadow-none">
+                             <IntentReviewCard
+                               proposal={msg.proposal}
+                               intentMeta={msg.intentMeta}
+                               onAccept={handleAcceptProposal}
+                               onRevise={handleReviseProposal}
+                               onReject={handleRejectProposal}
+                               isDeploying={isDeploying}
+                             />
+                           </div>
+                         </div>
+                       )}
+                       {/* M19: Legacy proposal card (direct generate_config) */}
+                       {msg.proposal && !msg.intentMeta && !msg.deployResult && (
                          <div className="chat chat-start mb-4 -mt-2">
                            <div className="chat-image avatar hidden sm:block">
                              <div className="w-10" />

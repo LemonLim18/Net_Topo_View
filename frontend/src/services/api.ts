@@ -62,7 +62,7 @@ export const deployApi = {
 // --- M5: LLM Agent API ---
 export const llmApi = {
   chat: (message: string) =>
-    request<{ role: string; content: string; model: string; type: string; proposal: any | null }>('/llm/chat', {
+    request<{ role: string; content: string; model: string; type: string; proposal: any | null; intent_meta: any | null }>('/llm/chat', {
       method: 'POST',
       body: JSON.stringify({ message }),
     }),
@@ -472,5 +472,255 @@ export const ansibleApi = {
     const token = localStorage.getItem('auth_token') ?? '';
     const url = `${BASE_URL}/api/v1/ansible/jobs/${jobId}/stream?token=${encodeURIComponent(token)}`;
     return new EventSource(url);
+  },
+};
+
+// ───────────────────────── Drift (M8) ─────────────────────────
+export interface DriftEventRecord {
+  id: number;
+  device_id: number;
+  has_drift: boolean;
+  severity: string | null;
+  diff_text: string | null;
+  timestamp: string;
+  hostname?: string;
+}
+
+export const driftApi = {
+  /** Trigger a drift check for a single device. */
+  checkDevice: (hostname: string) =>
+    request<DriftEventRecord>(`/drift/check/${encodeURIComponent(hostname)}`, { method: 'POST' }),
+
+  /** Trigger a network-wide drift check (background). */
+  checkAll: () =>
+    request<{ status: string; message: string }>('/drift/check/all', { method: 'POST' }),
+
+  /** Fetch recent drift events. */
+  listEvents: (limit = 50, deviceId?: number) => {
+    const params = new URLSearchParams({ limit: String(limit) });
+    if (deviceId !== undefined) params.set('device_id', String(deviceId));
+    return request<{ events: DriftEventRecord[] }>(`/drift/events?${params}`);
+  },
+};
+
+// ───────────────────────── Dashboard Summary ─────────────────────────
+export interface DashboardSummary {
+  devices: { total: number; up: number; down: number; unknown: number };
+  interfaces: { total: number; up: number; down: number };
+  security: { avg_score: number; total_audits: number; critical_events: number };
+  drift: { total_events: number; devices_with_drift: number; compliance_pct: number };
+  deployments: { total_jobs: number; recent_7d: number; last_status: string | null };
+  recent_events: Array<{ id: number; event_type: string; severity: string; description: string; created_at: string }>;
+  recent_audit_log: Array<{ id: number; action: string; target: string; details: string; created_at: string }>;
+}
+
+export const dashboardApi = {
+  getSummary: () => request<DashboardSummary>('/dashboard/summary'),
+};
+
+// ───────────────────────── M25: Incidents API ─────────────────────────
+
+export interface IncidentSummary {
+  id: string;
+  anomaly_type: string;
+  severity: string;
+  affected_devices: string[];
+  detected_at: string;
+  status: string;
+  root_cause_summary: string;
+  created_at: string;
+}
+
+export interface AnomalyMetrics {
+  current: number;
+  baseline: number;
+  threshold: number;
+}
+
+export interface IncidentReport {
+  id: string;
+  anomaly: {
+    id: string;
+    type: string;
+    severity: string;
+    affected_devices: string[];
+    detected_at: string;
+    metrics: AnomalyMetrics;
+  };
+  collected_context: {
+    logs: string[];
+    configs: Record<string, string>;
+    telemetry_snapshot: Record<string, any>;
+  };
+  root_cause_analysis: {
+    summary: string;
+    confidence: number;
+    possible_causes: string[];
+  };
+  proposed_solution: {
+    description: string;
+    playbook: {
+      name: string;
+      filename: string;
+      content: string;
+      hosts: string[];
+      tasks: any[];
+    };
+    estimated_impact: string;
+    rollback_plan: string;
+  };
+  status: string;
+  approver: string | null;
+  resolved_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export const incidentApi = {
+  listIncidents: (status?: string, limit = 100) => {
+    const params = new URLSearchParams({ limit: String(limit) });
+    if (status) params.set('status', status);
+    return request<IncidentSummary[]>(`/incidents?${params}`);
+  },
+
+  getIncident: (id: string) =>
+    request<IncidentReport>(`/incidents/${encodeURIComponent(id)}`),
+
+  approveIncident: (id: string) =>
+    request<{ status: string; incident_id: string; playbook: string }>(
+      `/incidents/${encodeURIComponent(id)}/approve`,
+      { method: 'POST' }
+    ),
+
+  dismissIncident: (id: string) =>
+    request<{ status: string; incident_id: string }>(
+      `/incidents/${encodeURIComponent(id)}/dismiss`,
+      { method: 'POST' }
+    ),
+
+  resolveIncident: (id: string) =>
+    request<{ status: string; incident_id: string; resolved_at: string }>(
+      `/incidents/${encodeURIComponent(id)}/resolve`,
+      { method: 'POST' }
+    ),
+
+  ingestIncident: (data: {
+    anomaly_type: string;
+    severity?: string;
+    affected_devices?: string[];
+    metrics?: Record<string, number>;
+    detected_at?: string;
+    logs?: string[];
+  }) =>
+    request<{ status: string; incident_id: string; message: string }>(
+      '/incidents/ingest',
+      { method: 'POST', body: JSON.stringify(data) }
+    ),
+};
+
+// ───────────────────────── M25: Agent Plan/Execute API ─────────────────────────
+
+export interface PlanResponse {
+  plan_id: string;
+  mode: 'planning';
+  context_summary: {
+    topology: string;
+    current_state: string;
+    affected_devices: string[];
+  };
+  proposed_actions: string[];
+  expected_outcomes: {
+    positive: string[];
+    warnings: string[];
+  };
+  risk_level: 'low' | 'medium' | 'high';
+}
+
+export interface ExecuteResponse {
+  mode: 'execution';
+  plan_id: string;
+  playbook: {
+    name: string;
+    filename: string;
+    content: string;
+    hosts: string[];
+    tasks: any[];
+  };
+  estimated_duration: string;
+  rollback_plan: string | null;
+}
+
+export const agentApi = {
+  /** Phase 1: Plan — returns structured plan for user review. */
+  plan: (message: string, domain: 'network' | 'security' = 'network', context?: {
+    current_view?: string;
+    selected_device?: string;
+  }) =>
+    request<PlanResponse>('/agent/plan', {
+      method: 'POST',
+      body: JSON.stringify({ message, domain, context: context ?? {} }),
+    }),
+
+  /** Phase 2: Execute — generate playbook from approved plan. */
+  execute: (planId: string, action: 'generate' | 'revise' | 'cancel' = 'generate') =>
+    request<ExecuteResponse>('/agent/execute', {
+      method: 'POST',
+      body: JSON.stringify({ plan_id: planId, action }),
+    }),
+};
+
+// ───────────────────────── M25: Playbook Refine/History API ─────────────────────────
+
+export interface ValidationError {
+  line?: number;
+  message: string;
+  rule?: string;
+}
+
+export interface PlaybookVersion {
+  version: number;
+  playbook: string;
+  created_at: string;
+  refinement_notes?: string;
+}
+
+export interface RefineResponse {
+  job_id: number;
+  version: number;
+  refined_playbook: string;
+  changes: string[];
+  iteration: number;
+}
+
+// Extends ansibleApi with refine + history
+export const playbookApi = {
+  refine: (jobId: number, errors: ValidationError[], feedback = '') =>
+    request<RefineResponse>(
+      `/ansible/jobs/${jobId}/refine`,
+      { method: 'POST', body: JSON.stringify({ errors, feedback }) }
+    ),
+
+  getHistory: (jobId: number) =>
+    request<PlaybookVersion[]>(`/ansible/jobs/${jobId}/history`),
+};
+
+// ───────────────────────── M25: Telemetry WebSocket helper ─────────────────────────
+
+export const telemetryWs = {
+  /**
+   * Connect to the real-time telemetry stream.
+   * @param onMessage - called for every incoming JSON payload
+   * @returns WebSocket instance (close() to disconnect)
+   */
+  connect: (onMessage: (data: any) => void): WebSocket => {
+    const wsBase = API_CONFIG.API_URL.replace(/^http/, 'ws');
+    const ws = new WebSocket(`${wsBase}/api/telemetry`);
+    ws.onopen  = () => console.debug('[telemetry] connected');
+    ws.onclose = () => console.debug('[telemetry] disconnected');
+    ws.onerror = (e) => console.warn('[telemetry] error', e);
+    ws.onmessage = (e) => {
+      try { onMessage(JSON.parse(e.data)); } catch { /* ignore parse errors */ }
+    };
+    return ws;
   },
 };

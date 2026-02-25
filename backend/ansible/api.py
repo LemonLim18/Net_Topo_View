@@ -15,6 +15,7 @@ Approval flow:
 All destructive changes require explicit operator approval before execute is allowed.
 """
 
+import json
 import logging
 import asyncio
 import os
@@ -658,3 +659,249 @@ async def stream_job_output(
             "Access-Control-Allow-Origin":  "*",
         },
     )
+
+
+# =============================================================================
+# M25 Phase-2 ─ Playbook Refine & Version History
+# =============================================================================
+
+class ValidationError(BaseModel):
+    line:    Optional[int] = None
+    message: str
+    rule:    str = "syntax"
+
+
+class RefineRequest(BaseModel):
+    """Feedback from playbook validation / user review for AI self-remediation."""
+    errors:   List[ValidationError] = []
+    feedback: str = ""
+
+
+class RefineResponse(BaseModel):
+    job_id:           int
+    version:          int
+    refined_playbook: str
+    changes:          List[str] = []
+    iteration:        int = 1
+
+
+_REFINE_SYSTEM = """\
+You are a senior Ansible engineer.
+The user will provide a YAML playbook and a list of validation errors plus feedback.
+Return ONLY the corrected YAML playbook — no explanations, no markdown fences,
+no commentary.  Preserve all existing working tasks.
+Also prepend a YAML comment block listing what you changed, one change per line:
+# Changes:
+# - <change 1>
+# - <change 2>
+---
+"""
+
+
+async def _ai_refine_playbook(
+    original: str,
+    errors: list[dict],
+    feedback: str,
+) -> tuple[str, list[str]]:
+    """Ask the LLM to fix a playbook given error/feedback."""
+    if _agent is None and _builder is None:
+        raise HTTPException(503, "LLM not available for playbook refinement")
+
+    # Get the provider from the agent, or the builder
+    provider = None
+    if _agent is not None:
+        provider = _agent._provider
+    elif hasattr(_builder, "_provider"):
+        provider = _builder._provider
+
+    if provider is None:
+        raise HTTPException(503, "LLM provider not available")
+
+    from llm.provider import LLMMessage
+    error_lines = "\n".join(
+        f"  Line {e.get('line','?')}: [{e.get('rule','?')}] {e.get('message','')}"
+        for e in errors
+    ) or "  (no specific errors listed)"
+
+    user_content = (
+        f"Original playbook:\n```yaml\n{original}\n```\n\n"
+        f"Validation errors:\n{error_lines}\n\n"
+        f"Additional feedback: {feedback or 'none'}\n\n"
+        "Please fix all errors and return the corrected YAML only."
+    )
+
+    resp = await provider.generate(
+        messages=[
+            LLMMessage(role="system", content=_REFINE_SYSTEM),
+            LLMMessage(role="user",   content=user_content),
+        ],
+        tools=None,
+        temperature=0.1,
+    )
+    raw = resp.content.strip()
+
+    # Strip markdown fences if the model ignored instructions
+    if "```" in raw:
+        parts = raw.split("```")
+        for part in parts:
+            stripped = part.lstrip("yaml\n").strip()
+            if "---" in stripped or "- name" in stripped:
+                raw = stripped
+                break
+
+    # Extract change comments
+    changes: list[str] = []
+    yaml_lines = raw.split("\n")
+    clean_lines: list[str] = []
+    for line in yaml_lines:
+        stripped = line.strip()
+        if stripped.startswith("# ") and ":" in stripped:
+            changes.append(stripped.lstrip("# ").strip())
+        else:
+            clean_lines.append(line)
+    final_yaml = "\n".join(clean_lines).strip()
+
+    return final_yaml, changes
+
+
+def _append_playbook_version(db, job_id: int, playbook: str, notes: str = "") -> int:
+    """
+    Load current playbook_versions for a job, append a new entry, save back.
+    Returns new version number.
+    """
+    try:
+        with db._connect() as conn:
+            row = conn.execute(
+                "SELECT playbook_versions FROM jobs WHERE id=?", (job_id,)
+            ).fetchone()
+    except Exception:
+        return 1
+
+    versions: list = []
+    if row and row[0]:
+        try:
+            versions = json.loads(row[0])
+        except Exception:
+            versions = []
+
+    new_version = len(versions) + 1
+    versions.append({
+        "version":          new_version,
+        "playbook":         playbook,
+        "created_at":       datetime.utcnow().isoformat(),
+        "refinement_notes": notes,
+    })
+
+    try:
+        with db._connect() as conn:
+            conn.execute(
+                "UPDATE jobs SET playbook_versions=?, ansible_playbook=? WHERE id=?",
+                (json.dumps(versions), playbook, job_id),
+            )
+    except Exception as exc:
+        logger.warning("Could not save playbook version: %s", exc)
+
+    return new_version
+
+
+@router.post(
+    "/jobs/{job_id}/refine",
+    response_model=RefineResponse,
+    summary="AI self-remediation — fix playbook based on validation errors or feedback",
+)
+async def refine_playbook(
+    job_id: int,
+    req:    RefineRequest,
+    user:   dict = Depends(require_role("operator")),
+):
+    """
+    Sends the current playbook + validation errors/feedback to the LLM.
+    The LLM returns a corrected version which is persisted over the existing one.
+
+    Use this in the Ansible Studio "Fix Issues" workflow:
+    1. Validate with /check
+    2. If errors, call /refine with the error list
+    3. Repeat until /check passes
+    4. Approve + execute
+    """
+    playbook_yaml, _ = _load_job_playbook(job_id)
+
+    errors_raw  = [e.model_dump() for e in req.errors]
+    refined, changes = await _ai_refine_playbook(
+        original=playbook_yaml,
+        errors=errors_raw,
+        feedback=req.feedback,
+    )
+
+    version = _append_playbook_version(
+        _db, job_id, refined,
+        notes=f"Refinement: {req.feedback or ', '.join([e.message for e in req.errors[:3]])}"
+    )
+
+    logger.info("Playbook refined job=%d version=%d user=%s", job_id, version, user.get("username"))
+    return RefineResponse(
+        job_id=job_id,
+        version=version,
+        refined_playbook=refined,
+        changes=changes,
+        iteration=version,
+    )
+
+
+class PlaybookVersion(BaseModel):
+    version:          int
+    playbook:         str
+    created_at:       str
+    refinement_notes: str = ""
+
+
+@router.get(
+    "/jobs/{job_id}/history",
+    response_model=List[PlaybookVersion],
+    summary="Get full playbook version history for a job",
+)
+async def get_playbook_history(
+    job_id: int,
+    user:   dict = Depends(get_current_user),
+):
+    """
+    Return all versions of the playbook for this job, oldest first.
+
+    Version 1 is the original LLM-generated playbook.
+    Subsequent versions are refinements from /refine calls.
+    """
+    if _db is None:
+        raise HTTPException(503, "Database not initialized")
+
+    with _db._connect() as conn:
+        # Auto-upgrade: add column if it doesn't exist yet
+        try:
+            conn.execute("ALTER TABLE jobs ADD COLUMN playbook_versions TEXT")
+        except Exception:
+            pass  # column already exists
+
+        row = conn.execute(
+            "SELECT playbook_versions, ansible_playbook FROM jobs WHERE id=?",
+            (job_id,),
+        ).fetchone()
+
+    if not row:
+        raise HTTPException(404, f"Job {job_id} not found")
+
+    if row["playbook_versions"]:
+        try:
+            versions = json.loads(row["playbook_versions"])
+            return [PlaybookVersion(**v) for v in versions]
+        except Exception:
+            pass
+
+    # Fallback: only the current playbook
+    if row["ansible_playbook"]:
+        return [PlaybookVersion(
+            version=1,
+            playbook=row["ansible_playbook"],
+            created_at=datetime.utcnow().isoformat(),
+            refinement_notes="Original generation",
+        )]
+
+    return []

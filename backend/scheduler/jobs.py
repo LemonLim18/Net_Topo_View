@@ -58,7 +58,7 @@ def job_security_audit() -> None:
         from db.manager import DatabaseManager
         from security.engine import SecurityAuditEngine
 
-        db = DatabaseManager("net_topo.db")
+        db = DatabaseManager("db/netauto.db")
         engine = SecurityAuditEngine()
         audits = engine.run_audit_all(db)
         logger.info("[Scheduler] Security-audit complete: %d devices audited", len(audits))
@@ -76,7 +76,7 @@ def job_cve_rescan() -> None:
         from db.manager import DatabaseManager
         from security.cve.matcher import CVEMatcher
 
-        db = DatabaseManager("net_topo.db")
+        db = DatabaseManager("db/netauto.db")
         matcher = CVEMatcher()
         results = matcher.scan_all_devices(db)
         total = sum(len(v) for v in results.values())

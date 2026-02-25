@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import ReactMarkdown from 'react-markdown';
-import { Send, Loader2, Bot, User2, Sparkles, AlertCircle } from 'lucide-react';
+import { Send, Loader2, Bot, Sparkles, AlertCircle, FileCode, RotateCcw, ChevronRight, Paperclip, X, TriangleAlert } from 'lucide-react';
 import { ansibleApi } from '../../src/services/api';
 import type { AnsibleMessage, AnsibleJob } from '../../typesLLM';
 
@@ -56,6 +56,66 @@ function parseIntent(text: string): {
   return { vendor, feature, target_hosts: target_hosts.length ? target_hosts : ['all'], params };
 }
 
+// ── VS Code-style markdown renderer ──────────────────────────────────────────
+interface MarkdownProps { content: string; onOpenFile?: (path: string) => void; }
+
+const VscodeMarkdown: React.FC<MarkdownProps> = ({ content, onOpenFile }) => (
+  <ReactMarkdown
+    components={{
+      p:    ({ children }) => <p className="mb-2 last:mb-0 leading-relaxed" style={{ fontSize: 13, color: '#cccccc' }}>{children}</p>,
+      strong: ({ children }) => <strong style={{ fontWeight: 600, color: '#e2c08d' }}>{children}</strong>,
+      em:   ({ children }) => <em style={{ fontStyle: 'italic', color: '#9cdcfe' }}>{children}</em>,
+      code: ({ children, className }) => {
+        if (className?.includes('language-')) return null; // handed by pre
+        return <code style={{ fontFamily: 'monospace', fontSize: 12, background: '#0a0a0a', color: '#ce9178', padding: '1px 6px', borderRadius: 3, border: '1px solid #3c3c3c' }}>{children}</code>;
+      },
+      pre: ({ children }) => {
+        const codeEl = children as React.ReactElement<any>;
+        const rawText = typeof codeEl?.props?.children === 'string' ? codeEl.props.children : String(codeEl?.props?.children ?? '');
+        const lang = (codeEl?.props?.className ?? '').replace('language-', '') || 'yaml';
+        const isFilePath = rawText.trim().includes('/') && !rawText.includes('\n') && rawText.trim().length < 80;
+        if (isFilePath && onOpenFile) {
+          return (
+            <button onClick={() => onOpenFile(rawText.trim())}
+              style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '3px 8px', margin: '4px 0', borderRadius: 4, background: '#1e3a5f', color: '#4fc3f7', fontSize: 12, fontFamily: 'monospace', border: '1px solid #264f78', cursor: 'pointer', width: '100%', textAlign: 'left' }}
+            >
+              <FileCode style={{ width: 12, height: 12, flexShrink: 0 }} />
+              <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{rawText.trim()}</span>
+              <ChevronRight style={{ width: 10, height: 10, marginLeft: 'auto', opacity: 0.6, flexShrink: 0 }} />
+            </button>
+          );
+        }
+        return (
+          <div style={{ margin: '8px 0', borderRadius: 4, overflow: 'hidden', border: '1px solid #3c3c3c' }}>
+            <div style={{ padding: '3px 10px', background: '#2d2d2d', borderBottom: '1px solid #3c3c3c', display: 'flex', justifyContent: 'space-between' }}>
+              <span style={{ fontSize: 10, color: '#858585', fontFamily: 'monospace', textTransform: 'uppercase', letterSpacing: '0.06em' }}>{lang}</span>
+            </div>
+            <pre style={{ background: '#0d0d0d', color: '#d4d4d4', fontFamily: 'monospace', fontSize: 11.5, lineHeight: 1.55, padding: '10px 12px', overflowX: 'auto', margin: 0, whiteSpace: 'pre' }}>{rawText}</pre>
+          </div>
+        );
+      },
+      ul: ({ children }) => <ul style={{ listStyle: 'none', paddingLeft: 0, margin: '6px 0' }}>{children}</ul>,
+      ol: ({ children }) => <ol style={{ paddingLeft: 16, margin: '6px 0', color: '#cccccc', fontSize: 13 }}>{children}</ol>,
+      li: ({ children }) => <li style={{ display: 'flex', gap: 6, color: '#cccccc', fontSize: 13, lineHeight: 1.5, marginBottom: 3 }}><span style={{ color: '#569cd6', flexShrink: 0 }}>›</span><span>{children}</span></li>,
+      blockquote: ({ children }) => <blockquote style={{ margin: '6px 0', paddingLeft: 10, borderLeft: '2px solid #569cd6', color: '#9aa0aa', fontStyle: 'italic', fontSize: 12 }}>{children}</blockquote>,
+      h1: ({ children }) => <h1 style={{ fontSize: 14, fontWeight: 700, color: '#e2e2e2', margin: '10px 0 4px' }}>{children}</h1>,
+      h2: ({ children }) => <h2 style={{ fontSize: 13, fontWeight: 600, color: '#e2e2e2', margin: '8px 0 4px' }}>{children}</h2>,
+      h3: ({ children }) => <h3 style={{ fontSize: 12, fontWeight: 600, color: '#9cdcfe', margin: '6px 0 2px' }}>{children}</h3>,
+      a: ({ href, children }) => {
+        const isRelFile = href && !href.startsWith('http') && (href.includes('/') || /\.(yml|yaml|json|j2|txt)$/.test(href));
+        if (isRelFile && onOpenFile) {
+          return <button onClick={() => onOpenFile(href!)} style={{ display: 'inline-flex', alignItems: 'center', gap: 3, color: '#4fc3f7', fontSize: 12, fontFamily: 'monospace', textDecoration: 'underline', cursor: 'pointer', background: 'none', border: 'none', padding: 0 }}><FileCode style={{ width: 11, height: 11 }} />{children}</button>;
+        }
+        return <a href={href} target="_blank" rel="noopener noreferrer" style={{ color: '#4fc3f7', textDecoration: 'underline' }}>{children}</a>;
+      },
+      hr: () => <hr style={{ border: 'none', borderTop: '1px solid #3c3c3c', margin: '10px 0' }} />,
+    }}
+  >
+    {content}
+  </ReactMarkdown>
+);
+
+// ── Main chat panel ───────────────────────────────────────────────────────────
 const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
   onPlaybookReady, onOpenFile, activeJob,
 }) => {
@@ -65,24 +125,117 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
     content:   '**Ansible AI** ready.\n\nDescribe what you want to configure in plain English. For example:\n\n> *Configure VLAN 100 named DATA on all access switches*\n\nI will generate an Ansible playbook, which you can then review, dry-run, and deploy.',
     timestamp: Date.now(),
   }]);
-  const [input, setInput]           = useState('');
-  const [isGenerating, setGenerating] = useState(false);
-  const bottomRef = useRef<HTMLDivElement>(null);
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const [input, setInput]               = useState('');
+  const [isGenerating, setGenerating]   = useState(false);
+  const [isDragOver, setIsDragOver]     = useState(false);
+  const [attachedFiles, setAttachedFiles] = useState<{ name: string; content: string; lang: string; size: number; truncated: boolean }[]>([]);
+  const bottomRef      = useRef<HTMLDivElement>(null);
+  const textareaRef    = useRef<HTMLTextAreaElement>(null);
+  const fileInputRef   = useRef<HTMLInputElement>(null);
+  const dragCounterRef = useRef(0);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
+
+  // ── File helpers ────────────────────────────────────────────────────────
+  const langFor = (name: string) =>
+    /\.ya?ml$/i.test(name) ? 'yaml' :
+    /\.json$/i.test(name) ? 'json' :
+    /\.j2$/i.test(name)   ? 'jinja2' :
+    /\.conf$/i.test(name) ? 'ini' :
+    /\.py$/i.test(name)   ? 'python' :
+    'text';
+
+  const readTextFile = (file: File): Promise<string> =>
+    new Promise((res, rej) => {
+      const reader = new FileReader();
+      reader.onload  = () => res(reader.result as string);
+      reader.onerror = () => rej(new Error('Failed to read file'));
+      reader.readAsText(file);
+    });
+
+  const MAX_FILE_BYTES = 8 * 1024;
+  const fmtSize = (b: number) => b < 1024 ? `${b}B` : b < 1024 * 1024 ? `${(b / 1024).toFixed(1)}K` : `${(b / (1024 * 1024)).toFixed(1)}M`;
+
+  const attachFiles = useCallback(async (files: FileList | File[]) => {
+    const arr = Array.from(files);
+    const results = await Promise.allSettled(arr.map(async (f) => {
+      const raw = await readTextFile(f);
+      const truncated = raw.length > MAX_FILE_BYTES;
+      const content   = truncated ? raw.slice(0, MAX_FILE_BYTES) + '\n… [truncated to 8 KB]' : raw;
+      return { name: f.name, content, lang: langFor(f.name), size: f.size, truncated };
+    }));
+    const valid = results
+      .filter((r): r is PromiseFulfilledResult<{ name: string; content: string; lang: string; size: number; truncated: boolean }> => r.status === 'fulfilled')
+      .map(r => r.value);
+    setAttachedFiles(prev => [...prev, ...valid]);
+  }, []);
+
+  // Panel-level drag handlers with counter to avoid child-element flicker
+  const handlePanelDragEnter = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    dragCounterRef.current += 1;
+    if (dragCounterRef.current === 1) setIsDragOver(true);
+  }, []);
+
+  const handlePanelDragLeave = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    dragCounterRef.current -= 1;
+    if (dragCounterRef.current === 0) setIsDragOver(false);
+  }, []);
+
+  const handlePanelDrop = useCallback(async (e: React.DragEvent) => {
+    e.preventDefault();
+    dragCounterRef.current = 0;
+    setIsDragOver(false);
+
+    // OS filesystem files (native drag from desktop/explorer)
+    if (e.dataTransfer.files.length) {
+      attachFiles(e.dataTransfer.files);
+      return;
+    }
+
+    // Files dragged from the Ansible file tree (path token set by AnsibleFileTree)
+    const ansiblePath = e.dataTransfer.getData('application/ansible-path');
+    if (ansiblePath) {
+      try {
+        const res = await ansibleApi.readFile(ansiblePath);
+        const name = ansiblePath.split('/').pop() ?? ansiblePath;
+        const raw  = res.content ?? '';
+        const truncated = raw.length > MAX_FILE_BYTES;
+        const content   = truncated ? raw.slice(0, MAX_FILE_BYTES) + '\n… [truncated to 8 KB]' : raw;
+        setAttachedFiles(prev => [...prev, {
+          name,
+          content,
+          lang: langFor(name),
+          size: res.size ?? raw.length,
+          truncated,
+        }]);
+      } catch (_) { /* ignore — file may not be readable */ }
+    }
+  }, [attachFiles]);
+
+  const removeAttachment = (idx: number) =>
+    setAttachedFiles(prev => prev.filter((_, i) => i !== idx));
 
   const addMsg = useCallback((msg: Omit<AnsibleMessage, 'id' | 'timestamp'>) => {
     setMessages(prev => [...prev, { ...msg, id: crypto.randomUUID(), timestamp: Date.now() }]);
   }, []);
 
   const handleSend = useCallback(async () => {
-    const text = input.trim();
-    if (!text || isGenerating) return;
+    const baseText = input.trim();
+    if (!baseText && attachedFiles.length === 0) return;
+    if (isGenerating) return;
+
+    // Build the full message: prepend attached file contents as fenced blocks
+    const fileContext = attachedFiles.map(f =>
+      `**File: \`${f.name}\`**\n\`\`\`${f.lang}\n${f.content.trimEnd()}\n\`\`\``
+    ).join('\n\n');
+    const text = fileContext ? (fileContext + (baseText ? '\n\n' + baseText : '')) : baseText;
 
     setInput('');
+    setAttachedFiles([]);
     addMsg({ role: 'user', content: text });
 
     // Loading bubble
@@ -135,103 +288,230 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
   }, [input, isGenerating, addMsg, onPlaybookReady]);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault();
-      handleSend();
-    }
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); }
   };
 
+  const clearMessages = () => setMessages([{
+    id: 'welcome', role: 'assistant', timestamp: Date.now(),
+    content: '**Ansible AI** is ready. Describe your configuration intent.',
+  }]);
+
+  /* ── VS Code Copilot-style shell ──────────────────────────────────────── */
   return (
-    <div className="flex flex-col h-full bg-base-100 border-l border-base-300">
-      {/* Header */}
-      <div className="flex items-center gap-2 px-3 py-2 border-b border-base-200 flex-shrink-0">
-        <Sparkles className="h-4 w-4 text-primary" />
-        <span className="text-sm font-bold">Ansible AI</span>
-        {activeJob && (
-          <span className={`badge badge-xs ml-auto ${
-            activeJob.status === 'success' ? 'badge-success' :
-            activeJob.status === 'failed'  ? 'badge-error'  :
-            activeJob.status === 'running' ? 'badge-warning' :
-            'badge-ghost'
-          }`}>
-            Job {activeJob.jobId} · {activeJob.status}
-          </span>
-        )}
+    <div
+      className="flex flex-col h-full"
+      style={{ background: '#1e1e1e', fontFamily: "'Menlo','Monaco','Consolas','Courier New',monospace", position: 'relative' }}
+      onDragEnter={handlePanelDragEnter}
+      onDragLeave={handlePanelDragLeave}
+      onDragOver={e => e.preventDefault()}
+      onDrop={handlePanelDrop}
+    >
+      {/* Full-panel drag-over overlay */}
+      {isDragOver && (
+        <div style={{
+          position: 'absolute', inset: 0, zIndex: 50,
+          background: 'rgba(14,99,156,0.12)',
+          border: '2px dashed #0e639c',
+          borderRadius: 4,
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          pointerEvents: 'none',
+        }}>
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8, color: '#4fc3f7' }}>
+            <Paperclip style={{ width: 28, height: 28, opacity: 0.85 }} />
+            <span style={{ fontSize: 13, fontWeight: 600 }}>Drop files to attach as context</span>
+            <span style={{ fontSize: 11, color: '#7ab3d4' }}>.yml .yaml .json .j2 .conf .py .ini .log .csv .md</span>
+          </div>
+        </div>
+      )}
+
+      {/* Title bar — matches VS Code secondary sidebar */}
+      <div className="flex items-center justify-between px-3 shrink-0"
+        style={{ background: '#252526', borderBottom: '1px solid #3c3c3c', height: 35 }}>
+        <div className="flex items-center gap-2">
+          <Sparkles style={{ width: 13, height: 13, color: '#c586c0' }} />
+          <span style={{ fontSize: 11, fontWeight: 600, letterSpacing: '0.06em', color: '#bbbbbb', textTransform: 'uppercase' }}>ANSIBLE AI</span>
+        </div>
+        <div className="flex items-center gap-1">
+          {activeJob && (
+            <span style={{
+              fontSize: 10, padding: '1px 7px', borderRadius: 10,
+              background: activeJob.status === 'success' ? '#1b3a1f' : activeJob.status === 'failed' ? '#3a1010' : activeJob.status === 'running' ? '#3a2e00' : '#2d2d2d',
+              color:      activeJob.status === 'success' ? '#69f0ae' : activeJob.status === 'failed' ? '#ff8a80' : activeJob.status === 'running' ? '#ffd740' : '#858585',
+              border:     `1px solid ${activeJob.status === 'success' ? '#2e7d32' : activeJob.status === 'failed' ? '#c62828' : activeJob.status === 'running' ? '#f9a825' : '#3c3c3c'}`,
+            }}>#{activeJob.jobId} · {activeJob.status}</span>
+          )}
+          <button onClick={clearMessages} title="Clear"
+            style={{ padding: '3px 4px', borderRadius: 3, background: 'transparent', border: 'none', color: '#666', cursor: 'pointer' }}
+            className="hover:bg-[#2d2d2d] transition-colors">
+            <RotateCcw style={{ width: 13, height: 13 }} />
+          </button>
+        </div>
       </div>
 
       {/* Message list */}
-      <div className="flex-grow overflow-y-auto px-3 py-3 space-y-3">
-        {messages.map(msg => (
-          <div
-            key={msg.id}
-            className={`flex gap-2 ${msg.role === 'user' ? 'flex-row-reverse' : 'flex-row'}`}
-          >
-            <div className={`flex-shrink-0 rounded-full p-1.5 h-7 w-7 flex items-center justify-center ${
-              msg.role === 'user' ? 'bg-primary text-primary-content' : 'bg-base-300'
-            }`}>
-              {msg.role === 'user' ? <User2 className="h-3.5 w-3.5" /> : <Bot className="h-3.5 w-3.5" />}
-            </div>
-            <div className={`max-w-[80%] rounded-xl px-3 py-2 text-sm ${
-              msg.role === 'user'
-                ? 'bg-primary text-primary-content rounded-br-none'
-                : msg.isError
-                  ? 'bg-error/10 text-error border border-error/30 rounded-bl-none'
-                  : 'bg-base-200 rounded-bl-none'
-            }`}>
-              {msg.isLoading ? (
-                <div className="flex items-center gap-2 opacity-60">
-                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                  <span>Generating playbook…</span>
+      <div className="grow overflow-y-auto" style={{ padding: '6px 0' }}>
+        {messages.map((msg, idx) => (
+          <div key={msg.id}>
+            {idx > 0 && <div style={{ height: 1, background: '#2a2a2a', margin: '2px 0' }} />}
+
+            {msg.role === 'user' ? (
+              /* User message */
+              <div style={{ padding: '8px 14px 6px', background: '#252526' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 7, marginBottom: 4 }}>
+                  <div style={{ width: 16, height: 16, borderRadius: '50%', background: '#0e639c', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 9, color: '#fff', fontWeight: 700, flexShrink: 0 }}>U</div>
+                  <span style={{ fontSize: 11, fontWeight: 600, color: '#cccccc' }}>You</span>
+                  <span style={{ fontSize: 10, color: '#444' }}>{new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
                 </div>
-              ) : msg.isError ? (
-                <div className="flex items-start gap-1.5">
-                  <AlertCircle className="h-4 w-4 flex-shrink-0 mt-0.5" />
-                  <span>{msg.content}</span>
-                </div>
-              ) : (
-                <ReactMarkdown
-                  components={{
-                    p:    ({children}) => <p className="mb-1 last:mb-0">{children}</p>,
-                    code: ({children}) => <code className="bg-base-300 px-1 rounded text-xs font-mono">{children}</code>,
-                    ul:   ({children}) => <ul className="list-disc pl-4 my-1 space-y-0.5">{children}</ul>,
-                    strong: ({children}) => <strong className="font-bold">{children}</strong>,
-                  }}
-                >
+                <div style={{ paddingLeft: 23, fontSize: 13, color: '#cccccc', lineHeight: 1.5, fontFamily: 'system-ui,-apple-system,sans-serif' }}>
                   {msg.content}
-                </ReactMarkdown>
-              )}
-            </div>
+                </div>
+              </div>
+            ) : (
+              /* Assistant message */
+              <div style={{ padding: '8px 14px 6px', background: '#1e1e1e' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 7, marginBottom: 6 }}>
+                  <div style={{ width: 16, height: 16, borderRadius: 3, background: '#c586c0', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                    <Bot style={{ width: 10, height: 10, color: '#1e1e1e' }} />
+                  </div>
+                  <span style={{ fontSize: 11, fontWeight: 600, color: '#c586c0' }}>Ansible AI</span>
+                </div>
+
+                <div style={{ paddingLeft: 23, fontFamily: 'system-ui,-apple-system,sans-serif' }}>
+                  {msg.isLoading ? (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: '#858585', fontSize: 13 }}>
+                      <Loader2 style={{ width: 14, height: 14, color: '#569cd6' }} className="animate-spin" />
+                      Generating playbook…
+                    </div>
+                  ) : msg.isError ? (
+                    <div style={{ display: 'flex', alignItems: 'flex-start', gap: 7, color: '#f48771', fontSize: 13 }}>
+                      <AlertCircle style={{ width: 14, height: 14, flexShrink: 0, marginTop: 2 }} />
+                      {msg.content}
+                    </div>
+                  ) : (
+                    <VscodeMarkdown content={msg.content} onOpenFile={onOpenFile} />
+                  )}
+
+                  {/* Playbook file chip */}
+                  {msg.playbookPath && (
+                    <button onClick={() => onOpenFile(msg.playbookPath!)}
+                      style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 8, padding: '4px 8px', borderRadius: 4, background: '#1e3a5f', border: '1px solid #264f78', color: '#4fc3f7', fontSize: 11, fontFamily: 'monospace', cursor: 'pointer' }}
+                      className="hover:bg-[#1e4a7f] transition-colors w-full text-left"
+                    >
+                      <FileCode style={{ width: 12, height: 12, flexShrink: 0 }} />
+                      <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{msg.playbookPath}</span>
+                      <ChevronRight style={{ width: 10, height: 10, marginLeft: 'auto', opacity: 0.6, flexShrink: 0 }} />
+                    </button>
+                  )}
+                </div>
+              </div>
+            )}
           </div>
         ))}
         <div ref={bottomRef} />
       </div>
 
       {/* Input area */}
-      <div className="p-3 border-t border-base-200 flex-shrink-0">
-        <div className="flex gap-2 items-end">
-          <textarea
-            ref={textareaRef}
-            className="textarea textarea-bordered flex-grow text-sm resize-none min-h-[60px] max-h-[120px]"
-            placeholder="Describe what you want to configure…"
-            value={input}
-            onChange={e => setInput(e.target.value)}
-            onKeyDown={handleKeyDown}
-            disabled={isGenerating}
-            rows={2}
-          />
-          <button
-            className="btn btn-primary btn-sm h-auto py-3"
-            onClick={handleSend}
-            disabled={!input.trim() || isGenerating}
-            title="Send (Enter)"
-          >
-            {isGenerating
-              ? <Loader2 className="h-4 w-4 animate-spin" />
-              : <Send className="h-4 w-4" />
-            }
-          </button>
+      <div className="shrink-0" style={{ borderTop: '1px solid #3c3c3c', background: '#1e1e1e', padding: '8px 10px' }}>
+
+        {/* Hidden native file picker */}
+        <input
+          ref={fileInputRef}
+          type="file"
+          multiple
+          accept=".yml,.yaml,.json,.j2,.conf,.txt,.py,.ini,.log,.csv,.md"
+          style={{ display: 'none' }}
+          onChange={e => {
+            if (e.target.files?.length) attachFiles(e.target.files);
+            e.target.value = '';
+          }}
+        />
+
+        {/* Input box wrapper */}
+        <div
+          style={{
+            borderRadius: 6,
+            border: '1px solid #3c3c3c',
+            background: '#2d2d2d',
+            position: 'relative',
+          }}
+          className="focus-within:border-[#0e639c]! transition-colors"
+        >
+
+          {/* Attached file chips */}
+          {attachedFiles.length > 0 && (
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, padding: '6px 8px 0' }}>
+              {attachedFiles.map((f, i) => (
+                <div
+                  key={i}
+                  role="listitem"
+                  title={f.truncated ? `${f.name} — truncated to 8 KB` : `${f.name} (${fmtSize(f.size)})`}
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: 4,
+                    background: '#1e3a5f', border: `1px solid ${f.truncated ? '#856404' : '#264f78'}`, borderRadius: 4,
+                    padding: '2px 6px', fontSize: 11, fontFamily: 'monospace', color: '#4fc3f7',
+                    maxWidth: 180,
+                  }}
+                >
+                  <FileCode style={{ width: 11, height: 11, flexShrink: 0 }} />
+                  <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>{f.name}</span>
+                  <span style={{ fontSize: 10, color: '#7ab3d4', flexShrink: 0 }}>{fmtSize(f.size)}</span>
+                  {f.truncated && (
+                    <TriangleAlert style={{ width: 10, height: 10, color: '#fbbf24', flexShrink: 0 }} />
+                  )}
+                  <button
+                    onClick={() => removeAttachment(i)}
+                    aria-label={`Remove ${f.name}`}
+                    style={{ background: 'none', border: 'none', padding: 0, cursor: 'pointer', color: '#7ab3d4', display: 'flex', flexShrink: 0 }}
+                  >
+                    <X style={{ width: 10, height: 10 }} />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Textarea + buttons row */}
+          <div style={{ display: 'flex', gap: 6, alignItems: 'flex-end', padding: '6px 8px' }}>
+            <textarea
+              ref={textareaRef}
+              style={{ flex: 1, background: 'transparent', border: 'none', outline: 'none', resize: 'none', fontSize: 13, fontFamily: 'system-ui,-apple-system,sans-serif', color: '#cccccc', minHeight: 52, maxHeight: 120, lineHeight: 1.5 }}
+              placeholder={attachedFiles.length ? 'Add a message or send file as-is…' : 'Ask Ansible AI or drop a file…'}
+              value={input}
+              onChange={e => setInput(e.target.value)}
+              onKeyDown={handleKeyDown}
+              disabled={isGenerating}
+              rows={2}
+            />
+            {/* Attach File as Context button */}
+            <button
+              onClick={() => fileInputRef.current?.click()}
+              title="Attach File as Context"
+              aria-label="Attach File as Context"
+              style={{ padding: 6, borderRadius: 4, border: 'none', cursor: 'pointer', background: 'transparent', color: '#666', flexShrink: 0, alignSelf: 'flex-end', transition: 'color 0.15s' }}
+              className="hover:text-[#4fc3f7]!"
+            >
+              <Paperclip style={{ width: 15, height: 15 }} />
+            </button>
+            {/* Send button */}
+            <button
+              onClick={handleSend}
+              disabled={(!input.trim() && attachedFiles.length === 0) || isGenerating}
+              title="Send (Enter)"
+              style={{ padding: 6, borderRadius: 4, border: 'none', flexShrink: 0, alignSelf: 'flex-end', transition: 'background 0.15s',
+                cursor: (input.trim() || attachedFiles.length > 0) && !isGenerating ? 'pointer' : 'not-allowed',
+                background: (input.trim() || attachedFiles.length > 0) && !isGenerating ? '#0e639c' : '#333',
+                color:      (input.trim() || attachedFiles.length > 0) && !isGenerating ? '#ffffff' : '#555',
+              }}
+            >
+              {isGenerating
+                ? <Loader2 style={{ width: 15, height: 15 }} className="animate-spin" />
+                : <Send style={{ width: 15, height: 15 }} />
+              }
+            </button>
+          </div>
         </div>
-        <p className="text-xs opacity-40 mt-1 text-center">Enter to send · Shift+Enter for newline</p>
+
+        <p style={{ fontSize: 10, color: '#444', textAlign: 'center', marginTop: 4 }}>Enter to send · Shift+Enter for newline · 📎 attach or drag from file tree</p>
       </div>
     </div>
   );

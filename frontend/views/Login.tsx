@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import type { User } from '../types';
 import { Lock, User as UserIcon, Shield } from 'lucide-react';
 import { authApi } from '../src/services/api';
-import { Toast } from '../src/utils/swal';
+import { Toast, LoginToast } from '../src/utils/swal';
 
 interface LoginProps {
     onLogin: (user: User) => void;
@@ -23,7 +23,7 @@ const Login: React.FC<LoginProps> = ({ onLogin }) => {
             // Store JWT token in localStorage
             localStorage.setItem('auth_token', response.access_token);
 
-            Toast.success('Welcome back', response.user.username);
+            LoginToast.welcome(response.user.username);
 
             // Pass user to the app
             onLogin({

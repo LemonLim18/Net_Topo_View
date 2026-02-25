@@ -37,6 +37,12 @@ class PollResult:
     lldp_summary: List[Dict] = field(default_factory=list)
     lldp_detail: List[Dict] = field(default_factory=list)
     arp_entries: List[Dict] = field(default_factory=list)
+    # Enriched device info (from show version / get_device_info)
+    vendor: Optional[str] = None
+    model: Optional[str] = None
+    os_version: Optional[str] = None
+    serial: Optional[str] = None
+    uptime: Optional[str] = None
 
     def to_dict(self) -> Dict:
         """Convert to the legacy dict format used by BFS engine."""
@@ -49,6 +55,17 @@ class PollResult:
         }
         if self.down:
             d["down"] = True
+        # Enriched fields
+        if self.vendor:
+            d["vendor"] = self.vendor
+        if self.model:
+            d["model"] = self.model
+        if self.os_version:
+            d["os_version"] = self.os_version
+        if self.serial:
+            d["serial"] = self.serial
+        if self.uptime:
+            d["uptime"] = self.uptime
         return d
 
 
@@ -93,6 +110,25 @@ def poll_device(
         # --- Collect data via M1 driver ---
         hostname = driver.get_hostname()
 
+        # --- Collect enriched device info (model, version, serial, uptime) ---
+        vendor_str: Optional[str] = None
+        model_str: Optional[str] = None
+        os_version_str: Optional[str] = None
+        serial_str: Optional[str] = None
+        uptime_str: Optional[str] = None
+        try:
+            dev_info = driver.get_device_info()
+            if dev_info:
+                vendor_str = dev_info.vendor.value if hasattr(dev_info.vendor, 'value') else str(dev_info.vendor)
+                model_str = dev_info.model or None
+                os_version_str = dev_info.os_version or None
+                serial_str = dev_info.serial or None
+                uptime_str = dev_info.uptime or None
+                if dev_info.hostname and not hostname:
+                    hostname = dev_info.hostname
+        except Exception as e:
+            logger.debug("get_device_info() failed for %s: %s", host_ip, e)
+
         # Convert M1 Interface objects → legacy {name: ip} dict
         raw_interfaces: List[Interface] = driver.get_interfaces()
         ifaces: Dict[str, str] = {}
@@ -135,10 +171,16 @@ def poll_device(
             lldp_summary=lldp_summary,
             lldp_detail=lldp_detail,
             arp_entries=arp_entries,
+            vendor=vendor_str,
+            model=model_str,
+            os_version=os_version_str,
+            serial=serial_str,
+            uptime=uptime_str,
         )
-        logger.info("Polled %s (%s) — %d ifaces, %d neighbors, %d ARP",
+        logger.info("Polled %s (%s) — %d ifaces, %d neighbors, %d ARP, vendor=%s model=%s",
                      hostname, host_ip, len(ifaces),
-                     len(lldp_summary), len(arp_entries))
+                     len(lldp_summary), len(arp_entries),
+                     vendor_str or "?", model_str or "?")
         return result.to_dict()
 
     except Exception as e:

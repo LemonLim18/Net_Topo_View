@@ -56,12 +56,18 @@ const TreeNode: React.FC<TreeNodeProps> = ({ node, depth, onFileOpen, selectedPa
   return (
     <li>
       <button
-        className={`flex items-center gap-1.5 w-full text-left px-2 py-0.5 rounded text-sm transition-colors ${
+        draggable
+        onDragStart={e => {
+          e.dataTransfer.effectAllowed = 'copy';
+          e.dataTransfer.setData('application/ansible-path', node.path);
+          e.dataTransfer.setData('text/plain', node.name);
+        }}
+        className={`flex items-center gap-1.5 w-full text-left px-2 py-0.5 rounded text-sm transition-colors cursor-grab active:cursor-grabbing ${
           isSel ? 'bg-primary text-primary-content' : 'hover:bg-base-300'
         }`}
         style={{ paddingLeft: `${8 + depth * 14}px` }}
         onClick={() => onFileOpen(node)}
-        title={node.path}
+        title={`${node.path} — drag to chat to attach`}
       >
         <FileCode2 className={`h-3.5 w-3.5 flex-shrink-0 ${isSel ? '' : isYaml ? 'text-blue-400' : isJ2 ? 'text-orange-400' : 'text-base-content opacity-50'}`} />
         <span className="truncate">{node.name}</span>
