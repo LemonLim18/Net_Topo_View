@@ -24,3 +24,8 @@ python-docx
 beautifulsoup4
 lxml
 google-genai
+
+# M22 — Ansible-First Automation Layer
+ansible-runner>=2.3
+netmiko>=4.3
+ansible-lint>=6.22         # optional: playbook linting in builder.py

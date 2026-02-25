@@ -49,3 +49,81 @@ export interface ChatSession {
   title: string;
   updatedAt: number;
 }
+
+// ─── M23: Ansible Workflow Studio ────────────────────────────────────────────
+
+export interface AnsibleFileNode {
+  type: 'file' | 'dir';
+  name: string;
+  path: string;            // relative to backend/ansible/
+  size?: number;
+  modified_at?: string;
+  children?: AnsibleFileNode[];
+}
+
+export interface AnsibleTab {
+  id: string;              // usually the file path
+  path: string;
+  name: string;
+  content: string;
+  isDirty: boolean;
+  isReadOnly: boolean;
+  jobId?: number;          // set when opened from AI generation
+}
+
+export interface AnsibleJobStep {
+  stage: string;
+  status: string;
+  details: string;
+  created_at: string;
+}
+
+export interface AnsibleJob {
+  jobId: number;
+  requestId: number;
+  status: string;          // pending | running | approved | success | failed
+  stage: string;           // plan | approve | apply | commit | rollback
+  hasPlaybook: boolean;
+  steps: AnsibleJobStep[];
+}
+
+export interface AnsibleCheckResult {
+  rc: number;
+  changed: boolean;
+  diff: string;
+  summary: string;
+}
+
+export interface AnsibleExecuteResult {
+  rc: number;
+  success: boolean;
+  changed: boolean;
+  summary: string;
+}
+
+export interface AnsibleMessage {
+  id: string;
+  role: 'user' | 'assistant' | 'system';
+  content: string;
+  timestamp: number;
+  isLoading?: boolean;
+  isError?: boolean;
+  jobId?: number;
+  playbookPath?: string;   // path opened in editor when playbook is ready
+}
+
+export interface CreateAndPlanRequest {
+  intent_description: string;
+  target_hosts: string[];
+  vendor: string;
+  feature: string;
+  params: Record<string, any>;
+  device_id?: number;      // optional; defaults to 0 (unknown)
+}
+
+export interface CreateAndPlanResult {
+  job_id: number;
+  request_id: number;
+  status: string;
+  playbook: string;
+}

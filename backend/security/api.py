@@ -6,6 +6,7 @@ import json
 import logging
 from typing import List, Optional
 from fastapi import APIRouter, HTTPException, BackgroundTasks
+from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel
 
 from db.manager import DatabaseManager
@@ -110,7 +111,7 @@ async def run_audit(device_id: int):
     config_text = history[0].config_text
     vendor = device.vendor or "cisco_ios"
 
-    audit = _engine.run_audit(device_id, config_text, vendor)
+    audit = await run_in_threadpool(_engine.run_audit, device_id, config_text, vendor)
 
     # Save to database
     try:
@@ -368,26 +369,21 @@ async def ingest_suricata_alert(payload: dict):
 
 
 @router.post("/threats/rogue-scan")
-async def scan_rogue_devices():
-    """Scan the network topology for unknown / rogue devices."""
-    db = DatabaseManager()
-    detector = RogueDeviceDetector(db)
-    events = detector.scan()
+async def scan_rogue_devices(background_tasks: BackgroundTasks):
+    """Scan the network topology for unknown / rogue devices (background)."""
+    def _run():
+        db = DatabaseManager()
+        detector = RogueDeviceDetector(db)
+        events = detector.scan()
+        for event in events:
+            try:
+                _save_event(db, event)
+            except Exception as e:
+                logger.error("Failed to save rogue event: %s", e)
+        logger.info("Rogue scan complete: %d devices found", len(events))
 
-    # Persist detected rogue events
-    saved_ids = []
-    for event in events:
-        try:
-            eid = _save_event(db, event)
-            saved_ids.append(eid)
-        except Exception as e:
-            logger.error("Failed to save rogue event: %s", e)
-
-    return {
-        "status": "complete",
-        "rogue_devices_found": len(events),
-        "event_ids": saved_ids,
-    }
+    background_tasks.add_task(_run)
+    return {"status": "accepted", "message": "Rogue device scan started in background"}
 
 
 @router.post("/threats/analyze")
@@ -420,7 +416,7 @@ async def analyze_threats(limit: int = 100):
             for r in rows
         ]
 
-        anomalies = _anomaly_detector.analyze_events(events)
+        anomalies = await run_in_threadpool(_anomaly_detector.analyze_events, events)
 
         # Save detected anomalies
         saved_ids = []
@@ -500,7 +496,7 @@ async def execute_playbook(event_id: int, vendor: str = "cisco_ios"):
         if not playbook:
             return {"status": "no_playbook", "message": f"No playbook for event type: {event.event_type}"}
 
-        result = _playbook_engine.execute(playbook.name, event, vendor)
+        result = await run_in_threadpool(_playbook_engine.execute, playbook.name, event, vendor)
         return {
             "playbook_name": result.playbook_name,
             "status": result.status,

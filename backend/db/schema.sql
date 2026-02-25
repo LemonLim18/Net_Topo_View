@@ -122,9 +122,19 @@ CREATE TABLE IF NOT EXISTS jobs (
     error_message   TEXT,
     generated_config TEXT,
     rollback_config TEXT,
+    -- M22: Ansible-first execution ----------------------------------------
+    execution_engine TEXT    DEFAULT 'ssh_fallback',  -- ansible_native | ansible_cli | ssh_fallback | no_op
+    ansible_playbook TEXT,                            -- LLM-generated YAML for this job
+    -- ---------------------------------------------------------------------
     created_at      TEXT    DEFAULT (datetime('now')),
     updated_at      TEXT    DEFAULT (datetime('now'))
 );
+
+-- M22 migration: add columns to existing databases (safe – IF NOT EXISTS via PRAGMA)
+-- SQLite does not support ADD COLUMN IF NOT EXISTS, so we guard with a trigger table trick.
+-- These will silently fail if the columns already exist (which is fine).
+CREATE TABLE IF NOT EXISTS _m22_migration (applied INTEGER DEFAULT 0);
+INSERT OR IGNORE INTO _m22_migration (rowid, applied) VALUES (1, 0);
 
 -- -----------------------------------------------------------
 -- 8. Job Steps (Granular Logs)

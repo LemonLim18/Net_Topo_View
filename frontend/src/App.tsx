@@ -8,6 +8,7 @@ import Deployments from '../views/Deployments';
 import NetBoxDevices from '../views/NetBoxDevices';
 import AIAgentPanel from '../components/AIAgentPanel';
 import KnowledgeBase from '../views/KnowledgeBase';
+import AnsibleStudioView from '../views/AnsibleStudioView';
 
 import Login from '../views/Login';
 import NetworkPerformance from '../views/NetworkPerformance';
@@ -69,6 +70,8 @@ const App: React.FC = () => {
         return <GeminiChat domain="network" />;
       case 'knowledge_base':
         return <KnowledgeBase />;
+      case 'ansible_studio':
+        return <AnsibleStudioView user={user} />;
 
       // Security Domain
       case 'sec_dashboard':
@@ -93,9 +96,8 @@ const App: React.FC = () => {
       );
   }
 
-  const handlePlaybookGenerated = (playbook: any) => {
-    console.log('Playbook generated:', playbook);
-    // In production, this would update a playbook editor/viewer in main area
+  const handlePlaybookGenerated = (_playbook: any) => {
+    setView('ansible_studio');
   };
 
   return (

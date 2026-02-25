@@ -1,4 +1,5 @@
 from fastapi import APIRouter, HTTPException, BackgroundTasks
+from starlette.concurrency import run_in_threadpool
 from typing import List, Optional
 from datetime import datetime
 
@@ -15,15 +16,13 @@ async def check_drift_for_device(hostname: str):
     """
     db = DatabaseManager("net_topo.db")
     comparator = DriftComparator(db)
-    
-    event = comparator.check_drift(hostname)
-    
+
+    event = await run_in_threadpool(comparator.check_drift, hostname)
+
     if not event:
         raise HTTPException(status_code=404, detail=f"Device {hostname} not found or no config history")
-        
-    # Persist event
-    db.save_drift_event(event)
 
+    await run_in_threadpool(db.save_drift_event, event)
     return event
 
 @router.post("/drift/check/all")

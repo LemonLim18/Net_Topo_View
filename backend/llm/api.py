@@ -24,6 +24,7 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
+from starlette.concurrency import run_in_threadpool
 
 logger = logging.getLogger("llm.api")
 
@@ -290,7 +291,8 @@ async def approve_proposal(proposal_id: str):
         job_id = _pipeline.add_job(req_id, proposal.target_device_id)
 
         # Run plan stage (config already generated, but pipeline needs it)
-        _pipeline.run_plan_stage(
+        await run_in_threadpool(
+            _pipeline.run_plan_stage,
             job_id,
             vendor=proposal.vendor,
             feature=proposal.feature,
@@ -298,7 +300,8 @@ async def approve_proposal(proposal_id: str):
         )
 
         # Execute stages 3-6 (Snapshot → Apply → Verify → Commit)
-        success = _pipeline.execute_job(
+        success = await run_in_threadpool(
+            _pipeline.execute_job,
             job_id,
             host=ssh_host,
             username=creds["username"],

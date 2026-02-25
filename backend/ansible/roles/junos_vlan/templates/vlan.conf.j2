@@ -1,0 +1,15 @@
+{# roles/junos_vlan/templates/vlan.conf.j2 #}
+{# Junos set-format — renders full desired state for all VLANs and interfaces. #}
+{# Idempotent: re-applying merges cleanly with no duplicate stanzas. #}
+{% for vlan in vlans %}
+set vlans {{ vlan.name }} vlan-id {{ vlan.id }}
+{% if vlan.description is defined and vlan.description %}
+set vlans {{ vlan.name }} description "{{ vlan.description }}"
+{% endif %}
+{% endfor %}
+{% for iface in target_interfaces %}
+set interfaces {{ iface.name }} unit 0 family ethernet-switching interface-mode access
+set interfaces {{ iface.name }} unit 0 family ethernet-switching vlan members {{ iface.vlan_name }}
+set interfaces {{ iface.name }} description "{{ iface.description | default('Managed by NetTopoView') }}"
+set interfaces {{ iface.name }} unit 0 family ethernet-switching storm-control default
+{% endfor %}

@@ -4,3 +4,8 @@ venv/
 topology_store/
 backup_folder/
 _debug*
+# M22  Ansible secrets & ephemeral work directories
+ansible/vault/
+ansible/private_data/
+*.retry
+/tmp/nettopo_*

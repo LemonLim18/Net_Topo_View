@@ -7,7 +7,16 @@ logger = logging.getLogger("netbox.client")
 
 # Defaults for development - in production uses env vars
 DEFAULT_NETBOX_URL = os.environ.get("NETBOX_URL", "http://localhost:8000")
-DEFAULT_NETBOX_TOKEN = os.environ.get("NETBOX_TOKEN", "0123456789abcdef0123456789abcdef01234567")
+DEFAULT_NETBOX_TOKEN = os.environ.get("NETBOX_TOKEN", "")
+
+_FAKE_TOKEN = "0123456789abcdef0123456789abcdef01234567"
+
+if not DEFAULT_NETBOX_TOKEN:
+    DEFAULT_NETBOX_TOKEN = _FAKE_TOKEN
+    logger.warning(
+        "NETBOX_TOKEN env var not set — using placeholder token. "
+        "NetBox API calls will fail unless a real token is configured."
+    )
 
 class NetBoxClient:
     _instance = None

@@ -43,6 +43,16 @@ from llm.retriever import KnowledgeRetriever
 from llm.ingestion import DocumentIngester
 from rag.api import router as rag_router, setup_rag
 
+# M22 — Ansible-first automation (optional: graceful no-op if ansible-runner absent)
+try:
+    from ansible.api import router as ansible_router, setup_ansible
+    from ansible.builder import PlaybookBuilder
+    from llm.gemini_provider import GeminiProvider as _GeminiProvider
+    _ANSIBLE_ENABLED = True
+except ImportError:
+    ansible_router = None   # type: ignore[assignment]
+    _ANSIBLE_ENABLED = False
+
 # --- Crawler Logic (Legacy/Transitional) ---
 import mini_nce as crawler
 
@@ -273,6 +283,13 @@ async def lifespan(app: FastAPI):
     setup_agent(agent, pipeline=pipeline, vault=vault)  # Inject agent + M4/M15
     set_crawl_runner(run_crawl_and_broadcast) # Inject crawl runner to API
 
+    # M22 — Ansible-first orchestration layer
+    if _ANSIBLE_ENABLED:
+        _provider = _GeminiProvider(api_key=os.getenv("GEMINI_API_KEY"))
+        _builder = PlaybookBuilder(_provider)
+        setup_ansible(_builder, agent, pipeline, db)
+        logger.info("Ansible orchestration layer initialized (M22)")
+
     # 4. Load Saved Topology
     global _current_topology_dict, _current_topology_json, _previous_topology_dict, _db, _agent
     _db = db
@@ -340,6 +357,8 @@ app.include_router(security_router, prefix="/api/v1", tags=["Security"])
 app.include_router(auth_router, prefix="/api/v1", tags=["Authentication"])
 app.include_router(ssh_router, prefix="/api/v1", tags=["SSH Terminal"])
 app.include_router(rag_router, prefix="/api/v1", tags=["RAG Knowledge Base"])
+if _ANSIBLE_ENABLED and ansible_router is not None:
+    app.include_router(ansible_router, prefix="/api/v1", tags=["Ansible Orchestration (M22)"])
 
 # WebSocket Endpoint (Streamlined)
 @app.websocket("/ws")

@@ -1,0 +1,14 @@
+{# roles/access_vlan/templates/interface.j2 #}
+{# Renders full desired-state for the interface — idempotent re-run is safe. #}
+interface {{ interface }}
+ description {{ description }}
+ switchport mode {{ mode }}
+ switchport access vlan {{ vlan_id }}
+{% if spanning_tree_portfast | default(true) %}
+ spanning-tree portfast
+{% endif %}
+{% if shutdown | default(false) %}
+ shutdown
+{% else %}
+ no shutdown
+{% endif %}

@@ -26,8 +26,9 @@ import uuid
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, UploadFile, status
 from fastapi.responses import JSONResponse
+from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel
 
 logger = logging.getLogger("rag.api")
@@ -176,7 +177,8 @@ async def upload_document(
     shutil.move(tmp_path, str(dest_path))
 
     try:
-        result = _ingester.ingest_file(
+        result = await run_in_threadpool(
+            _ingester.ingest_file,
             file_path=str(dest_path),
             doc_type=doc_type,
             vendor=vendor,
@@ -275,75 +277,50 @@ class RebuildResponse(BaseModel):
 
 @router.post(
     "/documents/rebuild",
-    response_model=RebuildResponse,
     summary="Wipe the vector store and re-ingest all files in knowledge_base/",
 )
 async def rebuild_knowledge_base(
+    background_tasks: BackgroundTasks,
     current_user: dict = Depends(_auth_dep),
 ):
     """
     Drop all existing chunks, then re-ingest every file in knowledge_base/.
-
-    Useful after upgrading the embedding model or adjusting chunk parameters.
-    Metadata (doc_type / vendor) is preserved from the file's companion
-    .meta.json sidecar if present; otherwise defaults to general/best_practice.
+    Runs in background — returns immediately with status 'accepted'.
     """
     _check_rag_ready()
 
-    kb_dir = Path(_KNOWLEDGE_BASE_DIR)
-    if not kb_dir.exists():
-        return RebuildResponse(files_processed=0, total_chunks=0, errors=[])
-
-    supported = {".pdf", ".txt", ".md", ".docx", ".html", ".htm"}
-    files = [f for f in kb_dir.iterdir() if f.is_file() and f.suffix.lower() in supported]
-
-    if not files:
-        return RebuildResponse(files_processed=0, total_chunks=0, errors=["No files found in knowledge_base/"])
-
-    # Wipe the vector store before rebuilding so chunks for deleted files
-    # do not persist across rebuilds.
-    _vector_store.clear_all()
-
-    results: list[dict] = []
-    errors: list[str] = []
-    total_chunks = 0
-
-    for f in files:
-        # Look for a sidecar metadata file
-        meta_file = f.with_suffix(f.suffix + ".meta.json")
-        doc_type = "best_practice"
-        vendor = "general"
-        if meta_file.exists():
-            import json
+    def _run():
+        kb_dir = Path(_KNOWLEDGE_BASE_DIR)
+        if not kb_dir.exists():
+            return
+        supported = {".pdf", ".txt", ".md", ".docx", ".html", ".htm"}
+        files = [f for f in kb_dir.iterdir() if f.is_file() and f.suffix.lower() in supported]
+        if not files:
+            return
+        _vector_store.clear_all()
+        total_chunks = 0
+        errors = []
+        for f in files:
+            meta_file = f.with_suffix(f.suffix + ".meta.json")
+            doc_type = "best_practice"
+            vendor = "general"
+            if meta_file.exists():
+                import json as _json
+                try:
+                    meta = _json.loads(meta_file.read_text())
+                    doc_type = meta.get("doc_type", doc_type)
+                    vendor = meta.get("vendor", vendor)
+                except Exception:
+                    pass
             try:
-                meta = json.loads(meta_file.read_text())
-                doc_type = meta.get("doc_type", doc_type)
-                vendor = meta.get("vendor", vendor)
-            except Exception:
-                pass
+                r = _ingester.ingest_file(file_path=str(f), doc_type=doc_type, vendor=vendor, doc_name=f.name)
+                total_chunks += r.get("chunks_stored", 0)
+            except Exception as exc:
+                errors.append(f"{f.name}: {exc}")
+        logger.info("Rebuild complete: %d files, %d chunks, %d errors", len(files), total_chunks, len(errors))
 
-        try:
-            result = _ingester.ingest_file(
-                file_path=str(f),
-                doc_type=doc_type,
-                vendor=vendor,
-                doc_name=f.name,
-            )
-            total_chunks += result.get("chunks_stored", 0)
-            results.append(result)
-        except Exception as exc:
-            errors.append(f"{f.name}: {exc}")
-
-    logger.info(
-        "user=%s rebuilt knowledge base: %d files, %d chunks, %d errors",
-        current_user.get("username"), len(results), total_chunks, len(errors),
-    )
-
-    return RebuildResponse(
-        files_processed=len(results),
-        total_chunks=total_chunks,
-        errors=errors,
-    )
+    background_tasks.add_task(_run)
+    return {"status": "accepted", "message": "Knowledge base rebuild started in background"}
 
 
 # ---------------------------------------------------------------------------

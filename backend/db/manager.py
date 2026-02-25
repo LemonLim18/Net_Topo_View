@@ -83,6 +83,24 @@ class DatabaseManager:
         schema_sql = _SCHEMA_PATH.read_text(encoding="utf-8")
         with self._connect() as conn:
             conn.executescript(schema_sql)
+        # Enable WAL mode for better concurrency under parallel reads/writes
+        # (background tasks, threadpool workers, scheduler all share the file)
+        with self._connect() as conn:
+            conn.execute("PRAGMA journal_mode = WAL")
+            conn.execute("PRAGMA synchronous = NORMAL")
+        # M22: add new columns to existing databases (ALTER TABLE is not
+        # idempotent in SQLite, so we swallow the "duplicate column" error)
+        _m22_columns = [
+            ("jobs", "execution_engine", "TEXT DEFAULT 'ssh_fallback'"),
+            ("jobs", "ansible_playbook", "TEXT"),
+        ]
+        with self._connect() as conn:
+            for table, col, col_def in _m22_columns:
+                try:
+                    conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {col_def}")
+                    logger.info("M22 migration: added %s.%s", table, col)
+                except Exception:
+                    pass  # column already exists
         logger.info("Database initialised at %s", self._db_path)
 
     @contextmanager

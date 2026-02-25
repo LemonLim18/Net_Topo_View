@@ -1,0 +1,11 @@
+# roles/access_vlan/molecule/default/converge.yml
+---
+- name: "Converge — apply access_vlan role"
+  hosts: all
+  gather_facts: false
+  roles:
+    - role: access_vlan
+      vars:
+        vlan_id:   100
+        vlan_name: "molecule_test"
+        interface: "GigabitEthernet0/1"

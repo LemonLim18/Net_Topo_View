@@ -22,10 +22,20 @@ from drivers.factory import DriverFactory
 from drivers.base import BaseDriver
 from llm.network_tools import generate_config, generate_rollback
 from deploy.models import (
-    Job, JobStatus, PipelineStage, ChangeRequest, RequestStatus, 
-    DeploymentRepository, JobStep
+    Job, JobStatus, PipelineStage, ChangeRequest, RequestStatus,
+    DeploymentRepository, JobStep, ExecutionEngine
 )
 from deploy.verifier import Verifier, VerificationCheck, VerificationResult
+
+# M22 — lazy imports to avoid circular import issues at module load time
+_ansible_available = False
+try:
+    from ansible.router import route_execution, ExecutionAction   # noqa: F401
+    from ansible.runner import run_playbook                        # noqa: F401
+    from ansible.inventory import build_inventory                  # noqa: F401
+    _ansible_available = True
+except ImportError:
+    pass
 
 logger = logging.getLogger("deploy.pipeline")
 
@@ -117,7 +127,10 @@ class DeploymentPipeline:
                     id=row["id"], request_id=row["request_id"], device_id=row["device_id"],
                     status=row["status"], stage=row["stage"],
                     generated_config=row["generated_config"],
-                    rollback_config=row["rollback_config"]
+                    rollback_config=row["rollback_config"],
+                    # M22 — may be NULL in older rows → default to ssh_fallback
+                    execution_engine=ExecutionEngine(row["execution_engine"]) if row["execution_engine"] else ExecutionEngine.SSH_FALLBACK,
+                    ansible_playbook=row["ansible_playbook"] if row["ansible_playbook"] else None,
                 )
 
             if not job.generated_config:
@@ -144,21 +157,53 @@ class DeploymentPipeline:
                 conn.execute("UPDATE jobs SET snapshot_pre_id = ? WHERE id = ?", (snap_id, job_id))
 
             # -----------------------------------------------------------
-            # Stage 4: APPLY
+            # Stage 4: APPLY  (M22 — Ansible-first with SSH fallback)
             # -----------------------------------------------------------
             self.repo.update_job_status(job_id, JobStatus.RUNNING, PipelineStage.APPLY)
             self.repo.log_step(job_id, PipelineStage.APPLY, "Pushing configuration")
-            
-            commands = job.generated_config.strip().splitlines()
-            result = driver.push_config(commands)
-            
-            self.repo.log_step(
-                job_id, PipelineStage.APPLY, 
-                f"Result: Success={result.success}\nOutput:\n{result.output}"
-            )
 
-            if not result.success:
-                raise RuntimeError(f"Config push failed: {result.error_message}")
+            engine = job.execution_engine or ExecutionEngine.SSH_FALLBACK
+
+            if _ansible_available and engine in (
+                ExecutionEngine.ANSIBLE_NATIVE, ExecutionEngine.ANSIBLE_CLI
+            ) and job.ansible_playbook:
+                # ── Ansible path ──────────────────────────────────────────
+                inventory = build_inventory(target_hosts=[host])
+                ans_result = run_playbook(
+                    playbook_content=job.ansible_playbook,
+                    inventory=inventory,
+                    extra_vars={},
+                    check_mode=False,
+                    job_id=str(job_id),
+                )
+                log_tail = ans_result.stdout[-3000:] if ans_result.stdout else ""
+                self.repo.log_step(
+                    job_id, PipelineStage.APPLY,
+                    f"Ansible [{engine.value}] rc={ans_result.rc} "
+                    f"changed={ans_result.changed}\n{log_tail}"
+                )
+                if not ans_result.success:
+                    raise RuntimeError(
+                        f"Ansible run failed (rc={ans_result.rc}): {ans_result.stderr[:500]}"
+                    )
+
+            elif engine == ExecutionEngine.NO_OP:
+                # ── RAG confirmed already converged — skip apply ──────────
+                self.repo.log_step(
+                    job_id, PipelineStage.APPLY,
+                    "NO_OP: RAG state already matches intent — skipping push"
+                )
+
+            else:
+                # ── SSH fallback  (original Paramiko/Netmiko path) ────────
+                commands = job.generated_config.strip().splitlines()
+                result = driver.push_config(commands)
+                self.repo.log_step(
+                    job_id, PipelineStage.APPLY,
+                    f"Result: Success={result.success}\nOutput:\n{result.output}"
+                )
+                if not result.success:
+                    raise RuntimeError(f"Config push failed: {result.error_message}")
 
             # -----------------------------------------------------------
             # Stage 5: VERIFY

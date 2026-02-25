@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, BackgroundTasks, HTTPException
 from pydantic import BaseModel
 from typing import Optional
+from starlette.concurrency import run_in_threadpool
 from db.manager import DatabaseManager
 from db.models import Device
 from netbox.sync_devices import DeviceSyncer
@@ -93,7 +94,7 @@ async def get_device(device_id: int):
 
 
 @router.post("/devices")
-async def create_device(body: DeviceCreate):
+async def create_device(body: DeviceCreate, background_tasks: BackgroundTasks):
     """Create a new device in the local inventory.
 
     Best-effort push to NetBox is attempted if the client is available.
@@ -116,8 +117,8 @@ async def create_device(body: DeviceCreate):
     )
     device_id = db.upsert_device(device)
 
-    # Best-effort push to NetBox
-    _try_push_to_netbox(body, action="create")
+    # Best-effort push to NetBox — run in background so it never blocks the response
+    background_tasks.add_task(_try_push_to_netbox, body, "create")
 
     created = db.get_device_by_id(device_id)
     return {
@@ -191,21 +192,29 @@ async def delete_device(device_id: int):
 async def sync_devices(background_tasks: BackgroundTasks):
     """
     Triggers a manual sync of all devices from NetBox.
+    Runs in a background task so it never blocks the event loop.
     """
-    db = DatabaseManager(DB_PATH)
-    syncer = DeviceSyncer(db)
-    result = syncer.sync_all_devices()
-    return result
+    def _run():
+        db = DatabaseManager(DB_PATH)
+        syncer = DeviceSyncer(db)
+        syncer.sync_all_devices()
+
+    background_tasks.add_task(_run)
+    return {"status": "accepted", "message": "NetBox device sync started in background"}
 
 @router.post("/sync/topology")
-async def sync_topology():
+async def sync_topology(background_tasks: BackgroundTasks):
     """
     Triggers a manual sync of topology (cables) from NetBox.
+    Runs in a background task so it never blocks the event loop.
     """
-    db = DatabaseManager(DB_PATH)
-    syncer = TopologySyncer(db)
-    result = syncer.sync_connections()
-    return result
+    def _run():
+        db = DatabaseManager(DB_PATH)
+        syncer = TopologySyncer(db)
+        syncer.sync_connections()
+
+    background_tasks.add_task(_run)
+    return {"status": "accepted", "message": "NetBox topology sync started in background"}
 
 
 # ---------------------------------------------------------------------------
@@ -213,7 +222,7 @@ async def sync_topology():
 # ---------------------------------------------------------------------------
 
 def _try_push_to_netbox(device_data: DeviceCreate, action: str = "create"):
-    """Attempt to push a device to NetBox. Failures are logged, not raised."""
+    """Attempt to push a device to NetBox (blocking — call via background task)."""
     try:
         nb = NetBoxClient.get_client()
         if nb and nb.api:

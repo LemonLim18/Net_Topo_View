@@ -40,6 +40,14 @@ class PipelineStage(str, Enum):
     ROLLBACK = "rollback"
 
 
+class ExecutionEngine(str, Enum):
+    """M22: Which execution path should this job use."""
+    ANSIBLE_NATIVE = "ansible_native"   # Vendor resource modules (desired-state)
+    ANSIBLE_CLI    = "ansible_cli"      # network_cli transport (IOS/NX-OS/VRP)
+    SSH_FALLBACK   = "ssh_fallback"     # Netmiko/Paramiko fallback (hop-chains, exotic vendors)
+    NO_OP          = "no_op"            # RAG confirmed already converged — nothing to push
+
+
 class JobStep(BaseModel):
     """Detailed log of a single action within a job."""
     id: Optional[int] = None
@@ -63,7 +71,10 @@ class Job(BaseModel):
     rollback_config: Optional[str] = None
     error_message: Optional[str] = None
     created_at: Optional[datetime] = None
-    
+    # M22 — Ansible-first execution
+    execution_engine: Optional[ExecutionEngine] = None  # None → SSH_FALLBACK at runtime
+    ansible_playbook: Optional[str] = None              # LLM-generated YAML stored here
+
     # Joined fields (for API response)
     hostname: Optional[str] = None
     steps: List[JobStep] = []

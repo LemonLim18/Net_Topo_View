@@ -1,0 +1,98 @@
+# backend/ansible/playbooks/junos_netconf_vlan.yml
+# Applies VLAN configuration to Juniper EX/QFX via NETCONF.
+# Uses candidate-commit with confirmed-commit timer for auto-rollback safety.
+---
+- name: "NetTopoView — Configure VLAN on Juniper via NETCONF"
+  hosts:          "{{ target_hosts | default('vendor_juniper_junos') }}"
+  gather_facts:   false
+  connection:     netconf
+  vars_files:
+    - "{{ playbook_dir }}/../vault/net_creds.yml"
+  vars:
+    vlans:
+      - id:          "{{ vlan_id }}"
+        name:        "{{ vlan_name | default('data') }}"
+        description: "{{ vlan_description | default('') }}"
+    target_interfaces: "{{ interfaces | default([]) }}"
+    commit_timeout:  60   # seconds — device auto-rolls back if confirm never arrives
+
+  pre_tasks:
+    - name: "SNAPSHOT PRE — retrieve running config via NETCONF"
+      junipernetworks.junos.junos_command:
+        commands: "show configuration | display set"
+        display:  text
+      register: pre_snapshot
+
+    - name: "SNAPSHOT PRE — save artefact"
+      ansible.builtin.copy:
+        content: "{{ pre_snapshot.stdout[0] }}"
+        dest:    "/tmp/nettopo_junos_{{ inventory_hostname }}_pre.txt"
+      delegate_to: localhost
+
+  tasks:
+    - block:
+        - name: "STAGE — load candidate config and preview diff"
+          junipernetworks.junos.junos_config:
+            src:         "{{ playbook_dir }}/../roles/junos_vlan/templates/vlan.conf.j2"
+            src_format:  set
+            update:      merge
+            diff:        true
+            confirm:     "{{ commit_timeout }}"
+          register: junos_diff
+          check_mode: "{{ ansible_check_mode }}"
+
+        - name: "DIFF — display candidate diff"
+          ansible.builtin.debug:
+            var: junos_diff.diff
+          when: junos_diff.diff is defined
+
+        - name: "COMMIT — confirm pending commit (clears auto-rollback timer)"
+          junipernetworks.junos.junos_config:
+            confirm_commit: true
+          when:
+            - not ansible_check_mode
+            - junos_diff.changed | default(false)
+
+      rescue:
+        - name: "ROLLBACK — revert to last committed config"
+          junipernetworks.junos.junos_config:
+            rollback: 1
+          ignore_errors: true
+
+        - name: "ROLLBACK — commit the rollback"
+          junipernetworks.junos.junos_config:
+            confirm_commit: true
+          ignore_errors: true
+
+        - name: "ROLLBACK — report failure"
+          ansible.builtin.fail:
+            msg: >
+              NETCONF change FAILED on {{ inventory_hostname }} — rollback 1
+              has been committed. Check pre-change snapshot at
+              /tmp/nettopo_junos_{{ inventory_hostname }}_pre.txt
+
+  post_tasks:
+    - name: "POST-VERIFY — check VLAN visible in committed config"
+      junipernetworks.junos.junos_command:
+        commands: "show vlans {{ vlan_name | default('data') }} terse"
+        display:  text
+      register: vlan_verify
+
+    - name: "POST-VERIFY — assert VLAN active"
+      ansible.builtin.assert:
+        that:
+          - "(vlan_name | default('data')) in vlan_verify.stdout[0]"
+        fail_msg: "VLAN {{ vlan_name }} not found post-commit on {{ inventory_hostname }}"
+        success_msg: "VLAN {{ vlan_name }} confirmed active ✓"
+
+    - name: "SNAPSHOT POST — retrieve post-change config"
+      junipernetworks.junos.junos_command:
+        commands: "show configuration | display set"
+        display:  text
+      register: post_snapshot
+
+    - name: "SNAPSHOT POST — save artefact"
+      ansible.builtin.copy:
+        content: "{{ post_snapshot.stdout[0] }}"
+        dest:    "/tmp/nettopo_junos_{{ inventory_hostname }}_post.txt"
+      delegate_to: localhost

@@ -1,0 +1,30 @@
+# roles/access_vlan/molecule/default/molecule.yml
+---
+dependency:
+  name: galaxy
+driver:
+  name: docker
+platforms:
+  - name: cisco-ios-sim
+    image: "ghcr.io/hellt/network-multitool:latest"
+    groups:
+      - vendor_cisco_ios
+    pre_build_image: true
+provisioner:
+  name: ansible
+  config_options:
+    defaults:
+      callbacks_enabled: "profile_tasks"
+      gathering: explicit
+  inventory:
+    host_vars:
+      cisco-ios-sim:
+        ansible_connection:    network_cli
+        ansible_network_os:    ios
+        ansible_user:          admin
+        ansible_password:      admin
+        ansible_become:        true
+        ansible_become_method: enable
+        ansible_become_pass:   admin
+verifier:
+  name: ansible

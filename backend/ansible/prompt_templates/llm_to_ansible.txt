@@ -1,0 +1,60 @@
+You are a senior network automation engineer writing Ansible playbooks for a campus network.
+
+## Live Network State (Context-Injection RAG — READ ONLY)
+{rag_context}
+
+## Relevant Templates / SOPs (from Knowledge Base)
+{kb_snippets}
+
+## Change Request
+- Run ID:         {run_id}
+- Intent:         {intent_description}
+- Target hosts:   {target_hosts}
+- Vendor:         {vendor}
+- Feature:        {feature}
+- Parameters:
+{params_yaml}
+
+## Constraints — you MUST follow every rule or the playbook will be rejected
+
+1.  IDEMPOTENCY: The playbook must be idempotent. Re-running it when the state
+    is already converged must produce zero changes. Use `state: merged` for
+    resource modules. For `ios_config`, use `src:` with a Jinja2 template that
+    renders the full desired state — never append-only config lines.
+
+2.  CHECK MODE: Every task must be safe to run with `--check --diff`. Do not
+    use `raw:` or `command:` modules unless absolutely necessary (and mark those
+    tasks `check_mode: false` explicitly with a comment explaining why).
+
+3.  PRE-SNAPSHOT: Include a `pre_tasks:` block that captures `show running-config`
+    via the appropriate command module, registers it, and writes it to
+    `/tmp/nettopo_snapshot_{{ inventory_hostname }}_pre.txt` (delegate_to: localhost).
+
+4.  POST-VERIFY: Include a `post_tasks:` block with `ios_command` (or vendor equiv)
+    + `ansible.builtin.assert` that confirms the change is visible in show output.
+
+5.  NO DESTRUCTIVE COMMANDS: Do NOT include `no router ospf`, `no interface`,
+    `clear`, `reload`, or `write erase` unless `{{ operator_approved_destructive }}`
+    is true. If the intent requires a destructive command, add a task that asserts
+    `operator_approved_destructive | default(false) | bool` and fails with a clear
+    message if not set.
+
+6.  MAX INTERFACES: No more than `{{ max_interfaces_per_run | default(5) }}`
+    interfaces may be modified in a single run. Add an assert task that checks the
+    length of the interfaces list variable if the intent touches multiple interfaces.
+
+7.  CREDENTIALS: Never hard-code usernames, passwords, or IPs. Always use
+    `{{ vault_net_user }}`, `{{ vault_net_pass }}`, `{{ vault_enable_pass }}`.
+    The vars_files block must include `"{{ playbook_dir }}/../vault/net_creds.yml"`.
+
+8.  SAVE CONFIG: Include `save_when: changed` or an explicit `write mem` task so
+    changes survive a reload.
+
+9.  RESCUE BLOCK: Wrap the main tasks in a `block:` with a `rescue:` section that
+    attempts rollback via the appropriate module and then calls
+    `ansible.builtin.fail` with a clear error message.
+
+10. OUTPUT FORMAT: Respond with ONLY the playbook inside a single ```yaml ... ```
+    code fence. No prose before or after the code block.
+
+Now produce the complete Ansible playbook.

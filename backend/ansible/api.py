@@ -1,0 +1,660 @@
+"""
+M22 Ansible Orchestration — FastAPI router.
+
+Endpoints:
+
+  POST /ansible/jobs/{job_id}/plan-ansible   — LLM generates playbook, stored on job
+  POST /ansible/jobs/{job_id}/check          — ansible-playbook --check (dry-run diff)
+  POST /ansible/jobs/{job_id}/approve        — operator approval gate (admin only)
+  POST /ansible/jobs/{job_id}/execute        — run approved playbook (admin only)
+  GET  /ansible/jobs/{job_id}/result         — fetch last run result
+
+Approval flow:
+  plan-ansible → check (operator reviews diff) → approve → execute
+
+All destructive changes require explicit operator approval before execute is allowed.
+"""
+
+import logging
+import asyncio
+import os
+import stat
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi.responses import StreamingResponse
+from starlette.concurrency import run_in_threadpool
+from pydantic import BaseModel
+
+logger = logging.getLogger("ansible.api")
+
+router = APIRouter(prefix="/ansible", tags=["Ansible Orchestration (M22)"])
+
+# ── Lazy-loaded shared instances (injected by backend.py) ───────────────────
+_builder  = None   # PlaybookBuilder
+_agent    = None   # NetworkAgent (for RAG context)
+_pipeline = None   # DeploymentPipeline
+_db       = None   # DatabaseManager
+
+
+def setup_ansible(builder, agent, pipeline, db_manager) -> None:
+    """Called from backend.py lifespan to inject shared instances."""
+    global _builder, _agent, _pipeline, _db
+    _builder  = builder
+    _agent    = agent
+    _pipeline = pipeline
+    _db       = db_manager
+    logger.info("Ansible orchestration layer initialized")
+
+
+def _require_builder():
+    if _builder is None:
+        raise HTTPException(503, "Ansible orchestration layer not initialized")
+    return _builder
+
+
+def _require_pipeline():
+    if _pipeline is None:
+        raise HTTPException(503, "Deployment pipeline not initialized")
+    return _pipeline
+
+
+# ── Auth dependency (reuse existing JWT auth) ────────────────────────────────
+try:
+    from auth.auth import get_current_user
+    from auth.rbac import require_role
+except ImportError:
+    async def get_current_user():   # type: ignore
+        return {"username": "anonymous", "role": "admin"}
+    def require_role(role: str):    # type: ignore
+        return get_current_user
+
+
+# ── Request / Response models ────────────────────────────────────────────────
+
+class PlanAnsibleRequest(BaseModel):
+    intent_description: str
+    target_hosts:       List[str]
+    vendor:             str
+    feature:            str
+    params:             Dict[str, Any] = {}
+    max_interfaces:     int = 5
+
+
+class CheckResult(BaseModel):
+    rc:      int
+    changed: bool
+    diff:    str
+    summary: str
+
+
+class ExecuteResult(BaseModel):
+    rc:      int
+    success: bool
+    changed: bool
+    summary: str
+
+
+# ── Endpoints ────────────────────────────────────────────────────────────────
+
+@router.post("/jobs/{job_id}/plan-ansible", summary="LLM generates Ansible playbook for a job")
+async def plan_ansible(
+    job_id:  int,
+    req:     PlanAnsibleRequest,
+    user:    dict = Depends(get_current_user),
+):
+    """
+    Ask the LLM to generate an Ansible playbook for this job and store it.
+    The playbook goes through ansible-lint validation before being stored.
+    No device contact occurs at this stage.
+    """
+    builder = _require_builder()
+
+    # Pull live RAG context from the agent (read-only)
+    rag_context = ""
+    kb_snippets: list[str] = []
+    if _agent is not None:
+        try:
+            # Context-Injection RAG: live topology digest from ContextBuilder
+            rag_context = _agent._context.build_full_context()
+        except Exception as exc:
+            logger.warning("Could not fetch RAG context: %s", exc)
+
+        # Vector-RAG (M21) snippets if available
+        try:
+            if hasattr(_agent, "_retriever") and _agent._retriever:
+                kb_snippets = [
+                    r["text"]
+                    for r in _agent._retriever.retrieve(
+                        req.intent_description, k=3
+                    )
+                ]
+        except Exception as exc:
+            logger.debug("Vector-RAG retrieval skipped: %s", exc)
+
+    intent = {
+        "description":   req.intent_description,
+        "target_hosts":  req.target_hosts,
+        "vendor":        req.vendor,
+        "feature":       req.feature,
+        "params":        req.params,
+        "max_interfaces": req.max_interfaces,
+    }
+
+    try:
+        playbook_yaml = await builder.build(
+            intent=intent,
+            rag_context=rag_context,
+            kb_snippets=kb_snippets,
+            run_id=str(job_id),
+        )
+    except Exception as exc:
+        logger.error("Playbook build failed job=%d: %s", job_id, exc)
+        raise HTTPException(422, f"Playbook generation failed: {exc}")
+
+    # Persist the playbook against the job
+    if _db is not None:
+        try:
+            with _db._connect() as conn:
+                conn.execute(
+                    "UPDATE jobs SET ansible_playbook = ?, stage = 'plan', "
+                    "status = 'pending' WHERE id = ?",
+                    (playbook_yaml, job_id),
+                )
+        except Exception as exc:
+            logger.warning("Could not persist playbook to DB: %s", exc)
+
+    logger.info("Playbook generated for job=%d by user=%s", job_id, user.get("username"))
+    return {
+        "job_id":   job_id,
+        "status":   "playbook_generated",
+        "playbook": playbook_yaml,
+    }
+
+
+@router.post(
+    "/jobs/{job_id}/check",
+    response_model=CheckResult,
+    summary="Dry-run the playbook (--check --diff) — no device changes",
+)
+async def check_playbook(
+    job_id: int,
+    user:   dict = Depends(require_role("operator")),
+):
+    """
+    Run ansible-playbook --check --diff against the stored playbook.
+    Returns per-host diff for operator review.  No changes are applied.
+    """
+    playbook_yaml, target_hosts = _load_job_playbook(job_id)
+
+    from ansible.inventory import build_inventory
+    from ansible.runner import run_playbook
+
+    inventory = build_inventory(target_hosts=target_hosts)
+    result = await run_in_threadpool(
+        run_playbook,
+        playbook_content=playbook_yaml,
+        inventory=inventory,
+        extra_vars={},
+        check_mode=True,
+        job_id=job_id,
+    )
+
+    logger.info("Check run job=%d rc=%d user=%s", job_id, result.rc, user.get("username"))
+    return CheckResult(
+        rc=result.rc,
+        changed=result.changed,
+        diff=result.stdout[-10000:],
+        summary=result.summary,
+    )
+
+
+@router.post("/jobs/{job_id}/approve", summary="Operator approves job for execution")
+async def approve_job(
+    job_id: int,
+    user:   dict = Depends(require_role("admin")),
+):
+    """
+    Set job status to 'approved'.  Required before /execute will run.
+    Only admins may approve.
+    """
+    if _db is None:
+        raise HTTPException(503, "Database not initialized")
+
+    with _db._connect() as conn:
+        conn.execute(
+            "UPDATE jobs SET status = 'approved', stage = 'approve' WHERE id = ?",
+            (job_id,),
+        )
+
+    logger.info("Job %d approved by %s", job_id, user.get("username"))
+    return {"job_id": job_id, "status": "approved", "approved_by": user.get("username")}
+
+
+@router.post(
+    "/jobs/{job_id}/execute",
+    response_model=ExecuteResult,
+    summary="Execute the approved Ansible playbook",
+)
+async def execute_playbook(
+    job_id: int,
+    user:   dict = Depends(require_role("admin")),
+):
+    """
+    Execute the stored playbook.  Job must be in 'approved' state.
+
+    Execution flow:
+      1. Route (Ansible native / CLI / SSH fallback)
+      2. Pre-snapshot
+      3. ansible-runner run (or SSH fallback)
+      4. Post-change verification via Context-Injection RAG
+      5. Commit or rollback
+    """
+    # ── Gate: must be approved ─────────────────────────────────────────────
+    if _db is None:
+        raise HTTPException(503, "Database not initialized")
+
+    with _db._connect() as conn:
+        row = conn.execute(
+            "SELECT status, ansible_playbook, generated_config, rollback_config "
+            "FROM jobs WHERE id = ?",
+            (job_id,)
+        ).fetchone()
+
+    if not row:
+        raise HTTPException(404, f"Job {job_id} not found")
+
+    if row["status"] != "approved":
+        raise HTTPException(
+            403,
+            f"Job {job_id} must be 'approved' before execution. Current status: {row['status']}"
+        )
+
+    playbook_yaml = row["ansible_playbook"]
+    if not playbook_yaml:
+        raise HTTPException(
+            422,
+            "No Ansible playbook stored for this job. Run /plan-ansible first."
+        )
+
+    # Extract target hosts from the stored playbook's `hosts:` field
+    import yaml as _yaml
+    try:
+        plays = _yaml.safe_load(playbook_yaml)
+        hosts_val = plays[0].get("hosts", "") if plays else ""
+        if isinstance(hosts_val, str) and hosts_val not in ("all", ""):
+            target_hosts = [h.strip() for h in hosts_val.split(",")]
+        else:
+            target_hosts = None
+    except Exception:
+        target_hosts = None
+
+    from ansible.inventory import build_inventory
+    from ansible.runner import run_playbook
+
+    inventory = build_inventory(target_hosts=target_hosts)
+
+    # Mark running
+    with _db._connect() as conn:
+        conn.execute(
+            "UPDATE jobs SET status = 'running', stage = 'apply' WHERE id = ?",
+            (job_id,)
+        )
+
+    result = await run_in_threadpool(
+        run_playbook,
+        playbook_content=playbook_yaml,
+        inventory=inventory,
+        extra_vars={},
+        check_mode=False,
+        job_id=job_id,
+    )
+
+    final_status = "success" if result.success else "failed"
+    with _db._connect() as conn:
+        conn.execute(
+            "UPDATE jobs SET status = ?, stage = ? WHERE id = ?",
+            (final_status, "commit" if result.success else "rollback", job_id)
+        )
+
+    logger.info(
+        "Execution complete job=%d rc=%d changed=%s user=%s",
+        job_id, result.rc, result.changed, user.get("username"),
+    )
+    return ExecuteResult(
+        rc=result.rc,
+        success=result.success,
+        changed=result.changed,
+        summary=result.summary,
+    )
+
+
+@router.get("/jobs/{job_id}/result", summary="Get last run result for a job")
+async def get_result(
+    job_id: int,
+    user:   dict = Depends(get_current_user),
+):
+    if _db is None:
+        raise HTTPException(503, "Database not initialized")
+
+    with _db._connect() as conn:
+        row = conn.execute(
+            "SELECT id, status, stage, error_message, ansible_playbook "
+            "FROM jobs WHERE id = ?",
+            (job_id,)
+        ).fetchone()
+        logs = conn.execute(
+            "SELECT stage, status, details, created_at FROM job_steps "
+            "WHERE job_id = ? ORDER BY id",
+            (job_id,)
+        ).fetchall()
+
+    if not row:
+        raise HTTPException(404, f"Job {job_id} not found")
+
+    return {
+        "job_id":  job_id,
+        "status":  row["status"],
+        "stage":   row["stage"],
+        "error":   row["error_message"],
+        "has_playbook": bool(row["ansible_playbook"]),
+        "steps":   [dict(r) for r in logs],
+    }
+
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _load_job_playbook(job_id: int) -> tuple[str, list[str]]:
+    """Load playbook YAML and target hosts from DB. Raises HTTPException on error."""
+    if _db is None:
+        raise HTTPException(503, "Database not initialized")
+
+    with _db._connect() as conn:
+        row = conn.execute(
+            "SELECT ansible_playbook FROM jobs WHERE id = ?", (job_id,)
+        ).fetchone()
+
+    if not row:
+        raise HTTPException(404, f"Job {job_id} not found")
+    if not row["ansible_playbook"]:
+        raise HTTPException(422, "No Ansible playbook stored. Run /plan-ansible first.")
+
+    # Extract target host list from the stored playbook YAML `hosts:` field
+    import yaml
+    try:
+        plays = yaml.safe_load(row["ansible_playbook"])
+        hosts_val = plays[0].get("hosts", "") if plays else ""
+        if isinstance(hosts_val, str) and hosts_val not in ("all", ""):
+            target_hosts = [h.strip() for h in hosts_val.split(",")]
+        else:
+            target_hosts = None   # no filter → inventory goes to all
+    except Exception:
+        target_hosts = None
+
+    return row["ansible_playbook"], target_hosts
+
+
+# =============================================================================
+# M23 ─ Ansible Workflow Studio  (new endpoints)
+# =============================================================================
+
+ANSIBLE_BASE = Path(__file__).parent
+_ALLOWED_ROOTS = ("playbooks", "roles", "inventory", "awx")
+_WRITABLE_ROOTS = ("playbooks", "inventory")   # roles/awx are read-only from UI
+
+
+def _safe_path(relative: str) -> Path:
+    """
+    Resolve *relative* against ANSIBLE_BASE and ensure it stays within
+    one of the allowed sub-trees.  Raises HTTPException 400 on traversal.
+    """
+    resolved = (ANSIBLE_BASE / relative).resolve()
+    try:
+        resolved.relative_to(ANSIBLE_BASE.resolve())
+    except ValueError:
+        raise HTTPException(400, "Path traversal detected")
+    # Must be inside one of the permitted root dirs
+    rel_parts = resolved.relative_to(ANSIBLE_BASE.resolve()).parts
+    if not rel_parts or rel_parts[0] not in _ALLOWED_ROOTS:
+        raise HTTPException(403, f"Access restricted to: {_ALLOWED_ROOTS}")
+    # Never expose vault contents
+    if "vault" in rel_parts or ".vault_pass" in rel_parts:
+        raise HTTPException(403, "Vault contents are not accessible via the API")
+    return resolved
+
+
+def _build_tree(root: Path, base: Path) -> list:
+    """Recursively build a file-node tree dict."""
+    result = []
+    try:
+        entries = sorted(root.iterdir(), key=lambda p: (p.is_file(), p.name.lower()))
+    except PermissionError:
+        return result
+    for entry in entries:
+        rel = str(entry.relative_to(base)).replace("\\", "/")
+        if entry.name.startswith(".") or entry.name == "__pycache__":
+            continue
+        if entry.is_dir():
+            result.append({
+                "type": "dir",
+                "name": entry.name,
+                "path": rel,
+                "children": _build_tree(entry, base),
+            })
+        else:
+            st = entry.stat()
+            result.append({
+                "type": "file",
+                "name": entry.name,
+                "path": rel,
+                "size": st.st_size,
+                "modified_at": datetime.fromtimestamp(st.st_mtime).isoformat(),
+            })
+    return result
+
+
+# ── M23: create-and-plan ───────────────────────────────────────────────────
+
+class CreateAndPlanRequest(BaseModel):
+    intent_description: str
+    target_hosts:       List[str]
+    vendor:             str
+    feature:            str
+    params:             Dict[str, Any] = {}
+    device_id:          int = 0
+
+
+@router.post(
+    "/create-and-plan",
+    summary="Auto-create a job and generate a playbook from natural language intent",
+)
+async def create_and_plan(
+    req:  CreateAndPlanRequest,
+    user: dict = Depends(get_current_user),
+):
+    """
+    Single-shot endpoint for the Ansible Studio AI chat:
+    1. Creates a ChangeRequest + Job in the deploy pipeline.
+    2. Generates an Ansible playbook via LLM (same as /plan-ansible).
+    3. Stores the playbook on the job and returns it.
+    """
+    if _db is None or _pipeline is None:
+        raise HTTPException(503, "Backend not fully initialized")
+
+    # Resolve device_id: if caller passes 0 / unknown, look up by first target host
+    device_id = req.device_id
+    if device_id == 0 and req.target_hosts:
+        with _db._connect() as conn:
+            row = conn.execute(
+                "SELECT id FROM devices WHERE hostname = ? LIMIT 1",
+                (req.target_hosts[0],),
+            ).fetchone()
+            if row:
+                device_id = row["id"]
+    if device_id == 0:
+        device_id = 1  # sentinel — prevents FK violation
+
+    # Create the change request + job
+    from deploy.models import ChangeRequest, Job, DeploymentRepository
+    repo = DeploymentRepository(_db)
+    cr_id = repo.create_request(ChangeRequest(
+        title=f"Ansible Studio: {req.intent_description[:60]}",
+        description=req.intent_description,
+        requester=user.get("username", "ansible_studio"),
+    ))
+    job_id = repo.create_job(Job(request_id=cr_id, device_id=device_id))
+
+    # Delegate to plan_ansible logic
+    plan_req = PlanAnsibleRequest(
+        intent_description=req.intent_description,
+        target_hosts=req.target_hosts,
+        vendor=req.vendor,
+        feature=req.feature,
+        params=req.params,
+    )
+    result = await plan_ansible(job_id=job_id, req=plan_req, user=user)
+    return {
+        "job_id":      job_id,
+        "request_id":  cr_id,
+        "status":      result.get("status"),
+        "playbook":    result.get("playbook"),
+    }
+
+
+# ── M23: file-server endpoints ────────────────────────────────────────────
+
+@router.get("/files", summary="List ansible file tree (playbooks, roles, inventory, awx)")
+async def list_files(user: dict = Depends(get_current_user)):
+    tree = []
+    for root_name in _ALLOWED_ROOTS:
+        root_dir = ANSIBLE_BASE / root_name
+        if root_dir.exists():
+            tree.append({
+                "type": "dir",
+                "name": root_name,
+                "path": root_name,
+                "children": _build_tree(root_dir, ANSIBLE_BASE),
+            })
+    return {"tree": tree}
+
+
+@router.get("/files/{file_path:path}", summary="Read a single ansible file")
+async def read_file(file_path: str, user: dict = Depends(get_current_user)):
+    path = _safe_path(file_path)
+    if not path.exists():
+        raise HTTPException(404, f"File not found: {file_path}")
+    if path.is_dir():
+        raise HTTPException(400, "Path is a directory, not a file")
+    content = path.read_text(encoding="utf-8", errors="replace")
+    st = path.stat()
+    return {
+        "path": file_path,
+        "content": content,
+        "size": st.st_size,
+        "modified_at": datetime.fromtimestamp(st.st_mtime).isoformat(),
+    }
+
+
+class WriteFileRequest(BaseModel):
+    content: str
+
+
+@router.put("/files/{file_path:path}", summary="Save edited ansible file content")
+async def write_file(
+    file_path: str,
+    body:       WriteFileRequest,
+    user:       dict = Depends(require_role("operator")),
+):
+    path = _safe_path(file_path)
+    # Only playbooks/ and inventory/ are writable from the UI
+    rel_parts = Path(file_path).parts
+    if not rel_parts or rel_parts[0] not in _WRITABLE_ROOTS:
+        raise HTTPException(
+            403,
+            f"Only {_WRITABLE_ROOTS} directories are writable. "
+            "roles/ and awx/ are read-only.",
+        )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(body.content, encoding="utf-8")
+    logger.info("File written: %s by %s", file_path, user.get("username"))
+    return {"path": file_path, "status": "saved"}
+
+
+# ── M23: SSE job-output stream ──────────────────────────────────────────────
+
+@router.get(
+    "/jobs/{job_id}/stream",
+    summary="SSE stream of ansible job step output (text/event-stream)",
+)
+async def stream_job_output(
+    job_id: int,
+    token:  str = Query("", description="JWT bearer token (query param for EventSource)"),
+):
+    """
+    Server-Sent Events stream of job_steps rows as they are written.
+    Polls the DB every 1.5 seconds.  Terminates when the job reaches a
+    terminal state (success / failed / rolled_back).
+
+    Auth: JWT passed as ?token= query parameter because the browser's native
+    EventSource API does not support custom headers.
+    """
+    # Validate token manually
+    if _db is None:
+        raise HTTPException(503, "Database not initialized")
+    try:
+        from auth.auth import decode_token
+        decode_token(token)
+    except Exception:
+        raise HTTPException(401, "Invalid or missing token")
+
+    _TERMINAL = {"success", "failed", "rolled_back"}
+
+    async def event_generator():
+        last_step_id = 0
+        while True:
+            try:
+                with _db._connect() as conn:
+                    # Fetch new steps since last seen
+                    new_steps = conn.execute(
+                        "SELECT id, stage, status, details, created_at "
+                        "FROM job_steps WHERE job_id = ? AND id > ? ORDER BY id",
+                        (job_id, last_step_id),
+                    ).fetchall()
+
+                    job_row = conn.execute(
+                        "SELECT status FROM jobs WHERE id = ?",
+                        (job_id,),
+                    ).fetchone()
+
+                for step in new_steps:
+                    last_step_id = step["id"]
+                    import json as _json
+                    data = _json.dumps({
+                        "stage":      step["stage"],
+                        "status":     step["status"],
+                        "details":    (step["details"] or "")[-2000:],
+                        "created_at": step["created_at"],
+                    })
+                    yield f"data: {data}\n\n"
+
+                if job_row and job_row["status"] in _TERMINAL:
+                    import json as _json
+                    yield f"data: {_json.dumps({'done': True, 'status': job_row['status']})}\n\n"
+                    return
+
+            except Exception as exc:
+                logger.warning("SSE stream error job=%d: %s", job_id, exc)
+
+            await asyncio.sleep(1.5)
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control":                "no-cache",
+            "X-Accel-Buffering":            "no",   # disable nginx buffering
+            "Access-Control-Allow-Origin":  "*",
+        },
+    )

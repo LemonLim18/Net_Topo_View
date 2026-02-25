@@ -69,6 +69,7 @@ export type ViewId =
   | 'net_perf' 
   | 'net_chat'
   | 'knowledge_base'
+  | 'ansible_studio'
   | 'sec_dashboard'
   | 'sec_events'
   | 'sec_analysis'

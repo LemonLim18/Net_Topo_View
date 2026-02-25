@@ -27,3 +27,10 @@ backend/config_engine/__pycache__/
 backend/test_config_engine.py
 *.pyc
 *.pyo
+
+# Test / tool caches (generated at repo root when running from outside subfolders)
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.coverage

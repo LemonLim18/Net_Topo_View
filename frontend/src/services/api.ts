@@ -398,3 +398,79 @@ export const sshApi = {
     return `${wsBase}/api/v1/ws/ssh/${sessionId}`;
   },
 };
+
+// --- M23: Ansible Workflow Studio API ---
+export const ansibleApi = {
+  /** Create a change-request + job and immediately generate a playbook via LLM. */
+  createAndPlan: (req: {
+    intent_description: string;
+    target_hosts: string[];
+    vendor: string;
+    feature: string;
+    params: Record<string, any>;
+    device_id?: number;
+  }) =>
+    request<{ job_id: number; request_id: number; status: string; playbook: string }>(
+      '/ansible/create-and-plan',
+      { method: 'POST', body: JSON.stringify(req) }
+    ),
+
+  /** Dry-run the stored playbook (--check --diff). */
+  checkPlaybook: (jobId: number) =>
+    request<{ rc: number; changed: boolean; diff: string; summary: string }>(
+      `/ansible/jobs/${jobId}/check`,
+      { method: 'POST' }
+    ),
+
+  /** Approve the job for execution (admin only). */
+  approveJob: (jobId: number) =>
+    request<{ job_id: number; status: string; approved_by: string }>(
+      `/ansible/jobs/${jobId}/approve`,
+      { method: 'POST' }
+    ),
+
+  /** Execute the approved playbook (admin only). */
+  executeJob: (jobId: number) =>
+    request<{ rc: number; success: boolean; changed: boolean; summary: string }>(
+      `/ansible/jobs/${jobId}/execute`,
+      { method: 'POST' }
+    ),
+
+  /** Poll job result and step logs. */
+  getResult: (jobId: number) =>
+    request<{
+      job_id: number;
+      status: string;
+      stage: string;
+      error: string | null;
+      has_playbook: boolean;
+      steps: { stage: string; status: string; details: string; created_at: string }[];
+    }>(`/ansible/jobs/${jobId}/result`),
+
+  /** List the ansible file tree (playbooks/, roles/, inventory/, awx/). */
+  listFiles: () =>
+    request<{ tree: any[] }>('/ansible/files'),
+
+  /** Read a single file's content from the ansible directory. */
+  readFile: (path: string) =>
+    request<{ path: string; content: string; size: number; modified_at: string }>(
+      `/ansible/files/${encodeURIComponent(path)}`
+    ),
+
+  /** Save edited file content back to disk (operator+). */
+  writeFile: (path: string, content: string) =>
+    request<{ path: string; status: string }>(
+      `/ansible/files/${encodeURIComponent(path)}`,
+      { method: 'PUT', body: JSON.stringify({ content }) }
+    ),
+
+  /**
+   * Open an SSE stream for live ansible job output.
+   * Returns an EventSource — caller is responsible for closing it.
+   */
+  streamJobOutput: (jobId: number): EventSource => {
+    const token = localStorage.getItem('auth_token') ?? '';
+    const url = `${BASE_URL}/api/v1/ansible/jobs/${jobId}/stream?token=${encodeURIComponent(token)}`;
+    return new EventSource(url);
+  },
+};

@@ -1,0 +1,79 @@
+# backend/ansible/awx/job_templates.yml
+# Import with:  awx import < backend/ansible/awx/job_templates.yml
+# Or sync via AWX GitOps (ansible-operator / awx-operator CRDs).
+---
+- name: "NetTopoView — Apply Access VLAN (Check Mode)"
+  job_type:                check     # ansible-playbook --check --diff
+  inventory:               "NetTopoView Dynamic Inventory"
+  project:                 "NetTopoView Automation"
+  playbook:                "playbooks/apply_vlan.yml"
+  credentials:
+    - "NetTopoView Vault Credential"
+    - "NetTopoView Network SSH"
+  ask_variables_on_launch: true
+  ask_limit_on_launch:     true
+  diff_mode:               true
+  verbosity:               2
+  allow_simultaneous:      false
+  survey_enabled:          true
+  survey_spec: &vlan_survey
+    name: "VLAN Change Parameters"
+    description: "Variables collected before the job runs"
+    spec:
+      - question_name:        "Target VLAN ID"
+        question_description: "VLAN ID to apply (1–4094)"
+        required:             true
+        type:                 integer
+        variable:             vlan_id
+        min:                  1
+        max:                  4094
+        default:              10
+      - question_name: "VLAN Name"
+        required:      true
+        type:          text
+        variable:      vlan_name
+        default:       "data"
+      - question_name:        "Interface"
+        question_description: "e.g. GigabitEthernet0/1"
+        required:             true
+        type:                 text
+        variable:             interface
+      - question_name:        "Description"
+        required:             false
+        type:                 text
+        variable:             description
+        default:              "Managed by NetTopoView"
+
+- name: "NetTopoView — Apply Access VLAN"
+  job_type:                run
+  inventory:               "NetTopoView Dynamic Inventory"
+  project:                 "NetTopoView Automation"
+  playbook:                "playbooks/apply_vlan.yml"
+  credentials:
+    - "NetTopoView Vault Credential"
+    - "NetTopoView Network SSH"
+  ask_variables_on_launch: true
+  ask_limit_on_launch:     true
+  diff_mode:               true
+  verbosity:               1
+  forks:                   10
+  timeout:                 300
+  allow_simultaneous:      false
+  survey_enabled:          true
+  survey_spec: *vlan_survey   # reuse the same survey
+
+- name: "NetTopoView — Junos NETCONF VLAN"
+  job_type:                run
+  inventory:               "NetTopoView Dynamic Inventory"
+  project:                 "NetTopoView Automation"
+  playbook:                "playbooks/junos_netconf_vlan.yml"
+  credentials:
+    - "NetTopoView Vault Credential"
+    - "NetTopoView Junos SSH"
+  ask_variables_on_launch: true
+  ask_limit_on_launch:     true
+  diff_mode:               true
+  verbosity:               1
+  forks:                   5
+  timeout:                 120
+  allow_simultaneous:      false

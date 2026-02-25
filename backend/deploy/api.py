@@ -6,8 +6,18 @@ Exposes the 6-stage deployment process to the frontend and LLM agent.
 
 import logging
 from typing import List, Optional, Dict, Any
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks
+from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel
+
+try:
+    from auth.auth import get_current_user
+    from auth.rbac import require_role
+except ImportError:
+    async def get_current_user():  # type: ignore
+        return {"username": "dev", "role": "admin"}
+    def require_role(role: str):  # type: ignore
+        return get_current_user
 
 from db.manager import DatabaseManager
 from deploy.pipeline import DeploymentPipeline
@@ -64,8 +74,9 @@ class ExecuteJob(BaseModel):
 
 @router.post("/requests", response_model=Dict[str, int])
 async def create_request(
-    req: CreateRequest, 
-    pipeline: DeploymentPipeline = Depends(get_pipeline)
+    req: CreateRequest,
+    pipeline: DeploymentPipeline = Depends(get_pipeline),
+    _user: dict = Depends(require_role("operator")),
 ):
     """Create a new logical Change Request."""
     req_id = pipeline.create_change_request(req.title, req.requester, req.description)
@@ -73,58 +84,66 @@ async def create_request(
 
 @router.post("/jobs", response_model=Dict[str, int])
 async def add_job(
-    job: CreateJob, 
-    pipeline: DeploymentPipeline = Depends(get_pipeline)
+    job: CreateJob,
+    pipeline: DeploymentPipeline = Depends(get_pipeline),
+    _user: dict = Depends(require_role("operator")),
 ):
     """Add a deployment job (target device) to a request."""
     job_id = pipeline.add_job(job.request_id, job.device_id)
     return {"job_id": job_id}
 
 @router.get("/jobs", response_model=List[Dict])
-async def list_jobs(pipeline: DeploymentPipeline = Depends(get_pipeline)):
+async def list_jobs(
+    pipeline: DeploymentPipeline = Depends(get_pipeline),
+    _user: dict = Depends(get_current_user),
+):
     """List all deployment jobs."""
     return pipeline.get_all_jobs()
 
 @router.post("/jobs/{job_id}/plan")
 async def plan_job(
-    job_id: int, 
+    job_id: int,
     plan: PlanJob,
-    pipeline: DeploymentPipeline = Depends(get_pipeline)
+    pipeline: DeploymentPipeline = Depends(get_pipeline),
+    _user: dict = Depends(require_role("operator")),
 ):
     """Run Stage 1: Generate configuration and rollback."""
-    success = pipeline.run_plan_stage(job_id, plan.vendor, plan.feature, plan.params)
+    success = await run_in_threadpool(
+        pipeline.run_plan_stage, job_id, plan.vendor, plan.feature, plan.params
+    )
     if not success:
         raise HTTPException(500, "Plan generation failed (check logs)")
     return {"status": "success", "result": "Plan generated"}
 
 @router.post("/jobs/{job_id}/execute")
 async def execute_job(
-    job_id: int, 
+    job_id: int,
     exec_params: ExecuteJob,
-    pipeline: DeploymentPipeline = Depends(get_pipeline)
+    pipeline: DeploymentPipeline = Depends(get_pipeline),
+    _user: dict = Depends(require_role("admin")),
 ):
     """
     Run Stages 3-6: Snapshot -> Apply -> Verify -> Commit.
-    
+
     WARNING: This applies changes to the live device!
     """
-    success = pipeline.execute_job(
-        job_id, 
+    success = await run_in_threadpool(
+        pipeline.execute_job,
+        job_id,
         host=exec_params.host,
         username=exec_params.username,
         password=exec_params.password,
-        driver_type=exec_params.driver_type
+        driver_type=exec_params.driver_type,
     )
-    
     if not success:
         return {"status": "failed", "message": "Execution failed (rolled back if possible)"}
-    
     return {"status": "success", "message": "Deployment completed successfully"}
 
 @router.get("/jobs/{job_id}/logs")
 async def get_job_logs(
     job_id: int,
-    pipeline: DeploymentPipeline = Depends(get_pipeline)
+    pipeline: DeploymentPipeline = Depends(get_pipeline),
+    _user: dict = Depends(get_current_user),
 ):
     """Get the step-by-step execution logs for a job."""
     logs = pipeline.get_job_logs(job_id)
