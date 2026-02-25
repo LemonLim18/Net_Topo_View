@@ -34,3 +34,7 @@ backend/test_config_engine.py
 .ruff_cache/
 htmlcov/
 .coverage
+
+backend/chroma_db/
+*.sqlite3-wal
+*.sqlite3-shm
