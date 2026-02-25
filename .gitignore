@@ -40,3 +40,5 @@ backend/chroma_db/
 *.sqlite3-shm
 
 backend/chroma_db/chroma.sqlite3
+
+backend/chroma_db/**
