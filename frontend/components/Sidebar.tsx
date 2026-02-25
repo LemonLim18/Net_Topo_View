@@ -7,6 +7,7 @@ import {
   Activity, 
   ShieldAlert, 
   ShieldCheck, 
+  Siren,
   LogOut,
   ScanSearch,
   Gauge,
@@ -95,6 +96,7 @@ const Sidebar: React.FC<SidebarProps> = ({ currentView, setView, user, onLogout 
                 <MenuItem id="sec_events" label="SIEM & Events" icon={ShieldAlert} />
                 <MenuItem id="sec_analysis" label="Threat Analysis" icon={ScanSearch} />
                 <MenuItem id="sec_chat" label="Security Copilot" icon={BotMessageSquare} />
+                <MenuItem id="incidents" label="Incident Response" icon={Siren} />
             </ul>
           </details>
         </li>

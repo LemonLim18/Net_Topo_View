@@ -55,11 +55,11 @@ except ImportError:
     _ANSIBLE_ENABLED = False
 
 # M25 — Phase-2 Autonomous Agent APIs
-from incidents.api import router as incidents_router
+from incidents.api import router as incidents_router, setup_incidents
 from agent.api import router as agent_router, setup_agent_api
 
-# --- Crawler Logic (Legacy/Transitional) ---
-import mini_nce as crawler
+# --- Crawler Logic (refactored BFS engine — replaces legacy mini_nce) ---
+from crawler.bfs_engine import crawl_topology as _bfs_crawl
 from crawler.store import save_crawl_result
 
 logging.basicConfig(level=logging.INFO)
@@ -74,13 +74,17 @@ PREVIOUS_TOPOLOGY_FILE = os.path.join(TOPOLOGY_SAVE_DIR, "previous_topo.json")
 NEW_FETCH_FILE = os.path.join(TOPOLOGY_SAVE_DIR, "new_fetch.json")
 
 CRAWL_INTERVAL_SECONDS = 300  # 5 minutes
-CRAWL_WORKERS = 6
-# Configure these via environment variables or secure vault in production
-CRAWL_SEEDS: List[str] = ["192.168.1.123"] 
-CRAWL_USER = "miinning"
-CRAWL_PASSWORD = "Cisco123"
-CRAWL_KEYFILE = None
-CRAWL_JUMP = None
+CRAWL_WORKERS = int(os.getenv("CRAWL_WORKERS", "6"))
+
+# Seeds & credentials from environment (no hardcoded secrets)
+CRAWL_SEEDS: List[str] = [
+    s.strip() for s in os.getenv("CRAWL_SEEDS", "192.168.1.123").split(",") if s.strip()
+]
+CRAWL_USER     = os.getenv("CRAWL_USER", "")
+CRAWL_PASSWORD = os.getenv("CRAWL_PASSWORD", "")
+CRAWL_KEYFILE  = os.getenv("CRAWL_KEYFILE") or None
+CRAWL_DRIVER   = os.getenv("CRAWL_DRIVER", "cisco_ios")
+CRAWL_JUMP     = None  # set via env JSON if needed
 
 # Global State
 _current_topology_dict: Optional[dict] = None
@@ -92,6 +96,7 @@ _topology_lock = asyncio.Lock()
 # can feed every fresh crawl result into the agent's RAG cache.
 _db: Optional[DatabaseManager] = None
 _agent: Optional[NetworkAgent] = None
+_vault = None  # CredentialVault — set in lifespan
 
 # ----------------------
 # WebSocket Connection Manager
@@ -133,8 +138,34 @@ mgr = ConnectionManager()
 # Crawler Helpers
 # ----------------------
 def do_sync_crawl() -> dict:
-    return crawler.crawl_topology(
-        CRAWL_SEEDS, CRAWL_USER, CRAWL_PASSWORD, CRAWL_KEYFILE, CRAWL_JUMP, workers=CRAWL_WORKERS
+    """Run BFS topology discovery using env-configured seeds & credentials.
+
+    Falls back to CredentialVault (M15) when CRAWL_USER is empty and the
+    vault has a 'default' SSH credential stored.
+    """
+    user = CRAWL_USER
+    password = CRAWL_PASSWORD
+
+    # If env creds are blank, try the CredentialVault for device_id=0 (global default)
+    if not user and _vault is not None:
+        cred = _vault.get(device_id=0, label="SSH")
+        if cred:
+            user = cred["username"]
+            password = cred["password"]
+            logger.info("Using CredentialVault default SSH credential for crawl")
+
+    if not user:
+        logger.error("No crawl credentials configured — set CRAWL_USER/CRAWL_PASSWORD or store a vault entry")
+        return {"timestamp": datetime.now().isoformat(), "seeds": CRAWL_SEEDS, "nodes": {}}
+
+    return _bfs_crawl(
+        seeds=CRAWL_SEEDS,
+        username=user,
+        password=password,
+        key_file=CRAWL_KEYFILE,
+        driver_type=CRAWL_DRIVER,
+        jump_host=CRAWL_JUMP,
+        workers=CRAWL_WORKERS,
     )
 
 def canonical_topology(topo: dict) -> dict:
@@ -304,13 +335,25 @@ async def lifespan(app: FastAPI):
         logger.info("Ansible orchestration layer initialized (M22)")
 
     # M25 — Phase-2: Agent Plan/Execute and Incidents
-    setup_agent_api(agent, builder=_builder)
+    setup_agent_api(agent, builder=_builder, db=db)
     logger.info("Autonomous Agent Plan/Execute API initialized (M25)")
 
+    # M25 — Incident Response Orchestrator (closed-loop pipeline)
+    from incidents.orchestrator import IncidentOrchestrator
+    _orchestrator = IncidentOrchestrator(
+        db=db,
+        agent=agent,
+        builder=_builder,
+        broadcast_fn=_telemetry_broadcast,
+    )
+    setup_incidents(_orchestrator)
+    logger.info("Incident Response Orchestrator initialized (M25)")
+
     # 4. Load Saved Topology
-    global _current_topology_dict, _current_topology_json, _previous_topology_dict, _db, _agent
+    global _current_topology_dict, _current_topology_json, _previous_topology_dict, _db, _agent, _vault
     _db = db
     _agent = agent
+    _vault = vault
     try:
         os.makedirs(TOPOLOGY_SAVE_DIR, exist_ok=True)
         if os.path.exists(CURRENT_TOPOLOGY_FILE):
@@ -330,7 +373,7 @@ async def lifespan(app: FastAPI):
         logger.warning(f"Failed to load initial topology: {e}")
 
     # 5. Start M16 Scheduler (replaces old periodic_crawler loop)
-    start_scheduler(run_crawl_and_broadcast)
+    start_scheduler(run_crawl_and_broadcast, orchestrator=_orchestrator)
     logger.info("Background scheduler started")
 
     # 6. SSH idle-session reaper (every 2 minutes)

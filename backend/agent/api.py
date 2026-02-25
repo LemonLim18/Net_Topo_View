@@ -26,6 +26,8 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 
+from db.manager import DatabaseManager
+
 logger = logging.getLogger("agent.api")
 
 router = APIRouter(prefix="/agent", tags=["Autonomous Agent (M25)"])
@@ -33,17 +35,86 @@ router = APIRouter(prefix="/agent", tags=["Autonomous Agent (M25)"])
 # ── Shared instances (injected by backend.py via setup_agent_api) ────────────
 _agent    = None   # NetworkAgent
 _builder  = None   # PlaybookBuilder
+_db: Optional[DatabaseManager] = None
 
 
-def setup_agent_api(agent, builder=None) -> None:
-    global _agent, _builder
+def setup_agent_api(agent, builder=None, db: Optional[DatabaseManager] = None) -> None:
+    global _agent, _builder, _db
     _agent   = agent
     _builder = builder
-    logger.info("Agent Plan/Execute API initialised (builder=%s)", bool(builder))
+    _db      = db
+    logger.info("Agent Plan/Execute API initialised (builder=%s, db=%s)", bool(builder), bool(db))
 
 
-# ── In-process plan store (UUID → plan dict) ─────────────────────────────────
-_plans: Dict[str, Dict[str, Any]] = {}
+# ── Plan persistence helpers (DB-backed, survives restarts) ───────────────
+
+def _save_plan(plan_id: str, domain: str, message: str, context: dict,
+               plan_data: dict, affected: list, risk: str) -> None:
+    """Persist a plan to the agent_plans table."""
+    if _db is None:
+        return
+    try:
+        with _db._connect() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO agent_plans "
+                "(id, domain, message, context_json, plan_data_json, affected_devices, risk_level) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    plan_id, domain, message,
+                    json.dumps(context),
+                    json.dumps(plan_data),
+                    json.dumps(affected),
+                    risk,
+                ),
+            )
+    except Exception as exc:
+        logger.warning("Failed to persist plan %s: %s", plan_id, exc)
+
+
+def _load_plan(plan_id: str) -> Optional[Dict[str, Any]]:
+    """Load a plan from DB (returns dict or None)."""
+    if _db is None:
+        return None
+    try:
+        with _db._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM agent_plans WHERE id = ?", (plan_id,)
+            ).fetchone()
+            if not row:
+                return None
+            return {
+                "id":               row["id"],
+                "domain":           row["domain"],
+                "message":          row["message"],
+                "context":          json.loads(row["context_json"] or "{}"),
+                "affected_devices": json.loads(row["affected_devices"] or "[]"),
+                "risk_level":       row["risk_level"],
+                "status":           row["status"],
+                "plan_data":        json.loads(row["plan_data_json"] or "{}"),
+            }
+    except Exception as exc:
+        logger.warning("Failed to load plan %s: %s", plan_id, exc)
+        return None
+
+
+def _update_plan_status(plan_id: str, status: str, playbook_yaml: str = "") -> None:
+    """Update plan status (e.g. executing, completed, cancelled)."""
+    if _db is None:
+        return
+    try:
+        with _db._connect() as conn:
+            if playbook_yaml:
+                conn.execute(
+                    "UPDATE agent_plans SET status = ?, playbook_yaml = ?, executed_at = datetime('now') WHERE id = ?",
+                    (status, playbook_yaml, plan_id),
+                )
+            else:
+                conn.execute(
+                    "UPDATE agent_plans SET status = ? WHERE id = ?",
+                    (status, plan_id),
+                )
+    except Exception as exc:
+        logger.warning("Failed to update plan %s: %s", plan_id, exc)
 
 # ── Request / Response models ────────────────────────────────────────────────
 
@@ -249,17 +320,20 @@ async def plan_action(req: PlanRequest):
 
     plan_data = await _llm_plan(agent, req.message, req.domain, req.context)
 
-    # Store plan for phase-2 retrieval
+    # Store plan for phase-2 retrieval  (DB-backed)
     plan_id = str(uuid.uuid4())
-    _plans[plan_id] = {
-        "id":               plan_id,
-        "message":          req.message,
-        "domain":           req.domain,
-        "context":          req.context.model_dump(),
-        "affected_devices": plan_data.get("context_summary", {}).get("affected_devices", []),
-        "risk_level":       plan_data.get("risk_level", "medium"),
-        "created_at":       datetime.utcnow().isoformat(),
-    }
+    affected = plan_data.get("context_summary", {}).get("affected_devices", [])
+    risk     = plan_data.get("risk_level", "medium")
+
+    _save_plan(
+        plan_id=plan_id,
+        domain=req.domain,
+        message=req.message,
+        context=req.context.model_dump(),
+        plan_data=plan_data,
+        affected=affected,
+        risk=risk,
+    )
 
     ctx_raw  = plan_data.get("context_summary", {})
     outs_raw = plan_data.get("expected_outcomes", {})
@@ -291,12 +365,12 @@ async def execute_plan(req: ExecuteRequest):
       "revise"   — regenerate with a different approach
       "cancel"   — discard the plan, return empty response
     """
-    plan = _plans.get(req.plan_id)
+    plan = _load_plan(req.plan_id)
     if not plan:
         raise HTTPException(404, f"Plan '{req.plan_id}' not found or expired")
 
     if req.action == "cancel":
-        _plans.pop(req.plan_id, None)
+        _update_plan_status(req.plan_id, "cancelled")
         return ExecuteResponse(
             mode="execution",
             plan_id=req.plan_id,
@@ -310,6 +384,9 @@ async def execute_plan(req: ExecuteRequest):
     playbook_yaml, hosts = await _llm_or_builder_playbook(
         agent, _builder, plan, req.plan_id
     )
+
+    # Persist the generated playbook into the plan row
+    _update_plan_status(req.plan_id, "executing", playbook_yaml=playbook_yaml)
 
     # Rough task-count from YAML (just count '- name:' lines)
     task_count = playbook_yaml.count("- name:")

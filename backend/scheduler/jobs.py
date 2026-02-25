@@ -5,6 +5,7 @@ Each function wraps an existing module entry-point so the scheduler
 can call it safely (catches all exceptions, logs errors).
 """
 
+import asyncio
 import logging
 from typing import Callable, Awaitable, Optional
 
@@ -12,17 +13,27 @@ logger = logging.getLogger("scheduler.jobs")
 
 
 # ────────────────────────────────────────────────────────
-# Job 1: Network Crawl
+# Injected dependencies
 # ────────────────────────────────────────────────────────
 _crawl_fn: Optional[Callable[..., Awaitable]] = None
+_orchestrator = None  # IncidentOrchestrator — set via set_orchestrator()
 
 
 def set_crawl_function(fn: Callable[..., Awaitable]) -> None:
-    """Inject the crawl-and-broadcast coroutine from py."""
+    """Inject the crawl-and-broadcast coroutine from backend.py."""
     global _crawl_fn
     _crawl_fn = fn
 
 
+def set_orchestrator(orch) -> None:
+    """Inject the IncidentOrchestrator instance."""
+    global _orchestrator
+    _orchestrator = orch
+
+
+# ────────────────────────────────────────────────────────
+# Job 1: Network Crawl
+# ────────────────────────────────────────────────────────
 async def job_crawl() -> None:
     """Periodic network crawl (calls run_crawl_and_broadcast)."""
     if _crawl_fn is None:
@@ -81,5 +92,44 @@ def job_cve_rescan() -> None:
         results = matcher.scan_all_devices(db)
         total = sum(len(v) for v in results.values())
         logger.info("[Scheduler] CVE-rescan complete: %d CVEs across %d devices", total, len(results))
+    except Exception:
+        logger.exception("[Scheduler] CVE-rescan job failed")
+
+
+# ────────────────────────────────────────────────────────
+# Job 5: Anomaly Detection & Incident Response
+# ────────────────────────────────────────────────────────
+async def job_anomaly_detect() -> None:
+    """
+    Periodic anomaly detection:
+      1. Scan recent security events
+      2. Create incidents for new anomalies
+      3. Run AI analysis (RCA + playbook)
+      4. Broadcast to UI
+    """
+    if _orchestrator is None:
+        logger.warning("Orchestrator not set — skipping anomaly detection")
+        return
+    try:
+        logger.info("[Scheduler] Anomaly-detection job triggered")
+
+        # Step 1+2: Detect & ingest
+        new_ids = _orchestrator.detect_and_ingest()
+        if not new_ids:
+            logger.info("[Scheduler] No new incidents from anomaly scan")
+            return
+
+        logger.info("[Scheduler] Created %d new incident(s): %s", len(new_ids), new_ids)
+
+        # Step 3+4: Analyse each and broadcast
+        for inc_id in new_ids:
+            try:
+                await _orchestrator.analyze_incident(inc_id)
+                await _orchestrator.broadcast_incident(inc_id, "incident_created")
+            except Exception:
+                logger.exception("[Scheduler] Failed to analyse incident %s", inc_id)
+
+    except Exception:
+        logger.exception("[Scheduler] Anomaly-detection job failed")
     except Exception:
         logger.exception("[Scheduler] CVE-rescan job failed")

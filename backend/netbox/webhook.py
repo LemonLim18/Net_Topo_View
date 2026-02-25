@@ -49,7 +49,7 @@ async def netbox_webhook(
         logger.info(f"Received NetBox Webhook: {event} {model} ({data.get('name')})")
 
         # 3. Handle Events
-        db = DatabaseManager("net_topo.db")
+        db = DatabaseManager("db/netauto.db")
         
         if model == "device":
              # Incremental sync could be done here, but for safety we resync all or specific device

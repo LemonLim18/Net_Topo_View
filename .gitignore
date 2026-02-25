@@ -38,3 +38,5 @@ htmlcov/
 backend/chroma_db/
 *.sqlite3-wal
 *.sqlite3-shm
+
+backend/chroma_db/chroma.sqlite3

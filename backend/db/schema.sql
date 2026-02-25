@@ -305,3 +305,21 @@ CREATE INDEX IF NOT EXISTS idx_intents_status ON intents(status);
 CREATE INDEX IF NOT EXISTS idx_intents_type   ON intents(intent_type);
 
 
+-- -----------------------------------------------------------
+-- 17. Agent Plans (M25 — Persist plan/execute workflow state)
+-- -----------------------------------------------------------
+CREATE TABLE IF NOT EXISTS agent_plans (
+    id              TEXT PRIMARY KEY,              -- UUID
+    domain          TEXT NOT NULL DEFAULT 'network',
+    message         TEXT NOT NULL,
+    context_json    TEXT,                           -- JSON (view, selected_device)
+    plan_data_json  TEXT,                           -- JSON (proposed_actions, outcomes, risk)
+    affected_devices TEXT,                          -- JSON array of hostnames
+    risk_level      TEXT DEFAULT 'medium',
+    status          TEXT DEFAULT 'planned',         -- planned | executing | completed | cancelled
+    playbook_yaml   TEXT,                           -- generated YAML (after execute)
+    created_at      TEXT DEFAULT (datetime('now')),
+    executed_at     TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_agent_plans_status ON agent_plans(status);

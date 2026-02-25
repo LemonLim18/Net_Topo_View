@@ -11,6 +11,7 @@ import AIAgentPanel from '../components/AIAgentPanel';
 import KnowledgeBase from '../views/KnowledgeBase';
 import AnsibleStudioView from '../views/AnsibleStudioView';
 import DriftView from '../views/DriftView';
+import IncidentDashboard from '../views/IncidentDashboard';
 
 import Login from '../views/Login';
 import NetworkPerformance from '../views/NetworkPerformance';
@@ -92,6 +93,10 @@ const App: React.FC = () => {
         return <GeminiChat domain="security" />;
       case 'sec_analysis':
          return <SecurityAnalysis />;
+
+      // Incident Response
+      case 'incidents':
+        return <IncidentDashboard />;
 
       default:
         return <OverviewDashboard setView={setView} setSelectedDeviceId={setSelectedDeviceId} />;

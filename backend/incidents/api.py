@@ -38,6 +38,7 @@ router = APIRouter(prefix="/incidents", tags=["Incidents (M25)"])
 
 # Singleton store — created lazily so tests can override the path
 _store: Optional[IncidentStore] = None
+_orchestrator = None  # IncidentOrchestrator — injected by backend.py
 
 
 def _get_store() -> IncidentStore:
@@ -45,6 +46,13 @@ def _get_store() -> IncidentStore:
     if _store is None:
         _store = IncidentStore()
     return _store
+
+
+def setup_incidents(orchestrator) -> None:
+    """Inject the IncidentOrchestrator (called by backend.py lifespan)."""
+    global _orchestrator
+    _orchestrator = orchestrator
+    logger.info("Incidents API wired to orchestrator")
 
 
 # ---------------------------------------------------------------------------
@@ -280,3 +288,61 @@ async def update_analysis(incident_id: str, req: AnalysisUpdate):
     if not ok:
         raise HTTPException(404, f"Incident {incident_id!r} not found")
     return {"status": "updated", "incident_id": incident_id}
+
+
+@router.post("/{incident_id}/execute")
+async def execute_incident_playbook(incident_id: str):
+    """
+    Execute the approved remediation playbook for an incident.
+
+    Runs ansible --check first (dry-run), then applies if check passes.
+    Only works on incidents with status='approved'.
+    """
+    if _orchestrator is None:
+        raise HTTPException(503, "Incident orchestrator not initialized")
+
+    result = await _orchestrator.execute_approved_playbook(incident_id)
+    if not result.get("success"):
+        raise HTTPException(
+            400 if result.get("error") else 500,
+            detail=result.get("error") or "Execution failed",
+        )
+
+    # Broadcast status change
+    try:
+        await _orchestrator.broadcast_incident(incident_id, "incident_resolved")
+    except Exception:
+        pass
+
+    return {
+        "status": "executed",
+        "incident_id": incident_id,
+        "result": result,
+    }
+
+
+@router.post("/{incident_id}/reanalyze")
+async def reanalyze_incident(incident_id: str):
+    """
+    Re-trigger AI analysis for an incident (e.g. if user wants a different approach).
+    """
+    if _orchestrator is None:
+        raise HTTPException(503, "Incident orchestrator not initialized")
+
+    store = _get_store()
+    row = store.get(incident_id)
+    if not row:
+        raise HTTPException(404, f"Incident {incident_id!r} not found")
+    if row["status"] in ("resolved", "dismissed"):
+        raise HTTPException(409, f"Incident is already '{row['status']}'")
+
+    ok = await _orchestrator.analyze_incident(incident_id)
+    if not ok:
+        raise HTTPException(500, "Analysis failed")
+
+    try:
+        await _orchestrator.broadcast_incident(incident_id, "incident_updated")
+    except Exception:
+        pass
+
+    return {"status": "reanalyzed", "incident_id": incident_id}

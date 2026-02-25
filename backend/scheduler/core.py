@@ -17,7 +17,9 @@ from scheduler.jobs import (
     job_drift_check,
     job_security_audit,
     job_cve_rescan,
+    job_anomaly_detect,
     set_crawl_function,
+    set_orchestrator,
 )
 
 logger = logging.getLogger("scheduler.core")
@@ -36,13 +38,13 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
-def start_scheduler(crawl_fn: Callable[..., Awaitable]) -> None:
+def start_scheduler(crawl_fn: Callable[..., Awaitable], orchestrator=None) -> None:
     """
     Create, configure, and start the global scheduler.
 
     Args:
-        crawl_fn: The async crawl-and-broadcast function from py
-                  (injected to avoid circular imports).
+        crawl_fn:      The async crawl-and-broadcast function from backend.py.
+        orchestrator:  IncidentOrchestrator instance (optional).
     """
     global _scheduler
 
@@ -50,14 +52,17 @@ def start_scheduler(crawl_fn: Callable[..., Awaitable]) -> None:
         logger.warning("Scheduler already running — skipping start")
         return
 
-    # Inject the crawl function into jobs module
+    # Inject dependencies into jobs module
     set_crawl_function(crawl_fn)
+    if orchestrator is not None:
+        set_orchestrator(orchestrator)
 
     # Read configurable intervals
-    crawl_min = _env_int("SCHED_CRAWL_MINUTES", 15)
-    drift_min = _env_int("SCHED_DRIFT_MINUTES", 30)
-    audit_hrs = _env_int("SCHED_AUDIT_HOURS", 6)
-    cve_hrs   = _env_int("SCHED_CVE_HOURS", 24)
+    crawl_min   = _env_int("SCHED_CRAWL_MINUTES", 15)
+    drift_min   = _env_int("SCHED_DRIFT_MINUTES", 30)
+    audit_hrs   = _env_int("SCHED_AUDIT_HOURS", 6)
+    cve_hrs     = _env_int("SCHED_CVE_HOURS", 24)
+    anomaly_min = _env_int("SCHED_ANOMALY_MINUTES", 5)
 
     _scheduler = AsyncIOScheduler(timezone="UTC")
 
@@ -94,10 +99,18 @@ def start_scheduler(crawl_fn: Callable[..., Awaitable]) -> None:
         replace_existing=True,
     )
 
+    _scheduler.add_job(
+        job_anomaly_detect,
+        trigger=IntervalTrigger(minutes=anomaly_min),
+        id="anomaly_detect",
+        name="Anomaly Detection & Incident Response",
+        replace_existing=True,
+    )
+
     _scheduler.start()
     logger.info(
-        "Scheduler started with %d jobs — Crawl: %dm, Drift: %dm, Audit: %dh, CVE: %dh",
-        len(_scheduler.get_jobs()), crawl_min, drift_min, audit_hrs, cve_hrs,
+        "Scheduler started with %d jobs — Crawl: %dm, Drift: %dm, Audit: %dh, CVE: %dh, Anomaly: %dm",
+        len(_scheduler.get_jobs()), crawl_min, drift_min, audit_hrs, cve_hrs, anomaly_min,
     )
 
 

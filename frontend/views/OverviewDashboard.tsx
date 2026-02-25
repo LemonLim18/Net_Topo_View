@@ -13,7 +13,7 @@ import {
   WifiOff,
   HelpCircle,
 } from 'lucide-react';
-import { dashboardApi, netboxApi } from '../src/services/api';
+import { dashboardApi, netboxApi, incidentApi } from '../src/services/api';
 import type { DashboardSummary, DeviceRecord } from '../src/services/api';
 import type { ViewId } from '../types';
 import { Toast } from '../src/utils/swal';
@@ -39,17 +39,20 @@ interface Props {
 const OverviewDashboard: React.FC<Props> = ({ setView, setSelectedDeviceId }) => {
   const [summary, setSummary] = useState<DashboardSummary | null>(null);
   const [devices, setDevices] = useState<DeviceRecord[]>([]);
+  const [incidents, setIncidents] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
 
   const refresh = useCallback(async () => {
     setLoading(true);
     try {
-      const [s, d] = await Promise.all([
+      const [s, d, inc] = await Promise.all([
         dashboardApi.getSummary(),
         netboxApi.listDevices(),
+        incidentApi.listIncidents().catch(() => []),
       ]);
       setSummary(s);
       setDevices(Array.isArray(d?.devices) ? d.devices : []);
+      setIncidents(Array.isArray(inc) ? inc : []);
     } catch (e: any) {
       Toast.error('Failed to load dashboard: ' + (e?.message ?? e));
     } finally {
@@ -92,7 +95,7 @@ const OverviewDashboard: React.FC<Props> = ({ setView, setSelectedDeviceId }) =>
       </div>
 
       {/* ─── KPI Row ─── */}
-      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-5 gap-4">
+      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-6 gap-4">
         {/* Devices */}
         <div className="card bg-base-100 shadow cursor-pointer hover:shadow-lg transition-shadow"
              onClick={() => setView('netbox_devices')}>
@@ -182,6 +185,33 @@ const OverviewDashboard: React.FC<Props> = ({ setView, setSelectedDeviceId }) =>
               {s.deployments.recent_7d} in last 7 days
               {s.deployments.last_status && <span className="ml-1">· last: {s.deployments.last_status}</span>}
             </p>
+          </div>
+        </div>
+
+        {/* Incidents */}
+        <div className="card bg-base-100 shadow cursor-pointer hover:shadow-lg transition-shadow"
+             onClick={() => setView('incidents')}>
+          <div className="card-body p-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-xs uppercase font-semibold opacity-60">Incidents</p>
+                <p className={`text-3xl font-bold ${incidents.filter(i => i.status === 'open' || i.status === 'investigating').length > 0 ? 'text-error' : 'text-success'}`}>
+                  {incidents.filter(i => i.status === 'open' || i.status === 'investigating').length}
+                </p>
+              </div>
+              <AlertTriangle className="h-8 w-8 text-error opacity-40" />
+            </div>
+            <div className="flex gap-2 mt-1 text-xs flex-wrap">
+              {['critical', 'high', 'medium'].map(sev => {
+                const count = incidents.filter(i => i.severity === sev && (i.status === 'open' || i.status === 'investigating')).length;
+                return count > 0 ? (
+                  <span key={sev} className={`badge badge-xs ${severityColor[sev]}`}>{count} {sev}</span>
+                ) : null;
+              })}
+              {incidents.filter(i => i.status === 'open' || i.status === 'investigating').length === 0 && (
+                <span className="opacity-50">All clear</span>
+              )}
+            </div>
           </div>
         </div>
       </div>
