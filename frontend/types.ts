@@ -79,7 +79,8 @@ export type ViewId =
   | 'sec_events'
   | 'sec_analysis'
   | 'sec_chat'
-  | 'incidents';
+  | 'incidents'
+  | 'onboarding';
 
 // Notification Types
 export type NotificationType = 'info' | 'success' | 'warning' | 'error';

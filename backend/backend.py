@@ -58,6 +58,9 @@ except ImportError:
 from incidents.api import router as incidents_router, setup_incidents
 from agent.api import router as agent_router, setup_agent_api
 
+# M0 — Device Onboarding Wizard
+from onboarding.api import router as onboarding_router
+
 # --- Crawler Logic (refactored BFS engine — replaces legacy mini_nce) ---
 from crawler.bfs_engine import crawl_topology as _bfs_crawl
 from crawler.store import save_crawl_result
@@ -429,6 +432,9 @@ if _ANSIBLE_ENABLED and ansible_router is not None:
 # M25 — Phase-2 Autonomous Agent APIs
 app.include_router(incidents_router, prefix="/api/v1", tags=["Incidents (M25)"])
 app.include_router(agent_router, prefix="/api/v1", tags=["Autonomous Agent (M25)"])
+
+# M0 — Onboarding
+app.include_router(onboarding_router, prefix="/api/v1", tags=["Onboarding (M0)"])
 
 # WebSocket Endpoint (Streamlined)
 @app.websocket("/ws")

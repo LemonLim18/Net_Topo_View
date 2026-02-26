@@ -68,3 +68,46 @@ class LLMProvider(ABC):
     def model_name(self) -> str:
         """Return the human-readable model name."""
         ...
+
+    def generate_sync(self, prompt: str, temperature: float = 0.3) -> str:
+        """
+        Synchronous single-turn helper for callers that cannot use async.
+        Wraps ``generate()`` using asyncio.  Subclasses may override this
+        with a more efficient native sync implementation (e.g. OllamaProvider).
+        """
+        import asyncio
+        loop = asyncio.new_event_loop()
+        try:
+            response = loop.run_until_complete(
+                self.generate(
+                    [LLMMessage(role="user", content=prompt)],
+                    temperature=temperature,
+                )
+            )
+            return response.content
+        finally:
+            loop.close()
+
+
+# ---------------------------------------------------------------------------
+# Factory
+# ---------------------------------------------------------------------------
+
+def get_llm_provider() -> "LLMProvider":
+    """
+    Return the configured LLM provider instance.
+
+    Provider selection (via ``LLM_PROVIDER`` env var):
+        gemini  → GeminiProvider  (default)
+        ollama  → OllamaProvider
+    """
+    import os
+    provider_name = os.getenv("LLM_PROVIDER", "gemini").lower()
+
+    if provider_name == "ollama":
+        from llm.ollama_provider import OllamaProvider
+        return OllamaProvider()
+
+    # Default: Gemini
+    from llm.gemini_provider import GeminiProvider
+    return GeminiProvider()

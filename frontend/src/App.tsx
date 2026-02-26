@@ -12,6 +12,7 @@ import KnowledgeBase from '../views/KnowledgeBase';
 import AnsibleStudioView from '../views/AnsibleStudioView';
 import DriftView from '../views/DriftView';
 import IncidentDashboard from '../views/IncidentDashboard';
+import OnboardingView from '../views/OnboardingView';
 
 import Login from '../views/Login';
 import NetworkPerformance from '../views/NetworkPerformance';
@@ -97,6 +98,10 @@ const App: React.FC = () => {
       // Incident Response
       case 'incidents':
         return <IncidentDashboard />;
+
+      // M0 — Device Onboarding
+      case 'onboarding':
+        return <OnboardingView setView={setView} />;
 
       default:
         return <OverviewDashboard setView={setView} setSelectedDeviceId={setSelectedDeviceId} />;

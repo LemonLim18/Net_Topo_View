@@ -15,7 +15,8 @@ import {
   BookOpen,
   Workflow,
   Rocket,
-  GitCompareArrows
+  GitCompareArrows,
+  PackagePlus
 } from 'lucide-react';
 import type { ViewId, User } from '../types';
 import { Confirm } from '../src/utils/swal';
@@ -74,6 +75,7 @@ const Sidebar: React.FC<SidebarProps> = ({ currentView, setView, user, onLogout 
               Operations
             </summary>
             <ul>
+                <MenuItem id="onboarding" label="Onboard Device" icon={PackagePlus} />
                 <MenuItem id="topology" label="Topology Map" icon={Network} />
                 <MenuItem id="netbox_devices" label="Device Inventory" icon={Server} />
                 <MenuItem id="drift" label="Compliance / Drift" icon={GitCompareArrows} />
