@@ -34,17 +34,24 @@ const Sidebar: React.FC<SidebarProps> = ({ currentView, setView, user, onLogout 
 
   if (!user) return null;
 
-  const MenuItem = ({ id, label, icon: Icon }: { id: ViewId, label: string, icon: any }) => (
-    <li>
-      <a 
-        className={currentView === id ? 'active' : ''} 
-        onClick={() => setView(id)}
-      >
-        <Icon className="h-4 w-4" />
-        {label}
-      </a>
-    </li>
-  );
+  const MenuItem = ({ id, label, icon: Icon }: { id: ViewId, label: string, icon: any }) => {
+    const isActive = currentView === id;
+    return (
+      <li>
+        <a
+          className={
+            isActive
+              ? 'active bg-primary/20 text-primary font-semibold border-l-2 border-primary'
+              : 'hover:bg-base-200'
+          }
+          onClick={() => setView(id)}
+        >
+          <Icon className={`h-4 w-4 ${isActive ? 'text-primary' : ''}`} />
+          {label}
+        </a>
+      </li>
+    );
+  };
 
   return (
     <aside className="w-64 bg-base-100 flex-shrink-0 shadow-lg z-10 flex flex-col h-full">

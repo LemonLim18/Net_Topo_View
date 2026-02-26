@@ -172,6 +172,11 @@ export const Confirm = {
 
   /** Neutral confirm (e.g. rollback). Returns true if confirmed. */
   ask: async (title: string, text?: string): Promise<boolean> => {
+    // Clear any lingering toasts/modals that may block this dialog
+    try { Swal.close(); } catch { /* ignore */ }
+    forceSwalCleanup();
+    // Small tick so the DOM settles before the new popup mounts
+    await new Promise((r) => setTimeout(r, 50));
     try {
       const result = await baseMixin.fire({
         icon: 'question',
@@ -211,7 +216,9 @@ const LoginToastBase = Swal.mixin({
   },
   buttonsStyling: false,
   showClass: { popup: 'animate-in slide-in-from-right duration-300' },
-  hideClass: { popup: 'animate-out slide-out-to-right duration-200' },
+  // Use SweetAlert2's own built-in hide animation — custom Tailwind animate-out
+  // classes break the internal animationend listener, causing the toast to stick.
+  hideClass: { popup: 'swal2-hide' },
   didOpen: (toast) => {
     toast.addEventListener('mouseenter', Swal.stopTimer);
     toast.addEventListener('mouseleave', Swal.resumeTimer);
@@ -220,12 +227,20 @@ const LoginToastBase = Swal.mixin({
 });
 
 export const LoginToast = {
-  welcome: (username: string) =>
-    LoginToastBase.fire({
+  welcome: (username: string) => {
+    // Safety net: force-dismiss after timer + buffer in case animationend never fires
+    const TIMER_MS = 3000;
+    setTimeout(() => {
+      try { Swal.close(); } catch { /* ignore */ }
+      forceSwalCleanup();
+    }, TIMER_MS + 800);
+
+    return LoginToastBase.fire({
       icon: 'success',
       title: `Welcome back, ${username}`,
       text: 'Redirecting to dashboard…',
-    }),
+    });
+  },
 };
 
 // ---------------------------------------------------------------------------
