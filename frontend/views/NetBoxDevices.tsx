@@ -73,6 +73,9 @@ const EMPTY_FORM = {
   os_version: '',
   serial_number: '',
   status: 'unknown',
+  ssh_user: '',
+  ssh_password: '',
+  ssh_port: '22',
 };
 
 // ---------------------------------------------------------------------------
@@ -156,6 +159,9 @@ const NetBoxDevices: React.FC = () => {
       os_version: d.os_version || '',
       serial_number: d.serial_number || '',
       status: d.status || 'unknown',
+      ssh_user: (d as any).ssh_user || '',
+      ssh_password: '',
+      ssh_port: String((d as any).ssh_port || 22),
     });
     setIsEditing(true);
     setEditId(d.id);
@@ -181,6 +187,9 @@ const NetBoxDevices: React.FC = () => {
           os_version: form.os_version || undefined,
           serial_number: form.serial_number || undefined,
           status: form.status,
+          ssh_user: form.ssh_user || undefined,
+          ssh_password: form.ssh_password || undefined,
+          ssh_port: form.ssh_port ? Number(form.ssh_port) : undefined,
         });
         Toast.success(`Device "${updated.hostname}" updated`);
         setSelected(updated);
@@ -193,6 +202,9 @@ const NetBoxDevices: React.FC = () => {
           os_version: form.os_version || undefined,
           serial_number: form.serial_number || undefined,
           status: form.status,
+          ssh_user: form.ssh_user || undefined,
+          ssh_password: form.ssh_password || undefined,
+          ssh_port: form.ssh_port ? Number(form.ssh_port) : undefined,
         });
         Toast.success(`Device "${created.hostname}" added`, `ID ${created.id}`);
       }
@@ -417,6 +429,10 @@ const NetBoxDevices: React.FC = () => {
                 <DetailRow label="Status">
                   {statusBadge(selected.status)}
                 </DetailRow>
+                <div className="divider text-xs opacity-60">SSH Access</div>
+                <DetailRow label="SSH User" value={(selected as any).ssh_user || '—'} mono />
+                <DetailRow label="SSH Port" value={String((selected as any).ssh_port || 22)} mono />
+                <DetailRow label="Password" value={(selected as any).ssh_user ? '••••••••' : '—'} />
                 <div className="divider text-xs opacity-60">Timestamps</div>
                 <DetailRow label="Last Polled" value={selected.last_polled || 'Never'} />
                 <DetailRow label="Created" value={selected.created_at || '—'} />
@@ -539,6 +555,44 @@ const NetBoxDevices: React.FC = () => {
                   placeholder="e.g. FTX1234ABCD"
                   value={form.serial_number}
                   onChange={(e) => setForm({ ...form, serial_number: e.target.value })}
+                />
+              </label>
+
+              {/* SSH Credentials */}
+              <div className="divider text-xs opacity-60 my-1">SSH Credentials</div>
+              <div className="grid grid-cols-2 gap-3">
+                <label className="form-control w-full">
+                  <div className="label"><span className="label-text">SSH Username</span></div>
+                  <input
+                    type="text"
+                    className="input input-bordered w-full"
+                    placeholder="admin"
+                    value={form.ssh_user}
+                    onChange={(e) => setForm({ ...form, ssh_user: e.target.value })}
+                  />
+                </label>
+                <label className="form-control w-full">
+                  <div className="label"><span className="label-text">SSH Port</span></div>
+                  <input
+                    type="number"
+                    className="input input-bordered w-full"
+                    placeholder="22"
+                    value={form.ssh_port}
+                    onChange={(e) => setForm({ ...form, ssh_port: e.target.value })}
+                  />
+                </label>
+              </div>
+              <label className="form-control w-full">
+                <div className="label">
+                  <span className="label-text">SSH Password</span>
+                  <span className="label-text-alt opacity-50">{isEditing ? 'leave blank to keep existing' : ''}</span>
+                </div>
+                <input
+                  type="password"
+                  className="input input-bordered w-full"
+                  placeholder="••••••••"
+                  value={form.ssh_password}
+                  onChange={(e) => setForm({ ...form, ssh_password: e.target.value })}
                 />
               </label>
             </div>

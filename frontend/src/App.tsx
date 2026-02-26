@@ -3,15 +3,14 @@ import Header from '../components/Header';
 import Sidebar from '../components/Sidebar';
 import OverviewDashboard from '../views/OverviewDashboard';
 import Dashboard from '../views/Dashboard';
-import Configuration from '../views/Configuration';
 import GeminiChat from  "../views/AIChat";
-import Deployments from '../views/Deployments';
 import NetBoxDevices from '../views/NetBoxDevices';
 import AIAgentPanel from '../components/AIAgentPanel';
 import KnowledgeBase from '../views/KnowledgeBase';
 import AnsibleStudioView from '../views/AnsibleStudioView';
 import DriftView from '../views/DriftView';
 import IncidentDashboard from '../views/IncidentDashboard';
+import OnboardingView from '../views/OnboardingView';
 
 import Login from '../views/Login';
 import NetworkPerformance from '../views/NetworkPerformance';
@@ -65,12 +64,8 @@ const App: React.FC = () => {
       case 'dashboard':
       case 'topology':
         return <Dashboard />;
-      case 'configuration':
-        return <Configuration />;
       case 'netbox_devices':
         return <NetBoxDevices />;
-      case 'deployments':
-        return <Deployments />;
       case 'drift':
         return <DriftView />;
       case 'device_detail':
@@ -97,6 +92,10 @@ const App: React.FC = () => {
       // Incident Response
       case 'incidents':
         return <IncidentDashboard />;
+
+      // M0 — Device Onboarding
+      case 'onboarding':
+        return <OnboardingView setView={setView} />;
 
       default:
         return <OverviewDashboard setView={setView} setSelectedDeviceId={setSelectedDeviceId} />;

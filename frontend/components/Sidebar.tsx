@@ -2,7 +2,6 @@ import React, { useState } from 'react';
 import { 
   Home,
   Network,
-  FileCog, 
   BotMessageSquare, 
   Activity, 
   ShieldAlert, 
@@ -14,8 +13,8 @@ import {
   Server,
   BookOpen,
   Workflow,
-  Rocket,
-  GitCompareArrows
+  GitCompareArrows,
+  PackagePlus
 } from 'lucide-react';
 import type { ViewId, User } from '../types';
 import { Confirm } from '../src/utils/swal';
@@ -33,17 +32,24 @@ const Sidebar: React.FC<SidebarProps> = ({ currentView, setView, user, onLogout 
 
   if (!user) return null;
 
-  const MenuItem = ({ id, label, icon: Icon }: { id: ViewId, label: string, icon: any }) => (
-    <li>
-      <a 
-        className={currentView === id ? 'active' : ''} 
-        onClick={() => setView(id)}
-      >
-        <Icon className="h-4 w-4" />
-        {label}
-      </a>
-    </li>
-  );
+  const MenuItem = ({ id, label, icon: Icon }: { id: ViewId, label: string, icon: any }) => {
+    const isActive = currentView === id;
+    return (
+      <li>
+        <a
+          className={
+            isActive
+              ? 'active bg-primary/20 text-primary font-semibold border-l-2 border-primary'
+              : 'hover:bg-base-200'
+          }
+          onClick={() => setView(id)}
+        >
+          <Icon className={`h-4 w-4 ${isActive ? 'text-primary' : ''}`} />
+          {label}
+        </a>
+      </li>
+    );
+  };
 
   return (
     <aside className="w-64 bg-base-100 flex-shrink-0 shadow-lg z-10 flex flex-col h-full">
@@ -74,12 +80,11 @@ const Sidebar: React.FC<SidebarProps> = ({ currentView, setView, user, onLogout 
               Operations
             </summary>
             <ul>
+                <MenuItem id="onboarding" label="Onboard Device" icon={PackagePlus} />
                 <MenuItem id="topology" label="Topology Map" icon={Network} />
                 <MenuItem id="netbox_devices" label="Device Inventory" icon={Server} />
                 <MenuItem id="drift" label="Compliance / Drift" icon={GitCompareArrows} />
                 <MenuItem id="net_perf" label="Performance" icon={Activity} />
-                <MenuItem id="deployments" label="Deployments" icon={Rocket} />
-                <MenuItem id="configuration" label="Configuration" icon={FileCog} />
             </ul>
           </details>
         </li>

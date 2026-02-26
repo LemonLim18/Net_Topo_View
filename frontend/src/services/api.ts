@@ -57,6 +57,18 @@ export const deployApi = {
 
   getLogs: (jobId: number) =>
     request<{ logs: any[] }>('/deploy/jobs/' + jobId + '/logs'),
+
+  /** Fetch recent audit entries (newest first). */
+  getAuditLog: (limit = 50) =>
+    request<{ entries: any[] }>(`/deploy/audit?limit=${limit}`),
+
+  /** Fetch audit entries for a specific job. */
+  getAuditForJob: (jobId: number) =>
+    request<{ entries: any[] }>(`/deploy/audit/job/${jobId}`),
+
+  /** List all deployment jobs. */
+  listJobs: () =>
+    request<any[]>('/deploy/jobs'),
 };
 
 // --- M5: LLM Agent API ---
@@ -147,6 +159,32 @@ export const configApi = {
       method: 'POST',
       body: JSON.stringify({ vendor, config_text: configText }),
     }),
+
+  /** Read raw .j2 template source for Monaco editing. */
+  getTemplateSource: (vendor: string, feature: string) =>
+    request<{ vendor: string; feature: string; content: string }>(
+      `/config/templates/${vendor}/${feature}/source`
+    ),
+
+  /** Save edited .j2 template source (admin only). */
+  saveTemplateSource: (vendor: string, feature: string, content: string) =>
+    request<{ status: string }>(
+      `/config/templates/${vendor}/${feature}/source`,
+      { method: 'PUT', body: JSON.stringify({ content }) }
+    ),
+
+  /** Read raw JSON schema source for Monaco editing. */
+  getSchemaSource: (feature: string) =>
+    request<{ feature: string; content: string }>(
+      `/config/schemas/${feature}/source`
+    ),
+
+  /** Save edited JSON schema source (admin only). */
+  saveSchemaSource: (feature: string, content: string) =>
+    request<{ status: string }>(
+      `/config/schemas/${feature}/source`,
+      { method: 'PUT', body: JSON.stringify({ content }) }
+    ),
 };
 
 // --- NetBox Device Inventory API ---
@@ -412,6 +450,22 @@ export const ansibleApi = {
   }) =>
     request<{ job_id: number; request_id: number; status: string; playbook: string }>(
       '/ansible/create-and-plan',
+      { method: 'POST', body: JSON.stringify(req) }
+    ),
+
+  /** Create a playbook from a Config Engine template (deterministic, no LLM). */
+  createFromTemplate: (req: {
+    vendor: string;
+    feature: string;
+    params: Record<string, any>;
+    target_hosts?: string[];
+    device_id?: number;
+  }) =>
+    request<{
+      job_id: number; request_id: number; status: string;
+      playbook: string; config: string; undo_config: string | null;
+    }>(
+      '/ansible/create-from-template',
       { method: 'POST', body: JSON.stringify(req) }
     ),
 

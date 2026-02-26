@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import ReactMarkdown from 'react-markdown';
-import { Send, Loader2, Bot, Sparkles, AlertCircle, FileCode, RotateCcw, ChevronRight, Paperclip, X, TriangleAlert } from 'lucide-react';
-import { ansibleApi } from '../../src/services/api';
+import { Send, Loader2, Bot, Sparkles, AlertCircle, FileCode, RotateCcw, ChevronRight, Paperclip, X, TriangleAlert, FileJson } from 'lucide-react';
+import { ansibleApi, configApi } from '../../src/services/api';
 import type { AnsibleMessage, AnsibleJob } from '../../typesLLM';
 
 interface AnsibleChatPanelProps {
@@ -122,7 +122,7 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
   const [messages, setMessages] = useState<AnsibleMessage[]>([{
     id:        'welcome',
     role:      'assistant',
-    content:   '**Ansible AI** ready.\n\nDescribe what you want to configure in plain English. For example:\n\n> *Configure VLAN 100 named DATA on all access switches*\n\nI will generate an Ansible playbook, which you can then review, dry-run, and deploy.',
+    content:   '**Ansible AI** ready.\n\nDescribe what you want to configure in plain English. For example:\n\n> *Configure VLAN 100 named DATA on all access switches*\n\nOr use **`/template`** to generate from a Config Engine template:\n\n> `/template cisco_ios vlan {"vlan_id":100,"vlan_name":"DATA"}`\n\nI will generate an Ansible playbook, which you can then review, dry-run, and deploy.',
     timestamp: Date.now(),
   }]);
   const [input, setInput]               = useState('');
@@ -246,35 +246,72 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
     setGenerating(true);
 
     try {
-      const { vendor, feature, target_hosts, params } = parseIntent(text);
+      // ── /template slash-command: generate from Config Engine template ────
+      const templateMatch = baseText.match(/^\/template\s+(\S+)\s+(\S+)(?:\s+(.+))?$/i);
 
-      const result = await ansibleApi.createAndPlan({
-        intent_description: text,
-        target_hosts,
-        vendor,
-        feature,
-        params,
-      });
+      if (templateMatch) {
+        const [, tplVendor, tplFeature, tplParamsRaw] = templateMatch;
+        let tplParams: Record<string, any> = {};
+        if (tplParamsRaw) {
+          try { tplParams = JSON.parse(tplParamsRaw); }
+          catch { tplParams = {}; }
+        }
 
-      const playbookName = `playbook_${result.job_id}.yml`;
+        const result = await ansibleApi.createFromTemplate({
+          vendor: tplVendor,
+          feature: tplFeature,
+          params: tplParams,
+          target_hosts: ['all'],
+        });
 
-      // Replace loading bubble with success message
-      setMessages(prev => prev.map(m =>
-        m.id === loadingId ? {
-          ...m,
-          isLoading: false,
-          content:
-            `✅ **Playbook generated** → \`${playbookName}\`\n\n` +
-            `- **Job ID:** ${result.job_id}\n` +
-            `- **Vendor:** \`${vendor}\`  **Feature:** \`${feature}\`\n` +
-            `- **Targets:** ${target_hosts.join(', ')}\n\n` +
-            `Recommend running **Check** to see the dry-run diff before deploying.`,
-          jobId: result.job_id,
-          playbookPath: playbookName,
-        } : m
-      ));
+        const playbookName = `playbook_${result.job_id}.yml`;
+        setMessages(prev => prev.map(m =>
+          m.id === loadingId ? {
+            ...m,
+            isLoading: false,
+            content:
+              `✅ **Template playbook generated** → \`${playbookName}\`\n\n` +
+              `- **Job ID:** ${result.job_id}\n` +
+              `- **Vendor:** \`${tplVendor}\`  **Feature:** \`${tplFeature}\`\n` +
+              `- **Source:** Config Engine template\n\n` +
+              `Recommend running **Check** to see the dry-run diff before deploying.`,
+            jobId: result.job_id,
+            playbookPath: playbookName,
+          } : m
+        ));
 
-      onPlaybookReady(result.job_id, result.playbook, playbookName);
+        onPlaybookReady(result.job_id, result.playbook, playbookName);
+      } else {
+        // ── Standard LLM generation ─────────────────────────────────────────
+        const { vendor, feature, target_hosts, params } = parseIntent(text);
+
+        const result = await ansibleApi.createAndPlan({
+          intent_description: text,
+          target_hosts,
+          vendor,
+          feature,
+          params,
+        });
+
+        const playbookName = `playbook_${result.job_id}.yml`;
+
+        setMessages(prev => prev.map(m =>
+          m.id === loadingId ? {
+            ...m,
+            isLoading: false,
+            content:
+              `✅ **Playbook generated** → \`${playbookName}\`\n\n` +
+              `- **Job ID:** ${result.job_id}\n` +
+              `- **Vendor:** \`${vendor}\`  **Feature:** \`${feature}\`\n` +
+              `- **Targets:** ${target_hosts.join(', ')}\n\n` +
+              `Recommend running **Check** to see the dry-run diff before deploying.`,
+            jobId: result.job_id,
+            playbookPath: playbookName,
+          } : m
+        ));
+
+        onPlaybookReady(result.job_id, result.playbook, playbookName);
+      }
     } catch (err: any) {
       setMessages(prev => prev.map(m =>
         m.id === loadingId ? {

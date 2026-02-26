@@ -31,6 +31,9 @@ class DeviceCreate(BaseModel):
     os_version: Optional[str] = None
     serial_number: Optional[str] = None
     status: str = "unknown"
+    ssh_user: Optional[str] = None
+    ssh_password: Optional[str] = None
+    ssh_port: int = 22
 
 class DeviceUpdate(BaseModel):
     hostname: Optional[str] = None
@@ -40,6 +43,9 @@ class DeviceUpdate(BaseModel):
     os_version: Optional[str] = None
     serial_number: Optional[str] = None
     status: Optional[str] = None
+    ssh_user: Optional[str] = None
+    ssh_password: Optional[str] = None
+    ssh_port: Optional[int] = None
 
 
 # ---------------------------------------------------------------------------
@@ -63,6 +69,8 @@ async def list_devices():
                 "serial_number": d.serial_number,
                 "status": d.status,
                 "last_polled": d.last_polled,
+                "ssh_user": d.ssh_user,
+                "ssh_port": d.ssh_port,
                 "created_at": d.created_at,
                 "updated_at": d.updated_at,
             }
@@ -88,6 +96,8 @@ async def get_device(device_id: int):
         "serial_number": d.serial_number,
         "status": d.status,
         "last_polled": d.last_polled,
+        "ssh_user": d.ssh_user,
+        "ssh_port": d.ssh_port,
         "created_at": d.created_at,
         "updated_at": d.updated_at,
     }
@@ -114,6 +124,9 @@ async def create_device(body: DeviceCreate, background_tasks: BackgroundTasks):
         os_version=body.os_version,
         serial_number=body.serial_number,
         status=body.status,
+        ssh_user=body.ssh_user,
+        ssh_password=body.ssh_password,
+        ssh_port=body.ssh_port,
     )
     device_id = db.upsert_device(device)
 
@@ -130,6 +143,8 @@ async def create_device(body: DeviceCreate, background_tasks: BackgroundTasks):
         "os_version": created.os_version,
         "serial_number": created.serial_number,
         "status": created.status,
+        "ssh_user": created.ssh_user,
+        "ssh_port": created.ssh_port,
         "created_at": created.created_at,
         "updated_at": created.updated_at,
     }
@@ -154,6 +169,9 @@ async def update_device(device_id: int, body: DeviceUpdate):
         serial_number=body.serial_number if body.serial_number is not None else existing.serial_number,
         status=body.status if body.status is not None else existing.status,
         last_polled=existing.last_polled,
+        ssh_user=body.ssh_user if body.ssh_user is not None else existing.ssh_user,
+        ssh_password=body.ssh_password if body.ssh_password is not None else existing.ssh_password,
+        ssh_port=body.ssh_port if body.ssh_port is not None else existing.ssh_port,
     )
     db.upsert_device(device)
 
@@ -168,6 +186,8 @@ async def update_device(device_id: int, body: DeviceUpdate):
         "serial_number": updated.serial_number,
         "status": updated.status,
         "last_polled": updated.last_polled,
+        "ssh_user": updated.ssh_user,
+        "ssh_port": updated.ssh_port,
         "created_at": updated.created_at,
         "updated_at": updated.updated_at,
     }

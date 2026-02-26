@@ -163,3 +163,82 @@ async def validate_config(req: ValidateRequest):
     except Exception as e:
         logger.error(f"Validation failed: {e}")
         raise HTTPException(500, f"Validation error: {e}")
+
+
+# ---------------------------------------------------------------------------
+# Template & Schema CRUD (for Ansible Studio file tree)
+# ---------------------------------------------------------------------------
+
+try:
+    from auth.auth import get_current_user as _get_user
+    from auth.rbac import require_role as _require_role
+except ImportError:
+    async def _get_user():   # type: ignore
+        return {"username": "anonymous", "role": "admin"}
+    def _require_role(role: str):  # type: ignore
+        return _get_user
+
+
+@router.get("/templates/{vendor}/{feature}/source")
+async def get_template_source(vendor: str, feature: str):
+    """Return the raw Jinja2 source of a template (for editing in Monaco)."""
+    try:
+        content = _renderer.get_template_content(vendor, feature)
+        return {"vendor": vendor, "feature": feature, "content": content}
+    except FileNotFoundError:
+        raise HTTPException(404, f"Template '{vendor}/{feature}.j2' not found")
+
+
+class SaveTemplateRequest(BaseModel):
+    content: str
+
+
+@router.put("/templates/{vendor}/{feature}/source")
+async def save_template_source(
+    vendor: str,
+    feature: str,
+    body: SaveTemplateRequest,
+    _user: dict = Depends(_require_role("admin")),
+):
+    """Write back edited Jinja2 source (admin only)."""
+    from pathlib import Path
+    tpl_file = Path(_renderer.templates_dir) / vendor / f"{feature}.j2"
+    if not tpl_file.parent.exists():
+        raise HTTPException(404, f"Vendor directory '{vendor}' not found")
+    tpl_file.write_text(body.content, encoding="utf-8")
+    # Invalidate cache if renderer caches compiled templates
+    _renderer._env = None  # force reload on next render
+    logger.info("Template %s/%s updated by %s", vendor, feature, _user.get("username"))
+    return {"status": "saved", "vendor": vendor, "feature": feature}
+
+
+@router.get("/schemas/{feature}/source")
+async def get_schema_source(feature: str):
+    """Return the raw JSON schema source for in-browser editing."""
+    from pathlib import Path
+    schema_file = Path(_renderer.schemas_dir) / f"{feature}.json"
+    if not schema_file.exists():
+        raise HTTPException(404, f"Schema '{feature}.json' not found")
+    return {"feature": feature, "content": schema_file.read_text(encoding="utf-8")}
+
+
+@router.put("/schemas/{feature}/source")
+async def save_schema_source(
+    feature: str,
+    body: SaveTemplateRequest,
+    _user: dict = Depends(_require_role("admin")),
+):
+    """Write back edited JSON schema (admin only)."""
+    import json as _json
+    from pathlib import Path
+    # Validate it's actual JSON before saving
+    try:
+        _json.loads(body.content)
+    except _json.JSONDecodeError as exc:
+        raise HTTPException(400, f"Invalid JSON: {exc}")
+    schema_file = Path(_renderer.schemas_dir) / f"{feature}.json"
+    schema_file.write_text(body.content, encoding="utf-8")
+    # Clear cached schema
+    _renderer._schema_cache.pop(feature, None)
+    logger.info("Schema %s updated by %s", feature, _user.get("username"))
+    return {"status": "saved", "feature": feature}

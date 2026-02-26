@@ -25,6 +25,9 @@ CREATE TABLE IF NOT EXISTS devices (
     serial_number   TEXT,
     status          TEXT    DEFAULT 'unknown',  -- up | down | unknown
     last_polled     TEXT,                       -- ISO-8601 timestamp
+    ssh_user        TEXT,                       -- SSH login username
+    ssh_password    TEXT,                       -- SSH login password (plain text)
+    ssh_port        INTEGER DEFAULT 22,         -- SSH port
     created_at      TEXT    DEFAULT (datetime('now')),
     updated_at      TEXT    DEFAULT (datetime('now'))
 );

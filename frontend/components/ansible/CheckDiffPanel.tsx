@@ -1,13 +1,32 @@
-import React from 'react';
-import { CheckCircle2, XCircle, Loader2, TerminalSquare } from 'lucide-react';
+import React, { useState } from 'react';
+import { CheckCircle2, XCircle, Loader2, TerminalSquare, Columns2, AlignJustify } from 'lucide-react';
 import type { AnsibleCheckResult } from '../../typesLLM';
+import ConfigDiff from '../ConfigDiff';
 
 interface CheckDiffPanelProps {
   result: AnsibleCheckResult | null;
   isLoading: boolean;
 }
 
+/** Extract before/after blocks from unified diff for side-by-side view */
+function extractBeforeAfter(diff: string): { before: string; after: string } | null {
+  const lines = diff.split('\n');
+  const before: string[] = [];
+  const after: string[] = [];
+  let hasContent = false;
+
+  for (const line of lines) {
+    if (line.startsWith('---') || line.startsWith('+++') || line.startsWith('@@')) continue;
+    if (line.startsWith('-'))  { before.push(line.substring(1)); hasContent = true; }
+    else if (line.startsWith('+')) { after.push(line.substring(1)); hasContent = true; }
+    else { const ctx = line.startsWith(' ') ? line.substring(1) : line; before.push(ctx); after.push(ctx); }
+  }
+
+  return hasContent ? { before: before.join('\n'), after: after.join('\n') } : null;
+}
+
 const CheckDiffPanel: React.FC<CheckDiffPanelProps> = ({ result, isLoading }) => {
+  const [sideBySide, setSideBySide] = useState(false);
   if (isLoading) {
     return (
       <div className="flex items-center gap-2 p-4 text-sm opacity-70">
@@ -20,6 +39,7 @@ const CheckDiffPanel: React.FC<CheckDiffPanelProps> = ({ result, isLoading }) =>
   if (!result) return null;
 
   const lines = result.diff.split('\n');
+  const parsed = extractBeforeAfter(result.diff);
 
   return (
     <div className="flex flex-col border-t border-base-300 bg-base-200">
@@ -39,23 +59,44 @@ const CheckDiffPanel: React.FC<CheckDiffPanelProps> = ({ result, isLoading }) =>
           : <XCircle className="h-4 w-4 text-error ml-auto" />
         }
         <span className="opacity-60 ml-1 truncate max-w-xs">{result.summary}</span>
+        {/* Side-by-side toggle */}
+        {parsed && (
+          <button
+            className={`btn btn-ghost btn-xs ml-2 ${sideBySide ? 'btn-active' : ''}`}
+            onClick={() => setSideBySide(v => !v)}
+            title={sideBySide ? 'Unified diff' : 'Side-by-side diff'}
+          >
+            {sideBySide ? <AlignJustify className="h-3 w-3" /> : <Columns2 className="h-3 w-3" />}
+          </button>
+        )}
       </div>
 
-      {/* Diff output */}
-      <div className="overflow-auto max-h-64 p-3 font-mono text-xs leading-5">
-        {lines.map((line, i) => {
-          let cls = 'text-base-content opacity-70';
-          if (line.startsWith('+++') || line.startsWith('---')) cls = 'text-blue-400 font-semibold';
-          else if (line.startsWith('+'))  cls = 'text-success';
-          else if (line.startsWith('-'))  cls = 'text-error';
-          else if (line.startsWith('@@')) cls = 'text-blue-400 opacity-80';
-          return (
-            <div key={i} className={cls}>
-              <pre className="whitespace-pre-wrap break-all">{line || '\u00A0'}</pre>
-            </div>
-          );
-        })}
-      </div>
+      {/* Diff output — unified or side-by-side */}
+      {sideBySide && parsed ? (
+        <div className="overflow-auto max-h-64 p-3">
+          <ConfigDiff
+            oldConfig={parsed.before}
+            newConfig={parsed.after}
+            fromLabel="Before"
+            toLabel="After"
+          />
+        </div>
+      ) : (
+        <div className="overflow-auto max-h-64 p-3 font-mono text-xs leading-5">
+          {lines.map((line, i) => {
+            let cls = 'text-base-content opacity-70';
+            if (line.startsWith('+++') || line.startsWith('---')) cls = 'text-blue-400 font-semibold';
+            else if (line.startsWith('+'))  cls = 'text-success';
+            else if (line.startsWith('-'))  cls = 'text-error';
+            else if (line.startsWith('@@')) cls = 'text-blue-400 opacity-80';
+            return (
+              <div key={i} className={cls}>
+                <pre className="whitespace-pre-wrap break-all">{line || '\u00A0'}</pre>
+              </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 };

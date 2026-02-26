@@ -148,3 +148,44 @@ async def get_job_logs(
     """Get the step-by-step execution logs for a job."""
     logs = pipeline.get_job_logs(job_id)
     return {"logs": logs}
+
+
+# ── Audit log endpoints ──────────────────────────────────────────────────
+
+@router.get("/audit")
+async def get_audit_log(
+    limit: int = 50,
+    _user: dict = Depends(get_current_user),
+):
+    """Return the most recent audit entries (newest first)."""
+    if not _pipeline:
+        raise HTTPException(503, "Pipeline not initialized")
+    from deploy.audit import AuditLogger
+    al = AuditLogger(_pipeline.db_manager)
+    return {"entries": al.get_recent(limit=limit)}
+
+
+@router.get("/audit/request/{request_id}")
+async def get_audit_for_request(
+    request_id: int,
+    _user: dict = Depends(get_current_user),
+):
+    """Return audit entries for a specific change request."""
+    if not _pipeline:
+        raise HTTPException(503, "Pipeline not initialized")
+    from deploy.audit import AuditLogger
+    al = AuditLogger(_pipeline.db_manager)
+    return {"entries": al.get_log_for_request(request_id)}
+
+
+@router.get("/audit/job/{job_id}")
+async def get_audit_for_job(
+    job_id: int,
+    _user: dict = Depends(get_current_user),
+):
+    """Return audit entries for a specific job."""
+    if not _pipeline:
+        raise HTTPException(503, "Pipeline not initialized")
+    from deploy.audit import AuditLogger
+    al = AuditLogger(_pipeline.db_manager)
+    return {"entries": al.get_log_for_job(job_id)}

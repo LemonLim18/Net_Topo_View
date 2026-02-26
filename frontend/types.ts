@@ -66,9 +66,7 @@ export type ViewId =
   | 'overview'
   | 'dashboard'
   | 'topology'
-  | 'configuration' 
   | 'netbox_devices'
-  | 'deployments'
   | 'drift'
   | 'net_perf' 
   | 'net_chat'
@@ -79,7 +77,8 @@ export type ViewId =
   | 'sec_events'
   | 'sec_analysis'
   | 'sec_chat'
-  | 'incidents';
+  | 'incidents'
+  | 'onboarding';
 
 // Notification Types
 export type NotificationType = 'info' | 'success' | 'warning' | 'error';
