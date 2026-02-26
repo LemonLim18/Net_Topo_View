@@ -9,7 +9,7 @@
  *   const ok = await Confirm.danger('Delete device R1?', 'This cannot be undone.');
  *   Alert.info('Heads up', 'The sync will run in the background.');
  */
-import Swal from 'sweetalert2';
+import Swal, { type SweetAlertOptions } from 'sweetalert2';
 
 // ---------------------------------------------------------------------------
 //  Utility: force SweetAlert2 to finish cleanup even if animations stall.
@@ -97,7 +97,7 @@ const ToastBase = Swal.mixin({
 const TOAST_TIMER_MS = 4000;
 
 /** Fire a toast and always force-cleanup after timer + buffer in case animationend never fires. */
-function _fireToast(opts: Parameters<typeof ToastBase.fire>[0]) {
+function _fireToast(opts: SweetAlertOptions) {
   setTimeout(() => {
     try { Swal.close(); } catch { /* ignore */ }
     forceSwalCleanup();

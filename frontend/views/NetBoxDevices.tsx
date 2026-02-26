@@ -159,9 +159,9 @@ const NetBoxDevices: React.FC = () => {
       os_version: d.os_version || '',
       serial_number: d.serial_number || '',
       status: d.status || 'unknown',
-      ssh_user: (d as any).ssh_user || '',
+      ssh_user: d.ssh_user || '',
       ssh_password: '',
-      ssh_port: String((d as any).ssh_port || 22),
+      ssh_port: String(d.ssh_port || 22),
     });
     setIsEditing(true);
     setEditId(d.id);
@@ -430,9 +430,9 @@ const NetBoxDevices: React.FC = () => {
                   {statusBadge(selected.status)}
                 </DetailRow>
                 <div className="divider text-xs opacity-60">SSH Access</div>
-                <DetailRow label="SSH User" value={(selected as any).ssh_user || '—'} mono />
-                <DetailRow label="SSH Port" value={String((selected as any).ssh_port || 22)} mono />
-                <DetailRow label="Password" value={(selected as any).ssh_user ? '••••••••' : '—'} />
+                <DetailRow label="SSH User" value={selected.ssh_user || '—'} mono />
+                <DetailRow label="SSH Port" value={String(selected.ssh_port || 22)} mono />
+                <DetailRow label="Password" value={selected.ssh_user ? '••••••••' : '—'} />
                 <div className="divider text-xs opacity-60">Timestamps</div>
                 <DetailRow label="Last Polled" value={selected.last_polled || 'Never'} />
                 <DetailRow label="Created" value={selected.created_at || '—'} />

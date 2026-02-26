@@ -200,6 +200,9 @@ export interface DeviceRecord {
   last_polled: string | null;
   created_at: string | null;
   updated_at: string | null;
+  ssh_user: string | null;
+  ssh_password: string | null;
+  ssh_port: number | null;
 }
 
 export const netboxApi = {
@@ -217,6 +220,9 @@ export const netboxApi = {
     os_version?: string;
     serial_number?: string;
     status?: string;
+    ssh_user?: string;
+    ssh_password?: string;
+    ssh_port?: number;
   }) =>
     request<DeviceRecord>('/netbox/devices', {
       method: 'POST',
@@ -231,6 +237,9 @@ export const netboxApi = {
     os_version?: string;
     serial_number?: string;
     status?: string;
+    ssh_user?: string;
+    ssh_password?: string;
+    ssh_port?: number;
   }) =>
     request<DeviceRecord>(`/netbox/devices/${id}`, {
       method: 'PUT',
