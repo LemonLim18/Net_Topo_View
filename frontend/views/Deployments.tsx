@@ -6,11 +6,7 @@ import {
   Server,
   Terminal,
   Bot,
-  CheckCircle,
-  XCircle,
-  AlertTriangle,
-  FileCode,
-  Loader2
+  FileCode
 } from 'lucide-react';
 import { deployApi, proposalApi } from '../src/services/api';
 import { Toast, Confirm } from '../src/utils/swal';

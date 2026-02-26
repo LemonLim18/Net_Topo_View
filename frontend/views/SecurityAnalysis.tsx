@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { ScanSearch, Sparkles, AlertOctagon, Terminal, ArrowRight, Shield, AlertTriangle, BookOpen, Play, RefreshCw } from 'lucide-react';
+import { ScanSearch, Sparkles, AlertOctagon, Terminal, ArrowRight, Shield, AlertTriangle, BookOpen, Play } from 'lucide-react';
 import { Toast } from '../src/utils/swal';
 import { securityApi, llmApi } from '../src/services/api';
 

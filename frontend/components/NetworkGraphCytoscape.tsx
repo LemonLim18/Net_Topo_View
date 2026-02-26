@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useCallback } from 'react';
+import React, { useRef } from 'react';
 import CytoscapeComponent from 'react-cytoscapejs';
 import cytoscape from 'cytoscape';
 import type { D3Node, D3Link } from '../types'; 
@@ -30,8 +30,6 @@ const NetworkGraphCytoscape: React.FC<NetworkGraphCytoscapeProps> = ({
   // Convert D3Node/D3Link to Cytoscape Elements
   const elements = React.useMemo(() => {
     const cyNodes = nodes.map(n => {
-        // Determine color based on diff status
-        let statusColor = '#a6adbb'; // default (base-content)
         let borderWidth = 0;
         let borderColor = 'transparent';
 

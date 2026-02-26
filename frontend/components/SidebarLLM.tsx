@@ -1,5 +1,5 @@
 import React from 'react';
-import { Plus, MessageSquare, Github, ExternalLink, Trash2 } from 'lucide-react';
+import { Plus, MessageSquare, Trash2 } from 'lucide-react';
 import  type { ChatSession } from '../typesLLM';
 
 interface SidebarProps {

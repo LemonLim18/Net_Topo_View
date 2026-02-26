@@ -8,27 +8,6 @@ interface ConfigDiffProps {
   toLabel?: string;
 }
 
-interface DiffLine {
-  type: 'add' | 'remove' | 'context' | 'header';
-  content: string;
-}
-
-function parseDiff(unified: string): DiffLine[] {
-  if (!unified) return [];
-  return unified.split('\n').map(line => {
-    if (line.startsWith('+++') || line.startsWith('---') || line.startsWith('@@')) {
-      return { type: 'header' as const, content: line };
-    }
-    if (line.startsWith('+')) {
-      return { type: 'add' as const, content: line.substring(1) };
-    }
-    if (line.startsWith('-')) {
-      return { type: 'remove' as const, content: line.substring(1) };
-    }
-    return { type: 'context' as const, content: line.startsWith(' ') ? line.substring(1) : line };
-  });
-}
-
 const ConfigDiff: React.FC<ConfigDiffProps> = ({
   oldConfig,
   newConfig,
@@ -38,10 +17,6 @@ const ConfigDiff: React.FC<ConfigDiffProps> = ({
   // Generate a simple unified diff client-side for display
   const oldLines = oldConfig.split('\n');
   const newLines = newConfig.split('\n');
-
-  // Build a simple line-by-line comparison
-  const maxLen = Math.max(oldLines.length, newLines.length);
-  const diffLines: DiffLine[] = [];
 
   // Simple diff: show removed old lines then added new lines
   // For a proper diff we rely on the backend, but for preview this is sufficient

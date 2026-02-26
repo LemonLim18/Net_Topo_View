@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import ReactMarkdown from 'react-markdown';
-import { Send, Loader2, Bot, Sparkles, AlertCircle, FileCode, RotateCcw, ChevronRight, Paperclip, X, TriangleAlert, FileJson } from 'lucide-react';
-import { ansibleApi, configApi } from '../../src/services/api';
+import { Send, Loader2, Bot, Sparkles, AlertCircle, FileCode, RotateCcw, ChevronRight, Paperclip, X, TriangleAlert } from 'lucide-react';
+import { ansibleApi } from '../../src/services/api';
 import type { AnsibleMessage, AnsibleJob } from '../../typesLLM';
 
 interface AnsibleChatPanelProps {

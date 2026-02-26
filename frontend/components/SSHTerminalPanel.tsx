@@ -1,8 +1,7 @@
-import React, { useState, useCallback } from 'react';
+import React, { useCallback } from 'react';
 import { X, Minus, Maximize2, Terminal as TerminalIcon } from 'lucide-react';
 import SSHTerminal, { type SSHConnectionState } from './SSHTerminal';
 import { sshApi } from '../src/services/api';
-import { Toast } from '../src/utils/swal';
 
 export interface SSHTab {
   sessionId: string;

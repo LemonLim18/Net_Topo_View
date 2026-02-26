@@ -44,6 +44,19 @@ interface ReviewableDiffLine {
   content: string;
 }
 
+type HunkLineKind = 'context' | 'add' | 'remove';
+
+interface DiffHunkLine {
+  kind: HunkLineKind;
+  content: string;
+  diffIndex: number;
+}
+
+interface DiffHunk {
+  newStart: number;
+  lines: DiffHunkLine[];
+}
+
 function parseReviewableDiffLines(diffText: string): ReviewableDiffLine[] {
   if (!diffText) return [];
   return diffText
@@ -59,27 +72,149 @@ function parseReviewableDiffLines(diffText: string): ReviewableDiffLine[] {
 }
 
 function buildMergedConfig(
+  diffText: string,
   generatedConfig: string,
-  reviewableLines: ReviewableDiffLine[],
   decisions: Record<number, boolean>,
 ): string {
-  const rejectedAddedCounts = new Map<string, number>();
-  for (const line of reviewableLines) {
-    if (line.lineType !== 'add') continue;
-    if (decisions[line.index] !== false) continue;
-    rejectedAddedCounts.set(line.content, (rejectedAddedCounts.get(line.content) ?? 0) + 1);
+  const parseUnifiedDiffHunks = (unified: string): DiffHunk[] => {
+    const diffLines = unified.split('\n');
+    const hunks: DiffHunk[] = [];
+    let current: DiffHunk | null = null;
+
+    for (let index = 0; index < diffLines.length; index += 1) {
+      const line = diffLines[index] ?? '';
+      const hunkHeader = /^@@\s+-\d+(?:,\d+)?\s+\+(\d+)(?:,\d+)?\s+@@/.exec(line);
+      if (hunkHeader) {
+        current = {
+          newStart: Number(hunkHeader[1] ?? 1),
+          lines: [],
+        };
+        hunks.push(current);
+        continue;
+      }
+
+      if (!current || line.startsWith('\\')) continue;
+
+      const prefix = line[0] ?? '';
+      if (prefix === ' ' || prefix === '+' || prefix === '-') {
+        const kind: HunkLineKind = prefix === ' ' ? 'context' : prefix === '+' ? 'add' : 'remove';
+        current.lines.push({
+          kind,
+          content: line.slice(1),
+          diffIndex: index,
+        });
+      }
+    }
+
+    return hunks;
+  };
+
+  const buildReviewedHunkChunk = (hunk: DiffHunk): string[] => {
+    const chunk: string[] = [];
+    for (const line of hunk.lines) {
+      if (line.kind === 'context') {
+        chunk.push(line.content);
+        continue;
+      }
+      if (line.kind === 'add') {
+        if (decisions[line.diffIndex] !== false) chunk.push(line.content);
+        continue;
+      }
+      if (decisions[line.diffIndex] === false) {
+        chunk.push(line.content);
+      }
+    }
+    return chunk;
+  };
+
+  const buildAppliedHunkChunk = (hunk: DiffHunk): string[] => {
+    return hunk.lines
+      .filter((line) => line.kind === 'context' || line.kind === 'add')
+      .map((line) => line.content);
+  };
+
+  const findSubsequenceNear = (
+    source: string[],
+    pattern: string[],
+    expected: number,
+  ): number => {
+    if (pattern.length === 0) return Math.max(0, Math.min(expected, source.length));
+    if (pattern.length > source.length) return -1;
+
+    const candidates: number[] = [];
+    for (let start = 0; start <= source.length - pattern.length; start += 1) {
+      let matched = true;
+      for (let i = 0; i < pattern.length; i += 1) {
+        if (source[start + i] !== pattern[i]) {
+          matched = false;
+          break;
+        }
+      }
+      if (matched) candidates.push(start);
+    }
+
+    if (candidates.length === 0) return -1;
+
+    let best = candidates[0];
+    let bestDistance = Math.abs(best - expected);
+    for (const candidate of candidates.slice(1)) {
+      const distance = Math.abs(candidate - expected);
+      if (distance < bestDistance) {
+        best = candidate;
+        bestDistance = distance;
+      }
+    }
+    return best;
+  };
+
+  const hunks = parseUnifiedDiffHunks(diffText);
+  if (hunks.length === 0) return generatedConfig;
+
+  const mergedLines = generatedConfig.split('\n');
+
+  for (let h = hunks.length - 1; h >= 0; h -= 1) {
+    const hunk = hunks[h];
+    const appliedChunk = buildAppliedHunkChunk(hunk);
+    const reviewedChunk = buildReviewedHunkChunk(hunk);
+    const expectedStart = Math.max(0, hunk.newStart - 1);
+
+    let removeLen = appliedChunk.length;
+    let start = findSubsequenceNear(mergedLines, appliedChunk, expectedStart);
+
+    if (start < 0) {
+      const contextChunk = hunk.lines
+        .filter((line) => line.kind === 'context')
+        .map((line) => line.content);
+      const contextStart = findSubsequenceNear(mergedLines, contextChunk, expectedStart);
+      if (contextStart >= 0) {
+        start = contextStart;
+        removeLen = contextChunk.length;
+      }
+    }
+
+    if (start < 0) {
+      start = Math.max(0, Math.min(expectedStart, mergedLines.length));
+      removeLen = 0;
+    }
+
+    mergedLines.splice(start, removeLen, ...reviewedChunk);
   }
 
-  const mergedLines: string[] = [];
-  for (const configLine of generatedConfig.split('\n')) {
-    const remainingRejects = rejectedAddedCounts.get(configLine) ?? 0;
-    if (remainingRejects > 0) {
-      rejectedAddedCounts.set(configLine, remainingRejects - 1);
-      continue;
-    }
-    mergedLines.push(configLine);
-  }
   return mergedLines.join('\n');
+}
+
+function summarizeMergeNotes(reviewableLines: ReviewableDiffLine[], decisions: Record<number, boolean>): string {
+  const rejectedAdds = reviewableLines.filter(
+    (line) => line.lineType === 'add' && decisions[line.index] === false,
+  ).length;
+  const rejectedRemoves = reviewableLines.filter(
+    (line) => line.lineType === 'remove' && decisions[line.index] === false,
+  ).length;
+
+  if (rejectedAdds === 0 && rejectedRemoves === 0) {
+    return 'No rejected lines';
+  }
+  return `Rejected +: ${rejectedAdds} • Rejected - restored: ${rejectedRemoves}`;
 }
 
 // ==================== M19 SUB-COMPONENTS ====================
@@ -123,7 +258,12 @@ const ProposalCard: React.FC<{
   const rejectedLineIndices = reviewableLines
     .filter(line => lineDecisions[line.index] === false)
     .map(line => line.index);
-  const mergedConfig = buildMergedConfig(proposal.generated_config, reviewableLines, lineDecisions);
+  const mergedConfig = buildMergedConfig(
+    proposal.diff_text,
+    proposal.generated_config,
+    lineDecisions,
+  );
+  const mergeNotes = summarizeMergeNotes(reviewableLines, lineDecisions);
 
   const handleCopy = (text: string) => {
     navigator.clipboard.writeText(text);
@@ -246,6 +386,7 @@ const ProposalCard: React.FC<{
               <div className="text-[11px] text-base-content/70">
                 Accepted: {acceptedLineIndices.length} • Rejected: {rejectedLineIndices.length}
               </div>
+              <div className="text-[11px] text-base-content/60">{mergeNotes}</div>
             </div>
           )}
         </div>
@@ -335,7 +476,12 @@ const IntentReviewCard: React.FC<{
   const rejectedLineIndices = reviewableLines
     .filter(line => lineDecisions[line.index] === false)
     .map(line => line.index);
-  const mergedConfig = buildMergedConfig(proposal.generated_config, reviewableLines, lineDecisions);
+  const mergedConfig = buildMergedConfig(
+    proposal.diff_text,
+    proposal.generated_config,
+    lineDecisions,
+  );
+  const mergeNotes = summarizeMergeNotes(reviewableLines, lineDecisions);
 
   const handleCopy = (text: string) => {
     navigator.clipboard.writeText(text);
@@ -517,6 +663,7 @@ const IntentReviewCard: React.FC<{
               <div className="text-[11px] text-base-content/70">
                 Accepted: {acceptedLineIndices.length} • Rejected: {rejectedLineIndices.length}
               </div>
+              <div className="text-[11px] text-base-content/60">{mergeNotes}</div>
             </div>
           )}
         </div>

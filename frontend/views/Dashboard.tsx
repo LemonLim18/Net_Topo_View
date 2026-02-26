@@ -14,7 +14,7 @@ import SSHConnectModal from '../components/SSHConnectModal';
 import { CONTROLLER_NODE_ID, CONTROLLER_NODE_DATA, mockTopologyData as PLANNED_TOPOLOGY_DATA } from '../constants';
 import { useWebSocket } from '../src/hooks/useWebSocket';
 import { API_CONFIG } from '../src/config';
-import { RefreshCw, Terminal, Info } from 'lucide-react';
+import { Terminal, Info } from 'lucide-react';
 import { Toast } from '../src/utils/swal';
 import { sshApi } from '../src/services/api';
 
@@ -152,7 +152,7 @@ const Dashboard: React.FC = () => {
       sessionId?: string;
     } | null>(null);
 
-    const { status, topology: realTimeTopology, requestTopology } = useWebSocket({
+    const { status, topology: realTimeTopology } = useWebSocket({
         url: API_CONFIG.WS_URL,
     });
     
@@ -235,21 +235,6 @@ const Dashboard: React.FC = () => {
         document.addEventListener('mouseup', handleMouseUp);
     }, [panelHeight]);
     
-    const handleManualCrawl = useCallback(async () => {
-        try {
-            const response = await fetch(`${API_CONFIG.API_URL}/crawl`, {
-                method: 'POST',
-            });
-            if (!response.ok) throw new Error('Crawl trigger failed');
-            Toast.success('Crawl triggered', 'Topology refresh in progress...');
-            // Give backend a moment before requesting new data
-            setTimeout(() => requestTopology(), 1000);
-        } catch (error) {
-            console.error('Failed to trigger manual crawl:', error);
-            Toast.error('Crawl failed', 'Could not trigger network discovery');
-        }
-    }, [requestTopology]);
-
     // --- Context Menu handler ---
     const handleNodeContextMenu = useCallback((nodeId: string, x: number, y: number) => {
         setContextMenu({ nodeId, x, y });

@@ -1,7 +1,6 @@
 import React from 'react';
-import { Bell, Check, Trash2, Bot, Sun, SunDim } from 'lucide-react';
+import { Bell, Check, Sun } from 'lucide-react';
 import { useNotification } from '../contexts/NotificationContext';
-import { formatDistanceToNow } from 'date-fns';
 
 const daisyUIThemes = [
   "light", "dark", "cupcake", "emerald", "corporate", "synthwave",

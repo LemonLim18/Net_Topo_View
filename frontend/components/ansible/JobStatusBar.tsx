@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
-import { CheckCircle2, Circle, Loader2, AlertCircle, History, ScrollText, RotateCcw } from 'lucide-react';
+import { CheckCircle2, Circle, Loader2, AlertCircle, History, ScrollText } from 'lucide-react';
 import { deployApi } from '../../src/services/api';
 import type { AnsibleJob } from '../../typesLLM';
 
