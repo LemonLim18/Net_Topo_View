@@ -17,7 +17,9 @@ async function request<T>(endpoint: string, options?: RequestInit): Promise<T> {
 
   if (!response.ok) {
     const errorBody = await response.json().catch(() => ({}));
-    throw new Error(errorBody.detail || `API Error: ${response.statusText}`);
+    const err: any = new Error(errorBody.detail || `API Error: ${response.statusText}`);
+    err.status = response.status;
+    throw err;
   }
 
   return response.json();
@@ -87,6 +89,12 @@ export const llmApi = {
 };
 
 // --- M19: Proposal API (Agentic Workflow) ---
+export interface ProposalReviewPayload {
+  merged_config: string;
+  accepted_line_indices: number[];
+  rejected_line_indices: number[];
+}
+
 export const proposalApi = {
   list: (status?: string) =>
     request<{ proposals: any[] }>(
@@ -95,6 +103,17 @@ export const proposalApi = {
 
   get: (id: string) =>
     request<any>(`/llm/chat/proposals/${id}`),
+
+  review: (id: string, payload: ProposalReviewPayload) =>
+    request<{
+      status: string;
+      message: string;
+      proposal: any;
+      review: { accepted_count: number; rejected_count: number; reviewed_by: string };
+    }>(`/llm/chat/proposals/${id}/review`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
 
   approve: (id: string) =>
     request<{ status: string; message: string; job_id?: number; proposal: any }>(
@@ -525,6 +544,27 @@ export const ansibleApi = {
     request<{ path: string; status: string }>(
       `/ansible/files/${encodeURIComponent(path)}`,
       { method: 'PUT', body: JSON.stringify({ content }) }
+    ),
+
+  /** Create a new file under writable roots (operator/admin). */
+  createFile: (path: string, content: string = '') =>
+    request<{ path: string; status: string }>(
+      `/ansible/files/create-file/${encodeURIComponent(path)}`,
+      { method: 'POST', body: JSON.stringify({ content }) }
+    ),
+
+  /** Create a new folder under writable roots (operator/admin). */
+  createFolder: (path: string) =>
+    request<{ path: string; status: string }>(
+      `/ansible/files/create-folder/${encodeURIComponent(path)}`,
+      { method: 'POST' }
+    ),
+
+  /** Delete a file/folder under writable roots (operator/admin). */
+  deletePath: (path: string) =>
+    request<{ path: string; status: string }>(
+      `/ansible/files/${encodeURIComponent(path)}`,
+      { method: 'DELETE' }
     ),
 
   /**

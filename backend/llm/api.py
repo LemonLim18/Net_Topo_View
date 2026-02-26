@@ -22,9 +22,11 @@ Endpoints:
 import logging
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
+
+from auth.rbac import require_role
 
 logger = logging.getLogger("llm.api")
 
@@ -56,6 +58,14 @@ class InfoResponse(BaseModel):
     tools: list = []
     history_length: int = 0
     status: str = "ready"
+
+
+class ProposalReviewRequest(BaseModel):
+    """Line-level review result submitted by engineer/admin before approval."""
+
+    merged_config: str = Field(..., description="Reviewed merged config", min_length=1)
+    accepted_line_indices: List[int] = Field(default_factory=list)
+    rejected_line_indices: List[int] = Field(default_factory=list)
 
 
 # -----------------------------------------------------------------------
@@ -206,8 +216,49 @@ async def get_proposal(proposal_id: str):
     return proposal.model_dump()
 
 
+@router.post("/proposals/{proposal_id}/review")
+async def review_proposal_lines(
+    proposal_id: str,
+    body: ProposalReviewRequest,
+    user=Depends(require_role("operator", "admin")),
+):
+    """Persist reviewed/merged config on a pending proposal before final approval."""
+    agent = _get_agent()
+    mgr = agent.proposal_manager
+
+    proposal = mgr.get(proposal_id)
+    if not proposal:
+        raise HTTPException(404, f"Proposal {proposal_id} not found")
+    if proposal.status != "pending":
+        raise HTTPException(
+            409, f"Proposal is '{proposal.status}', expected 'pending'"
+        )
+
+    merged = (body.merged_config or "").strip("\n")
+    if not merged.strip():
+        raise HTTPException(422, "Merged config cannot be empty")
+
+    updated = mgr.update_pending_generated_config(proposal_id, merged)
+    if not updated:
+        raise HTTPException(500, "Failed to update proposal review")
+
+    return {
+        "status": "reviewed",
+        "message": "Line-level review saved",
+        "proposal": updated.model_dump(),
+        "review": {
+            "accepted_count": len(body.accepted_line_indices),
+            "rejected_count": len(body.rejected_line_indices),
+            "reviewed_by": user.get("username", "unknown"),
+        },
+    }
+
+
 @router.post("/proposals/{proposal_id}/approve")
-async def approve_proposal(proposal_id: str):
+async def approve_proposal(
+    proposal_id: str,
+    user=Depends(require_role("operator", "admin")),
+):
     """
     Approve a pending proposal and deploy it to the target device.
 
@@ -238,6 +289,16 @@ async def approve_proposal(proposal_id: str):
     proposal = mgr.approve(proposal_id)
     if not proposal:
         raise HTTPException(500, "Failed to approve proposal")
+
+    is_admin = user.get("role") == "admin"
+
+    # Engineer/operator approval: approve proposal only (no device deployment)
+    if not is_admin:
+        return {
+            "status": "approved",
+            "message": "Proposal approved. Admin approval is required to deploy to devices.",
+            "proposal": proposal.model_dump(),
+        }
 
     # 3. Check if pipeline is available
     if not _pipeline:
@@ -358,7 +419,10 @@ async def approve_proposal(proposal_id: str):
 
 
 @router.post("/proposals/{proposal_id}/reject")
-async def reject_proposal(proposal_id: str):
+async def reject_proposal(
+    proposal_id: str,
+    user=Depends(require_role("operator", "admin")),
+):
     """Reject a pending proposal. The config is discarded."""
     agent = _get_agent()
     mgr = agent.proposal_manager
@@ -383,7 +447,10 @@ async def reject_proposal(proposal_id: str):
 
 
 @router.post("/proposals/{proposal_id}/rollback")
-async def rollback_proposal(proposal_id: str):
+async def rollback_proposal(
+    proposal_id: str,
+    user=Depends(require_role("admin")),
+):
     """
     Rollback a deployed proposal by applying its stored undo commands.
     """

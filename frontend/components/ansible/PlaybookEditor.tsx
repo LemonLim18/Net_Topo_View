@@ -48,6 +48,14 @@ const PlaybookEditor: React.FC<PlaybookEditorProps> = ({
   const isApproved  = job?.status === 'approved';
   const isDeploying = job?.status === 'running';
   const isDone      = job?.status === 'success' || job?.status === 'failed';
+  const approveTitle = !isAdmin
+    ? 'Admin role required for device deployment approval'
+    : 'Approve playbook for device deployment';
+  const deployTitle = !isAdmin
+    ? 'Admin role required for deployment to devices'
+    : !isApproved
+      ? 'Job must be approved first'
+      : 'Deploy to all target devices';
 
   return (
     <div className="flex flex-col h-full min-h-0 bg-base-200">
@@ -108,7 +116,7 @@ const PlaybookEditor: React.FC<PlaybookEditorProps> = ({
           className="btn btn-xs btn-warning gap-1"
           onClick={onApprove}
           disabled={!isAdmin || !hasPlaybook || isApproved || isDeploying || isDone}
-          title={!isAdmin ? 'Admin role required' : 'Approve playbook for deployment'}
+          title={approveTitle}
         >
           <ShieldCheck className="h-3 w-3" /> Approve
         </button>
@@ -117,7 +125,7 @@ const PlaybookEditor: React.FC<PlaybookEditorProps> = ({
           className={`btn btn-xs gap-1 ${isDeploying ? 'btn-disabled' : 'btn-success'}`}
           onClick={onDeploy}
           disabled={!isAdmin || !isApproved || isDeploying}
-          title={!isApproved ? 'Job must be approved first' : 'Deploy to all target devices'}
+          title={deployTitle}
         >
           <Play className="h-3 w-3" />
           {isDeploying ? 'Deploying…' : 'Deploy'}

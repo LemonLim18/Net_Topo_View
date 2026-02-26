@@ -206,6 +206,35 @@ class ProposalManager:
         """Transition proposal from deployed → rolled_back."""
         return self._update_status(proposal_id, "rolled_back", from_status="deployed")
 
+    def update_pending_generated_config(
+        self,
+        proposal_id: str,
+        merged_config: str,
+    ) -> Optional[ConfigProposal]:
+        """Update generated_config for a pending proposal after line-level review."""
+        conn = self._connect()
+        try:
+            cur = conn.execute(
+                """
+                UPDATE config_proposals
+                SET generated_config = ?,
+                    updated_at = datetime('now')
+                WHERE id = ? AND status = 'pending'
+                """,
+                (merged_config, proposal_id),
+            )
+            conn.commit()
+            if cur.rowcount == 0:
+                logger.warning(
+                    "Pending config update failed for proposal %s (not found or not pending)",
+                    proposal_id,
+                )
+                return None
+            logger.info("Updated pending generated_config for proposal %s", proposal_id)
+            return self.get(proposal_id)
+        finally:
+            conn.close()
+
     def list_pending(self) -> List[ConfigProposal]:
         """Return all proposals in 'pending' status."""
         return self._list_by_status("pending")

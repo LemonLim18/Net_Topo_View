@@ -19,6 +19,7 @@ import json
 import logging
 import asyncio
 import os
+import shutil
 import stat
 from datetime import datetime
 from pathlib import Path
@@ -456,6 +457,22 @@ def _build_tree(root: Path, base: Path) -> list:
     return result
 
 
+def _safe_writable_path(relative: str) -> tuple[Path, tuple[str, ...]]:
+    """
+    Resolve path and enforce writable roots only.
+    Returns (resolved_path, rel_parts).
+    """
+    path = _safe_path(relative)
+    rel_parts = Path(relative).parts
+    if not rel_parts or rel_parts[0] not in _WRITABLE_ROOTS:
+        raise HTTPException(
+            403,
+            f"Only {_WRITABLE_ROOTS} directories are writable. "
+            "roles/ and awx/ are read-only.",
+        )
+    return path, rel_parts
+
+
 # ── M23: create-and-plan ───────────────────────────────────────────────────
 
 class CreateAndPlanRequest(BaseModel):
@@ -677,11 +694,15 @@ class WriteFileRequest(BaseModel):
     content: str
 
 
+class CreateFileRequest(BaseModel):
+    content: str = ""
+
+
 @router.put("/files/{file_path:path}", summary="Save edited ansible file content")
 async def write_file(
     file_path: str,
     body:       WriteFileRequest,
-    user:       dict = Depends(require_role("operator")),
+    user:       dict = Depends(require_role("operator", "admin")),
 ):
     path = _safe_path(file_path)
     # Only playbooks/ and inventory/ are writable from the UI
@@ -696,6 +717,58 @@ async def write_file(
     path.write_text(body.content, encoding="utf-8")
     logger.info("File written: %s by %s", file_path, user.get("username"))
     return {"path": file_path, "status": "saved"}
+
+
+@router.post("/files/create-file/{file_path:path}", summary="Create a new blank ansible file")
+async def create_file(
+    file_path: str,
+    body:      CreateFileRequest,
+    user:      dict = Depends(require_role("operator", "admin")),
+):
+    path, rel_parts = _safe_writable_path(file_path)
+    if len(rel_parts) < 2:
+        raise HTTPException(400, "Provide a file path under playbooks/ or inventory/")
+    if path.exists():
+        raise HTTPException(409, f"Path already exists: {file_path}")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(body.content or "", encoding="utf-8")
+    logger.info("File created: %s by %s", file_path, user.get("username"))
+    return {"path": file_path, "status": "created"}
+
+
+@router.post("/files/create-folder/{folder_path:path}", summary="Create a new ansible folder")
+async def create_folder(
+    folder_path: str,
+    user:        dict = Depends(require_role("operator", "admin")),
+):
+    path, rel_parts = _safe_writable_path(folder_path)
+    if len(rel_parts) < 2:
+        raise HTTPException(400, "Provide a folder path under playbooks/ or inventory/")
+    if path.exists() and not path.is_dir():
+        raise HTTPException(409, f"Path exists as file: {folder_path}")
+    path.mkdir(parents=True, exist_ok=True)
+    logger.info("Folder created: %s by %s", folder_path, user.get("username"))
+    return {"path": folder_path, "status": "created"}
+
+
+@router.delete("/files/{target_path:path}", summary="Delete ansible file or folder")
+async def delete_path(
+    target_path: str,
+    user:        dict = Depends(require_role("operator", "admin")),
+):
+    path, rel_parts = _safe_writable_path(target_path)
+    if len(rel_parts) == 1 and rel_parts[0] in _WRITABLE_ROOTS:
+        raise HTTPException(403, f"Cannot delete writable root directory: {rel_parts[0]}")
+    if not path.exists():
+        raise HTTPException(404, f"Path not found: {target_path}")
+
+    if path.is_dir():
+        shutil.rmtree(path)
+    else:
+        path.unlink()
+
+    logger.info("Path deleted: %s by %s", target_path, user.get("username"))
+    return {"path": target_path, "status": "deleted"}
 
 
 # ── M23: SSE job-output stream ──────────────────────────────────────────────

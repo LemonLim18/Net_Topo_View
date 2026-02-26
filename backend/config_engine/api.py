@@ -7,7 +7,7 @@ to the M11 frontend Configuration view.
 
 import logging
 from typing import Any, Dict, List, Optional
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from config_engine.renderer import TemplateRenderer

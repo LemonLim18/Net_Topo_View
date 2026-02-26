@@ -1,5 +1,4 @@
 import React, { useEffect, useRef } from 'react';
-import { Terminal, Info, X } from 'lucide-react';
 
 export interface ContextMenuAction {
   label: string;
@@ -36,14 +35,16 @@ const ContextMenu: React.FC<ContextMenuProps> = ({ x, y, actions, onClose }) => 
     };
   }, [onClose]);
 
-  // Adjust position so menu doesn't overflow viewport
-  const adjustedX = Math.min(x, window.innerWidth - 200);
-  const adjustedY = Math.min(y, window.innerHeight - (actions.length * 40 + 16));
+  // Slightly right + above the click point, while avoiding viewport overflow.
+  const desiredX = x + 10;
+  const desiredY = y - 8;
+  const adjustedX = Math.max(8, Math.min(desiredX, window.innerWidth - 220));
+  const adjustedY = Math.max(8, Math.min(desiredY, window.innerHeight - (actions.length * 40 + 20)));
 
   return (
     <ul
       ref={menuRef}
-      className="menu menu-sm bg-base-200 border border-base-300 rounded-box shadow-xl w-52 z-[100] absolute"
+      className="menu menu-sm bg-base-200 border border-base-300 rounded-box shadow-xl w-52 z-9999 fixed"
       style={{ left: adjustedX, top: adjustedY }}
     >
       {actions.map((action, i) => (

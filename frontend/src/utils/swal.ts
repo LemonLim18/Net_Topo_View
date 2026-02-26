@@ -98,10 +98,11 @@ const TOAST_TIMER_MS = 4000;
 
 /** Fire a toast and always force-cleanup after timer + buffer in case animationend never fires. */
 function _fireToast(opts: SweetAlertOptions) {
+  const timerMs = typeof opts.timer === 'number' ? opts.timer : TOAST_TIMER_MS;
   setTimeout(() => {
     try { Swal.close(); } catch { /* ignore */ }
     forceSwalCleanup();
-  }, TOAST_TIMER_MS + 800);
+  }, timerMs + 800);
   return ToastBase.fire(opts);
 }
 
@@ -117,6 +118,21 @@ export const Toast = {
 
   info: (title: string, text?: string) =>
     _fireToast({ icon: 'info', title, text }),
+
+  /** Slightly larger + longer success toast for key file operations. */
+  successEmphasis: (title: string, text?: string, timer: number = 5600) =>
+    _fireToast({
+      icon: 'success',
+      title,
+      text,
+      timer,
+      customClass: {
+        popup: '!rounded-lg !text-base !shadow-xl !border !border-success/40 !bg-base-200 !px-5 !py-3',
+        title: '!text-base-content !text-base !font-bold !m-0 !p-0',
+        htmlContainer: '!text-base-content/75 !text-sm !m-0 !p-0 !mt-1',
+        timerProgressBar: '!bg-success',
+      },
+    }),
 
   /**
    * Show a centered modal dialog that auto-dismisses, then optionally

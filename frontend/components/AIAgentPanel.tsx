@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { 
   Bot, 
   Send, 
@@ -56,6 +56,56 @@ interface Message {
   mode?: AgentMode;
 }
 
+interface ProposalReviewInput {
+  mergedConfig: string;
+  acceptedLineIndices: number[];
+  rejectedLineIndices: number[];
+}
+
+interface ReviewableDiffLine {
+  index: number;
+  lineType: 'add' | 'remove';
+  content: string;
+}
+
+function parseReviewableDiffLines(diffText: string): ReviewableDiffLine[] {
+  if (!diffText) return [];
+  return diffText
+    .split('\n')
+    .map((line, index) => ({ line, index }))
+    .filter(({ line }) => !line.startsWith('+++') && !line.startsWith('---') && !line.startsWith('@@'))
+    .filter(({ line }) => line.startsWith('+') || line.startsWith('-'))
+    .map(({ line, index }) => ({
+      index,
+      lineType: line.startsWith('+') ? 'add' : 'remove',
+      content: line.slice(1),
+    }));
+}
+
+function buildMergedConfig(
+  generatedConfig: string,
+  reviewableLines: ReviewableDiffLine[],
+  decisions: Record<number, boolean>,
+): string {
+  const rejectedAddedCounts = new Map<string, number>();
+  for (const line of reviewableLines) {
+    if (line.lineType !== 'add') continue;
+    if (decisions[line.index] !== false) continue;
+    rejectedAddedCounts.set(line.content, (rejectedAddedCounts.get(line.content) ?? 0) + 1);
+  }
+
+  const mergedLines: string[] = [];
+  for (const configLine of generatedConfig.split('\n')) {
+    const remainingRejects = rejectedAddedCounts.get(configLine) ?? 0;
+    if (remainingRejects > 0) {
+      rejectedAddedCounts.set(configLine, remainingRejects - 1);
+      continue;
+    }
+    mergedLines.push(configLine);
+  }
+  return mergedLines.join('\n');
+}
+
 interface AIAgentPanelProps {
   isOpen: boolean;
   onToggle: () => void;
@@ -78,13 +128,32 @@ const RiskBadge: React.FC<{ level: 'low' | 'medium' | 'high' }> = ({ level }) =>
 // ---- ProposalCard: Shows config, rollback, diff, and action buttons ----
 const ProposalCard: React.FC<{ 
   proposal: ConfigProposal; 
-  onAccept: () => void;
+  onAccept: (review: ProposalReviewInput) => void;
   onRevise: () => void;
   onReject: () => void;
   isDeploying: boolean;
 }> = ({ proposal, onAccept, onRevise, onReject, isDeploying }) => {
   const [showRollback, setShowRollback] = useState(false);
   const [showDiff, setShowDiff] = useState(false);
+  const reviewableLines = useMemo(
+    () => parseReviewableDiffLines(proposal.diff_text),
+    [proposal.diff_text],
+  );
+  const [lineDecisions, setLineDecisions] = useState<Record<number, boolean>>({});
+
+  useEffect(() => {
+    const initial: Record<number, boolean> = {};
+    for (const line of reviewableLines) initial[line.index] = true;
+    setLineDecisions(initial);
+  }, [proposal.id, proposal.diff_text, reviewableLines]);
+
+  const acceptedLineIndices = reviewableLines
+    .filter(line => lineDecisions[line.index] !== false)
+    .map(line => line.index);
+  const rejectedLineIndices = reviewableLines
+    .filter(line => lineDecisions[line.index] === false)
+    .map(line => line.index);
+  const mergedConfig = buildMergedConfig(proposal.generated_config, reviewableLines, lineDecisions);
 
   return (
     <div className="space-y-3">
@@ -170,9 +239,36 @@ const ProposalCard: React.FC<{
             <span className="text-xs">{showDiff ? '▲' : '▼'}</span>
           </button>
           {showDiff && (
-            <pre className="p-3 text-xs overflow-x-auto max-h-48 overflow-y-auto font-mono">
-              <code>{proposal.diff_text}</code>
-            </pre>
+            <div className="p-3 space-y-2">
+              <div className="text-[11px] text-base-content/70">
+                Engineer line review: uncheck lines to reject them before proposal approval.
+              </div>
+              <div className="max-h-48 overflow-y-auto border border-base-300 rounded-md bg-base-100">
+                {reviewableLines.map((line) => (
+                  <label
+                    key={line.index}
+                    className={`flex items-start gap-2 px-2 py-1 border-b border-base-300/50 text-xs font-mono ${
+                      line.lineType === 'add' ? 'text-success' : 'text-error'
+                    }`}
+                  >
+                    <input
+                      type="checkbox"
+                      className="checkbox checkbox-xs mt-0.5"
+                      checked={lineDecisions[line.index] !== false}
+                      onChange={(e) => {
+                        const checked = e.target.checked;
+                        setLineDecisions(prev => ({ ...prev, [line.index]: checked }));
+                      }}
+                    />
+                    <span className="opacity-60">{line.lineType === 'add' ? '+' : '-'}</span>
+                    <span className="break-all">{line.content || ' '}</span>
+                  </label>
+                ))}
+              </div>
+              <div className="text-[11px] text-base-content/70">
+                Accepted: {acceptedLineIndices.length} • Rejected: {rejectedLineIndices.length}
+              </div>
+            </div>
           )}
         </div>
       )}
@@ -181,18 +277,22 @@ const ProposalCard: React.FC<{
       {proposal.status === 'pending' && (
         <div className="border-t border-base-300 pt-3">
           <p className="text-xs text-center mb-2 text-base-content/70">
-            Deploy this configuration to {proposal.target_device}?
+            Engineer approval saves reviewed lines first; device deployment requires admin approval.
           </p>
           <div className="flex gap-2 justify-center flex-wrap">
             <button 
-              onClick={onAccept} 
+              onClick={() => onAccept({
+                mergedConfig,
+                acceptedLineIndices,
+                rejectedLineIndices,
+              })}
               className="btn btn-success btn-sm gap-1"
               disabled={isDeploying}
             >
               {isDeploying ? (
-                <><Loader2 className="w-3 h-3 animate-spin" /> Deploying...</>
+                <><Loader2 className="w-3 h-3 animate-spin" /> Approving...</>
               ) : (
-                <><CheckCircle className="w-3 h-3" /> Accept & Deploy</>
+                <><CheckCircle className="w-3 h-3" /> Approve Proposal</>
               )}
             </button>
             <button onClick={onRevise} className="btn btn-ghost btn-sm gap-1" disabled={isDeploying}>
@@ -352,38 +452,58 @@ const AIAgentPanel: React.FC<AIAgentPanelProps> = ({
   };
 
   // ---- Accept & Deploy ----
-  const handleAccept = async () => {
+  const handleAccept = async (review: ProposalReviewInput) => {
     if (!currentProposal) return;
     setIsDeploying(true);
 
     try {
+      await proposalApi.review(currentProposal.id, {
+        merged_config: review.mergedConfig,
+        accepted_line_indices: review.acceptedLineIndices,
+        rejected_line_indices: review.rejectedLineIndices,
+      });
       const result = await proposalApi.approve(currentProposal.id);
-      
-      const deployMsg: Message = {
-        id: generateId(),
-        role: 'agent',
-        content: '',
-        timestamp: Date.now(),
-        deployResult: { 
-          status: result.status, 
-          message: result.message,
-          job_id: result.job_id 
-        },
-        proposal: result.proposal as ConfigProposal,
-        mode: 'deployed'
-      };
-      setMessages(prev => [...prev, deployMsg]);
+      const updatedProposal = result.proposal as ConfigProposal;
+
+      if (result.status === 'deployed' || updatedProposal.status === 'deployed') {
+        const deployMsg: Message = {
+          id: generateId(),
+          role: 'agent',
+          content: '',
+          timestamp: Date.now(),
+          deployResult: {
+            status: result.status,
+            message: result.message,
+            job_id: result.job_id
+          },
+          proposal: updatedProposal,
+          mode: 'deployed'
+        };
+        setMessages(prev => [...prev, deployMsg]);
+        setAgentMode('deployed');
+      } else {
+        const approvedMsg: Message = {
+          id: generateId(),
+          role: 'agent',
+          content: `✅ ${result.message}`,
+          timestamp: Date.now(),
+          proposal: updatedProposal,
+          mode: 'idle',
+        };
+        setMessages(prev => [...prev, approvedMsg]);
+        setAgentMode('idle');
+      }
+
       setCurrentProposal(result.proposal as ConfigProposal);
-      setAgentMode('deployed');
     } catch (error: any) {
       const errorMsg: Message = {
         id: generateId(),
         role: 'agent',
-        content: `❌ Deployment failed: ${error.message}`,
+        content: `❌ Approval failed: ${error.message}`,
         timestamp: Date.now()
       };
       setMessages(prev => [...prev, errorMsg]);
-      Toast.error('Deployment Failed', error.message);
+      Toast.error('Approval Failed', error.message);
     } finally {
       setIsDeploying(false);
     }
