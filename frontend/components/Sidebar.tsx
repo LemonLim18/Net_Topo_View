@@ -2,7 +2,6 @@ import React, { useState } from 'react';
 import { 
   Home,
   Network,
-  FileCog, 
   BotMessageSquare, 
   Activity, 
   ShieldAlert, 
@@ -14,7 +13,6 @@ import {
   Server,
   BookOpen,
   Workflow,
-  Rocket,
   GitCompareArrows,
   PackagePlus
 } from 'lucide-react';
@@ -87,8 +85,6 @@ const Sidebar: React.FC<SidebarProps> = ({ currentView, setView, user, onLogout 
                 <MenuItem id="netbox_devices" label="Device Inventory" icon={Server} />
                 <MenuItem id="drift" label="Compliance / Drift" icon={GitCompareArrows} />
                 <MenuItem id="net_perf" label="Performance" icon={Activity} />
-                <MenuItem id="deployments" label="Deployments" icon={Rocket} />
-                <MenuItem id="configuration" label="Configuration" icon={FileCog} />
             </ul>
           </details>
         </li>

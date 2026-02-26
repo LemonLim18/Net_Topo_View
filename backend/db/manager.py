@@ -101,6 +101,19 @@ class DatabaseManager:
                     logger.info("M22 migration: added %s.%s", table, col)
                 except Exception:
                     pass  # column already exists
+        # M0: SSH credential columns on devices
+        _m0_columns = [
+            ("devices", "ssh_user",     "TEXT"),
+            ("devices", "ssh_password", "TEXT"),
+            ("devices", "ssh_port",     "INTEGER DEFAULT 22"),
+        ]
+        with self._connect() as conn:
+            for table, col, col_def in _m0_columns:
+                try:
+                    conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {col_def}")
+                    logger.info("M0 migration: added %s.%s", table, col)
+                except Exception:
+                    pass  # column already exists
         logger.info("Database initialised at %s", self._db_path)
 
     @contextmanager
@@ -164,12 +177,15 @@ class DatabaseManager:
                     """UPDATE devices
                        SET management_ip = ?, vendor = ?, model = ?,
                            os_version = ?, serial_number = ?, status = ?,
-                           last_polled = ?, updated_at = ?
+                           last_polled = ?, ssh_user = ?, ssh_password = ?,
+                           ssh_port = ?, updated_at = ?
                      WHERE id = ?""",
                     (
                         device.management_ip, device.vendor, device.model,
                         device.os_version, device.serial_number, device.status,
-                        device.last_polled or now, now, row["id"],
+                        device.last_polled or now,
+                        device.ssh_user, device.ssh_password, device.ssh_port,
+                        now, row["id"],
                     ),
                 )
                 return row["id"]
@@ -177,12 +193,16 @@ class DatabaseManager:
                 cur2 = conn.execute(
                     """INSERT INTO devices
                        (hostname, management_ip, vendor, model, os_version,
-                        serial_number, status, last_polled, created_at, updated_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        serial_number, status, last_polled,
+                        ssh_user, ssh_password, ssh_port,
+                        created_at, updated_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
                         device.hostname, device.management_ip, device.vendor,
                         device.model, device.os_version, device.serial_number,
-                        device.status, device.last_polled or now, now, now,
+                        device.status, device.last_polled or now,
+                        device.ssh_user, device.ssh_password, device.ssh_port,
+                        now, now,
                     ),
                 )
                 return cur2.lastrowid
@@ -223,6 +243,9 @@ class DatabaseManager:
             serial_number=row["serial_number"],
             status=row["status"],
             last_polled=row["last_polled"],
+            ssh_user=row["ssh_user"] if "ssh_user" in row.keys() else None,
+            ssh_password=row["ssh_password"] if "ssh_password" in row.keys() else None,
+            ssh_port=row["ssh_port"] if "ssh_port" in row.keys() else 22,
             created_at=row["created_at"],
             updated_at=row["updated_at"],
         )

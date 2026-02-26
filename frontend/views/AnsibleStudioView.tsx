@@ -4,7 +4,7 @@ import PlaybookEditor                               from '../components/ansible/
 import JobStatusBar                                 from '../components/ansible/JobStatusBar';
 import AnsibleChatPanel                             from '../components/ansible/AnsibleChatPanel';
 import SSHTerminalDrawer, { type SSHTab }           from '../components/ansible/SSHTerminalDrawer';
-import { ansibleApi }                               from '../src/services/api';
+import { ansibleApi, configApi }                    from '../src/services/api';
 import type {
   AnsibleTab, AnsibleJob, AnsibleCheckResult,
 } from '../typesLLM';
@@ -98,6 +98,27 @@ const AnsibleStudioView: React.FC<AnsibleStudioViewProps> = ({ user }) => {
   // ── File tree → open file ────────────────────────────────────────────────
   const handleFileOpen = useCallback(async (node: any) => {
     if (tabs.find(t => t.id === node.path)) { setActiveTabId(node.path); return; }
+
+    // Virtual template file from Config Engine
+    const tplMatch = node.path.match(/^templates\/([^/]+)\/(.+)\.j2$/);
+    if (tplMatch) {
+      try {
+        const res = await configApi.getTemplateSource(tplMatch[1], tplMatch[2]);
+        openTab(node.path, node.name, res.content, false, false);
+      } catch { /* ignore */ }
+      return;
+    }
+
+    // Virtual schema file from Config Engine
+    const schemaMatch = node.path.match(/^schemas\/(.+)\.json$/);
+    if (schemaMatch) {
+      try {
+        const res = await configApi.getSchemaSource(schemaMatch[1]);
+        openTab(node.path, node.name, res.content, false, false);
+      } catch { /* ignore */ }
+      return;
+    }
+
     try {
       const r = await ansibleApi.readFile(node.path);
       openTab(node.path, node.name, r.content, false, false);
@@ -107,6 +128,23 @@ const AnsibleStudioView: React.FC<AnsibleStudioViewProps> = ({ user }) => {
   // ── Save ─────────────────────────────────────────────────────────────────
   const handleSave = useCallback(async () => {
     if (!activeTab || activeTab.isReadOnly) return;
+
+    // Virtual template file → Config Engine API
+    const tplMatch = activeTab.id.match(/^templates\/([^/]+)\/(.+)\.j2$/);
+    if (tplMatch) {
+      await configApi.saveTemplateSource(tplMatch[1], tplMatch[2], activeTab.content);
+      setTabs(prev => prev.map(t => t.id === activeTab.id ? { ...t, isDirty: false } : t));
+      return;
+    }
+
+    // Virtual schema file → Config Engine API
+    const schemaMatch = activeTab.id.match(/^schemas\/(.+)\.json$/);
+    if (schemaMatch) {
+      await configApi.saveSchemaSource(schemaMatch[1], activeTab.content);
+      setTabs(prev => prev.map(t => t.id === activeTab.id ? { ...t, isDirty: false } : t));
+      return;
+    }
+
     await ansibleApi.writeFile(activeTab.id, activeTab.content);
     setTabs(prev => prev.map(t => t.id === activeTab.id ? { ...t, isDirty: false } : t));
     setFileTreeRefresh(n => n + 1);

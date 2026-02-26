@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useCallback } from 'react';
-import { Folder, FolderOpen, FileCode2, RefreshCw, ChevronRight, ChevronDown } from 'lucide-react';
-import { ansibleApi } from '../../src/services/api';
+import { Folder, FolderOpen, FileCode2, RefreshCw, ChevronRight, ChevronDown, FileJson } from 'lucide-react';
+import { ansibleApi, configApi } from '../../src/services/api';
 import type { AnsibleFileNode } from '../../typesLLM';
 
 interface AnsibleFileTreeProps {
@@ -51,7 +51,17 @@ const TreeNode: React.FC<TreeNodeProps> = ({ node, depth, onFileOpen, selectedPa
 
   const isYaml = node.name.endsWith('.yml') || node.name.endsWith('.yaml');
   const isJ2   = node.name.endsWith('.j2');
+  const isJson = node.name.endsWith('.json');
   const isSel  = selectedPath === node.path;
+
+  const iconColor = isSel
+    ? ''
+    : isYaml ? 'text-blue-400'
+    : isJ2   ? 'text-orange-400'
+    : isJson ? 'text-emerald-400'
+    : 'text-base-content opacity-50';
+
+  const Icon = isJson ? FileJson : FileCode2;
 
   return (
     <li>
@@ -69,7 +79,7 @@ const TreeNode: React.FC<TreeNodeProps> = ({ node, depth, onFileOpen, selectedPa
         onClick={() => onFileOpen(node)}
         title={`${node.path} — drag to chat to attach`}
       >
-        <FileCode2 className={`h-3.5 w-3.5 flex-shrink-0 ${isSel ? '' : isYaml ? 'text-blue-400' : isJ2 ? 'text-orange-400' : 'text-base-content opacity-50'}`} />
+        <Icon className={`h-3.5 w-3.5 flex-shrink-0 ${iconColor}`} />
         <span className="truncate">{node.name}</span>
       </button>
     </li>
@@ -85,8 +95,66 @@ const AnsibleFileTree: React.FC<AnsibleFileTreeProps> = ({ onFileOpen, selectedP
     setLoading(true);
     setError(null);
     try {
-      const res = await ansibleApi.listFiles();
-      setTree(res.tree || []);
+      const [filesRes, templates] = await Promise.all([
+        ansibleApi.listFiles(),
+        configApi.listTemplates().catch(() => [] as { vendor: string; feature: string; has_undo: boolean; schema_exists: boolean }[]),
+      ]);
+
+      const ansibleTree: AnsibleFileNode[] = filesRes.tree || [];
+
+      // Build virtual "templates/" and "schemas/" nodes from Config Engine data
+      if (templates.length > 0) {
+        const byVendor: Record<string, AnsibleFileNode[]> = {};
+        const schemaChildren: AnsibleFileNode[] = [];
+        const seenSchemas = new Set<string>();
+
+        for (const t of templates) {
+          // templates/{vendor}/{feature}.j2
+          if (!byVendor[t.vendor]) byVendor[t.vendor] = [];
+          byVendor[t.vendor].push({
+            type: 'file',
+            name: `${t.feature}.j2`,
+            path: `templates/${t.vendor}/${t.feature}.j2`,
+          });
+
+          // schemas/{feature}.json  (deduplicated)
+          if (t.schema_exists && !seenSchemas.has(t.feature)) {
+            seenSchemas.add(t.feature);
+            schemaChildren.push({
+              type: 'file',
+              name: `${t.feature}.json`,
+              path: `schemas/${t.feature}.json`,
+            });
+          }
+        }
+
+        const vendorDirs: AnsibleFileNode[] = Object.entries(byVendor)
+          .sort(([a], [b]) => a.localeCompare(b))
+          .map(([vendor, files]) => ({
+            type: 'dir' as const,
+            name: vendor,
+            path: `templates/${vendor}`,
+            children: files.sort((a, b) => a.name.localeCompare(b.name)),
+          }));
+
+        ansibleTree.push({
+          type: 'dir',
+          name: 'templates',
+          path: 'templates',
+          children: vendorDirs,
+        });
+
+        if (schemaChildren.length > 0) {
+          ansibleTree.push({
+            type: 'dir',
+            name: 'schemas',
+            path: 'schemas',
+            children: schemaChildren.sort((a, b) => a.name.localeCompare(b.name)),
+          });
+        }
+      }
+
+      setTree(ansibleTree);
     } catch (e: any) {
       setError(e.message || 'Failed to load files');
     } finally {

@@ -61,6 +61,14 @@ from agent.api import router as agent_router, setup_agent_api
 # M0 — Device Onboarding Wizard
 from onboarding.api import router as onboarding_router
 
+# M4 — Deployment Approval Gate
+try:
+    from deploy.approval import router as approval_router, set_db_manager as _set_approval_db
+    _APPROVAL_ENABLED = True
+except ImportError:
+    approval_router = None  # type: ignore[assignment]
+    _APPROVAL_ENABLED = False
+
 # --- Crawler Logic (refactored BFS engine — replaces legacy mini_nce) ---
 from crawler.bfs_engine import crawl_topology as _bfs_crawl
 from crawler.store import save_crawl_result
@@ -329,6 +337,11 @@ async def lifespan(app: FastAPI):
     setup_dashboard(db)            # Inject DB for dashboard summary
     set_crawl_runner(run_crawl_and_broadcast) # Inject crawl runner to API
 
+    # M4 — Inject DB into approval module so its Depends(_get_db) works at request time
+    if _APPROVAL_ENABLED:
+        _set_approval_db(db)
+        logger.info("Deployment approval gate initialized")
+
     # M22 — Ansible-first orchestration layer
     _builder = None
     if _ANSIBLE_ENABLED:
@@ -402,8 +415,6 @@ app = FastAPI(title="CogniShield Backend", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
         "http://localhost:5173",
         "http://127.0.0.1:5173",
     ],
@@ -428,6 +439,10 @@ app.include_router(rag_router, prefix="/api/v1", tags=["RAG Knowledge Base"])
 app.include_router(dashboard_router, prefix="/api/v1", tags=["Dashboard"])
 if _ANSIBLE_ENABLED and ansible_router is not None:
     app.include_router(ansible_router, prefix="/api/v1", tags=["Ansible Orchestration (M22)"])
+
+# M4 — Deployment approval gate
+if _APPROVAL_ENABLED and approval_router is not None:
+    app.include_router(approval_router, tags=["Deploy Approval (M4)"])
 
 # M25 — Phase-2 Autonomous Agent APIs
 app.include_router(incidents_router, prefix="/api/v1", tags=["Incidents (M25)"])

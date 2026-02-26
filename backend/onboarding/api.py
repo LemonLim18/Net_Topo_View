@@ -1,174 +1,154 @@
 """
 M0 — Onboarding API
-REST + WebSocket endpoints for the Device Onboarding Wizard.
+Endpoints for the Device Onboarding Wizard.
+
+Flow
+----
+1.  Frontend calls GET /onboarding/devices  → list of registered devices
+2.  User picks one; frontend calls POST /onboarding/generate/{device_id}
+3.  Backend looks up device, builds vendor template, returns config string
+4.  User edits in Monaco editor and clicks "Download Script"
 """
 from __future__ import annotations
 
-import asyncio
 import logging
 from typing import Optional
 
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect
-from pydantic import BaseModel, Field
+from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
 
 from .config_generator import OnboardingConfigGenerator
-from .connectivity_poller import get_poller, STATUS_REGISTERED, STATUS_FAILED
+from db.manager import DatabaseManager
 
 logger = logging.getLogger("onboarding.api")
 
 router = APIRouter(prefix="/onboarding", tags=["Onboarding (M0)"])
 
+DB_PATH = "db/netauto.db"
+
+
+def _db() -> DatabaseManager:
+    return DatabaseManager(DB_PATH)
+
 
 # ---------------------------------------------------------------------------
-# Request / response models
+# Response models
 # ---------------------------------------------------------------------------
 
-class OnboardingParams(BaseModel):
-    hostname:        str
-    mgmt_ip:         str
-    subnet_mask:     str  = "255.255.255.0"
-    gateway:         str
-    mgmt_interface:  str  = "GigabitEthernet0/0"
-    vendor:          str  = "cisco_ios"   # cisco_ios | cisco_xe | huawei_vrp | juniper_junos
-    ssh_user:        str
-    ssh_password:    str
-    port:            int  = Field(22, ge=1, le=65535)
-    timeout_minutes: int  = Field(10, ge=1, le=60)
+class DeviceSummary(BaseModel):
+    id:            int
+    hostname:      str
+    management_ip: Optional[str]
+    vendor:        Optional[str]
+    ssh_user:      Optional[str]
+    ssh_port:      int
+    status:        str
 
 
 class GenerateResponse(BaseModel):
-    config: str
-
-
-class PollStartResponse(BaseModel):
-    device_id: int
-    status:    str
-
-
-class PollStatusResponse(BaseModel):
-    device_id:    int
-    status:       str
-    attempts:     int
-    last_attempt: Optional[str]
+    config:   str
+    filename: str   # suggested download filename
 
 
 # ---------------------------------------------------------------------------
-# POST /generate  — produce Day-0 CLI block
+# GET /onboarding/devices  — list all inventory devices for the picker
 # ---------------------------------------------------------------------------
+
+@router.get("/devices", response_model=list[DeviceSummary])
+async def list_devices():
+    """Return all registered devices so the wizard can populate a picker."""
+    devices = _db().get_all_devices()
+    return [
+        DeviceSummary(
+            id            = d.id,
+            hostname      = d.hostname,
+            management_ip = d.management_ip,
+            vendor        = d.vendor or "cisco_ios",
+            ssh_user      = d.ssh_user,
+            ssh_port      = d.ssh_port or 22,
+            status        = d.status,
+        )
+        for d in devices
+    ]
+
+
+# ---------------------------------------------------------------------------
+# POST /onboarding/generate/{device_id}  — build vendor config from inventory
+# ---------------------------------------------------------------------------
+
+@router.post("/generate/{device_id}", response_model=GenerateResponse)
+async def generate_for_device(device_id: int):
+    """
+    Look up a registered device and return its Day-0 bootstrap config.
+    The device must already have management_ip, vendor, ssh_user, ssh_password
+    set in inventory for a full config to be generated.
+    """
+    device = _db().get_device_by_id(device_id)
+    if not device:
+        raise HTTPException(404, f"Device {device_id} not found in inventory")
+
+    # Build params dict from the device record
+    # Use sensible defaults for fields not stored in inventory
+    params = {
+        "hostname":       device.hostname,
+        "mgmt_ip":        device.management_ip or "0.0.0.0",
+        "subnet_mask":    "255.255.255.0",
+        "gateway":        _guess_gateway(device.management_ip),
+        "mgmt_interface": _default_mgmt_iface(device.vendor),
+        "vendor":         device.vendor or "cisco_ios",
+        "ssh_user":       device.ssh_user or "admin",
+        "ssh_password":   device.ssh_password or "CHANGE_ME",
+        "port":           device.ssh_port or 22,
+    }
+
+    config = OnboardingConfigGenerator().generate(params)
+    filename = f"{device.hostname}_day0_config.txt"
+    return GenerateResponse(config=config, filename=filename)
+
+
+# ---------------------------------------------------------------------------
+# POST /onboarding/generate  — generate from manual params (no device lookup)
+# ---------------------------------------------------------------------------
+
+class ManualParams(BaseModel):
+    hostname:       str
+    mgmt_ip:        str
+    subnet_mask:    str = "255.255.255.0"
+    gateway:        str
+    mgmt_interface: str = "GigabitEthernet0/0"
+    vendor:         str = "cisco_ios"
+    ssh_user:       str = "admin"
+    ssh_password:   str = "CHANGE_ME"
+    port:           int = 22
+
 
 @router.post("/generate", response_model=GenerateResponse)
-async def generate_config(params: OnboardingParams):
-    """Return a vendor-specific Day-0 config block for console-paste."""
+async def generate_manual(params: ManualParams):
+    """Generate a Day-0 config from manually supplied params (no device lookup)."""
     config = OnboardingConfigGenerator().generate(params.model_dump())
-    return GenerateResponse(config=config)
+    filename = f"{params.hostname}_day0_config.txt"
+    return GenerateResponse(config=config, filename=filename)
 
 
 # ---------------------------------------------------------------------------
-# POST /start-poll  — register device placeholder + start SSH polling
+# Helpers
 # ---------------------------------------------------------------------------
 
-@router.post("/start-poll", response_model=PollStartResponse)
-async def start_poll(params: OnboardingParams):
-    """
-    Create a placeholder device record and begin SSH polling in the background.
-    Returns immediately with the assigned device_id.
-    """
-    poller    = get_poller()
-    device_id = poller.start_session(params.model_dump())
-
-    asyncio.create_task(
-        poller.poll_loop(
-            device_id=device_id,
-            timeout_minutes=params.timeout_minutes,
-        )
-    )
-
-    return PollStartResponse(device_id=device_id, status="polling")
-
-
-# ---------------------------------------------------------------------------
-# GET /status/{device_id}  — current poll state
-# ---------------------------------------------------------------------------
-
-@router.get("/status/{device_id}", response_model=PollStatusResponse)
-async def poll_status(device_id: int):
-    """Return the current polling state for a device."""
-    poller = get_poller()
-    state  = poller.get_status(device_id)
-    return PollStatusResponse(
-        device_id    = state["device_id"],
-        status       = state["status"],
-        attempts     = state.get("attempts", 0),
-        last_attempt = state.get("last_attempt"),
-    )
-
-
-# ---------------------------------------------------------------------------
-# WebSocket /ws/{device_id}  — stream poll events in real time
-# ---------------------------------------------------------------------------
-
-@router.websocket("/ws/{device_id}")
-async def poll_websocket(websocket: WebSocket, device_id: int, timeout_minutes: int = 10):
-    """
-    Open this WebSocket BEFORE or immediately AFTER calling /start-poll.
-    Events streamed: attempt | connected | registered | timeout
-    """
-    await websocket.accept()
-    poller = get_poller()
-
-    # Queue used as the bridge between the poll loop and this WS handler
-    queue: asyncio.Queue = asyncio.Queue()
-
-    async def broadcast(event_dict: dict) -> None:
-        await queue.put(event_dict)
-
-    # Check whether a session already exists; if not, create one on the fly
-    state = poller.get_status(device_id)
-    if state["status"] == "unknown":
-        # Client opened WS without calling /start-poll first — tell them
-        await websocket.send_json({"event": "error", "message": "No active onboarding session for this device_id. Call /start-poll first."})
-        await websocket.close()
-        return
-
-    # Register our broadcast function and restart the poll loop if still pending
-    session = poller._sessions.get(device_id)
-    if session is not None:
-        session["broadcast"] = broadcast
-        # If the background task hasn't started yet or was created without a
-        # broadcast target, launch a new one that will use our queue.
-        current_status = session["status"]
-        if current_status in ("pending", "polling"):
-            asyncio.create_task(
-                poller.poll_loop(
-                    device_id=device_id,
-                    timeout_minutes=timeout_minutes,
-                    broadcast=broadcast,
-                )
-            )
-
+def _guess_gateway(mgmt_ip: Optional[str]) -> str:
+    """Derive a likely gateway from a /24 management IP (last octet → .1)."""
+    if not mgmt_ip:
+        return "0.0.0.0"
     try:
-        while True:
-            try:
-                event = await asyncio.wait_for(queue.get(), timeout=1.0)
-                await websocket.send_json(event)
+        parts = mgmt_ip.split(".")
+        return f"{parts[0]}.{parts[1]}.{parts[2]}.1"
+    except Exception:
+        return "0.0.0.0"
 
-                # Terminal events — close gracefully
-                if event.get("event") in ("registered", "timeout"):
-                    break
-            except asyncio.TimeoutError:
-                # Heartbeat — keep connection alive and check if terminal
-                final = poller.get_status(device_id)
-                if final["status"] in (STATUS_REGISTERED, STATUS_FAILED):
-                    break
-                # Send a keepalive ping
-                try:
-                    await websocket.send_json({"event": "ping"})
-                except Exception:
-                    break
-    except WebSocketDisconnect:
-        logger.info("WS client disconnected from onboarding stream for device_id=%d", device_id)
-    finally:
-        try:
-            await websocket.close()
-        except Exception:
-            pass
+
+def _default_mgmt_iface(vendor: Optional[str]) -> str:
+    vendor = (vendor or "cisco_ios").lower()
+    if "huawei" in vendor:
+        return "GigabitEthernet0/0/0"
+    if "juniper" in vendor:
+        return "fxp0"
+    return "GigabitEthernet0/0"

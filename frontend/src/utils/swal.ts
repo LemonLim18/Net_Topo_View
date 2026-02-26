@@ -84,25 +84,39 @@ const ToastBase = Swal.mixin({
   width: 'auto',
   padding: '0.6rem 1rem',
   showClass: { popup: 'animate-in slide-in-from-right-4 fade-in duration-200' },
-  hideClass: { popup: 'animate-out slide-out-to-right-4 fade-out duration-150' },
+  // Use SweetAlert2's own built-in hide animation — custom Tailwind animate-out
+  // classes break the internal animationend listener, causing the toast to stick.
+  hideClass: { popup: 'swal2-hide' },
   didOpen: (toast) => {
     toast.addEventListener('mouseenter', Swal.stopTimer);
     toast.addEventListener('mouseleave', Swal.resumeTimer);
   },
+  didClose: forceSwalCleanup,
 });
+
+const TOAST_TIMER_MS = 4000;
+
+/** Fire a toast and always force-cleanup after timer + buffer in case animationend never fires. */
+function _fireToast(opts: Parameters<typeof ToastBase.fire>[0]) {
+  setTimeout(() => {
+    try { Swal.close(); } catch { /* ignore */ }
+    forceSwalCleanup();
+  }, TOAST_TIMER_MS + 800);
+  return ToastBase.fire(opts);
+}
 
 export const Toast = {
   success: (title: string, text?: string) =>
-    ToastBase.fire({ icon: 'success', title, text }),
+    _fireToast({ icon: 'success', title, text }),
 
   error: (title: string, text?: string) =>
-    ToastBase.fire({ icon: 'error', title, text }),
+    _fireToast({ icon: 'error', title, text }),
 
   warning: (title: string, text?: string) =>
-    ToastBase.fire({ icon: 'warning', title, text }),
+    _fireToast({ icon: 'warning', title, text }),
 
   info: (title: string, text?: string) =>
-    ToastBase.fire({ icon: 'info', title, text }),
+    _fireToast({ icon: 'info', title, text }),
 
   /**
    * Show a centered modal dialog that auto-dismisses, then optionally
@@ -116,6 +130,12 @@ export const Toast = {
     timer: number = 3500,
     icon: 'success' | 'error' | 'info' | 'warning' | 'question' = 'info',
   ) => {
+    // Safety net: force-close after timer + buffer in case animationend never fires
+    setTimeout(() => {
+      try { Swal.close(); } catch { /* ignore */ }
+      forceSwalCleanup();
+    }, timer + 800);
+
     return baseMixin
       .fire({
         icon,
@@ -147,6 +167,10 @@ export const Toast = {
 export const Confirm = {
   /** Red "danger" confirm (e.g. delete). Returns true if confirmed. */
   danger: async (title: string, text?: string): Promise<boolean> => {
+    // Clear any lingering toasts/modals that may block this dialog
+    try { Swal.close(); } catch { /* ignore */ }
+    forceSwalCleanup();
+    await new Promise((r) => setTimeout(r, 50));
     try {
       const result = await baseMixin.fire({
         icon: 'warning',

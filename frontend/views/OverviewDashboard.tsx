@@ -13,7 +13,7 @@ import {
   WifiOff,
   HelpCircle,
 } from 'lucide-react';
-import { dashboardApi, netboxApi, incidentApi } from '../src/services/api';
+import { dashboardApi, netboxApi, incidentApi, deployApi, proposalApi } from '../src/services/api';
 import type { DashboardSummary, DeviceRecord } from '../src/services/api';
 import type { ViewId } from '../types';
 import { Toast } from '../src/utils/swal';
@@ -40,19 +40,25 @@ const OverviewDashboard: React.FC<Props> = ({ setView, setSelectedDeviceId }) =>
   const [summary, setSummary] = useState<DashboardSummary | null>(null);
   const [devices, setDevices] = useState<DeviceRecord[]>([]);
   const [incidents, setIncidents] = useState<any[]>([]);
+  const [pendingApprovals, setPendingApprovals] = useState<any[]>([]);
+  const [recentDeploys, setRecentDeploys] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
 
   const refresh = useCallback(async () => {
     setLoading(true);
     try {
-      const [s, d, inc] = await Promise.all([
+      const [s, d, inc, proposals, deploys] = await Promise.all([
         dashboardApi.getSummary(),
         netboxApi.listDevices(),
         incidentApi.listIncidents().catch(() => []),
+        proposalApi.list('pending').catch(() => ({ proposals: [] })),
+        deployApi.listJobs().catch(() => []),
       ]);
       setSummary(s);
       setDevices(Array.isArray(d?.devices) ? d.devices : []);
       setIncidents(Array.isArray(inc) ? inc : []);
+      setPendingApprovals(proposals.proposals ?? []);
+      setRecentDeploys(Array.isArray(deploys) ? deploys.slice(0, 5) : []);
     } catch (e: any) {
       Toast.error('Failed to load dashboard: ' + (e?.message ?? e));
     } finally {
@@ -172,7 +178,7 @@ const OverviewDashboard: React.FC<Props> = ({ setView, setSelectedDeviceId }) =>
 
         {/* Deployments */}
         <div className="card bg-base-100 shadow cursor-pointer hover:shadow-lg transition-shadow"
-             onClick={() => setView('deployments')}>
+             onClick={() => setView('ansible_studio')}>
           <div className="card-body p-4">
             <div className="flex items-center justify-between">
               <div>
@@ -296,6 +302,71 @@ const OverviewDashboard: React.FC<Props> = ({ setView, setSelectedDeviceId }) =>
 
       {/* ─── Two-Column: Deployments + Audit Log ─── */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+
+        {/* Pending Approvals */}
+        <div className="card bg-base-100 shadow">
+          <div className="card-body p-4">
+            <div className="flex items-center justify-between mb-3">
+              <h2 className="card-title text-sm">Pending Approvals</h2>
+              <button className="btn btn-ghost btn-xs gap-1" onClick={() => setView('ansible_studio')}>
+                Studio <ArrowRight className="h-3 w-3" />
+              </button>
+            </div>
+            {pendingApprovals.length === 0 ? (
+              <p className="text-sm opacity-50 text-center py-8">No pending approvals</p>
+            ) : (
+              <div className="space-y-2 max-h-48 overflow-y-auto">
+                {pendingApprovals.map((p: any) => (
+                  <div key={p.id} className="flex items-start gap-3 p-2 rounded-lg hover:bg-base-200">
+                    <Rocket className="h-4 w-4 mt-0.5 flex-shrink-0 text-warning" />
+                    <div className="min-w-0 flex-1">
+                      <p className="text-xs font-medium truncate">{p.title ?? p.description ?? `Proposal ${p.id}`}</p>
+                      <p className="text-[10px] opacity-50">{p.vendor ?? ''} / {p.feature ?? ''}</p>
+                    </div>
+                    <span className="badge badge-xs badge-warning">pending</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Recent Deployments */}
+        <div className="card bg-base-100 shadow">
+          <div className="card-body p-4">
+            <div className="flex items-center justify-between mb-3">
+              <h2 className="card-title text-sm">Recent Deployments</h2>
+              <button className="btn btn-ghost btn-xs gap-1" onClick={() => setView('ansible_studio')}>
+                View all <ArrowRight className="h-3 w-3" />
+              </button>
+            </div>
+            {recentDeploys.length === 0 ? (
+              <p className="text-sm opacity-50 text-center py-8">No deployments yet</p>
+            ) : (
+              <table className="table table-xs">
+                <thead><tr><th>Job</th><th>Status</th><th>Stage</th><th>Created</th></tr></thead>
+                <tbody>
+                  {recentDeploys.map((j: any) => (
+                    <tr key={j.id ?? j.job_id} className="hover">
+                      <td className="font-mono text-[11px]">#{j.id ?? j.job_id}</td>
+                      <td>
+                        <span className={`badge badge-xs ${j.status === 'success' ? 'badge-success' : j.status === 'failed' ? 'badge-error' : 'badge-ghost'}`}>
+                          {j.status}
+                        </span>
+                      </td>
+                      <td className="text-[11px] opacity-70">{j.stage ?? '—'}</td>
+                      <td className="text-[11px] opacity-50">{j.created_at ? new Date(j.created_at).toLocaleString() : '—'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* ─── Two-Column: Audit Log + Quick Actions ─── */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* Recent Audit Log */}
         <div className="card bg-base-100 shadow">
           <div className="card-body p-4">
@@ -330,8 +401,8 @@ const OverviewDashboard: React.FC<Props> = ({ setView, setSelectedDeviceId }) =>
               <button className="btn btn-sm btn-outline gap-2" onClick={() => setView('net_chat')}>
                 <ArrowRight className="h-4 w-4" /> AI Copilot
               </button>
-              <button className="btn btn-sm btn-outline gap-2" onClick={() => setView('configuration')}>
-                <ArrowRight className="h-4 w-4" /> Generate Config
+              <button className="btn btn-sm btn-outline gap-2" onClick={() => setView('ansible_studio')}>
+                <ArrowRight className="h-4 w-4" /> Ansible Studio
               </button>
               <button className="btn btn-sm btn-outline gap-2" onClick={() => setView('sec_dashboard')}>
                 <ShieldCheck className="h-4 w-4" /> Security Audit

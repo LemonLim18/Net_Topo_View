@@ -524,6 +524,121 @@ async def create_and_plan(
     }
 
 
+# ── Template-based config generation (Config Engine as a helper) ─────────
+
+class CreateFromTemplateRequest(BaseModel):
+    vendor:       str
+    feature:      str
+    params:       Dict[str, Any] = {}
+    target_hosts: List[str] = ["all"]
+    device_id:    int = 0
+
+
+@router.post(
+    "/create-from-template",
+    summary="Generate a playbook from a Config Engine template (no LLM needed)",
+)
+async def create_from_template(
+    req:  CreateFromTemplateRequest,
+    user: dict = Depends(get_current_user),
+):
+    """
+    Deterministic path: render vendor config via the Config Engine's Jinja2
+    templates, wrap the result in a minimal Ansible playbook, and create a
+    ChangeRequest + Job — same pipeline as the LLM route.
+    """
+    if _db is None:
+        raise HTTPException(503, "Backend not fully initialized")
+
+    # ── 1. Render config via Config Engine ──────────────────────────────
+    try:
+        from config_engine.renderer import TemplateRenderer
+        renderer = TemplateRenderer()
+        config_text = renderer.render(req.vendor, req.feature, req.params)
+    except (ValueError, FileNotFoundError) as exc:
+        raise HTTPException(400, f"Template render failed: {exc}")
+    except Exception as exc:
+        logger.error("Template render error: %s", exc)
+        raise HTTPException(500, f"Template rendering failed: {exc}")
+
+    undo_text = None
+    try:
+        from config_engine.renderer import TemplateRenderer as _TR
+        undo_text = _TR().render_undo(req.vendor, req.feature, req.params)
+    except Exception:
+        pass  # undo is optional
+
+    # ── 2. Wrap in Ansible playbook YAML ────────────────────────────────
+    hosts_str = ",".join(req.target_hosts) if req.target_hosts else "all"
+
+    MODULE_MAP = {
+        "cisco_ios":     ("cisco.ios.ios_config",   "commands"),
+        "cisco_xe":      ("cisco.ios.ios_config",   "commands"),
+        "huawei_vrp":    ("community.network.ce_config", "lines"),
+        "juniper_junos": ("junipernetworks.junos.junos_config", "lines"),
+    }
+    module_name, lines_key = MODULE_MAP.get(req.vendor, ("cisco.ios.ios_config", "commands"))
+    config_lines = [l for l in config_text.splitlines() if l.strip()]
+
+    import yaml as _yaml
+    playbook = _yaml.dump(
+        [{
+            "name": f"Config Engine: {req.feature} ({req.vendor})",
+            "hosts": hosts_str,
+            "gather_facts": False,
+            "tasks": [{
+                "name": f"Apply {req.feature} configuration",
+                module_name: {lines_key: config_lines},
+            }],
+        }],
+        default_flow_style=False,
+        sort_keys=False,
+    )
+
+    # ── 3. Create ChangeRequest + Job ───────────────────────────────────
+    device_id = req.device_id
+    if device_id == 0 and req.target_hosts:
+        with _db._connect() as conn:
+            row = conn.execute(
+                "SELECT id FROM devices WHERE hostname = ? LIMIT 1",
+                (req.target_hosts[0],),
+            ).fetchone()
+            if row:
+                device_id = row["id"]
+    if device_id == 0:
+        device_id = 1  # sentinel
+
+    from deploy.models import ChangeRequest, Job, DeploymentRepository
+    repo = DeploymentRepository(_db)
+    cr_id = repo.create_request(ChangeRequest(
+        title=f"Template: {req.vendor}/{req.feature}",
+        description=f"Config Engine render of {req.feature} for {hosts_str}",
+        requester=user.get("username", "ansible_studio"),
+    ))
+    job_id = repo.create_job(Job(request_id=cr_id, device_id=device_id))
+
+    # Persist the playbook on the job
+    with _db._connect() as conn:
+        conn.execute(
+            "UPDATE jobs SET ansible_playbook = ?, generated_config = ?, "
+            "rollback_config = ?, stage = 'plan', status = 'pending' WHERE id = ?",
+            (playbook, config_text, undo_text, job_id),
+        )
+
+    logger.info(
+        "Template-based playbook created job=%d vendor=%s feature=%s user=%s",
+        job_id, req.vendor, req.feature, user.get("username"),
+    )
+    return {
+        "job_id":       job_id,
+        "request_id":   cr_id,
+        "status":       "playbook_generated",
+        "playbook":     playbook,
+        "config":       config_text,
+        "undo_config":  undo_text,
+    }
+
+
 # ── M23: file-server endpoints ────────────────────────────────────────────
 
 @router.get("/files", summary="List ansible file tree (playbooks, roles, inventory, awx)")
