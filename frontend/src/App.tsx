@@ -11,6 +11,10 @@ import AnsibleStudioView from '../views/AnsibleStudioView';
 import DriftView from '../views/DriftView';
 import IncidentDashboard from '../views/IncidentDashboard';
 import OnboardingView from '../views/OnboardingView';
+import IntentHistoryView from '../views/IntentHistoryView';
+import SDNDashboardView from '../views/SDNDashboardView';
+import PlaybookComparisonView from '../views/PlaybookComparisonView';
+import ApprovalQueueView from '../views/ApprovalQueueView';
 
 import Login from '../views/Login';
 import NetworkPerformance from '../views/NetworkPerformance';
@@ -96,6 +100,22 @@ const App: React.FC = () => {
       // M0 — Device Onboarding
       case 'onboarding':
         return <OnboardingView setView={setView} />;
+
+      // Phase 1 — Intent Lifecycle Management
+      case 'intent_history':
+        return <IntentHistoryView setView={setView} />;
+
+      // Phase 3 — SDN Controller Dashboard
+      case 'sdn_dashboard':
+        return <SDNDashboardView setView={setView} />;
+
+      // Phase 12 — Playbook Candidate Comparison (UC14)
+      case 'playbook_comparison':
+        return <PlaybookComparisonView setView={setView} />;
+
+      // Phase 16 — Approval Queue Dashboard
+      case 'approval_queue':
+        return <ApprovalQueueView setView={setView} />;
 
       default:
         return <OverviewDashboard setView={setView} setSelectedDeviceId={setSelectedDeviceId} />;

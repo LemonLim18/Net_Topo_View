@@ -17,6 +17,7 @@ logger = logging.getLogger("scheduler.jobs")
 # ────────────────────────────────────────────────────────
 _crawl_fn: Optional[Callable[..., Awaitable]] = None
 _orchestrator = None  # IncidentOrchestrator — set via set_orchestrator()
+_broadcast_fn: Optional[Callable[..., Awaitable]] = None  # WebSocket broadcast
 
 
 def set_crawl_function(fn: Callable[..., Awaitable]) -> None:
@@ -29,6 +30,12 @@ def set_orchestrator(orch) -> None:
     """Inject the IncidentOrchestrator instance."""
     global _orchestrator
     _orchestrator = orch
+
+
+def set_broadcast_fn(fn: Callable[..., Awaitable]) -> None:
+    """Inject the WebSocket broadcast function from backend.py."""
+    global _broadcast_fn
+    _broadcast_fn = fn
 
 
 # ────────────────────────────────────────────────────────
@@ -49,12 +56,27 @@ async def job_crawl() -> None:
 # ────────────────────────────────────────────────────────
 # Job 2: Drift Detection
 # ────────────────────────────────────────────────────────
-def job_drift_check() -> None:
-    """Periodic drift check across all devices."""
+async def job_drift_check() -> None:
+    """Periodic drift check across all devices, with WebSocket push."""
     try:
         logger.info("[Scheduler] Drift-check job triggered")
         from drift.api import run_network_drift_check
-        run_network_drift_check()
+        results = run_network_drift_check()
+
+        # Push drift results over WebSocket
+        if _broadcast_fn is not None and results:
+            drift_count = sum(1 for e in results if e.get("has_drift", False)) if isinstance(results, list) else 0
+            try:
+                await _broadcast_fn({
+                    "event": "drift_check_complete",
+                    "data": {
+                        "devices_checked": len(results) if isinstance(results, list) else 0,
+                        "drift_detected": drift_count,
+                        "timestamp": __import__("datetime").datetime.utcnow().isoformat(),
+                    },
+                })
+            except Exception:
+                logger.debug("[Scheduler] Drift broadcast failed (non-fatal)")
     except Exception:
         logger.exception("[Scheduler] Drift-check job failed")
 

@@ -307,6 +307,150 @@ class IncidentOrchestrator:
             logger.exception("Execution failed for incident %s", incident_id)
             return {"success": False, "error": str(exc)}
 
+    # ------------------------------------------------------------------
+    # 5. Full Auto-Remediation Pipeline (UC37)
+    # ------------------------------------------------------------------
+
+    async def auto_remediate_incident(
+        self,
+        incident_id: str,
+        *,
+        skip_analysis: bool = False,
+        require_approval: bool = False,
+    ) -> Dict[str, Any]:
+        """
+        Execute the full closed-loop auto-remediation pipeline:
+
+        1. (Optional) Run AI analysis to generate RCA + playbook
+        2. (Optional) Wait for human approval — or auto-approve
+        3. Execute the remediation playbook (dry-run → apply)
+        4. Update incident status + broadcast result
+
+        Parameters
+        ----------
+        incident_id : str
+            The incident to remediate.
+        skip_analysis : bool
+            If True, skip LLM analysis (assumes playbook already attached).
+        require_approval : bool
+            If True, stop at 'approved' and return without executing.
+            A human must call POST /incidents/{id}/execute to proceed.
+        """
+        timeline: List[Dict[str, Any]] = []
+        _ts = lambda: datetime.utcnow().isoformat()
+
+        row = self._store.get(incident_id)
+        if not row:
+            return {"success": False, "error": "Incident not found", "timeline": timeline}
+
+        # Step 1: AI Analysis (unless already done or skipped)
+        has_playbook = bool((row.get("proposed_playbook") or "").strip())
+        if not skip_analysis and not has_playbook:
+            timeline.append({"step": "analysis", "started_at": _ts()})
+            try:
+                ok = await self.analyze_incident(incident_id)
+                if not ok:
+                    timeline.append({"step": "analysis", "status": "failed", "ended_at": _ts()})
+                    return {
+                        "success": False,
+                        "error": "AI analysis failed",
+                        "timeline": timeline,
+                    }
+                timeline.append({"step": "analysis", "status": "completed", "ended_at": _ts()})
+                # Reload the row to get the newly-generated playbook
+                row = self._store.get(incident_id)
+            except Exception as exc:
+                timeline.append({"step": "analysis", "status": "error", "detail": str(exc), "ended_at": _ts()})
+                return {
+                    "success": False,
+                    "error": f"Analysis error: {exc}",
+                    "timeline": timeline,
+                }
+
+        # Verify we have a playbook now
+        playbook_yaml = (row.get("proposed_playbook") or "").strip() if row else ""
+        if not playbook_yaml:
+            return {
+                "success": False,
+                "error": "No remediation playbook available after analysis",
+                "timeline": timeline,
+            }
+
+        # Step 2: Auto-approve (or gate for human approval)
+        timeline.append({"step": "approval", "started_at": _ts()})
+        if require_approval:
+            self._store.set_status(incident_id, "investigating")
+            timeline.append({"step": "approval", "status": "pending_human", "ended_at": _ts()})
+            return {
+                "success": True,
+                "status": "awaiting_approval",
+                "incident_id": incident_id,
+                "message": "Playbook generated. Awaiting human approval before execution.",
+                "timeline": timeline,
+            }
+
+        self._store.set_status(incident_id, "approved", approver="auto_remediation")
+        timeline.append({"step": "approval", "status": "auto_approved", "ended_at": _ts()})
+
+        # Step 3: Execute the playbook
+        timeline.append({"step": "execution", "started_at": _ts()})
+        result = await self.execute_approved_playbook(incident_id)
+        timeline.append({
+            "step": "execution",
+            "status": "success" if result.get("success") else "failed",
+            "detail": result,
+            "ended_at": _ts(),
+        })
+
+        # Step 4: Broadcast
+        event_type = "incident_auto_remediated" if result.get("success") else "incident_remediation_failed"
+        try:
+            await self.broadcast_incident(incident_id, event_type)
+        except Exception:
+            pass
+
+        return {
+            "success": result.get("success", False),
+            "incident_id": incident_id,
+            "execution_result": result,
+            "timeline": timeline,
+        }
+
+    async def process_pending_auto_remediations(self) -> Dict[str, Any]:
+        """
+        Scan for incidents created by the threshold engine that are still
+        'investigating' (have a playbook attached) and execute them.
+
+        This method is designed to be called periodically by the scheduler
+        to close the auto-remediation loop.
+        """
+        results = {"processed": 0, "succeeded": 0, "failed": 0, "errors": []}
+
+        # Find investigating incidents that have a playbook and were auto-created
+        rows = self._store.list_all(status="investigating", limit=20)
+        for row in rows:
+            playbook = (row.get("proposed_playbook") or "").strip()
+            anomaly_type = row.get("anomaly_type", "")
+            if not playbook or not anomaly_type.startswith("threshold_breach_"):
+                continue
+
+            inc_id = row["id"]
+            results["processed"] += 1
+            try:
+                outcome = await self.auto_remediate_incident(
+                    inc_id, skip_analysis=True, require_approval=False
+                )
+                if outcome.get("success"):
+                    results["succeeded"] += 1
+                else:
+                    results["failed"] += 1
+                    results["errors"].append(f"{inc_id}: {outcome.get('error', 'unknown')}")
+            except Exception as exc:
+                results["failed"] += 1
+                results["errors"].append(f"{inc_id}: {exc}")
+
+        return results
+
     # ==================================================================
     # Private helpers
     # ==================================================================

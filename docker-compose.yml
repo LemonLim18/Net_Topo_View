@@ -1,0 +1,122 @@
+# ─────────────────────────────────────────────────────────────
+# NetTopoView / CogniShield — Docker Compose Stack
+#
+# Services:
+#   app        — FastAPI backend + React frontend (built in Dockerfile)
+#   influxdb   — Time-series telemetry store
+#   telegraf   — SNMP polling agent
+#   chromadb   — Vector embedding store (optional, can use embedded)
+# ─────────────────────────────────────────────────────────────
+
+version: "3.9"
+
+services:
+  # ── Main Application ───────────────────────────────────────
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: nettopo-app
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    volumes:
+      # Persistent SQLite database
+      - nettopo-db:/app/backend/db
+      # Persistent ChromaDB embeddings
+      - nettopo-chroma:/app/backend/chroma_db
+      # Topology snapshots
+      - nettopo-topo:/app/topology_store
+      # Ansible playbooks output
+      - nettopo-playbooks:/app/backend/ansible/playbooks
+      # Knowledge base documents
+      - nettopo-kb:/app/backend/knowledge_base
+    environment:
+      # ── Network Crawl ──
+      CRAWL_SEEDS: ${CRAWL_SEEDS:-192.168.1.1}
+      CRAWL_USER: ${CRAWL_USER:-}
+      CRAWL_PASSWORD: ${CRAWL_PASSWORD:-}
+      CRAWL_DRIVER: ${CRAWL_DRIVER:-cisco_ios}
+      CRAWL_WORKERS: ${CRAWL_WORKERS:-6}
+
+      # ── InfluxDB ──
+      INFLUXDB_URL: http://influxdb:8086
+      INFLUXDB_TOKEN: ${INFLUXDB_TOKEN:-my-super-secret-token}
+      INFLUXDB_ORG: ${INFLUXDB_ORG:-netauto}
+      INFLUXDB_BUCKET: ${INFLUXDB_BUCKET:-telegraf}
+
+      # ── Gemini LLM ──
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+
+      # ── NetBox (optional) ──
+      NETBOX_URL: ${NETBOX_URL:-}
+      NETBOX_TOKEN: ${NETBOX_TOKEN:-}
+
+      # ── Auth ──
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:-change-me-in-production}
+      DEFAULT_ADMIN_PASSWORD: ${DEFAULT_ADMIN_PASSWORD:-admin}
+    depends_on:
+      influxdb:
+        condition: service_healthy
+    networks:
+      - nettopo
+
+  # ── InfluxDB — Time-Series Store ───────────────────────────
+  influxdb:
+    image: influxdb:2.7
+    container_name: nettopo-influxdb
+    restart: unless-stopped
+    ports:
+      - "8086:8086"
+    volumes:
+      - influxdb-data:/var/lib/influxdb2
+      - influxdb-config:/etc/influxdb2
+    environment:
+      DOCKER_INFLUXDB_INIT_MODE: setup
+      DOCKER_INFLUXDB_INIT_USERNAME: admin
+      DOCKER_INFLUXDB_INIT_PASSWORD: ${INFLUXDB_ADMIN_PASSWORD:-adminpassword123}
+      DOCKER_INFLUXDB_INIT_ORG: ${INFLUXDB_ORG:-netauto}
+      DOCKER_INFLUXDB_INIT_BUCKET: ${INFLUXDB_BUCKET:-telegraf}
+      DOCKER_INFLUXDB_INIT_ADMIN_TOKEN: ${INFLUXDB_TOKEN:-my-super-secret-token}
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8086/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - nettopo
+
+  # ── Telegraf — SNMP Poller ─────────────────────────────────
+  telegraf:
+    image: telegraf:1.30
+    container_name: nettopo-telegraf
+    restart: unless-stopped
+    volumes:
+      - ./telegraf.conf:/etc/telegraf/telegraf.conf:ro
+    environment:
+      INFLUXDB_URL: http://influxdb:8086
+      INFLUXDB_TOKEN: ${INFLUXDB_TOKEN:-my-super-secret-token}
+      INFLUXDB_ORG: ${INFLUXDB_ORG:-netauto}
+      INFLUXDB_BUCKET: ${INFLUXDB_BUCKET:-telegraf}
+    depends_on:
+      influxdb:
+        condition: service_healthy
+    # Telegraf needs host network to reach SNMP devices on the LAN
+    # Alternatively, adjust routing or use macvlan
+    network_mode: host
+
+# ── Volumes ──────────────────────────────────────────────────
+volumes:
+  nettopo-db:
+  nettopo-chroma:
+  nettopo-topo:
+  nettopo-playbooks:
+  nettopo-kb:
+  influxdb-data:
+  influxdb-config:
+
+# ── Network ──────────────────────────────────────────────────
+networks:
+  nettopo:
+    driver: bridge

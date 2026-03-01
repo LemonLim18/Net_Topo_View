@@ -18,6 +18,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException, Query
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from incidents.store import IncidentStore
@@ -346,3 +347,69 @@ async def reanalyze_incident(incident_id: str):
         pass
 
     return {"status": "reanalyzed", "incident_id": incident_id}
+
+
+# ---------------------------------------------------------------------------
+# Phase 8 — Auto-Remediation (UC37)
+# ---------------------------------------------------------------------------
+
+class AutoRemediateRequest(BaseModel):
+    """Options for the auto-remediation pipeline."""
+    skip_analysis: bool = False
+    require_approval: bool = False
+
+
+@router.post("/{incident_id}/auto-remediate")
+async def auto_remediate_incident(incident_id: str, req: AutoRemediateRequest = AutoRemediateRequest()):
+    """
+    Trigger the full auto-remediation pipeline for an incident:
+    1. AI analysis → RCA + playbook generation (unless skip_analysis)
+    2. Auto-approve (or gate for human approval if require_approval)
+    3. Execute remediation playbook (dry-run → apply)
+
+    Use `skip_analysis=true` when the incident already has a playbook
+    (e.g. threshold-triggered incidents with a pre-configured playbook).
+
+    Use `require_approval=true` to stop after analysis and wait for
+    a human to call POST /incidents/{id}/execute.
+    """
+    if _orchestrator is None:
+        raise HTTPException(503, "Incident orchestrator not initialized")
+
+    store = _get_store()
+    row = store.get(incident_id)
+    if not row:
+        raise HTTPException(404, f"Incident {incident_id!r} not found")
+    if row["status"] in ("resolved", "dismissed"):
+        raise HTTPException(409, f"Incident is already '{row['status']}'")
+
+    result = await _orchestrator.auto_remediate_incident(
+        incident_id,
+        skip_analysis=req.skip_analysis,
+        require_approval=req.require_approval,
+    )
+
+    # Broadcast status update
+    try:
+        event = "incident_auto_remediated" if result.get("success") else "incident_updated"
+        await _orchestrator.broadcast_incident(incident_id, event)
+    except Exception:
+        pass
+
+    status_code = 200 if result.get("success") else 422
+    return JSONResponse(content=result, status_code=status_code)
+
+
+@router.post("/auto-remediate/process-pending")
+async def process_pending_auto_remediations():
+    """
+    Scan for threshold-triggered incidents that are in 'investigating'
+    state with a playbook attached, and execute auto-remediation for each.
+
+    Designed to be called by the scheduler on a periodic basis.
+    """
+    if _orchestrator is None:
+        raise HTTPException(503, "Incident orchestrator not initialized")
+
+    result = await _orchestrator.process_pending_auto_remediations()
+    return result

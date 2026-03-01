@@ -141,3 +141,68 @@ async def get_request_status(
         "status": req.status.value,
         "requester": req.requester,
     }
+
+
+@router.get("/queue/pending")
+async def list_pending_approvals(
+    limit: int = 50,
+    db: DatabaseManager = Depends(_get_db),
+):
+    """
+    Phase 16 — List all change requests in PENDING_APPROVAL state.
+    Aggregates from both deployment pipeline and ansible jobs.
+    """
+    pending_items = []
+
+    # 1. Deployment change requests
+    try:
+        with db._connect() as conn:
+            rows = conn.execute(
+                "SELECT id, title, requester, status, created_at "
+                "FROM change_requests WHERE status = 'pending_approval' "
+                "ORDER BY created_at DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+            for r in rows:
+                pending_items.append({
+                    "id": r["id"],
+                    "type": "change_request",
+                    "title": r["title"],
+                    "requester": r["requester"],
+                    "status": "pending_approval",
+                    "created_at": r["created_at"],
+                })
+    except Exception as e:
+        logger.debug("Could not fetch pending change_requests: %s", e)
+
+    # 2. Ansible jobs awaiting approval
+    try:
+        with db._connect() as conn:
+            rows = conn.execute(
+                "SELECT j.id, j.status, j.stage, j.created_at, "
+                "       cr.title, cr.requester "
+                "FROM jobs j "
+                "LEFT JOIN change_requests cr ON j.request_id = cr.id "
+                "WHERE j.stage = 'plan' AND j.status = 'pending' "
+                "ORDER BY j.created_at DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+            for r in rows:
+                pending_items.append({
+                    "id": r["id"],
+                    "type": "ansible_job",
+                    "title": r["title"] or f"Ansible Job #{r['id']}",
+                    "requester": r["requester"] or "system",
+                    "status": "awaiting_approval",
+                    "created_at": r["created_at"],
+                })
+    except Exception as e:
+        logger.debug("Could not fetch pending ansible jobs: %s", e)
+
+    # Sort combined results by created_at descending
+    pending_items.sort(key=lambda x: x.get("created_at", ""), reverse=True)
+
+    return {
+        "items": pending_items[:limit],
+        "total": len(pending_items),
+    }

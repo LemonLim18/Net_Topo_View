@@ -54,6 +54,18 @@ def setup_rag(ingester, vector_store) -> None:
     logger.info("RAG module ready")
 
 
+# DI global for context bundle builder
+_bundle_builder = None
+
+
+def setup_context_bundle(db_manager) -> None:
+    """Inject the context bundle builder at application startup."""
+    global _bundle_builder
+    from rag.context_bundle import ContextBundleBuilder
+    _bundle_builder = ContextBundleBuilder(db_manager=db_manager)
+    logger.info("Context bundle builder ready")
+
+
 # ---------------------------------------------------------------------------
 # Auth dependency (re-uses whatever auth scheme is already in the project)
 # ---------------------------------------------------------------------------
@@ -101,6 +113,20 @@ class StatusResponse(BaseModel):
     total_chunks: int
     total_documents: int
     chroma_path: str
+
+
+# DI global for context bundle builder
+_bundle_builder = None
+_db_manager = None
+
+
+def setup_context_bundle(db_manager) -> None:
+    """Inject db_manager so the context-bundle preview endpoint can work."""
+    global _bundle_builder, _db_manager
+    from rag.context_bundle import ContextBundleBuilder
+    _db_manager = db_manager
+    _bundle_builder = ContextBundleBuilder(db_manager=db_manager)
+    logger.info("RAG context-bundle builder ready")
 
 
 # ---------------------------------------------------------------------------
@@ -364,6 +390,49 @@ async def get_rag_status(
 
 
 # ---------------------------------------------------------------------------
+# Context Bundle Preview (UC06-UC09)
+# ---------------------------------------------------------------------------
+
+class BundlePreviewRequest(BaseModel):
+    device_hostnames: Optional[list[str]] = None
+    vendor_filter: Optional[str] = None
+    include_telemetry: bool = True
+    include_sdn: bool = True
+
+
+@router.post(
+    "/context-bundle/preview",
+    summary="Preview the fused context bundle that would be sent to the LLM",
+)
+async def preview_context_bundle(
+    body: BundlePreviewRequest,
+    current_user: dict = Depends(_auth_dep),
+):
+    """
+    Build (but do not send to the LLM) a context bundle for the given scope.
+
+    Returns:
+        - ``prompt_text``: The markdown string injected into the system prompt.
+        - ``bundle``: The raw structured bundle (JSON-serialisable dict).
+    """
+    if _bundle_builder is None:
+        raise HTTPException(status_code=503, detail="Context bundle builder not initialised")
+
+    bundle = await run_in_threadpool(
+        _bundle_builder.build_bundle,
+        device_hostnames=body.device_hostnames,
+        vendor_filter=body.vendor_filter,
+        include_telemetry=body.include_telemetry,
+        include_sdn=body.include_sdn,
+    )
+
+    return {
+        "prompt_text": bundle.to_prompt_text(),
+        "bundle": bundle.to_dict(),
+    }
+
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
@@ -386,3 +455,54 @@ def _safe_filename(name: str, suffix: str) -> str:
     safe_stem = "".join(c if c.isalnum() or c in "-_. " else "_" for c in stem)
     safe_stem = safe_stem.strip()[:128] or str(uuid.uuid4())
     return f"{safe_stem}{suffix}"
+
+
+# ---------------------------------------------------------------------------
+# Phase 9 — Network State Auto-Embedding
+# ---------------------------------------------------------------------------
+
+_state_embedder = None
+
+
+def setup_state_embedder(embedder_instance) -> None:
+    """Inject the NetworkStateEmbedder (called by backend.py lifespan)."""
+    global _state_embedder
+    _state_embedder = embedder_instance
+
+
+@router.get("/state-embedding/status")
+async def state_embedding_status():
+    """Return status of the network state auto-embedder."""
+    if _state_embedder is None:
+        return {"available": False, "last_embedded_at": None}
+    return {
+        "available": True,
+        "last_embedded_at": _state_embedder.last_embedded_at,
+    }
+
+
+@router.post("/state-embedding/trigger")
+async def trigger_state_embedding(background: BackgroundTasks):
+    """
+    Manually trigger a re-embedding of the current network state.
+    Reads the latest topology from disk and embeds it.
+    """
+    if _state_embedder is None:
+        raise HTTPException(503, "Network state embedder not initialised")
+
+    import json as _json
+
+    topo_path = os.path.join(
+        os.path.dirname(__file__), "..", "topology_store", "current_topo.json"
+    )
+    if not os.path.exists(topo_path):
+        raise HTTPException(404, "No current topology file found")
+
+    try:
+        with open(topo_path, "r") as f:
+            topology = _json.load(f)
+    except Exception as exc:
+        raise HTTPException(500, f"Failed to read topology: {exc}")
+
+    result = _state_embedder.embed_crawl_result(topology)
+    return result

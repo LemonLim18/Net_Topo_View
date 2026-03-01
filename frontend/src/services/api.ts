@@ -71,6 +71,58 @@ export const deployApi = {
   /** List all deployment jobs. */
   listJobs: () =>
     request<any[]>('/deploy/jobs'),
+
+  /** Phase 16 — List pending approvals (change requests + ansible jobs). */
+  listPendingApprovals: (limit = 50) => {
+    const url = `${BASE_URL}/api/deploy/queue/pending?limit=${limit}`;
+    const token = localStorage.getItem('auth_token');
+    return fetch(url, {
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+    }).then(async r => {
+      if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || r.statusText);
+      return r.json() as Promise<{
+        items: { id: number; type: string; title: string; requester: string; status: string; created_at: string }[];
+        total: number;
+      }>;
+    });
+  },
+
+  /** Phase 16 — Approve a change request. */
+  approveRequest: (requestId: number, actor = 'admin', comment?: string) => {
+    const url = `${BASE_URL}/api/deploy/${requestId}/approve`;
+    const token = localStorage.getItem('auth_token');
+    return fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify({ actor, comment }),
+    }).then(async r => {
+      if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || r.statusText);
+      return r.json() as Promise<{ status: string; request_id: number }>;
+    });
+  },
+
+  /** Phase 16 — Reject a change request. */
+  rejectRequest: (requestId: number, actor = 'admin', comment?: string) => {
+    const url = `${BASE_URL}/api/deploy/${requestId}/reject`;
+    const token = localStorage.getItem('auth_token');
+    return fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify({ actor, comment }),
+    }).then(async r => {
+      if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || r.statusText);
+      return r.json() as Promise<{ status: string; request_id: number }>;
+    });
+  },
 };
 
 // --- M5: LLM Agent API ---
@@ -140,6 +192,24 @@ export const monitorApi = {
     
   getStatus: () =>
     request<{ status: string; message: string }>('/monitor/status'),
+
+  /** Phase 10 — Get latest metrics (raw InfluxDB CSV or SQLite fallback) */
+  getLatestMetrics: (device?: string, limit = 30) => {
+    const params = new URLSearchParams({ limit: String(limit) });
+    if (device) params.set('device', device);
+    return request<any>(`/monitor/metrics/latest?${params}`);
+  },
+
+  /** Phase 10 — Get time-series metric history for charting */
+  getMetricHistory: (device?: string, metric = 'cpu', rangeMinutes = 60) => {
+    const params = new URLSearchParams({ metric, range_minutes: String(rangeMinutes) });
+    if (device) params.set('device', device);
+    return request<{ source: string; metric: string; data: any[] }>(`/monitor/metrics/history?${params}`);
+  },
+
+  /** Phase 10 — Get per-device summary with CPU/memory enrichment */
+  getDeviceSummary: (limit = 50) =>
+    request<{ devices: any[] }>(`/monitor/metrics/summary?limit=${limit}`),
 };
 
 // --- M3: Config Engine API ---
@@ -274,6 +344,15 @@ export const netboxApi = {
     request<{ status: string; synced_count?: number }>('/netbox/sync/devices', {
       method: 'POST',
     }),
+
+  /** Phase 4: Get planned (design-of-record) topology from NetBox */
+  getPlannedTopology: () =>
+    request<{
+      nodes: Record<string, any>;
+      source: string;
+      device_count?: number;
+      timestamp?: string | null;
+    }>('/netbox/topology/planned'),
 };
 
 // --- M13: Security Module API ---
@@ -436,6 +515,36 @@ export const ragApi = {
 
   rebuild: () =>
     request<{ files_processed: number; total_chunks: number; errors: string[] }>('/rag/documents/rebuild', { method: 'POST' }),
+
+  /** Preview the fused context bundle (inventory + telemetry + SDN) */
+  previewBundle: (params: {
+    device_hostnames?: string[];
+    vendor_filter?: string;
+    include_telemetry?: boolean;
+    include_sdn?: boolean;
+  } = {}) =>
+    request<{ prompt_text: string; bundle: Record<string, unknown> }>('/rag/context-bundle/preview', {
+      method: 'POST',
+      body: JSON.stringify(params),
+    }),
+
+  /** Phase 9 — Get network state embedding status */
+  stateEmbeddingStatus: () =>
+    request<{ available: boolean; last_embedded_at: string | null }>('/rag/state-embedding/status'),
+
+  /** Phase 9 — Manually trigger network state re-embedding */
+  triggerStateEmbedding: () =>
+    request<{
+      status: string;
+      doc_id?: string;
+      devices_embedded?: number;
+      link_chunks?: number;
+      config_chunks?: number;
+      interface_chunks?: number;
+      total_chunks?: number;
+      embedded_at?: string;
+      reason?: string;
+    }>('/rag/state-embedding/trigger', { method: 'POST' }),
 };
 
 // --- SSH Terminal API ---
@@ -576,6 +685,35 @@ export const ansibleApi = {
     const url = `${BASE_URL}/api/v1/ansible/jobs/${jobId}/stream?token=${encodeURIComponent(token)}`;
     return new EventSource(url);
   },
+
+  /** Phase 6: Generate multiple candidate playbooks (conservative/balanced/aggressive) */
+  planCandidates: (jobId: number, req: {
+    intent_description: string;
+    target_hosts: string[];
+    vendor: string;
+    feature: string;
+    params: Record<string, any>;
+  }, n: number = 3) =>
+    request<{
+      job_id: number;
+      candidates: {
+        index: number;
+        yaml: string;
+        approach: string;
+        valid: boolean;
+        errors: string[];
+      }[];
+    }>(`/ansible/jobs/${jobId}/plan-candidates?n=${n}`, {
+      method: 'POST',
+      body: JSON.stringify(req),
+    }),
+
+  /** Phase 6: Select a candidate playbook after review */
+  selectCandidate: (jobId: number, candidateIndex: number, playbookYaml: string) =>
+    request<{ job_id: number; selected_index: number; status: string }>(
+      `/ansible/jobs/${jobId}/select-candidate?candidate_index=${candidateIndex}`,
+      { method: 'POST', body: JSON.stringify({ playbook_yaml: playbookYaml }) }
+    ),
 };
 
 // ───────────────────────── Drift (M8) ─────────────────────────
@@ -604,6 +742,16 @@ export const driftApi = {
     if (deviceId !== undefined) params.set('device_id', String(deviceId));
     return request<{ events: DriftEventRecord[] }>(`/drift/events?${params}`);
   },
+
+  /** Phase 13 — Get drift KPI summary (compliance rate, severity breakdown). */
+  getSummary: () =>
+    request<{
+      total_devices: number;
+      compliant: number;
+      drifted: number;
+      compliance_pct: number;
+      severity_breakdown: Record<string, number>;
+    }>('/drift/summary'),
 };
 
 // ───────────────────────── Dashboard Summary ─────────────────────────
@@ -719,7 +867,45 @@ export const incidentApi = {
       '/incidents/ingest',
       { method: 'POST', body: JSON.stringify(data) }
     ),
+
+  // Phase 8 — Auto-Remediation (UC37)
+  autoRemediate: (id: string, opts?: { skip_analysis?: boolean; require_approval?: boolean }) =>
+    request<AutoRemediationResult>(
+      `/incidents/${encodeURIComponent(id)}/auto-remediate`,
+      { method: 'POST', body: JSON.stringify(opts ?? {}) }
+    ),
+
+  processPendingRemediations: () =>
+    request<{ processed: number; succeeded: number; failed: number; errors?: string[] }>(
+      '/incidents/auto-remediate/process-pending',
+      { method: 'POST' }
+    ),
+
+  executePlaybook: (id: string) =>
+    request<{ status: string; incident_id: string; result: any }>(
+      `/incidents/${encodeURIComponent(id)}/execute`,
+      { method: 'POST' }
+    ),
 };
+
+// Auto-Remediation types
+export interface AutoRemediationTimeline {
+  step: string;
+  status?: string;
+  started_at?: string;
+  ended_at?: string;
+  detail?: any;
+}
+
+export interface AutoRemediationResult {
+  success: boolean;
+  incident_id?: string;
+  status?: string;
+  error?: string;
+  message?: string;
+  execution_result?: any;
+  timeline: AutoRemediationTimeline[];
+}
 
 // ───────────────────────── M25: Agent Plan/Execute API ─────────────────────────
 
@@ -805,6 +991,290 @@ export const playbookApi = {
 
   getHistory: (jobId: number) =>
     request<PlaybookVersion[]>(`/ansible/jobs/${jobId}/history`),
+};
+
+// ───────────────────────── M25: Telemetry WebSocket helper ─────────────────────────
+
+// ───────────────────────── Phase 1: Intent Lifecycle API (UC02-UC05) ─────────────────────────
+
+export interface IntentSummary {
+  id: string;
+  user_prompt: string;
+  intent_type: string;
+  action?: string;
+  feature?: string;
+  vendor?: string;
+  risk_level: string;
+  status: string;
+  blast_radius: number;
+  resolved_devices?: string[];
+  policy_approved?: boolean;
+  created_at?: string;
+}
+
+export interface IntentListResponse {
+  items: IntentSummary[];
+  total: number;
+  page: number;
+  page_size: number;
+}
+
+export interface IntentDetailResponse extends IntentSummary {
+  parameters?: Record<string, any>;
+  scope?: Record<string, any>;
+  policy_result?: Record<string, any>;
+  proposal_id?: string;
+  linked_proposals: Record<string, any>[];
+  linked_plans: Record<string, any>[];
+}
+
+export const intentApi = {
+  /** List intents with optional filters and pagination */
+  list: (params?: {
+    status?: string;
+    intent_type?: string;
+    risk_level?: string;
+    search?: string;
+    page?: number;
+    page_size?: number;
+  }) => {
+    const query = new URLSearchParams();
+    if (params?.status) query.set('status', params.status);
+    if (params?.intent_type) query.set('intent_type', params.intent_type);
+    if (params?.risk_level) query.set('risk_level', params.risk_level);
+    if (params?.search) query.set('search', params.search);
+    if (params?.page) query.set('page', String(params.page));
+    if (params?.page_size) query.set('page_size', String(params.page_size));
+    const qs = query.toString();
+    return request<IntentListResponse>(`/intents${qs ? '?' + qs : ''}`);
+  },
+
+  /** Get full intent detail */
+  get: (id: string) =>
+    request<IntentDetailResponse>(`/intents/${id}`),
+
+  /** Edit an intent (only draft/parsed/validated status) */
+  update: (id: string, body: {
+    user_prompt?: string;
+    parameters?: Record<string, any>;
+    scope?: Record<string, any>;
+    risk_level?: string;
+    vendor?: string;
+    feature?: string;
+  }) =>
+    request<IntentSummary>(`/intents/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(body),
+    }),
+
+  /** Cancel an intent */
+  cancel: (id: string) =>
+    request<IntentSummary>(`/intents/${id}/cancel`, { method: 'POST' }),
+
+  /** Duplicate an intent */
+  duplicate: (id: string) =>
+    request<IntentSummary>(`/intents/${id}/duplicate`, { method: 'POST' }),
+
+  /** Get linked playbooks/proposals for an intent */
+  getPlaybooks: (id: string) =>
+    request<{
+      intent_id: string;
+      proposals: Record<string, any>[];
+      agent_plans: Record<string, any>[];
+    }>(`/intents/${id}/playbooks`),
+};
+
+// ───────────────────────── Phase 3: SDN Controller Management ─────────────────────────
+
+export interface SDNControllerDetail {
+  id: number;
+  name: string;
+  controller_type: string;
+  url: string;
+  username?: string;
+  verify_ssl: boolean;
+  status: string;
+  managed_device_count: number;
+  last_synced?: string;
+  created_at?: string;
+  updated_at?: string;
+  managed_devices?: Record<string, any>[];
+  topology_links?: Record<string, any>[];
+}
+
+export const sdnApi = {
+  /** List all registered SDN controllers */
+  list: () => request<SDNControllerDetail[]>('/sdn/controllers'),
+
+  /** Get detailed info for one controller */
+  get: (id: number) => request<SDNControllerDetail>(`/sdn/controllers/${id}`),
+
+  /** Register a new SDN controller */
+  create: (body: {
+    name: string;
+    controller_type: string;
+    url: string;
+    username?: string;
+    password?: string;
+    verify_ssl?: boolean;
+  }) => request<SDNControllerDetail>('/sdn/controllers', {
+    method: 'POST',
+    body: JSON.stringify(body),
+  }),
+
+  /** Update controller settings */
+  update: (id: number, body: {
+    name?: string;
+    url?: string;
+    username?: string;
+    password?: string;
+    verify_ssl?: boolean;
+  }) => request<SDNControllerDetail>(`/sdn/controllers/${id}`, {
+    method: 'PUT',
+    body: JSON.stringify(body),
+  }),
+
+  /** Delete a controller */
+  delete: (id: number) => request<{ status: string }>(`/sdn/controllers/${id}`, { method: 'DELETE' }),
+
+  /** Trigger live sync */
+  sync: (id: number) => request<{
+    status: string;
+    managed_device_count: number;
+    topology_links: number;
+    devices: Record<string, any>[];
+    links: Record<string, any>[];
+    synced_at: string;
+  }>(`/sdn/controllers/${id}/sync`, { method: 'POST' }),
+
+  /** Get topology from controller */
+  topology: (id: number) => request<{
+    controller_id: number;
+    controller_name: string;
+    devices: Record<string, any>[];
+    links: Record<string, any>[];
+  }>(`/sdn/controllers/${id}/topology`),
+};
+
+// ───────────────────────── Phase 5: Threshold Monitoring ─────────────────────────
+
+export interface ThresholdRule {
+  id: number;
+  name: string;
+  metric: string;
+  measurement: string;
+  field_key: string;
+  operator: string;
+  threshold: number;
+  severity: string;
+  device_filter?: Record<string, any> | null;
+  cooldown_minutes: number;
+  enabled: boolean;
+  auto_remediate: boolean;
+  remediation_playbook?: string | null;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface ThresholdAlert {
+  id: number;
+  rule_id: number;
+  device?: string;
+  metric?: string;
+  value?: number;
+  threshold?: number;
+  severity?: string;
+  status: string;
+  incident_id?: string;
+  created_at?: string;
+  resolved_at?: string;
+}
+
+export const thresholdApi = {
+  /** List all threshold rules */
+  listRules: () => request<ThresholdRule[]>('/monitor/thresholds/rules'),
+
+  /** Create a new threshold rule */
+  createRule: (body: Omit<ThresholdRule, 'id' | 'created_at' | 'updated_at'>) =>
+    request<ThresholdRule>('/monitor/thresholds/rules', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+
+  /** Update a rule */
+  updateRule: (id: number, body: Partial<ThresholdRule>) =>
+    request<ThresholdRule>(`/monitor/thresholds/rules/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(body),
+    }),
+
+  /** Delete a rule */
+  deleteRule: (id: number) =>
+    request<{ status: string }>(`/monitor/thresholds/rules/${id}`, { method: 'DELETE' }),
+
+  /** List alerts */
+  listAlerts: (statusFilter?: string, limit?: number) => {
+    const params = new URLSearchParams();
+    if (statusFilter) params.set('status_filter', statusFilter);
+    if (limit) params.set('limit', String(limit));
+    const qs = params.toString();
+    return request<ThresholdAlert[]>(`/monitor/thresholds/alerts${qs ? '?' + qs : ''}`);
+  },
+
+  /** Acknowledge an alert */
+  acknowledgeAlert: (id: number) =>
+    request<{ status: string }>(`/monitor/thresholds/alerts/${id}/acknowledge`, { method: 'POST' }),
+
+  /** Resolve an alert */
+  resolveAlert: (id: number) =>
+    request<{ status: string }>(`/monitor/thresholds/alerts/${id}/resolve`, { method: 'POST' }),
+
+  /** Trigger manual evaluation of all rules */
+  evaluate: () =>
+    request<{ evaluated: number; alerts_created: number; errors: string[] }>(
+      '/monitor/thresholds/evaluate', { method: 'POST' }),
+
+  /** Evaluate all rules AND trigger auto-remediation for breaches */
+  evaluateAndRemediate: () =>
+    request<{
+      evaluation: { evaluated: number; alerts_created: number; errors: string[] };
+      remediation: { processed: number; succeeded: number; failed: number; error?: string };
+    }>('/monitor/thresholds/evaluate-and-remediate', { method: 'POST' }),
+};
+
+// ───────────────────────── Phase 7: Unified Validator ─────────────────────────
+
+export interface ValidationStage {
+  name: string;
+  passed: boolean;
+  warnings: string[];
+  errors: string[];
+  details?: Record<string, any>;
+  duration_ms: number;
+}
+
+export interface ValidationReport {
+  report_id: string;
+  overall_pass: boolean;
+  stages: ValidationStage[];
+  risk_level: string;
+  blast_radius: number;
+  timestamp: string;
+}
+
+export const validatorApi = {
+  /** Run unified validation across all stages */
+  runReport: (body: {
+    playbook_yaml?: string;
+    config_text?: string;
+    vendor?: string;
+    target_hosts?: string[];
+    run_dry_run?: boolean;
+    check_policy?: boolean;
+  }) => request<ValidationReport>('/validate/report', {
+    method: 'POST',
+    body: JSON.stringify(body),
+  }),
 };
 
 // ───────────────────────── M25: Telemetry WebSocket helper ─────────────────────────

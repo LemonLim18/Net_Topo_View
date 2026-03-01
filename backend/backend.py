@@ -41,7 +41,7 @@ from llm.embedder import GeminiEmbedder
 from llm.vector_store import KnowledgeVectorStore
 from llm.retriever import KnowledgeRetriever
 from llm.ingestion import DocumentIngester
-from rag.api import router as rag_router, setup_rag
+from rag.api import router as rag_router, setup_rag, setup_context_bundle
 from dashboard.api import router as dashboard_router, setup_dashboard
 
 # M22 — Ansible-first automation (optional: graceful no-op if ansible-runner absent)
@@ -60,6 +60,18 @@ from agent.api import router as agent_router, setup_agent_api
 
 # M0 — Device Onboarding Wizard
 from onboarding.api import router as onboarding_router
+
+# Phase 1 — Intent Lifecycle Management (UC02-UC05)
+from llm.intent_api import router as intent_router, setup_intents
+
+# Phase 3 — SDN Controller Management
+from sdn.api import router as sdn_router, setup_sdn
+
+# Phase 5 — Threshold-Based Telemetry Monitoring
+from monitor.threshold_engine import router as threshold_router, setup_thresholds
+
+# Phase 7 — Unified Validator Report
+from config_engine.unified_validator import router as validator_router, setup_validator
 
 # M4 — Deployment Approval Gate
 try:
@@ -108,6 +120,7 @@ _topology_lock = asyncio.Lock()
 _db: Optional[DatabaseManager] = None
 _agent: Optional[NetworkAgent] = None
 _vault = None  # CredentialVault — set in lifespan
+_state_embedder = None  # NetworkStateEmbedder — Phase 9
 
 # ----------------------
 # WebSocket Connection Manager
@@ -278,6 +291,16 @@ async def run_crawl_and_broadcast(trigger: str = "periodic"):
             _agent.refresh_context()
             logger.debug("Agent RAG context refreshed after crawl")
 
+        # 2c. Phase 9 — Auto-embed network state into ChromaDB
+        if _state_embedder is not None:
+            try:
+                embed_result = await loop.run_in_executor(
+                    None, _state_embedder.embed_crawl_result, new_topo
+                )
+                logger.info("Auto-embedded network state: %s", embed_result.get("status"))
+            except Exception as e:
+                logger.warning("Network state auto-embedding failed: %s", e)
+
         # 3. Detect changes
         previous_canon = canonical_topology(_previous_topology_dict) if _previous_topology_dict else None
         current_canon = canonical_topology(_current_topology_dict) if _current_topology_dict else canonical_topology({})
@@ -325,6 +348,18 @@ async def lifespan(app: FastAPI):
     logger.info("Vector knowledge store ready (chunks=%d)", vector_store.count())
     setup_rag(ingester, vector_store)
 
+    # Phase 9 — Auto Network State Embedding
+    global _state_embedder
+    try:
+        from rag.auto_embedder import NetworkStateEmbedder
+        from rag.api import setup_state_embedder
+        _state_embedder = NetworkStateEmbedder(vector_store, embedder, db)
+        setup_state_embedder(_state_embedder)
+        logger.info("Network state auto-embedder initialized (Phase 9)")
+    except Exception as exc:
+        logger.warning("Network state auto-embedder init failed: %s", exc)
+        _state_embedder = None
+
     agent = NetworkAgent(db, retriever=retriever)
 
     # 3. Initialize Credential Vault (M15)
@@ -353,6 +388,26 @@ async def lifespan(app: FastAPI):
     # M25 — Phase-2: Agent Plan/Execute and Incidents
     setup_agent_api(agent, builder=_builder, db=db)
     logger.info("Autonomous Agent Plan/Execute API initialized (M25)")
+
+    # Phase 1 — Intent Lifecycle Management
+    setup_intents(db)
+    logger.info("Intent Lifecycle API initialized")
+
+    # Phase 2 — RAG Context Bundle (UC06-UC09)
+    setup_context_bundle(db)
+    logger.info("RAG Context Bundle builder initialized")
+
+    # Phase 3 — SDN Controller Management
+    setup_sdn(db)
+    logger.info("SDN Controller Management initialized")
+
+    # Phase 5 — Threshold-Based Telemetry Monitoring
+    setup_thresholds(db)
+    logger.info("Threshold monitoring engine initialized")
+
+    # Phase 7 — Unified Validator Report
+    setup_validator(db)
+    logger.info("Unified validator initialized")
 
     # M25 — Incident Response Orchestrator (closed-loop pipeline)
     from incidents.orchestrator import IncidentOrchestrator
@@ -389,7 +444,7 @@ async def lifespan(app: FastAPI):
         logger.warning(f"Failed to load initial topology: {e}")
 
     # 5. Start M16 Scheduler (replaces old periodic_crawler loop)
-    start_scheduler(run_crawl_and_broadcast, orchestrator=_orchestrator)
+    start_scheduler(run_crawl_and_broadcast, orchestrator=_orchestrator, broadcast_fn=_telemetry_broadcast)
     logger.info("Background scheduler started")
 
     # 6. SSH idle-session reaper (every 2 minutes)
@@ -450,6 +505,18 @@ app.include_router(agent_router, prefix="/api/v1", tags=["Autonomous Agent (M25)
 
 # M0 — Onboarding
 app.include_router(onboarding_router, prefix="/api/v1", tags=["Onboarding (M0)"])
+
+# Phase 1 — Intent Lifecycle
+app.include_router(intent_router, prefix="/api/v1", tags=["Intent Lifecycle"])
+
+# Phase 3 — SDN Controller Management
+app.include_router(sdn_router, prefix="/api/v1", tags=["SDN Controllers"])
+
+# Phase 5 — Threshold Monitoring
+app.include_router(threshold_router, prefix="/api/v1", tags=["Threshold Monitoring"])
+
+# Phase 7 — Unified Validator
+app.include_router(validator_router, prefix="/api/v1", tags=["Unified Validation"])
 
 # WebSocket Endpoint (Streamlined)
 @app.websocket("/ws")

@@ -159,13 +159,50 @@ class ContextBuilder:
             logger.warning("Failed to list templates: %s", e)
             return "(Config templates not available)"
 
-    def build_full_context(self) -> str:
-        """Build the complete context string for the system prompt."""
+    def build_full_context(
+        self,
+        device_hostnames: Optional[List[str]] = None,
+        include_bundle: bool = True,
+    ) -> str:
+        """
+        Build the complete context string for the system prompt.
+
+        When *include_bundle* is True (the default) the ``ContextBundleBuilder``
+        is invoked to fuse NetBox inventory, telemetry samples, and SDN
+        controller state into the context, giving the LLM much richer
+        grounding than topology alone (SRD UC06-UC09).
+        """
         parts = [
             self.build_topology_context(),
             self.build_available_templates_context(),
         ]
+
+        if include_bundle:
+            bundle_text = self.build_network_bundle_context(device_hostnames)
+            if bundle_text:
+                parts.append(bundle_text)
+
         return "\n\n".join(p for p in parts if p)
+
+    def build_network_bundle_context(
+        self,
+        device_hostnames: Optional[List[str]] = None,
+    ) -> str:
+        """
+        Build the fused network-context bundle (inventory + telemetry + SDN).
+
+        Returns:
+            A markdown-formatted block ready for LLM injection, or empty
+            string if the bundle builder is unavailable.
+        """
+        try:
+            from rag.context_bundle import ContextBundleBuilder
+            builder = ContextBundleBuilder(db_manager=self._db)
+            bundle = builder.build_bundle(device_hostnames=device_hostnames)
+            return bundle.to_prompt_text()
+        except Exception as exc:
+            logger.debug("Context bundle build skipped: %s", exc)
+            return ""
 
     def build_knowledge_context(self, query: str, retriever, k: int = 5) -> str:
         """

@@ -358,35 +358,76 @@ const ProposalCard: React.FC<{
           </button>
           {showDiff && (
             <div className="p-3 space-y-2">
-              <div className="text-[11px] text-base-content/70">
-                Engineer line review: uncheck lines to reject them before proposal approval.
+              <div className="flex items-center justify-between">
+                <div className="text-[11px] text-base-content/70">
+                  Engineer line review: choose <span className="font-semibold">Keep</span> or <span className="font-semibold">Undo</span> per line before approval.
+                </div>
+                <div className="flex gap-1">
+                  <button
+                    type="button"
+                    className="btn btn-xs btn-success btn-outline gap-1"
+                    onClick={() => {
+                      const all: Record<number, boolean> = {};
+                      for (const l of reviewableLines) all[l.index] = true;
+                      setLineDecisions(all);
+                    }}
+                  >
+                    <CheckCircle className="w-3 h-3" /> Keep All
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-xs btn-warning btn-outline gap-1"
+                    onClick={() => {
+                      const all: Record<number, boolean> = {};
+                      for (const l of reviewableLines) all[l.index] = false;
+                      setLineDecisions(all);
+                    }}
+                  >
+                    <X className="w-3 h-3" /> Undo All
+                  </button>
+                </div>
               </div>
               <div className="max-h-48 overflow-y-auto border border-base-300 rounded-md bg-base-100">
                 {reviewableLines.map((line) => (
-                  <label
+                  <div
                     key={line.index}
                     className={`flex items-start gap-2 px-2 py-1 border-b border-base-300/50 text-xs font-mono ${
                       line.lineType === 'add' ? 'text-success' : 'text-error'
                     }`}
                   >
-                    <input
-                      type="checkbox"
-                      className="checkbox checkbox-xs mt-0.5"
-                      checked={lineDecisions[line.index] !== false}
-                      onChange={(e) => {
-                        const checked = e.target.checked;
-                        setLineDecisions(prev => ({ ...prev, [line.index]: checked }));
-                      }}
-                    />
+                    <div className="join join-horizontal mt-0.5">
+                      <button
+                        type="button"
+                        className={`join-item btn btn-xs ${lineDecisions[line.index] !== false ? 'btn-success' : 'btn-ghost'}`}
+                        onClick={() => setLineDecisions(prev => ({ ...prev, [line.index]: true }))}
+                      >
+                        Keep
+                      </button>
+                      <button
+                        type="button"
+                        className={`join-item btn btn-xs ${lineDecisions[line.index] === false ? 'btn-warning' : 'btn-ghost'}`}
+                        onClick={() => setLineDecisions(prev => ({ ...prev, [line.index]: false }))}
+                      >
+                        Undo
+                      </button>
+                    </div>
                     <span className="opacity-60">{line.lineType === 'add' ? '+' : '-'}</span>
                     <span className="break-all">{line.content || ' '}</span>
-                  </label>
+                  </div>
                 ))}
               </div>
               <div className="text-[11px] text-base-content/70">
                 Accepted: {acceptedLineIndices.length} • Rejected: {rejectedLineIndices.length}
               </div>
               <div className="text-[11px] text-base-content/60">{mergeNotes}</div>
+              <div className="rounded-md border border-base-300 overflow-hidden bg-base-300">
+                <div className="px-2 py-1 text-[11px] font-semibold bg-base-200 border-b border-base-300">
+                  Reviewed Preview (applies Keep/Undo)
+                </div>
+                <pre className="p-2 text-xs max-h-40 overflow-auto font-mono bg-neutral-800 text-green-400">
+                  <code>{mergedConfig}</code>
+                </pre>
+              </div>
             </div>
           )}
         </div>
@@ -635,35 +676,76 @@ const IntentReviewCard: React.FC<{
           </button>
           {showDiff && (
             <div className="p-3 space-y-2">
-              <div className="text-[11px] text-base-content/70">
-                Engineer line review: uncheck lines to reject them before proposal approval.
+              <div className="flex items-center justify-between">
+                <div className="text-[11px] text-base-content/70">
+                  Engineer line review: choose <span className="font-semibold">Keep</span> or <span className="font-semibold">Undo</span> per line before approval.
+                </div>
+                <div className="flex gap-1">
+                  <button
+                    type="button"
+                    className="btn btn-xs btn-success btn-outline gap-1"
+                    onClick={() => {
+                      const all: Record<number, boolean> = {};
+                      for (const l of reviewableLines) all[l.index] = true;
+                      setLineDecisions(all);
+                    }}
+                  >
+                    <CheckCircle className="w-3 h-3" /> Keep All
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-xs btn-warning btn-outline gap-1"
+                    onClick={() => {
+                      const all: Record<number, boolean> = {};
+                      for (const l of reviewableLines) all[l.index] = false;
+                      setLineDecisions(all);
+                    }}
+                  >
+                    <X className="w-3 h-3" /> Undo All
+                  </button>
+                </div>
               </div>
               <div className="max-h-48 overflow-y-auto border border-base-300 rounded-md bg-base-100">
                 {reviewableLines.map((line) => (
-                  <label
+                  <div
                     key={line.index}
                     className={`flex items-start gap-2 px-2 py-1 border-b border-base-300/50 text-xs font-mono ${
                       line.lineType === 'add' ? 'text-success' : 'text-error'
                     }`}
                   >
-                    <input
-                      type="checkbox"
-                      className="checkbox checkbox-xs mt-0.5"
-                      checked={lineDecisions[line.index] !== false}
-                      onChange={(e) => {
-                        const checked = e.target.checked;
-                        setLineDecisions(prev => ({ ...prev, [line.index]: checked }));
-                      }}
-                    />
+                    <div className="join join-horizontal mt-0.5">
+                      <button
+                        type="button"
+                        className={`join-item btn btn-xs ${lineDecisions[line.index] !== false ? 'btn-success' : 'btn-ghost'}`}
+                        onClick={() => setLineDecisions(prev => ({ ...prev, [line.index]: true }))}
+                      >
+                        Keep
+                      </button>
+                      <button
+                        type="button"
+                        className={`join-item btn btn-xs ${lineDecisions[line.index] === false ? 'btn-warning' : 'btn-ghost'}`}
+                        onClick={() => setLineDecisions(prev => ({ ...prev, [line.index]: false }))}
+                      >
+                        Undo
+                      </button>
+                    </div>
                     <span className="opacity-60">{line.lineType === 'add' ? '+' : '-'}</span>
                     <span className="break-all">{line.content || ' '}</span>
-                  </label>
+                  </div>
                 ))}
               </div>
               <div className="text-[11px] text-base-content/70">
                 Accepted: {acceptedLineIndices.length} • Rejected: {rejectedLineIndices.length}
               </div>
               <div className="text-[11px] text-base-content/60">{mergeNotes}</div>
+              <div className="rounded-md border border-base-300 overflow-hidden bg-base-300">
+                <div className="px-2 py-1 text-[11px] font-semibold bg-base-200 border-b border-base-300">
+                  Reviewed Preview (applies Keep/Undo)
+                </div>
+                <pre className="p-2 text-xs max-h-40 overflow-auto font-mono bg-neutral-800 text-green-400">
+                  <code>{mergedConfig}</code>
+                </pre>
+              </div>
             </div>
           )}
         </div>

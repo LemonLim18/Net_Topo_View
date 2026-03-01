@@ -202,7 +202,7 @@ const DriftView: React.FC = () => {
       </div>
 
       {/* Events table */}
-      <div className="flex-grow overflow-y-auto px-6 pb-6 min-h-0">
+      <div className="grow overflow-y-auto px-6 pb-6 min-h-0">
         {loading ? (
           <div className="flex items-center justify-center h-40 gap-2 opacity-50">
             <span className="loading loading-spinner" />

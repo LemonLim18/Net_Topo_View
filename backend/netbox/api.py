@@ -238,6 +238,29 @@ async def sync_topology(background_tasks: BackgroundTasks):
 
 
 # ---------------------------------------------------------------------------
+#  Phase 4 — Planned Topology from NetBox (UC15 / UC17)
+# ---------------------------------------------------------------------------
+
+@router.get("/topology/planned")
+async def get_planned_topology():
+    """
+    Build the design-of-record (planned) topology graph from NetBox.
+
+    Returns the same node/edge structure as the BFS crawler output so the
+    frontend topology renderer can display it directly.  Enables visual
+    comparison of *planned* vs *discovered* topology.
+    """
+    db = _db()
+    syncer = TopologySyncer(db)
+    try:
+        planned = await run_in_threadpool(syncer.get_planned_topology)
+        return planned
+    except Exception as e:
+        logger.error("Planned topology fetch failed: %s", e)
+        raise HTTPException(500, f"Failed to build planned topology: {e}")
+
+
+# ---------------------------------------------------------------------------
 #  Helper — best-effort NetBox push
 # ---------------------------------------------------------------------------
 

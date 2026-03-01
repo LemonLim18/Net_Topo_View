@@ -70,3 +70,42 @@ def run_network_drift_check():
 
     logger.info("Network drift check complete: %d devices checked, %d with drift",
                 len(results), sum(1 for e in results if e.has_drift))
+    return results
+
+
+@router.get("/drift/summary")
+async def drift_summary():
+    """
+    Phase 13 — Drift KPI summary for dashboard.
+    Returns compliance rate, device counts, and latest drift timestamps.
+    """
+    db = DatabaseManager(DB_PATH)
+    rows = await run_in_threadpool(db.get_drift_events, limit=500)
+    events = rows if isinstance(rows, list) else []
+
+    # De-duplicate: keep latest per device
+    latest_by_device: dict = {}
+    for ev in events:
+        dev_id = ev.get("device_id") or ev.get("hostname", "unknown")
+        existing = latest_by_device.get(dev_id)
+        if existing is None or (ev.get("timestamp", "") > existing.get("timestamp", "")):
+            latest_by_device[dev_id] = ev
+
+    total = len(latest_by_device)
+    drifted = sum(1 for e in latest_by_device.values() if e.get("has_drift"))
+    compliant = total - drifted
+    compliance_pct = round((compliant / total) * 100, 1) if total > 0 else 100.0
+
+    severity_counts = {"low": 0, "medium": 0, "high": 0}
+    for e in latest_by_device.values():
+        sev = (e.get("severity") or "low").lower()
+        if sev in severity_counts:
+            severity_counts[sev] += 1
+
+    return {
+        "total_devices": total,
+        "compliant": compliant,
+        "drifted": drifted,
+        "compliance_pct": compliance_pct,
+        "severity_breakdown": severity_counts,
+    }

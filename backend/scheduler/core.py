@@ -20,6 +20,7 @@ from scheduler.jobs import (
     job_anomaly_detect,
     set_crawl_function,
     set_orchestrator,
+    set_broadcast_fn,
 )
 
 logger = logging.getLogger("scheduler.core")
@@ -38,13 +39,14 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
-def start_scheduler(crawl_fn: Callable[..., Awaitable], orchestrator=None) -> None:
+def start_scheduler(crawl_fn: Callable[..., Awaitable], orchestrator=None, broadcast_fn=None) -> None:
     """
     Create, configure, and start the global scheduler.
 
     Args:
         crawl_fn:      The async crawl-and-broadcast function from backend.py.
         orchestrator:  IncidentOrchestrator instance (optional).
+        broadcast_fn:  WebSocket broadcast function for push events (optional).
     """
     global _scheduler
 
@@ -56,6 +58,8 @@ def start_scheduler(crawl_fn: Callable[..., Awaitable], orchestrator=None) -> No
     set_crawl_function(crawl_fn)
     if orchestrator is not None:
         set_orchestrator(orchestrator)
+    if broadcast_fn is not None:
+        set_broadcast_fn(broadcast_fn)
 
     # Read configurable intervals
     crawl_min   = _env_int("SCHED_CRAWL_MINUTES", 15)

@@ -14,7 +14,10 @@ import {
   BookOpen,
   Workflow,
   GitCompareArrows,
-  PackagePlus
+  PackagePlus,
+  History,
+  ListChecks,
+  Columns
 } from 'lucide-react';
 import type { ViewId, User } from '../types';
 import { Confirm } from '../src/utils/swal';
@@ -116,6 +119,10 @@ const Sidebar: React.FC<SidebarProps> = ({ currentView, setView, user, onLogout 
             <ul>
                 <MenuItem id="net_chat" label="Network Copilot" icon={BotMessageSquare} />
                 <MenuItem id="ansible_studio" label="Ansible Studio" icon={Workflow} />
+                <MenuItem id="intent_history" label="Intent History" icon={History} />
+                <MenuItem id="playbook_comparison" label="Playbook Compare" icon={Columns} />
+                <MenuItem id="approval_queue" label="Approval Queue" icon={ListChecks} />
+                <MenuItem id="sdn_dashboard" label="SDN Controllers" icon={Network} />
                 <MenuItem id="knowledge_base" label="Knowledge Base" icon={BookOpen} />
             </ul>
           </details>

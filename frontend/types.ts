@@ -78,7 +78,11 @@ export type ViewId =
   | 'sec_analysis'
   | 'sec_chat'
   | 'incidents'
-  | 'onboarding';
+  | 'onboarding'
+  | 'intent_history'
+  | 'sdn_dashboard'
+  | 'playbook_comparison'
+  | 'approval_queue';
 
 // Notification Types
 export type NotificationType = 'info' | 'success' | 'warning' | 'error';
@@ -90,4 +94,39 @@ export interface AppNotification {
     type: NotificationType;
     timestamp: number;
     read: boolean;
+}
+
+// Intent Lifecycle types (Phase 1 — UC02-UC05)
+export interface IntentRecord {
+    id: string;
+    user_prompt: string;
+    intent_type: string;
+    action?: string;
+    feature?: string;
+    vendor?: string;
+    risk_level: string;
+    status: string;
+    blast_radius: number;
+    resolved_devices?: string[];
+    policy_approved?: boolean;
+    created_at?: string;
+    parameters?: Record<string, any>;
+    scope?: Record<string, any>;
+    policy_result?: Record<string, any>;
+    proposal_id?: string;
+    linked_proposals?: Record<string, any>[];
+    linked_plans?: Record<string, any>[];
+}
+
+// SDN Controller types (Phase 3)
+export interface SDNController {
+    id: number;
+    name: string;
+    controller_type: string;
+    url: string;
+    username: string;
+    status: string;
+    managed_device_count: number;
+    last_synced?: string;
+    created_at?: string;
 }

@@ -217,7 +217,7 @@ const IncidentDashboard: React.FC = () => {
   return (
     <div className="h-full flex overflow-hidden bg-base-200">
       {/* ─── Left: Incident List ───────────────────────────────── */}
-      <div className="w-96 flex-shrink-0 border-r border-base-300 flex flex-col">
+      <div className="w-96 shrink-0 border-r border-base-300 flex flex-col">
         {/* Header */}
         <div className="p-4 border-b border-base-300 flex items-center justify-between">
           <div className="flex items-center gap-2">
@@ -278,7 +278,7 @@ const IncidentDashboard: React.FC = () => {
                       </p>
                     </div>
                   </div>
-                  <div className="flex flex-col items-end gap-1 flex-shrink-0">
+                  <div className="flex flex-col items-end gap-1 shrink-0">
                     <span className={`badge badge-xs ${severityColor[inc.severity] || ''}`}>
                       {inc.severity}
                     </span>

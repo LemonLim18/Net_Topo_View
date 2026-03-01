@@ -176,6 +176,99 @@ async def plan_ansible(
     }
 
 
+# ── Phase 6: Multi-Candidate Playbook Generation (UC14) ──────────────────
+
+@router.post(
+    "/jobs/{job_id}/plan-candidates",
+    summary="LLM generates multiple candidate playbooks with different approaches",
+)
+async def plan_ansible_candidates(
+    job_id:  int,
+    req:     PlanAnsibleRequest,
+    n:       int = 3,
+    user:    dict = Depends(get_current_user),
+):
+    """
+    Generate *n* candidate playbooks (conservative, balanced, aggressive)
+    for the same intent.  The operator picks the best one.
+    """
+    builder = _require_builder()
+
+    rag_context = ""
+    kb_snippets: list[str] = []
+    if _agent is not None:
+        try:
+            rag_context = _agent._context.build_full_context()
+        except Exception:
+            pass
+        try:
+            if hasattr(_agent, "_retriever") and _agent._retriever:
+                kb_snippets = [
+                    r["text"]
+                    for r in _agent._retriever.retrieve(req.intent_description, k=3)
+                ]
+        except Exception:
+            pass
+
+    intent = {
+        "description":   req.intent_description,
+        "target_hosts":  req.target_hosts,
+        "vendor":        req.vendor,
+        "feature":       req.feature,
+        "params":        req.params,
+        "max_interfaces": req.max_interfaces,
+    }
+
+    try:
+        candidates = await builder.build_candidates(
+            intent=intent,
+            rag_context=rag_context,
+            kb_snippets=kb_snippets,
+            n=min(n, 5),
+            run_id=str(job_id),
+        )
+    except Exception as exc:
+        raise HTTPException(422, f"Multi-candidate generation failed: {exc}")
+
+    logger.info("Generated %d candidates for job=%d", len(candidates), job_id)
+    return {
+        "job_id": job_id,
+        "candidates": candidates,
+    }
+
+
+@router.post(
+    "/jobs/{job_id}/select-candidate",
+    summary="Select one of the generated candidate playbooks",
+)
+async def select_candidate(
+    job_id: int,
+    candidate_index: int = 0,
+    playbook_yaml: str = "",
+    user:  dict = Depends(get_current_user),
+):
+    """
+    After reviewing candidates, operator selects one by index.
+    The selected playbook is stored against the job.
+    """
+    if not playbook_yaml:
+        raise HTTPException(400, "playbook_yaml is required")
+
+    if _db is not None:
+        with _db._connect() as conn:
+            conn.execute(
+                "UPDATE jobs SET ansible_playbook = ?, stage = 'plan', "
+                "status = 'pending' WHERE id = ?",
+                (playbook_yaml, job_id),
+            )
+
+    return {
+        "job_id": job_id,
+        "selected_index": candidate_index,
+        "status": "candidate_selected",
+    }
+
+
 @router.post(
     "/jobs/{job_id}/check",
     response_model=CheckResult,

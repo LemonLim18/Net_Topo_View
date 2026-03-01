@@ -79,6 +79,18 @@ export const NotificationProvider: React.FC<{ children: ReactNode }> = ({ childr
                     } else if (msg.event === 'incident_updated' && msg.data?.status === 'approved') {
                         addNotification('Incident Approved', `Playbook ready for deployment: ${msg.data?.id ?? ''}`, 'info');
                     }
+
+                    // Phase 13 — Drift detection push events
+                    if (msg.event === 'drift_check_complete') {
+                        const dCount = msg.data?.drift_detected ?? 0;
+                        if (dCount > 0) {
+                            addNotification(
+                                'Drift Detected',
+                                `${dCount} device(s) with configuration drift (${msg.data?.devices_checked ?? 0} checked)`,
+                                dCount > 2 ? 'error' : 'warning',
+                            );
+                        }
+                    }
                 } catch { /* ignore non-JSON frames */ }
             };
 

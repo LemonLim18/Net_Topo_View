@@ -326,3 +326,23 @@ CREATE TABLE IF NOT EXISTS agent_plans (
 );
 
 CREATE INDEX IF NOT EXISTS idx_agent_plans_status ON agent_plans(status);
+
+-- -----------------------------------------------------------
+-- 18. SDN Controllers (Phase 3 — SDN Controller Management)
+-- -----------------------------------------------------------
+CREATE TABLE IF NOT EXISTS sdn_controllers (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    name            TEXT    NOT NULL UNIQUE,        -- human-friendly label
+    controller_type TEXT    NOT NULL,               -- opendaylight | onos
+    url             TEXT    NOT NULL,               -- e.g. http://192.168.1.100:8181
+    username        TEXT,
+    password_enc    TEXT,                           -- Fernet-encrypted (via CredentialVault)
+    verify_ssl      BOOLEAN DEFAULT 0,
+    status          TEXT    DEFAULT 'offline',      -- online | offline | error
+    managed_device_count INTEGER DEFAULT 0,
+    last_synced     TEXT,                           -- ISO-8601
+    created_at      TEXT    DEFAULT (datetime('now')),
+    updated_at      TEXT    DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_sdn_controllers_status ON sdn_controllers(status);

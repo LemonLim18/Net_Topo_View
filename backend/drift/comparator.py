@@ -1,7 +1,7 @@
 import logging
 import difflib
 from datetime import datetime
-from typing import Optional, List
+from typing import Optional, List, Tuple
 
 from db.manager import DatabaseManager
 from db.models import Device, ConfigSnapshot
@@ -10,6 +10,24 @@ from netbox.client import NetBoxClient
 from drift.models import DriftEvent
 
 logger = logging.getLogger("drift.comparator")
+
+# ── Vendor-to-template mapping ──────────────────────────────────────
+_VENDOR_MAP = {
+    "cisco_ios":      "cisco_ios",
+    "cisco_xe":       "cisco_ios",     # IOS-XE uses same template base
+    "cisco_iosxe":    "cisco_ios",
+    "cisco_nxos":     "cisco_ios",
+    "juniper_junos":  "juniper_junos",
+    "juniper":        "juniper_junos",
+    "junos":          "juniper_junos",
+    "huawei_vrp":     "huawei_vrp",
+    "huawei":         "huawei_vrp",
+    "vrp":            "huawei_vrp",
+    "arista_eos":     "cisco_ios",     # EOS syntax is largely IOS-like
+}
+
+# Base features to try rendering for golden config comparison
+_BASE_FEATURES = ["base", "ntp", "logging", "ssh_harden", "banner"]
 
 class DriftComparator:
     def __init__(self, db_manager: DatabaseManager):
@@ -68,23 +86,65 @@ class DriftComparator:
 
     def _fetch_intended_config(self, device: Device) -> Optional[str]:
         """
-        Retrieves the intended configuration.
-         Ideally this calls NetBox -> M3 Renderer.
-         For MVP, checking if we have a locally saved 'intended' snapshot or
-         using NetBox 'render config' API if available.
-        """
-        # MVP: Attempt to render a basic template if vendor is known
-        # In a real scenario, we'd fetch specific params from NetBox.
-        if device.vendor in ["cisco_ios", "cisco_xe"]:
-             # Example: Render a base template with hostname
-             try:
-                 return self.renderer.render("cisco_ios", "base", {"hostname": device.hostname})
-             except Exception:
-                 pass
-        
-        return None 
+        Retrieves the intended (golden) configuration for drift comparison.
 
-    def _compute_diff(self, intended: str, actual: str) -> (bool, str):
+        Strategy (Phase 15 — Multi-Vendor):
+          1. Map device vendor to template vendor key.
+          2. Try rendering a composite golden config from base features
+             (ntp, logging, ssh_harden, banner) using M3 Renderer.
+          3. If vendor is unknown or templates fail, return None (skip drift).
+
+        Supports: cisco_ios, cisco_xe, cisco_nxos, juniper_junos, huawei_vrp, arista_eos
+        """
+        # Resolve vendor alias
+        raw_vendor = (device.vendor or "").lower().strip()
+        template_vendor = _VENDOR_MAP.get(raw_vendor)
+
+        if not template_vendor:
+            logger.info(
+                "Unsupported vendor '%s' for drift comparison on %s — skipping",
+                device.vendor, device.hostname,
+            )
+            return None
+
+        # Build composite golden config from multiple features
+        sections: list[str] = []
+        params = {"hostname": device.hostname}
+
+        for feature in _BASE_FEATURES:
+            try:
+                rendered = self.renderer.render(template_vendor, feature, params)
+                if rendered and rendered.strip():
+                    sections.append(f"! --- {feature} ---")
+                    sections.append(rendered.strip())
+            except Exception:
+                # Template doesn't exist for this feature — skip silently
+                pass
+
+        if not sections:
+            logger.info(
+                "No renderable templates for vendor '%s' (%s) — falling back to last-known-good",
+                template_vendor, device.hostname,
+            )
+            # Fallback: use second-to-last config snapshot as intended
+            return self._get_last_known_good(device)
+
+        return "\n".join(sections)
+
+    def _get_last_known_good(self, device: Device) -> Optional[str]:
+        """
+        Fallback intended config: use the second-to-last config snapshot
+        (i.e. the previously captured config before the latest one).
+        """
+        try:
+            history = self.db.get_config_history(device.id, limit=2)
+            if len(history) >= 2:
+                return history[1].config_text
+        except Exception as e:
+            logger.debug("Could not fetch last-known-good for %s: %s", device.hostname, e)
+        return None
+
+    def _compute_diff(self, intended: str, actual: str) -> Tuple[bool, str]:
         intended_lines = intended.splitlines()
         actual_lines = actual.splitlines()
         

@@ -121,6 +121,90 @@ class PlaybookBuilder:
         logger.info("Playbook built and validated OK")
         return playbook_yaml
 
+    async def build_candidates(
+        self,
+        intent:      dict,
+        rag_context: str,
+        kb_snippets: list[str],
+        n:           int = 3,
+        run_id:      Optional[str] = None,
+    ) -> list[dict]:
+        """
+        Generate *n* candidate playbooks with different approaches/temperatures.
+
+        Returns a list of dicts:
+            [
+                {"index": 0, "yaml": "...", "approach": "conservative", "valid": True, "errors": []},
+                {"index": 1, "yaml": "...", "approach": "balanced",     "valid": True, "errors": []},
+                {"index": 2, "yaml": "...", "approach": "aggressive",   "valid": False, "errors": ["lint error ..."]},
+            ]
+        """
+        approaches = [
+            {"label": "conservative", "temp": 0.05, "extra": "Use the simplest, safest commands. Prefer single-step changes."},
+            {"label": "balanced",     "temp": 0.2,  "extra": "Balance robustness with brevity. Use best practices."},
+            {"label": "aggressive",   "temp": 0.4,  "extra": "Optimise for completeness. Include pre/post validation tasks."},
+        ][:n]
+
+        params_yaml = yaml.dump(
+            intent.get("params", {}),
+            default_flow_style=False,
+            indent=2,
+        ).strip()
+
+        snippets_text = "\n---\n".join(
+            s[:_KB_SNIPPET_MAX_CHARS]
+            for s in kb_snippets[:_KB_SNIPPETS_MAX]
+        ) or "(none retrieved)"
+
+        candidates = []
+        for i, approach in enumerate(approaches):
+            try:
+                prompt_text = PROMPT_TEMPLATE.format(
+                    rag_context=rag_context[:_RAG_CONTEXT_MAX_CHARS],
+                    kb_snippets=snippets_text,
+                    run_id=run_id or "unknown",
+                    intent_description=intent.get("description", ""),
+                    target_hosts=", ".join(intent.get("target_hosts", [])),
+                    vendor=intent.get("vendor", ""),
+                    feature=intent.get("feature", ""),
+                    params_yaml=params_yaml,
+                )
+                # Append approach guidance
+                prompt_text += f"\n\n**Approach: {approach['label']}** — {approach['extra']}"
+
+                from llm.provider import LLMMessage
+                messages = [LLMMessage(role="user", content=prompt_text)]
+
+                response = await self._provider.generate(
+                    messages=messages, temperature=approach["temp"]
+                )
+                raw_text = response.content
+                playbook_yaml = self._extract_yaml(raw_text)
+
+                errors = []
+                try:
+                    self._validate_yaml_structure(playbook_yaml)
+                except PlaybookBuildError as e:
+                    errors.append(str(e))
+
+                candidates.append({
+                    "index": i,
+                    "yaml": playbook_yaml,
+                    "approach": approach["label"],
+                    "valid": len(errors) == 0,
+                    "errors": errors,
+                })
+            except Exception as e:
+                candidates.append({
+                    "index": i,
+                    "yaml": "",
+                    "approach": approach["label"],
+                    "valid": False,
+                    "errors": [str(e)],
+                })
+
+        return candidates
+
     # ── helpers ────────────────────────────────────────────────────────────
 
     def _extract_yaml(self, raw: str) -> str:
