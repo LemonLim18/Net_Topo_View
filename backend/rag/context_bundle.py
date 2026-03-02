@@ -26,10 +26,13 @@ from typing import Any, Dict, List, Optional
 logger = logging.getLogger("rag.context_bundle")
 
 # InfluxDB settings (from environment)
-INFLUXDB_URL = os.getenv("INFLUXDB_URL", "http://192.168.1.250:8086")
+INFLUXDB_URL = os.getenv("INFLUXDB_URL", "http://localhost:8086")
 INFLUXDB_TOKEN = os.getenv("INFLUXDB_TOKEN", "")
 INFLUXDB_ORG = os.getenv("INFLUXDB_ORG", "netauto")
 INFLUXDB_BUCKET = os.getenv("INFLUXDB_BUCKET", "telegraf")
+
+# Prometheus (optional — for SNMP exporter metrics)
+PROMETHEUS_URL = os.getenv("PROMETHEUS_URL", "")
 
 
 # ---------------------------------------------------------------------------

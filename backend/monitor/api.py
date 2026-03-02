@@ -7,15 +7,24 @@ import urllib.request
 import json
 from db.manager import DatabaseManager
 from monitor.telegraf_gen import TelegrafConfigGenerator
+from monitor.prometheus import (
+    get_health as prom_health,
+    query_device_metrics as prom_device_metrics,
+    query_active_alerts as prom_active_alerts,
+    query_interface_traffic as prom_interface_traffic,
+)
 
 router = APIRouter(prefix="/monitor", tags=["monitor"])
 logger = logging.getLogger("api.monitor")
 
 # InfluxDB connection (configure via env vars)
-INFLUXDB_URL   = os.getenv("INFLUXDB_URL", "http://192.168.1.250:8086")
+INFLUXDB_URL   = os.getenv("INFLUXDB_URL", "http://localhost:8086")
 INFLUXDB_TOKEN = os.getenv("INFLUXDB_TOKEN", "")
 INFLUXDB_ORG   = os.getenv("INFLUXDB_ORG", "netauto")
 INFLUXDB_BUCKET = os.getenv("INFLUXDB_BUCKET", "telegraf")
+
+# Prometheus connection (optional — complements InfluxDB)
+PROMETHEUS_URL = os.getenv("PROMETHEUS_URL", "")
 
 
 class StatusResponse(BaseModel):
@@ -65,9 +74,19 @@ async def get_monitor_status():
         details["devices_error"] = str(exc)
 
     influx_ok = details["influxdb"]["reachable"]
+
+    # 3. Check Prometheus health (optional)
+    try:
+        prom_status = prom_health()
+        details["prometheus"] = prom_status
+    except Exception as exc:
+        details["prometheus"] = {"enabled": False, "error": str(exc)}
+
+    prom_ok = details.get("prometheus", {}).get("reachable", False)
     overall = "healthy" if influx_ok else "degraded"
     msg = (
         f"InfluxDB {'reachable' if influx_ok else 'unreachable'}, "
+        f"Prometheus {'reachable' if prom_ok else 'disabled/unreachable'}, "
         f"{details['devices_monitored']} device(s) monitored"
     )
 
@@ -302,3 +321,58 @@ from(bucket: "{INFLUXDB_BUCKET}")
             logger.debug("InfluxDB enrichment failed: %s", exc)
 
     return {"devices": devices}
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Prometheus endpoints (complement InfluxDB telemetry)
+# ═══════════════════════════════════════════════════════════════════════════
+
+@router.get("/prometheus/health")
+async def prometheus_health():
+    """Check Prometheus reachability and active scrape targets."""
+    return prom_health()
+
+
+@router.get("/prometheus/alerts")
+async def prometheus_alerts():
+    """Fetch currently firing Prometheus alert rules."""
+    alerts = prom_active_alerts()
+    return {"count": len(alerts), "alerts": alerts}
+
+
+@router.get("/prometheus/device-metrics")
+async def prometheus_device_metrics(devices: str = "", metrics: str = ""):
+    """
+    Query SNMP Exporter metrics from Prometheus for given device IPs.
+
+    Query params:
+        devices: comma-separated IPs (e.g. "192.168.1.101,192.168.1.102")
+        metrics: comma-separated metric names (optional, uses defaults)
+    """
+    if not devices:
+        raise HTTPException(400, "Provide ?devices=IP1,IP2,...")
+    ip_list = [ip.strip() for ip in devices.split(",") if ip.strip()]
+    metric_list = [m.strip() for m in metrics.split(",") if m.strip()] or None
+    data = prom_device_metrics(ip_list, metric_list)
+    return {"devices": data}
+
+
+@router.get("/prometheus/interface-traffic")
+async def prometheus_interface_traffic(
+    device: str = "",
+    interface: str = "",
+    range_minutes: int = 30,
+):
+    """
+    Query interface traffic rate (bps) from Prometheus SNMP Exporter.
+
+    Query params:
+        device:        device management IP
+        interface:     interface name filter (optional)
+        range_minutes: lookback window (default: 30)
+    """
+    if not device:
+        raise HTTPException(400, "Provide ?device=IP")
+    series = prom_interface_traffic(device, interface, range_minutes)
+    return {"device": device, "series": series}
+

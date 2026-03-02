@@ -47,10 +47,23 @@ services:
 
       # ── Gemini LLM ──
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      LLM_PROVIDER: ${LLM_PROVIDER:-gemini}
 
-      # ── NetBox (optional) ──
-      NETBOX_URL: ${NETBOX_URL:-}
+      # ── SDN Controller (OpenDaylight) ──
+      ODL_URL: ${ODL_URL:-http://192.168.1.250:8181}
+      ODL_USER: ${ODL_USER:-admin}
+      ODL_PASSWORD: ${ODL_PASSWORD:-admin}
+
+      # ── Prometheus + Grafana (192.168.1.252) ──
+      PROMETHEUS_URL: ${PROMETHEUS_URL:-http://192.168.1.252:9090}
+      GRAFANA_URL: ${GRAFANA_URL:-http://192.168.1.252:3000}
+
+      # ── NetBox ──
+      NETBOX_URL: ${NETBOX_URL:-http://192.168.1.252:8000}
       NETBOX_TOKEN: ${NETBOX_TOKEN:-}
+
+      # ── SNMP ──
+      SNMP_COMMUNITY: ${SNMP_COMMUNITY:-cognishield}
 
       # ── Auth ──
       JWT_SECRET_KEY: ${JWT_SECRET_KEY:-change-me-in-production}

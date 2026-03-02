@@ -31,7 +31,7 @@ router = APIRouter(prefix="/monitor/thresholds", tags=["Threshold Monitoring"])
 # DI
 _db = None
 
-INFLUXDB_URL = os.getenv("INFLUXDB_URL", "http://192.168.1.250:8086")
+INFLUXDB_URL = os.getenv("INFLUXDB_URL", "http://localhost:8086")
 INFLUXDB_TOKEN = os.getenv("INFLUXDB_TOKEN", "")
 INFLUXDB_ORG = os.getenv("INFLUXDB_ORG", "netauto")
 INFLUXDB_BUCKET = os.getenv("INFLUXDB_BUCKET", "telegraf")
