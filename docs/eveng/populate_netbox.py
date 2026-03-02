@@ -98,21 +98,30 @@ CABLES = [
     ("Cisco_Core_1", "GigabitEthernet1", "Cisco_Core_2", "GigabitEthernet1"),
     # Core1 ↔ Distribution
     ("Cisco_Core_1", "GigabitEthernet2", "Dist_Cisco_SW1",  "Ethernet0/1"),
-    ("Cisco_Core_1", "GigabitEthernet3", "Dist_Huawei_SW2", "GE1/0/0"),
+    ("Cisco_Core_1", "GigabitEthernet3", "Dist_Huawei_SW2", "GE1/0/1"),
     ("Cisco_Core_1", "GigabitEthernet4", "Dist_Cisco_SW3",  "Ethernet0/1"),
     ("Cisco_Core_1", "GigabitEthernet5", "Dist_Huawei_SW4", "GE1/0/0"),
     # Core2 ↔ Distribution
     ("Cisco_Core_2", "GigabitEthernet2", "Dist_Cisco_SW1",  "Ethernet0/2"),
-    ("Cisco_Core_2", "GigabitEthernet3", "Dist_Huawei_SW2", "GE1/0/1"),
+    ("Cisco_Core_2", "GigabitEthernet3", "Dist_Huawei_SW2", "GE1/0/2"),
     ("Cisco_Core_2", "GigabitEthernet4", "Dist_Cisco_SW3",  "Ethernet0/2"),
     ("Cisco_Core_2", "GigabitEthernet5", "Dist_Huawei_SW4", "GE1/0/1"),
-    # Distribution ↔ Access (Block A)
+    # Distribution Pair Inter-Switch Links (peer links)
+    ("Dist_Cisco_SW1", "Ethernet1/2",    "Dist_Huawei_SW2", "GE1/0/5"),
+    ("Dist_Cisco_SW3", "Ethernet1/2",    "Dist_Huawei_SW4", "GE1/0/5"),
+    # Distribution ↔ Access (Block A — dual-homed: each access to BOTH dist)
     ("Dist_Cisco_SW1",  "Ethernet0/3",  "Acc_Cisco_1",   "Ethernet0/1"),
+    ("Dist_Huawei_SW2", "GE1/0/3",      "Acc_Cisco_1",   "Ethernet1/0"),
     ("Dist_Cisco_SW1",  "Ethernet1/0",  "Acc_Cisco_2",   "Ethernet0/1"),
-    ("Dist_Huawei_SW2", "GE1/0/2",      "Acc_Huawei_1",  "GE1/0/1"),
-    # Distribution ↔ Access (Block B)
+    ("Dist_Huawei_SW2", "GE1/0/4",      "Acc_Cisco_2",   "Ethernet1/0"),
+    ("Dist_Cisco_SW1",  "Ethernet1/1",  "Acc_Huawei_1",  "GE1/0/1"),
+    ("Dist_Huawei_SW2", "GE1/0/0",      "Acc_Huawei_1",  "GE1/0/5"),
+    # Distribution ↔ Access (Block B — dual-homed: each access to BOTH dist)
     ("Dist_Cisco_SW3",  "Ethernet0/3",  "Acc_Cisco_3",   "Ethernet0/1"),
+    ("Dist_Huawei_SW4", "GE1/0/3",      "Acc_Cisco_3",   "Ethernet1/0"),
     ("Dist_Cisco_SW3",  "Ethernet1/0",  "Acc_Cisco_4",   "Ethernet0/1"),
+    ("Dist_Huawei_SW4", "GE1/0/4",      "Acc_Cisco_4",   "Ethernet1/0"),
+    ("Dist_Cisco_SW3",  "Ethernet1/1",  "Acc_Juniper_1", "ge-0/0/0"),
     ("Dist_Huawei_SW4", "GE1/0/2",      "Acc_Juniper_1", "ge-0/0/1"),
 ]
 

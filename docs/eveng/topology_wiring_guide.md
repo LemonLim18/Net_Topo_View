@@ -53,31 +53,51 @@ Cisco_Core_1  Gi1 ──── Gi1  Cisco_Core_2     10.0.0.0/30
 ### Core ↔ Distribution (OSPF Area 0 — each core connects to all 4 dist)
 ```
 Cisco_Core_1  Gi2 ──── e0/1     Dist_Cisco_SW1     10.0.1.0/30
-Cisco_Core_1  Gi3 ──── GE1/0/0  Dist_Huawei_SW2    10.0.1.4/30
+Cisco_Core_1  Gi3 ──── GE1/0/1  Dist_Huawei_SW2    10.0.1.4/30
 Cisco_Core_1  Gi4 ──── e0/1     Dist_Cisco_SW3     10.1.1.8/30
 Cisco_Core_1  Gi5 ──── GE1/0/0  Dist_Huawei_SW4    10.1.1.12/30
 
 Cisco_Core_2  Gi2 ──── e0/2     Dist_Cisco_SW1     10.0.2.0/30
-Cisco_Core_2  Gi3 ──── GE1/0/1  Dist_Huawei_SW2    10.0.2.4/30
+Cisco_Core_2  Gi3 ──── GE1/0/2  Dist_Huawei_SW2    10.0.2.4/30
 Cisco_Core_2  Gi4 ──── e0/2     Dist_Cisco_SW3     10.0.2.8/30
 Cisco_Core_2  Gi5 ──── GE1/0/1  Dist_Huawei_SW4    10.0.2.12/30
 ```
 
-### Distribution ↔ Access (L2 trunks — no IPs on physical links)
-
-**Block A** (Dist_Cisco_SW1 + Dist_Huawei_SW2):
+### Distribution Pair Inter-Switch Links (L2 trunk — peer link)
 ```
-Dist_Cisco_SW1   e0/3  ──── e0/1  Acc_Cisco_1      trunk: VLAN 10,20,100
-Dist_Cisco_SW1   e1/0  ──── e0/1  Acc_Cisco_2      trunk: VLAN 10,20,100
-Dist_Huawei_SW2  GE1/0/2 ── GE1/0/1  Acc_Huawei_1  trunk: VLAN 10,30,100
+Pair A:  Dist_Cisco_SW1  e1/2  ──── GE1/0/5  Dist_Huawei_SW2   trunk: VLAN 10,20,30,100
+Pair B:  Dist_Cisco_SW3  e1/2  ──── GE1/0/5  Dist_Huawei_SW4   trunk: VLAN 10,20,30,40,100
 ```
 
-**Block B** (Dist_Cisco_SW3 + Dist_Huawei_SW4):
+### Distribution ↔ Access (L2 trunks — dual-homed, each access switch connects to BOTH dist)
+
+**Block A** (Dist_Cisco_SW1 + Dist_Huawei_SW2) — all 3 access switches dual-homed:
 ```
-Dist_Cisco_SW3   e0/3  ──── e0/1  Acc_Cisco_3      trunk: VLAN 20,30,100
-Dist_Cisco_SW3   e1/0  ──── e0/1  Acc_Cisco_4      trunk: VLAN 20,30,100
-Dist_Huawei_SW4  GE1/0/2 ── ge-0/0/1  Acc_Juniper_1  trunk: VLAN 10,40,100
+Dist_Cisco_SW1   e0/3    ──── e0/1    Acc_Cisco_1      trunk: VLAN 10,20,100
+Dist_Huawei_SW2  GE1/0/3 ──── e1/0    Acc_Cisco_1      trunk: VLAN 10,20,100
+
+Dist_Cisco_SW1   e1/0    ──── e0/1    Acc_Cisco_2      trunk: VLAN 10,20,100
+Dist_Huawei_SW2  GE1/0/4 ──── e1/0    Acc_Cisco_2      trunk: VLAN 10,20,100
+
+Dist_Cisco_SW1   e1/1    ──── GE1/0/1 Acc_Huawei_1     trunk: VLAN 10,30,100
+Dist_Huawei_SW2  GE1/0/0 ──── GE1/0/5 Acc_Huawei_1     trunk: VLAN 10,30,100
 ```
+VRRP virtual IPs: VLAN 10 → 10.10.10.254, VLAN 20 → 10.10.20.254, VLAN 30 → 10.10.30.254
+Dist_Cisco_SW1 active for VLAN 10,20 | Dist_Huawei_SW2 active for VLAN 30
+
+**Block B** (Dist_Cisco_SW3 + Dist_Huawei_SW4) — all 3 access switches dual-homed:
+```
+Dist_Cisco_SW3   e0/3    ──── e0/1    Acc_Cisco_3      trunk: VLAN 20,30,100
+Dist_Huawei_SW4  GE1/0/3 ──── e1/0    Acc_Cisco_3      trunk: VLAN 20,30,100
+
+Dist_Cisco_SW3   e1/0    ──── e0/1    Acc_Cisco_4      trunk: VLAN 20,30,100
+Dist_Huawei_SW4  GE1/0/4 ──── e1/0    Acc_Cisco_4      trunk: VLAN 20,30,100
+
+Dist_Cisco_SW3   e1/1    ──── ge-0/0/0  Acc_Juniper_1  trunk: VLAN 10,40,100
+Dist_Huawei_SW4  GE1/0/2 ──── ge-0/0/1  Acc_Juniper_1  trunk: VLAN 10,40,100
+```
+VRRP virtual IPs: VLAN 10 → 10.10.10.254, VLAN 20 → 10.10.20.254, VLAN 30 → 10.10.30.254, VLAN 40 → 10.10.40.254
+Dist_Cisco_SW3 active for VLAN 20,30 | Dist_Huawei_SW4 active for VLAN 10,40
 
 ### Management Cloud
 | Platform       | Cloud0 Interface     | Notes                                        |

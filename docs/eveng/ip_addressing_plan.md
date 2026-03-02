@@ -44,7 +44,7 @@
 | Link                    | Subnet         | Core 1 side          | Dist side             |
 |-------------------------|----------------|----------------------|-----------------------|
 | Core1 ↔ Dist_Cisco_SW1  | 10.0.1.0/30   | Gi2 = 10.0.1.1      | e0/1 = 10.0.1.2      |
-| Core1 ↔ Dist_Huawei_SW2 | 10.0.1.4/30   | Gi3 = 10.0.1.5      | GE1/0/0 = 10.0.1.6   |
+| Core1 ↔ Dist_Huawei_SW2 | 10.0.1.4/30   | Gi3 = 10.0.1.5      | GE1/0/1 = 10.0.1.6   |
 | Core1 ↔ Dist_Cisco_SW3  | 10.1.1.8/30   | Gi4 = 10.1.1.9      | e0/1 = 10.1.1.10     |
 | Core1 ↔ Dist_Huawei_SW4 | 10.1.1.12/30  | Gi5 = 10.1.1.13     | GE1/0/0 = 10.1.1.14  |
 
@@ -52,35 +52,52 @@
 | Link                    | Subnet         | Core 2 side          | Dist side             |
 |-------------------------|----------------|----------------------|-----------------------|
 | Core2 ↔ Dist_Cisco_SW1  | 10.0.2.0/30   | Gi2 = 10.0.2.1      | e0/2 = 10.0.2.2      |
-| Core2 ↔ Dist_Huawei_SW2 | 10.0.2.4/30   | Gi3 = 10.0.2.5      | GE1/0/1 = 10.0.2.6   |
+| Core2 ↔ Dist_Huawei_SW2 | 10.0.2.4/30   | Gi3 = 10.0.2.5      | GE1/0/2 = 10.0.2.6   |
 | Core2 ↔ Dist_Cisco_SW3  | 10.0.2.8/30   | Gi4 = 10.0.2.9      | e0/2 = 10.0.2.10     |
 | Core2 ↔ Dist_Huawei_SW4 | 10.0.2.12/30  | Gi5 = 10.0.2.13     | GE1/0/1 = 10.0.2.14  |
 
+### Distribution Pair Inter-Switch Links (L2 peer-link trunks — no IPs)
+| Pair   | Side A                      | Side B                      | VLANs allowed          |
+|--------|-----------------------------|-----------------------------|------------------------|
+| Pair A | Dist_Cisco_SW1 e1/2         | Dist_Huawei_SW2 GE1/0/5    | 10, 20, 30, 100       |
+| Pair B | Dist_Cisco_SW3 e1/2         | Dist_Huawei_SW4 GE1/0/5    | 10, 20, 30, 40, 100   |
+
 ## Distribution ↔ Access Links (L2 trunks — no IPs on the link)
 
-### Block A
+### Block A (dual-homed: each access switch to BOTH Dist_Cisco_SW1 + Dist_Huawei_SW2)
 | Dist side                         | Access side                  | VLANs allowed      |
 |-----------------------------------|------------------------------|---------------------|
 | Dist_Cisco_SW1 e0/3               | Acc_Cisco_1 e0/1             | 10, 20, 100         |
+| Dist_Huawei_SW2 GE1/0/3           | Acc_Cisco_1 e1/0             | 10, 20, 100         |
 | Dist_Cisco_SW1 e1/0               | Acc_Cisco_2 e0/1             | 10, 20, 100         |
-| Dist_Huawei_SW2 GE1/0/2           | Acc_Huawei_1 GE1/0/1        | 10, 30, 100         |
+| Dist_Huawei_SW2 GE1/0/4           | Acc_Cisco_2 e1/0             | 10, 20, 100         |
+| Dist_Cisco_SW1 e1/1               | Acc_Huawei_1 GE1/0/1         | 10, 30, 100         |
+| Dist_Huawei_SW2 GE1/0/0           | Acc_Huawei_1 GE1/0/5         | 10, 30, 100         |
 
-### Block B
+### Block B (dual-homed: each access switch to BOTH Dist_Cisco_SW3 + Dist_Huawei_SW4)
 | Dist side                         | Access side                  | VLANs allowed      |
 |-----------------------------------|------------------------------|---------------------|
 | Dist_Cisco_SW3 e0/3               | Acc_Cisco_3 e0/1             | 20, 30, 100         |
+| Dist_Huawei_SW4 GE1/0/3           | Acc_Cisco_3 e1/0             | 20, 30, 100         |
 | Dist_Cisco_SW3 e1/0               | Acc_Cisco_4 e0/1             | 20, 30, 100         |
-| Dist_Huawei_SW4 GE1/0/2           | Acc_Juniper_1 ge-0/0/1      | 10, 40, 100         |
+| Dist_Huawei_SW4 GE1/0/4           | Acc_Cisco_4 e1/0             | 20, 30, 100         |
+| Dist_Cisco_SW3 e1/1               | Acc_Juniper_1 ge-0/0/0       | 10, 40, 100         |
+| Dist_Huawei_SW4 GE1/0/2           | Acc_Juniper_1 ge-0/0/1       | 10, 40, 100         |
 
 ## VLAN Plan
 
-| VLAN | Name         | Subnet           | Gateway (on Distribution SVIs) |
-|------|------------- |------------------|-------------------------------|
-| 10   | Engineering  | 10.10.10.0/24    | 10.10.10.1                    |
-| 20   | Operations   | 10.10.20.0/24    | 10.10.20.1                    |
-| 30   | Guest        | 10.10.30.0/24    | 10.10.30.1                    |
-| 40   | IoT          | 10.10.40.0/24    | 10.10.40.1                    |
-| 100  | Management   | 192.168.1.0/24   | 192.168.1.1 (your LAN GW)    |
+| VLAN | Name         | Subnet           | VRRP VIP (gateway) | Block A SVIs                              | Block B SVIs                              |
+|------|------------- |------------------|--------------------|--------------------------------------------|-------------------------------------------|
+| 10   | Engineering  | 10.10.10.0/24    | 10.10.10.254       | SW1 .1 (pri 110), SW2 .2 (pri 100)        | SW3 .4 (pri 100), SW4 .3 (pri 110)       |
+| 20   | Operations   | 10.10.20.0/24    | 10.10.20.254       | SW1 .1 (pri 110), SW2 .2 (pri 100)        | SW3 .3 (pri 110), SW4 .4 (pri 100)       |
+| 30   | Guest        | 10.10.30.0/24    | 10.10.30.254       | SW1 .2 (pri 100), SW2 .1 (pri 110)        | SW3 .3 (pri 110), SW4 .4 (pri 100)       |
+| 40   | IoT          | 10.10.40.0/24    | 10.10.40.254       | — (not in Block A)                         | SW3 .2 (pri 100), SW4 .1 (pri 110)       |
+| 100  | Management   | 192.168.1.0/24   | 192.168.1.1 (LAN GW)| —                                        | —                                         |
+
+> **VRRP note:** Within each dist pair, one switch is VRRP-active (priority 110) and the other
+> is standby (priority 100) per VLAN for load balancing. VIP = .254 on every data VLAN.
+> Block A and Block B are separate L2 domains; both blocks reuse the same VLAN IDs and
+> subnets, which OSPF sees as equal-cost paths (acceptable for lab).
 
 ## Management Interface Per Platform
 
