@@ -462,10 +462,12 @@ const Dashboard: React.FC = () => {
                     <button className={`btn join-item btn-sm ${topologyView === 'actual' ? 'btn-active' : ''}`} onClick={() => setTopologyView('actual')}>Real-Time</button>
                     <button className={`btn join-item btn-sm ${topologyView === 'diff' ? 'btn-active' : ''}`} onClick={() => setTopologyView('diff')}>Diff</button>
                 </div>
+                {/* D3/Cytoscape engine toggle — temporarily hidden
                 <div className="join">
                     <button className={`btn join-item btn-sm ${vizEngine === 'd3' ? 'btn-active' : ''}`} onClick={() => setVizEngine('d3')}>D3.js</button>
                     <button className={`btn join-item btn-sm ${vizEngine === 'cytoscape' ? 'btn-active' : ''}`} onClick={() => setVizEngine('cytoscape')}>Cytoscape</button>
                 </div>
+                */}
                 <button
                     className={`btn btn-sm btn-outline btn-primary gap-1 ${isRefreshing ? 'btn-disabled' : ''}`}
                     onClick={handleRefreshTopology}
@@ -473,7 +475,7 @@ const Dashboard: React.FC = () => {
                     title="Trigger a fresh network crawl and reload topology"
                 >
                     <RefreshCw size={14} className={isRefreshing ? 'animate-spin' : ''} />
-                    {isRefreshing ? 'Scanning...' : 'Refresh Topology'}
+                    {isRefreshing ? 'Scanning...' : 'Refresh'}
                 </button>
             </div>
 

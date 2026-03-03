@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import Header from '../components/Header';
+import { authApi } from './services/api';
 import Sidebar from '../components/Sidebar';
 import OverviewDashboard from '../views/OverviewDashboard';
 import Dashboard from '../views/Dashboard';
@@ -32,10 +33,36 @@ const App: React.FC = () => {
   const [view, setView] = useState<ViewId>('overview');
   const [selectedDeviceId, setSelectedDeviceId] = useState<number | null>(null);
   const [user, setUser] = useState<User | null>(null);
+  const [authChecked, setAuthChecked] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
+    return localStorage.getItem('sidebarCollapsed') === 'true';
+  });
   const [aiPanelOpen, setAiPanelOpen] = useState(() => {
     const saved = localStorage.getItem('aiPanelOpen');
     return saved !== null ? JSON.parse(saved) : true;
   });
+
+  // ── Hydrate user from stored JWT on mount ──
+  useEffect(() => {
+    const token = localStorage.getItem('auth_token');
+    if (!token) {
+      setAuthChecked(true);
+      return;
+    }
+    authApi.me()
+      .then(me => {
+        setUser({
+          id: me.id,
+          username: me.username,
+          role: me.role as User['role'],
+          lastLogin: me.lastLogin || new Date().toISOString(),
+        });
+      })
+      .catch(() => {
+        localStorage.removeItem('auth_token');
+      })
+      .finally(() => setAuthChecked(true));
+  }, []);
 
   useEffect(() => {
     localStorage.setItem('theme', theme);
@@ -53,6 +80,10 @@ const App: React.FC = () => {
   useEffect(() => {
     localStorage.setItem('aiPanelOpen', JSON.stringify(aiPanelOpen));
   }, [aiPanelOpen]);
+
+  useEffect(() => {
+    localStorage.setItem('sidebarCollapsed', String(sidebarCollapsed));
+  }, [sidebarCollapsed]);
 
   // Determine domain based on current view
   const getCurrentDomain = (): AppDomain => {
@@ -122,6 +153,14 @@ const App: React.FC = () => {
     }
   };
 
+  if (!authChecked) {
+    return (
+      <div data-theme={theme} className="w-screen h-screen font-sans flex items-center justify-center">
+        <span className="loading loading-spinner loading-lg text-primary"></span>
+      </div>
+    );
+  }
+
   if (!user) {
       return (
         <div data-theme={theme} className="w-screen h-screen font-sans">
@@ -143,7 +182,9 @@ const App: React.FC = () => {
                 currentView={view} 
                 setView={setView} 
                 user={user} 
-                onLogout={() => setUser(null)}
+                onLogout={() => { localStorage.removeItem('auth_token'); setUser(null); }}
+                collapsed={sidebarCollapsed}
+                onToggleCollapse={() => setSidebarCollapsed(c => !c)}
             />
             <main className="flex-grow relative overflow-hidden bg-base-200 flex">
               {/* Main Content Area */}

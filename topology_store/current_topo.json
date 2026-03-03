@@ -1,75 +1,53 @@
 {
-  "timestamp": "2026-03-03T01:37:31+08:00",
-  "seeds": [
-    "192.168.1.42",
-    "192.168.1.46",
-    "192.168.1.47"
-  ],
-  "nodes": {
-    "Acc_Cisco_2": {
-      "interfaceList": [
-        {
-          "Vlan100": "192.168.1.47"
-        }
-      ],
-      "connectedNode": [
-        "Dist_Cisco_SW1"
-      ],
-      "edgeLink": {
-        "Ethernet0/1": {
-          "remote_node": "Dist_Cisco_SW1",
-          "remote_interface": "Ethernet1/0",
-          "remote_ip": null
-        }
-      },
-      "mgmt_ip": "192.168.1.47"
-    },
-    "Acc_Cisco_1": {
-      "interfaceList": [
-        {
-          "Vlan100": "192.168.1.46"
-        }
-      ],
-      "connectedNode": [
-        "Dist_Cisco_SW1"
-      ],
-      "edgeLink": {
-        "Ethernet0/1": {
-          "remote_node": "Dist_Cisco_SW1",
-          "remote_interface": "Ethernet0/3",
-          "remote_ip": null
-        }
-      },
-      "mgmt_ip": "192.168.1.46"
-    },
-    "Dist_Cisco_SW1": {
-      "interfaceList": [
-        {
-          "Ethernet0/0": "192.168.1.42",
-          "Ethernet0/1": "10.0.1.2",
-          "Ethernet0/2": "10.0.2.2",
-          "Vlan10": "10.10.10.1",
-          "Vlan20": "10.10.20.1",
-          "Vlan30": "10.10.30.2"
-        }
-      ],
-      "connectedNode": [
-        "Acc_Cisco_2",
-        "Acc_Cisco_1"
-      ],
-      "edgeLink": {
-        "Ethernet1/0": {
-          "remote_node": "Acc_Cisco_2",
-          "remote_interface": "Ethernet0/1",
-          "remote_ip": null
-        },
-        "Ethernet0/3": {
-          "remote_node": "Acc_Cisco_1",
-          "remote_interface": "Ethernet0/1",
-          "remote_ip": null
-        }
-      },
-      "mgmt_ip": "192.168.1.42"
-    }
-  }
+    "nodes":  {
+                  "Acc_Huawei_1":  {
+                                       "connectedNode":  [
+                                                             "Dist_Huawei_SW2"
+                                                         ],
+                                       "edgeLink":  {
+                                                        "GE1/0/5":  {
+                                                                        "remote_interface":  "GE1/0/0",
+                                                                        "remote_ip":  "192.168.1.43",
+                                                                        "remote_node":  "Dist_Huawei_SW2"
+                                                                    }
+                                                    },
+                                       "interfaceList":  [
+                                                             {
+                                                                 "MEth0/0/0":  "192.168.1.48"
+                                                             }
+                                                         ],
+                                       "mgmt_ip":  "192.168.1.48"
+                                   },
+                  "Dist_Huawei_SW2":  {
+                                          "connectedNode":  [
+                                                                "Acc_Huawei_1"
+                                                            ],
+                                          "edgeLink":  {
+                                                           "GE1/0/0":  {
+                                                                           "remote_interface":  "GE1/0/5",
+                                                                           "remote_ip":  "192.168.1.48",
+                                                                           "remote_node":  "Acc_Huawei_1"
+                                                                       }
+                                                       },
+                                          "interfaceList":  [
+                                                                {
+                                                                    "GE1/0/1":  "10.0.1.6",
+                                                                    "GE1/0/2":  "10.0.2.6",
+                                                                    "MEth0/0/0":  "192.168.1.43",
+                                                                    "Vlanif10":  "10.10.10.2",
+                                                                    "Vlanif20":  "10.10.20.2",
+                                                                    "Vlanif30":  "10.10.30.1"
+                                                                }
+                                                            ],
+                                          "mgmt_ip":  "192.168.1.43"
+                                      }
+              },
+    "seeds":  [
+                  "192.168.1.42",
+                  "192.168.1.43",
+                  "192.168.1.46",
+                  "192.168.1.47",
+                  "192.168.1.48"
+              ],
+    "timestamp":  "2026-03-03T15:47:27+08:00"
 }
