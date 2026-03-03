@@ -9,6 +9,7 @@ import NetBoxDevices from '../views/NetBoxDevices';
 import AIAgentPanel from '../components/AIAgentPanel';
 import KnowledgeBase from '../views/KnowledgeBase';
 import AnsibleStudioView from '../views/AnsibleStudioView';
+import TemplateStudioView from '../views/TemplateStudioView';
 import DriftView from '../views/DriftView';
 import IncidentDashboard from '../views/IncidentDashboard';
 import OnboardingView from '../views/OnboardingView';
@@ -147,6 +148,10 @@ const App: React.FC = () => {
       // Phase 16 — Approval Queue Dashboard
       case 'approval_queue':
         return <ApprovalQueueView setView={setView} />;
+
+      // Template Studio — Jinja2 template editor
+      case 'template_studio':
+        return <TemplateStudioView />;
 
       default:
         return <OverviewDashboard setView={setView} setSelectedDeviceId={setSelectedDeviceId} />;

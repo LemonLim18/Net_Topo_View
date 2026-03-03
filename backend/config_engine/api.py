@@ -242,3 +242,41 @@ async def save_schema_source(
     _renderer._schema_cache.pop(feature, None)
     logger.info("Schema %s updated by %s", feature, _user.get("username"))
     return {"status": "saved", "feature": feature}
+
+
+@router.delete("/templates/{vendor}/{feature}")
+async def delete_template(
+    vendor: str,
+    feature: str,
+    _user: dict = Depends(_require_role("admin")),
+):
+    """Delete a Jinja2 template file (admin only)."""
+    from pathlib import Path
+    tpl_file = Path(_renderer.templates_dir) / vendor / f"{feature}.j2"
+    if not tpl_file.exists():
+        raise HTTPException(404, f"Template '{vendor}/{feature}.j2' not found")
+    tpl_file.unlink()
+    _renderer._env = None  # force reload
+    logger.info("Template %s/%s deleted by %s", vendor, feature, _user.get("username"))
+    return {"status": "deleted", "vendor": vendor, "feature": feature}
+
+
+@router.post("/templates/{vendor}/{feature}/create")
+async def create_template(
+    vendor: str,
+    feature: str,
+    body: SaveTemplateRequest,
+    _user: dict = Depends(_require_role("admin")),
+):
+    """Create a new Jinja2 template file (admin only)."""
+    from pathlib import Path
+    vendor_dir = Path(_renderer.templates_dir) / vendor
+    vendor_dir.mkdir(parents=True, exist_ok=True)
+    tpl_file = vendor_dir / f"{feature}.j2"
+    if tpl_file.exists():
+        raise HTTPException(409, f"Template '{vendor}/{feature}.j2' already exists")
+    tpl_file.write_text(body.content, encoding="utf-8")
+    _renderer._env = None  # force reload
+    logger.info("Template %s/%s created by %s", vendor, feature, _user.get("username"))
+    return {"status": "created", "vendor": vendor, "feature": feature}
+

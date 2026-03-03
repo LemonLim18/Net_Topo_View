@@ -274,6 +274,19 @@ export const configApi = {
       `/config/schemas/${feature}/source`,
       { method: 'PUT', body: JSON.stringify({ content }) }
     ),
+
+  /** Delete a template file (admin only). */
+  deleteTemplate: (vendor: string, feature: string) =>
+    request<{ status: string }>(`/config/templates/${vendor}/${feature}`, {
+      method: 'DELETE',
+    }),
+
+  /** Create a new template file (admin only). */
+  createTemplate: (vendor: string, feature: string, content: string) =>
+    request<{ status: string }>(`/config/templates/${vendor}/${feature}/create`, {
+      method: 'POST',
+      body: JSON.stringify({ content }),
+    }),
 };
 
 // --- NetBox Device Inventory API ---

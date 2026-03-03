@@ -82,7 +82,8 @@ export type ViewId =
   | 'intent_history'
   | 'sdn_dashboard'
   | 'playbook_comparison'
-  | 'approval_queue';
+  | 'approval_queue'
+  | 'template_studio';
 
 // Notification Types
 export type NotificationType = 'info' | 'success' | 'warning' | 'error';

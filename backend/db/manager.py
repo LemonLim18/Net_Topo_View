@@ -497,6 +497,32 @@ class DatabaseManager:
         return events
 
     # =============================================================
+    # SECURITY EVENTS (persistent)
+    # =============================================================
+    def insert_security_event(
+        self,
+        event_type: str,
+        severity: str,
+        description: str,
+        source_ip: Optional[str] = None,
+        dest_ip: Optional[str] = None,
+        device_id: Optional[int] = None,
+        raw_data: Optional[str] = None,
+    ) -> int:
+        """Insert a security event (e.g. rogue_device, brute_force)."""
+        now = datetime.now(tz=TZ_UTC8).isoformat(timespec="seconds")
+        with self._connect() as conn:
+            cur = conn.execute(
+                """INSERT INTO security_events
+                   (event_type, severity, source_ip, dest_ip,
+                    device_id, description, raw_data, status, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, 'new', ?)""",
+                (event_type, severity, source_ip, dest_ip,
+                 device_id, description, raw_data, now),
+            )
+            return cur.lastrowid
+
+    # =============================================================
     # Utility
     # =============================================================
     def close(self) -> None:

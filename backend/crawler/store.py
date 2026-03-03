@@ -69,6 +69,30 @@ def save_crawl_result(
     if crawl_devices:
         for dev in crawl_devices:
             device_repo.save(dev)
+
+            # --- Rogue device detection ---
+            # If this device was NOT in the inventory before, flag it
+            if dev.source == "crawler":
+                # source only equals "crawler" for brand-new devices
+                # (existing devices preserve their original source)
+                try:
+                    db_manager.insert_security_event(
+                        event_type="rogue_device",
+                        severity="high",
+                        source_ip=dev.management_ip,
+                        description=(
+                            f'Unregistered device "{dev.hostname}" '
+                            f"discovered at {dev.management_ip or 'unknown IP'} "
+                            f"during network crawl"
+                        ),
+                    )
+                    logger.warning(
+                        "ROGUE DEVICE detected: %s (%s)",
+                        dev.hostname, dev.management_ip,
+                    )
+                except Exception as e:
+                    logger.warning("Failed to log rogue device event: %s", e)
+
         logger.info("Synced %d devices to persistent DB", len(crawl_devices))
 
     # ----- 3. Sync links to persistent SQL -----
