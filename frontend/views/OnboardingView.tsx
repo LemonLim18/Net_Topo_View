@@ -106,6 +106,7 @@ const OnboardingView: React.FC<{ setView: (id: ViewId) => void }> = ({ setView }
           <h1 className="text-xl font-bold">Onboard New Device</h1>
           <p className="text-sm opacity-60">
             Select a registered device, review the generated Day-0 config in the editor, then download the script for console-paste.
+            Only devices pushed to NetBox (status: "Registered") appear here.
           </p>
         </div>
       </div>
@@ -148,9 +149,9 @@ const OnboardingView: React.FC<{ setView: (id: ViewId) => void }> = ({ setView }
                   <PackagePlus className="h-8 w-8 text-base-content/50" strokeWidth={1.5} />
                 </div>
                 <div>
-                  <p className="text-base font-semibold text-base-content">No devices registered yet</p>
+                  <p className="text-base font-semibold text-base-content">No registered devices ready for onboarding</p>
                   <p className="mt-1 text-sm text-base-content/50">
-                    Add a device to the inventory first, then come back to generate its onboarding config.
+                    Go to Device Inventory, register a device, and push it to NetBox first.
                   </p>
                 </div>
                 <button
@@ -306,7 +307,8 @@ const OnboardingView: React.FC<{ setView: (id: ViewId) => void }> = ({ setView }
             <h2 className="card-title text-lg">Script Downloaded!</h2>
             <p className="text-sm opacity-70 max-w-md">
               Paste <strong>{filename}</strong> into the device console to bootstrap it.
-              Once SSH is reachable, the rest of the platform (Topology Crawl, Drift, Security Audit) will work automatically.
+              The device status has been changed to <strong>Provisioning</strong>.
+              Once SSH is reachable, the next crawler run will automatically transition it to <strong>Active</strong>.
             </p>
 
             <div className="flex gap-3 mt-2">

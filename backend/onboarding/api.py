@@ -56,7 +56,7 @@ class GenerateResponse(BaseModel):
 
 @router.get("/devices", response_model=list[DeviceSummary])
 async def list_devices():
-    """Return all registered devices so the wizard can populate a picker."""
+    """Return only 'registered' devices (pushed to NetBox, ready for Day-0)."""
     devices = _db().get_all_devices()
     return [
         DeviceSummary(
@@ -69,6 +69,7 @@ async def list_devices():
             status        = d.status,
         )
         for d in devices
+        if d.status == "registered"
     ]
 
 
@@ -103,6 +104,27 @@ async def generate_for_device(device_id: int):
 
     config = OnboardingConfigGenerator().generate(params)
     filename = f"{device.hostname}_day0_config.txt"
+
+    # Transition device status to 'provisioning'
+    db = _db()
+    from db.models import Device as DeviceModel
+    updated = DeviceModel(
+        hostname=device.hostname,
+        management_ip=device.management_ip,
+        vendor=device.vendor,
+        model=device.model,
+        os_version=device.os_version,
+        serial_number=device.serial_number,
+        status="provisioning",
+        source=getattr(device, 'source', 'manual'),
+        last_polled=device.last_polled,
+        ssh_user=device.ssh_user,
+        ssh_password=device.ssh_password,
+        ssh_port=device.ssh_port,
+    )
+    db.upsert_device(updated)
+    logger.info("Device '%s' transitioned to 'provisioning'", device.hostname)
+
     return GenerateResponse(config=config, filename=filename)
 
 

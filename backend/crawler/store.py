@@ -49,6 +49,11 @@ def save_crawl_result(
         if not isinstance(node_data, dict):
             continue
         status = "down" if node_data.get("down") else "active"
+
+        # Check if device already exists (preserve manual/netbox source)
+        existing = device_repo.find_by_hostname(hostname)
+        source = existing.source if existing else "crawler"
+
         crawl_devices.append(Device(
             hostname=hostname,
             management_ip=node_data.get("mgmt_ip"),
@@ -57,6 +62,7 @@ def save_crawl_result(
             os_version=node_data.get("os_version"),
             serial_number=node_data.get("serial"),
             status=status,
+            source=source,
             last_polled=datetime.now(tz=TZ_UTC8).isoformat(timespec="seconds"),
         ))
 

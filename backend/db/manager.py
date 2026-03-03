@@ -75,6 +75,13 @@ class DatabaseManager:
         }
         self._topo_lock = threading.Lock()
 
+        # ---- Safe migration: add 'source' column if missing ----
+        try:
+            with self._connect() as conn:
+                conn.execute("ALTER TABLE devices ADD COLUMN source TEXT DEFAULT 'manual'")
+        except Exception:
+            pass  # column already exists
+
     # =============================================================
     # Initialisation
     # =============================================================
@@ -168,7 +175,7 @@ class DatabaseManager:
         now = datetime.now(tz=TZ_UTC8).isoformat(timespec="seconds")
         with self._connect() as conn:
             cur = conn.execute(
-                "SELECT id FROM devices WHERE hostname = ?",
+                "SELECT id, source FROM devices WHERE hostname = ?",
                 (device.hostname,),
             )
             row = cur.fetchone()
@@ -177,13 +184,13 @@ class DatabaseManager:
                     """UPDATE devices
                        SET management_ip = ?, vendor = ?, model = ?,
                            os_version = ?, serial_number = ?, status = ?,
-                           last_polled = ?, ssh_user = ?, ssh_password = ?,
-                           ssh_port = ?, updated_at = ?
+                           source = ?, last_polled = ?, ssh_user = ?,
+                           ssh_password = ?, ssh_port = ?, updated_at = ?
                      WHERE id = ?""",
                     (
                         device.management_ip, device.vendor, device.model,
                         device.os_version, device.serial_number, device.status,
-                        device.last_polled or now,
+                        device.source, device.last_polled or now,
                         device.ssh_user, device.ssh_password, device.ssh_port,
                         now, row["id"],
                     ),
@@ -193,14 +200,14 @@ class DatabaseManager:
                 cur2 = conn.execute(
                     """INSERT INTO devices
                        (hostname, management_ip, vendor, model, os_version,
-                        serial_number, status, last_polled,
+                        serial_number, status, source, last_polled,
                         ssh_user, ssh_password, ssh_port,
                         created_at, updated_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
                         device.hostname, device.management_ip, device.vendor,
                         device.model, device.os_version, device.serial_number,
-                        device.status, device.last_polled or now,
+                        device.status, device.source, device.last_polled or now,
                         device.ssh_user, device.ssh_password, device.ssh_port,
                         now, now,
                     ),
@@ -233,6 +240,7 @@ class DatabaseManager:
 
     @staticmethod
     def _row_to_device(row: sqlite3.Row) -> Device:
+        keys = row.keys()
         return Device(
             id=row["id"],
             hostname=row["hostname"],
@@ -242,10 +250,11 @@ class DatabaseManager:
             os_version=row["os_version"],
             serial_number=row["serial_number"],
             status=row["status"],
+            source=row["source"] if "source" in keys else "manual",
             last_polled=row["last_polled"],
-            ssh_user=row["ssh_user"] if "ssh_user" in row.keys() else None,
-            ssh_password=row["ssh_password"] if "ssh_password" in row.keys() else None,
-            ssh_port=row["ssh_port"] if "ssh_port" in row.keys() else 22,
+            ssh_user=row["ssh_user"] if "ssh_user" in keys else None,
+            ssh_password=row["ssh_password"] if "ssh_password" in keys else None,
+            ssh_port=row["ssh_port"] if "ssh_port" in keys else 22,
             created_at=row["created_at"],
             updated_at=row["updated_at"],
         )

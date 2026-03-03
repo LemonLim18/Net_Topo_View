@@ -37,7 +37,8 @@ class DeviceSyncer:
                     hostname=hostname,
                     management_ip=mgmt_ip,
                     vendor=vendor,
-                    status="active" if nb_dev.status.value == "active" else "down"
+                    status="registered",
+                    source="netbox",
                 )
                 
                 self.db.upsert_device(device)

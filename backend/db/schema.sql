@@ -23,7 +23,8 @@ CREATE TABLE IF NOT EXISTS devices (
     model           TEXT,
     os_version      TEXT,
     serial_number   TEXT,
-    status          TEXT    DEFAULT 'unknown',  -- up | down | unknown
+    status          TEXT    DEFAULT 'unknown',  -- planned | registered | provisioning | active | down | unknown
+    source          TEXT    DEFAULT 'manual',   -- manual | crawler | netbox
     last_polled     TEXT,                       -- ISO-8601 timestamp
     ssh_user        TEXT,                       -- SSH login username
     ssh_password    TEXT,                       -- SSH login password (plain text)
@@ -346,3 +347,10 @@ CREATE TABLE IF NOT EXISTS sdn_controllers (
 );
 
 CREATE INDEX IF NOT EXISTS idx_sdn_controllers_status ON sdn_controllers(status);
+
+-- -----------------------------------------------------------
+-- Migration: add 'source' column to devices (safe for existing DBs)
+-- -----------------------------------------------------------
+-- SQLite ALTER TABLE ADD COLUMN is a no-op if column already exists
+-- (raises error caught by application init).
+-- We use a separate statement so the schema file remains idempotent.

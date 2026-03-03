@@ -286,12 +286,40 @@ export interface DeviceRecord {
   os_version: string | null;
   serial_number: string | null;
   status: string;
+  source: string;
   last_polled: string | null;
   created_at: string | null;
   updated_at: string | null;
   ssh_user: string | null;
   ssh_password: string | null;
   ssh_port: number | null;
+}
+
+export interface InterfaceRecord {
+  id: number;
+  device_id: number;
+  name: string;
+  ip_address: string | null;
+  subnet_mask: string | null;
+  mac_address: string | null;
+  speed: string | null;
+  status: string;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+export interface LinkRecord {
+  id: number;
+  src_device_id: number;
+  dst_device_id: number;
+  src_interface_id: number | null;
+  dst_interface_id: number | null;
+  discovery_protocol: string | null;
+  created_at: string | null;
+  src_hostname: string;
+  dst_hostname: string;
+  src_interface_name: string | null;
+  dst_interface_name: string | null;
 }
 
 export const netboxApi = {
@@ -342,6 +370,73 @@ export const netboxApi = {
 
   syncFromNetbox: () =>
     request<{ status: string; synced_count?: number }>('/netbox/sync/devices', {
+      method: 'POST',
+    }),
+
+  // Interface CRUD
+  listInterfaces: (deviceId: number) =>
+    request<{ interfaces: InterfaceRecord[] }>(`/netbox/devices/${deviceId}/interfaces`),
+
+  createInterface: (deviceId: number, iface: {
+    name: string;
+    ip_address?: string;
+    subnet_mask?: string;
+    mac_address?: string;
+    speed?: string;
+    status?: string;
+  }) =>
+    request<InterfaceRecord>(`/netbox/devices/${deviceId}/interfaces`, {
+      method: 'POST',
+      body: JSON.stringify(iface),
+    }),
+
+  updateInterface: (deviceId: number, ifaceId: number, iface: {
+    name?: string;
+    ip_address?: string;
+    subnet_mask?: string;
+    mac_address?: string;
+    speed?: string;
+    status?: string;
+  }) =>
+    request<InterfaceRecord>(`/netbox/devices/${deviceId}/interfaces/${ifaceId}`, {
+      method: 'PUT',
+      body: JSON.stringify(iface),
+    }),
+
+  deleteInterface: (deviceId: number, ifaceId: number) =>
+    request<{ deleted: boolean }>(`/netbox/devices/${deviceId}/interfaces/${ifaceId}`, {
+      method: 'DELETE',
+    }),
+
+  // Link CRUD
+  listLinks: () =>
+    request<{ links: LinkRecord[] }>('/netbox/links'),
+
+  createLink: (link: {
+    src_device_id: number;
+    src_interface_id?: number;
+    dst_device_id: number;
+    dst_interface_id?: number;
+    discovery_protocol?: string;
+  }) =>
+    request<{ id: number; created: boolean }>('/netbox/links', {
+      method: 'POST',
+      body: JSON.stringify(link),
+    }),
+
+  deleteLink: (linkId: number) =>
+    request<{ deleted: boolean }>(`/netbox/links/${linkId}`, {
+      method: 'DELETE',
+    }),
+
+  // Push to NetBox
+  pushDevice: (deviceId: number) =>
+    request<DeviceRecord & { pushed: boolean }>(`/netbox/devices/${deviceId}/push`, {
+      method: 'POST',
+    }),
+
+  pushAll: () =>
+    request<{ pushed_count: number; message: string }>('/netbox/push-all', {
       method: 'POST',
     }),
 

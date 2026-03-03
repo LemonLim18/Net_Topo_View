@@ -25,7 +25,8 @@ class Device:
     model: Optional[str] = None
     os_version: Optional[str] = None
     serial_number: Optional[str] = None
-    status: str = "unknown"               # up | down | unknown
+    status: str = "unknown"               # planned | registered | provisioning | active | down | unknown
+    source: str = "manual"                # manual | crawler | netbox
     last_polled: Optional[str] = None     # ISO-8601
     ssh_user: Optional[str] = None
     ssh_password: Optional[str] = None

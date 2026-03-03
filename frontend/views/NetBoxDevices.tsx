@@ -12,8 +12,14 @@ import {
   Loader2,
   Download,
   AlertTriangle,
+  Upload,
+  Network,
+  Cable,
+  CircleDot,
+  Clock,
+  Cpu,
 } from 'lucide-react';
-import { netboxApi, type DeviceRecord } from '../src/services/api';
+import { netboxApi, type DeviceRecord, type InterfaceRecord, type LinkRecord } from '../src/services/api';
 import { Toast, Confirm } from '../src/utils/swal';
 
 // ---------------------------------------------------------------------------
@@ -28,6 +34,9 @@ const VENDOR_OPTIONS = [
 ];
 
 const STATUS_OPTIONS = [
+  { value: 'planned', label: 'Planned' },
+  { value: 'registered', label: 'Registered' },
+  { value: 'provisioning', label: 'Provisioning' },
   { value: 'active', label: 'Active' },
   { value: 'down', label: 'Down' },
   { value: 'unknown', label: 'Unknown' },
@@ -41,6 +50,24 @@ const vendorLabel = (v: string | null) => {
 
 const statusBadge = (status: string) => {
   switch (status) {
+    case 'planned':
+      return (
+        <span className="badge badge-sm badge-warning gap-1">
+          <CircleDot className="w-3 h-3" /> Planned
+        </span>
+      );
+    case 'registered':
+      return (
+        <span className="badge badge-sm badge-info gap-1">
+          <Upload className="w-3 h-3" /> Registered
+        </span>
+      );
+    case 'provisioning':
+      return (
+        <span className="badge badge-sm badge-secondary gap-1">
+          <Clock className="w-3 h-3" /> Provisioning
+        </span>
+      );
     case 'active':
       return (
         <span className="badge badge-sm badge-success gap-1">
@@ -62,6 +89,19 @@ const statusBadge = (status: string) => {
   }
 };
 
+const sourceBadge = (source: string) => {
+  switch (source) {
+    case 'manual':
+      return <span className="badge badge-xs badge-outline">Manual</span>;
+    case 'crawler':
+      return <span className="badge badge-xs badge-primary badge-outline">Crawler</span>;
+    case 'netbox':
+      return <span className="badge badge-xs badge-accent badge-outline">NetBox</span>;
+    default:
+      return <span className="badge badge-xs badge-ghost">{source}</span>;
+  }
+};
+
 // ---------------------------------------------------------------------------
 //  Empty form
 // ---------------------------------------------------------------------------
@@ -72,10 +112,18 @@ const EMPTY_FORM = {
   model: '',
   os_version: '',
   serial_number: '',
-  status: 'unknown',
+  status: 'planned',
   ssh_user: '',
   ssh_password: '',
   ssh_port: '22',
+};
+
+const EMPTY_IFACE_FORM = {
+  name: '',
+  ip_address: '',
+  subnet_mask: '255.255.255.0',
+  mac_address: '',
+  speed: '',
 };
 
 // ---------------------------------------------------------------------------
@@ -88,18 +136,47 @@ const NetBoxDevices: React.FC = () => {
   const [selected, setSelected] = useState<DeviceRecord | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
+  const [isPushing, setIsPushing] = useState(false);
+
+  // Interfaces for selected device
+  const [interfaces, setInterfaces] = useState<InterfaceRecord[]>([]);
+  const [loadingIfaces, setLoadingIfaces] = useState(false);
+
+  // Links
+  const [links, setLinks] = useState<LinkRecord[]>([]);
+  const [loadingLinks, setLoadingLinks] = useState(false);
+
+  // Detail tab
+  const [detailTab, setDetailTab] = useState<'info' | 'interfaces' | 'links'>('info');
 
   // Search / filter
   const [search, setSearch] = useState('');
   const [filterVendor, setFilterVendor] = useState('');
   const [filterStatus, setFilterStatus] = useState('');
 
-  // Modal state
+  // Device modal state
   const [showModal, setShowModal] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
   const [editId, setEditId] = useState<number | null>(null);
   const [form, setForm] = useState({ ...EMPTY_FORM });
   const [formError, setFormError] = useState<string | null>(null);
+
+  // Interface modal state
+  const [showIfaceModal, setShowIfaceModal] = useState(false);
+  const [ifaceForm, setIfaceForm] = useState({ ...EMPTY_IFACE_FORM });
+  const [ifaceFormError, setIfaceFormError] = useState<string | null>(null);
+
+  // Link modal state
+  const [showLinkModal, setShowLinkModal] = useState(false);
+  const [linkForm, setLinkForm] = useState({
+    src_device_id: 0,
+    src_interface_id: 0,
+    dst_device_id: 0,
+    dst_interface_id: 0,
+  });
+  const [linkFormError, setLinkFormError] = useState<string | null>(null);
+  const [srcInterfaces, setSrcInterfaces] = useState<InterfaceRecord[]>([]);
+  const [dstInterfaces, setDstInterfaces] = useState<InterfaceRecord[]>([]);
 
   // -----------------------------------------------------------------------
   //  Data fetching
@@ -117,9 +194,39 @@ const NetBoxDevices: React.FC = () => {
     }
   }, []);
 
+  const fetchInterfaces = useCallback(async (deviceId: number) => {
+    setLoadingIfaces(true);
+    try {
+      const res = await netboxApi.listInterfaces(deviceId);
+      setInterfaces(res.interfaces);
+    } catch (e: any) {
+      Toast.error('Failed to load interfaces', e.message);
+    } finally {
+      setLoadingIfaces(false);
+    }
+  }, []);
+
+  const fetchLinks = useCallback(async () => {
+    setLoadingLinks(true);
+    try {
+      const res = await netboxApi.listLinks();
+      setLinks(res.links);
+    } catch (e: any) {
+      Toast.error('Failed to load links', e.message);
+    } finally {
+      setLoadingLinks(false);
+    }
+  }, []);
+
+  useEffect(() => { fetchDevices(); }, [fetchDevices]);
+
   useEffect(() => {
-    fetchDevices();
-  }, [fetchDevices]);
+    if (selected) {
+      fetchInterfaces(selected.id);
+    } else {
+      setInterfaces([]);
+    }
+  }, [selected, fetchInterfaces]);
 
   // -----------------------------------------------------------------------
   //  Filtering
@@ -139,7 +246,7 @@ const NetBoxDevices: React.FC = () => {
   });
 
   // -----------------------------------------------------------------------
-  //  CRUD handlers
+  //  Device CRUD handlers
   // -----------------------------------------------------------------------
 
   const handleCreate = () => {
@@ -158,7 +265,7 @@ const NetBoxDevices: React.FC = () => {
       model: d.model || '',
       os_version: d.os_version || '',
       serial_number: d.serial_number || '',
-      status: d.status || 'unknown',
+      status: d.status || 'planned',
       ssh_user: d.ssh_user || '',
       ssh_password: '',
       ssh_port: String(d.ssh_port || 22),
@@ -255,6 +362,156 @@ const NetBoxDevices: React.FC = () => {
   };
 
   // -----------------------------------------------------------------------
+  //  Push to NetBox
+  // -----------------------------------------------------------------------
+
+  const handlePushDevice = async (d: DeviceRecord) => {
+    setIsPushing(true);
+    try {
+      const res = await netboxApi.pushDevice(d.id);
+      Toast.success(`"${d.hostname}" pushed to NetBox`, `Status → Registered`);
+      setSelected(res);
+      fetchDevices();
+    } catch (e: any) {
+      Toast.error('Push failed', e.message);
+    } finally {
+      setIsPushing(false);
+    }
+  };
+
+  const handlePushAll = async () => {
+    const plannedCount = devices.filter(d => d.status === 'planned').length;
+    if (plannedCount === 0) {
+      Toast.warning('No planned devices', 'All devices are already registered or active');
+      return;
+    }
+    const ok = await Confirm.ask(
+      `Push ${plannedCount} device(s) to NetBox?`,
+      'All planned devices will be marked as registered.',
+    );
+    if (!ok) return;
+
+    setIsPushing(true);
+    try {
+      const res = await netboxApi.pushAll();
+      Toast.success(res.message);
+      fetchDevices();
+    } catch (e: any) {
+      Toast.error('Push all failed', e.message);
+    } finally {
+      setIsPushing(false);
+    }
+  };
+
+  // -----------------------------------------------------------------------
+  //  Interface CRUD handlers
+  // -----------------------------------------------------------------------
+
+  const handleAddInterface = () => {
+    setIfaceForm({ ...EMPTY_IFACE_FORM });
+    setIfaceFormError(null);
+    setShowIfaceModal(true);
+  };
+
+  const handleSaveInterface = async () => {
+    if (!ifaceForm.name.trim()) {
+      setIfaceFormError('Interface name is required');
+      return;
+    }
+    if (!selected) return;
+    setIfaceFormError(null);
+    try {
+      await netboxApi.createInterface(selected.id, {
+        name: ifaceForm.name,
+        ip_address: ifaceForm.ip_address || undefined,
+        subnet_mask: ifaceForm.subnet_mask || undefined,
+        mac_address: ifaceForm.mac_address || undefined,
+        speed: ifaceForm.speed || undefined,
+      });
+      Toast.success(`Interface "${ifaceForm.name}" added`);
+      setShowIfaceModal(false);
+      fetchInterfaces(selected.id);
+    } catch (e: any) {
+      setIfaceFormError(e.message || 'Failed to add interface');
+    }
+  };
+
+  const handleDeleteInterface = async (iface: InterfaceRecord) => {
+    if (!selected) return;
+    const ok = await Confirm.danger(
+      `Delete interface ${iface.name}?`,
+      'This will also remove any links using this interface.',
+    );
+    if (!ok) return;
+    try {
+      await netboxApi.deleteInterface(selected.id, iface.id);
+      Toast.success(`Interface "${iface.name}" deleted`);
+      fetchInterfaces(selected.id);
+    } catch (e: any) {
+      Toast.error('Delete failed', e.message);
+    }
+  };
+
+  // -----------------------------------------------------------------------
+  //  Link CRUD handlers
+  // -----------------------------------------------------------------------
+
+  const handleAddLink = () => {
+    setLinkForm({ src_device_id: 0, src_interface_id: 0, dst_device_id: 0, dst_interface_id: 0 });
+    setLinkFormError(null);
+    setSrcInterfaces([]);
+    setDstInterfaces([]);
+    setShowLinkModal(true);
+    fetchLinks();
+  };
+
+  const loadIfacesForLink = async (deviceId: number, side: 'src' | 'dst') => {
+    if (!deviceId) return;
+    try {
+      const res = await netboxApi.listInterfaces(deviceId);
+      if (side === 'src') setSrcInterfaces(res.interfaces);
+      else setDstInterfaces(res.interfaces);
+    } catch { /* ignore */ }
+  };
+
+  const handleSaveLink = async () => {
+    if (!linkForm.src_device_id || !linkForm.dst_device_id) {
+      setLinkFormError('Both source and destination devices are required');
+      return;
+    }
+    setLinkFormError(null);
+    try {
+      await netboxApi.createLink({
+        src_device_id: linkForm.src_device_id,
+        src_interface_id: linkForm.src_interface_id || undefined,
+        dst_device_id: linkForm.dst_device_id,
+        dst_interface_id: linkForm.dst_interface_id || undefined,
+        discovery_protocol: 'manual',
+      });
+      Toast.success('Link created');
+      setShowLinkModal(false);
+      fetchLinks();
+    } catch (e: any) {
+      setLinkFormError(e.message || 'Failed to create link');
+    }
+  };
+
+  const handleDeleteLink = async (link: LinkRecord) => {
+    const ok = await Confirm.danger(
+      `Delete link?`,
+      `${link.src_hostname} → ${link.dst_hostname}`,
+    );
+    if (!ok) return;
+    try {
+      await netboxApi.deleteLink(link.id);
+      Toast.success('Link deleted');
+      fetchLinks();
+    } catch (e: any) {
+      Toast.error('Delete failed', e.message);
+    }
+  };
+
+  // -----------------------------------------------------------------------
   //  Render
   // -----------------------------------------------------------------------
 
@@ -268,6 +525,14 @@ const NetBoxDevices: React.FC = () => {
           <span className="badge badge-primary badge-outline">{devices.length} devices</span>
         </div>
         <div className="flex gap-2">
+          <button
+            className="btn btn-sm btn-outline gap-1"
+            onClick={handlePushAll}
+            disabled={isPushing}
+          >
+            {isPushing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Upload className="w-4 h-4" />}
+            Push All to NetBox
+          </button>
           <button className="btn btn-sm btn-outline gap-1" onClick={handleSync} disabled={isSyncing}>
             {isSyncing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
             Sync from NetBox
@@ -332,8 +597,8 @@ const NetBoxDevices: React.FC = () => {
                   <th>Hostname</th>
                   <th>Management IP</th>
                   <th>Vendor</th>
-                  <th>Model</th>
                   <th>Status</th>
+                  <th>Source</th>
                   <th className="text-right">Actions</th>
                 </tr>
               </thead>
@@ -366,10 +631,22 @@ const NetBoxDevices: React.FC = () => {
                       <td className="font-mono font-semibold">{d.hostname}</td>
                       <td className="font-mono text-xs">{d.management_ip || '—'}</td>
                       <td className="text-xs">{vendorLabel(d.vendor)}</td>
-                      <td className="text-xs">{d.model || '—'}</td>
                       <td>{statusBadge(d.status)}</td>
+                      <td>{sourceBadge(d.source)}</td>
                       <td className="text-right">
                         <div className="flex gap-1 justify-end">
+                          {d.status === 'planned' && (
+                            <button
+                              className="btn btn-ghost btn-xs text-info"
+                              title="Push to NetBox"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handlePushDevice(d);
+                              }}
+                            >
+                              <Upload className="w-3.5 h-3.5" />
+                            </button>
+                          )}
                           <button
                             className="btn btn-ghost btn-xs"
                             title="Edit"
@@ -407,6 +684,15 @@ const NetBoxDevices: React.FC = () => {
               <div className="p-4 bg-base-200/50 border-b border-base-300 flex items-center justify-between">
                 <h2 className="font-bold text-lg truncate">{selected.hostname}</h2>
                 <div className="flex gap-1">
+                  {selected.status === 'planned' && (
+                    <button
+                      className="btn btn-xs btn-info gap-1"
+                      onClick={() => handlePushDevice(selected)}
+                      disabled={isPushing}
+                    >
+                      <Upload className="w-3 h-3" /> Push
+                    </button>
+                  )}
                   <button className="btn btn-xs btn-outline gap-1" onClick={() => handleEdit(selected)}>
                     <Edit3 className="w-3 h-3" /> Edit
                   </button>
@@ -418,25 +704,179 @@ const NetBoxDevices: React.FC = () => {
                   </button>
                 </div>
               </div>
-              <div className="p-4 overflow-y-auto grow space-y-3">
-                <DetailRow label="ID" value={String(selected.id)} />
-                <DetailRow label="Hostname" value={selected.hostname} mono />
-                <DetailRow label="Management IP" value={selected.management_ip || '—'} mono />
-                <DetailRow label="Vendor" value={vendorLabel(selected.vendor)} />
-                <DetailRow label="Model" value={selected.model || '—'} />
-                <DetailRow label="OS Version" value={selected.os_version || '—'} />
-                <DetailRow label="Serial Number" value={selected.serial_number || '—'} mono />
-                <DetailRow label="Status">
-                  {statusBadge(selected.status)}
-                </DetailRow>
-                <div className="divider text-xs opacity-60">SSH Access</div>
-                <DetailRow label="SSH User" value={selected.ssh_user || '—'} mono />
-                <DetailRow label="SSH Port" value={String(selected.ssh_port || 22)} mono />
-                <DetailRow label="Password" value={selected.ssh_user ? '••••••••' : '—'} />
-                <div className="divider text-xs opacity-60">Timestamps</div>
-                <DetailRow label="Last Polled" value={selected.last_polled || 'Never'} />
-                <DetailRow label="Created" value={selected.created_at || '—'} />
-                <DetailRow label="Updated" value={selected.updated_at || '—'} />
+
+              {/* Tabs */}
+              <div className="tabs tabs-bordered px-4 pt-2 shrink-0">
+                <button
+                  className={`tab tab-sm ${detailTab === 'info' ? 'tab-active' : ''}`}
+                  onClick={() => setDetailTab('info')}
+                >
+                  <Cpu className="w-3.5 h-3.5 mr-1" /> Info
+                </button>
+                <button
+                  className={`tab tab-sm ${detailTab === 'interfaces' ? 'tab-active' : ''}`}
+                  onClick={() => setDetailTab('interfaces')}
+                >
+                  <Network className="w-3.5 h-3.5 mr-1" /> Interfaces ({interfaces.length})
+                </button>
+                <button
+                  className={`tab tab-sm ${detailTab === 'links' ? 'tab-active' : ''}`}
+                  onClick={() => { setDetailTab('links'); fetchLinks(); }}
+                >
+                  <Cable className="w-3.5 h-3.5 mr-1" /> Links
+                </button>
+              </div>
+
+              <div className="p-4 overflow-y-auto grow">
+                {/* Info Tab */}
+                {detailTab === 'info' && (
+                  <div className="space-y-3">
+                    <DetailRow label="ID" value={String(selected.id)} />
+                    <DetailRow label="Hostname" value={selected.hostname} mono />
+                    <DetailRow label="Management IP" value={selected.management_ip || '—'} mono />
+                    <DetailRow label="Vendor" value={vendorLabel(selected.vendor)} />
+                    <DetailRow label="Model" value={selected.model || '—'} />
+                    <DetailRow label="OS Version" value={selected.os_version || '—'} />
+                    <DetailRow label="Serial Number" value={selected.serial_number || '—'} mono />
+                    <DetailRow label="Status">{statusBadge(selected.status)}</DetailRow>
+                    <DetailRow label="Source">{sourceBadge(selected.source)}</DetailRow>
+                    <div className="divider text-xs opacity-60">SSH Access</div>
+                    <DetailRow label="SSH User" value={selected.ssh_user || '—'} mono />
+                    <DetailRow label="SSH Port" value={String(selected.ssh_port || 22)} mono />
+                    <DetailRow label="Password" value={selected.ssh_user ? '••••••••' : '—'} />
+                    <div className="divider text-xs opacity-60">Timestamps</div>
+                    <DetailRow label="Last Polled" value={selected.last_polled || 'Never'} />
+                    <DetailRow label="Created" value={selected.created_at || '—'} />
+                    <DetailRow label="Updated" value={selected.updated_at || '—'} />
+                  </div>
+                )}
+
+                {/* Interfaces Tab */}
+                {detailTab === 'interfaces' && (
+                  <div className="space-y-3">
+                    <div className="flex justify-between items-center mb-2">
+                      <span className="text-sm font-semibold opacity-70">
+                        {interfaces.length} interface{interfaces.length !== 1 ? 's' : ''}
+                      </span>
+                      <button className="btn btn-xs btn-primary gap-1" onClick={handleAddInterface}>
+                        <Plus className="w-3 h-3" /> Add Interface
+                      </button>
+                    </div>
+
+                    {loadingIfaces ? (
+                      <div className="text-center py-6 opacity-50">
+                        <Loader2 className="w-5 h-5 animate-spin mx-auto mb-1" />
+                        Loading…
+                      </div>
+                    ) : interfaces.length === 0 ? (
+                      <div className="text-center py-6 opacity-40">
+                        <Network className="w-6 h-6 mx-auto mb-1" />
+                        <p className="text-xs">No interfaces defined yet</p>
+                      </div>
+                    ) : (
+                      <div className="overflow-x-auto">
+                        <table className="table table-xs w-full">
+                          <thead>
+                            <tr>
+                              <th>Name</th>
+                              <th>IP Address</th>
+                              <th>Subnet</th>
+                              <th></th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {interfaces.map((iface) => (
+                              <tr key={iface.id}>
+                                <td className="font-mono text-xs">{iface.name}</td>
+                                <td className="font-mono text-xs">{iface.ip_address || '—'}</td>
+                                <td className="text-xs">{iface.subnet_mask || '—'}</td>
+                                <td className="text-right">
+                                  <button
+                                    className="btn btn-ghost btn-xs text-error"
+                                    onClick={() => handleDeleteInterface(iface)}
+                                  >
+                                    <Trash2 className="w-3 h-3" />
+                                  </button>
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Links Tab */}
+                {detailTab === 'links' && (
+                  <div className="space-y-3">
+                    <div className="flex justify-between items-center mb-2">
+                      <span className="text-sm font-semibold opacity-70">Topology Links</span>
+                      <button className="btn btn-xs btn-primary gap-1" onClick={handleAddLink}>
+                        <Plus className="w-3 h-3" /> Add Link
+                      </button>
+                    </div>
+
+                    {loadingLinks ? (
+                      <div className="text-center py-6 opacity-50">
+                        <Loader2 className="w-5 h-5 animate-spin mx-auto mb-1" />
+                        Loading…
+                      </div>
+                    ) : links.length === 0 ? (
+                      <div className="text-center py-6 opacity-40">
+                        <Cable className="w-6 h-6 mx-auto mb-1" />
+                        <p className="text-xs">No links defined yet</p>
+                      </div>
+                    ) : (
+                      <div className="overflow-x-auto">
+                        <table className="table table-xs w-full">
+                          <thead>
+                            <tr>
+                              <th>Source</th>
+                              <th></th>
+                              <th>Destination</th>
+                              <th>Type</th>
+                              <th></th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {links
+                              .filter(l =>
+                                l.src_hostname === selected.hostname ||
+                                l.dst_hostname === selected.hostname
+                              )
+                              .map((link) => (
+                              <tr key={link.id}>
+                                <td className="text-xs">
+                                  <div className="font-mono font-semibold">{link.src_hostname}</div>
+                                  <div className="opacity-60">{link.src_interface_name || '—'}</div>
+                                </td>
+                                <td className="text-center opacity-40">→</td>
+                                <td className="text-xs">
+                                  <div className="font-mono font-semibold">{link.dst_hostname}</div>
+                                  <div className="opacity-60">{link.dst_interface_name || '—'}</div>
+                                </td>
+                                <td>
+                                  <span className="badge badge-xs badge-ghost">
+                                    {link.discovery_protocol || 'manual'}
+                                  </span>
+                                </td>
+                                <td className="text-right">
+                                  <button
+                                    className="btn btn-ghost btn-xs text-error"
+                                    onClick={() => handleDeleteLink(link)}
+                                  >
+                                    <Trash2 className="w-3 h-3" />
+                                  </button>
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
             </>
           ) : (
@@ -448,7 +888,7 @@ const NetBoxDevices: React.FC = () => {
         </div>
       </div>
 
-      {/* ─── Add / Edit Modal ─── */}
+      {/* ─── Add / Edit Device Modal ─── */}
       {showModal && (
         <div className="modal modal-open">
           <div className="modal-box max-w-lg">
@@ -464,122 +904,65 @@ const NetBoxDevices: React.FC = () => {
             )}
 
             <div className="space-y-3">
-              {/* Hostname */}
               <label className="form-control w-full">
                 <div className="label"><span className="label-text">Hostname *</span></div>
-                <input
-                  type="text"
-                  className="input input-bordered w-full"
-                  placeholder="e.g. R1"
-                  value={form.hostname}
-                  onChange={(e) => setForm({ ...form, hostname: e.target.value })}
-                />
+                <input type="text" className="input input-bordered w-full" placeholder="e.g. R1"
+                  value={form.hostname} onChange={(e) => setForm({ ...form, hostname: e.target.value })} />
               </label>
 
-              {/* Management IP */}
               <label className="form-control w-full">
                 <div className="label"><span className="label-text">Management IP</span></div>
-                <input
-                  type="text"
-                  className="input input-bordered w-full"
-                  placeholder="e.g. 192.168.1.1"
-                  value={form.management_ip}
-                  onChange={(e) => setForm({ ...form, management_ip: e.target.value })}
-                />
+                <input type="text" className="input input-bordered w-full" placeholder="e.g. 192.168.1.1"
+                  value={form.management_ip} onChange={(e) => setForm({ ...form, management_ip: e.target.value })} />
               </label>
 
-              {/* Vendor + Status row */}
               <div className="grid grid-cols-2 gap-3">
                 <label className="form-control w-full">
                   <div className="label"><span className="label-text">Vendor</span></div>
-                  <select
-                    className="select select-bordered w-full"
-                    value={form.vendor}
-                    onChange={(e) => setForm({ ...form, vendor: e.target.value })}
-                  >
-                    {VENDOR_OPTIONS.map((o) => (
-                      <option key={o.value} value={o.value}>
-                        {o.label}
-                      </option>
-                    ))}
+                  <select className="select select-bordered w-full" value={form.vendor}
+                    onChange={(e) => setForm({ ...form, vendor: e.target.value })}>
+                    {VENDOR_OPTIONS.map((o) => (<option key={o.value} value={o.value}>{o.label}</option>))}
                   </select>
                 </label>
-
                 <label className="form-control w-full">
                   <div className="label"><span className="label-text">Status</span></div>
-                  <select
-                    className="select select-bordered w-full"
-                    value={form.status}
-                    onChange={(e) => setForm({ ...form, status: e.target.value })}
-                  >
-                    {STATUS_OPTIONS.map((o) => (
-                      <option key={o.value} value={o.value}>
-                        {o.label}
-                      </option>
-                    ))}
+                  <select className="select select-bordered w-full" value={form.status}
+                    onChange={(e) => setForm({ ...form, status: e.target.value })}>
+                    {STATUS_OPTIONS.map((o) => (<option key={o.value} value={o.value}>{o.label}</option>))}
                   </select>
                 </label>
               </div>
 
-              {/* Model + OS Version */}
               <div className="grid grid-cols-2 gap-3">
                 <label className="form-control w-full">
                   <div className="label"><span className="label-text">Model</span></div>
-                  <input
-                    type="text"
-                    className="input input-bordered w-full"
-                    placeholder="e.g. ISR4331"
-                    value={form.model}
-                    onChange={(e) => setForm({ ...form, model: e.target.value })}
-                  />
+                  <input type="text" className="input input-bordered w-full" placeholder="e.g. ISR4331"
+                    value={form.model} onChange={(e) => setForm({ ...form, model: e.target.value })} />
                 </label>
-
                 <label className="form-control w-full">
                   <div className="label"><span className="label-text">OS Version</span></div>
-                  <input
-                    type="text"
-                    className="input input-bordered w-full"
-                    placeholder="e.g. 17.3.4"
-                    value={form.os_version}
-                    onChange={(e) => setForm({ ...form, os_version: e.target.value })}
-                  />
+                  <input type="text" className="input input-bordered w-full" placeholder="e.g. 17.3.4"
+                    value={form.os_version} onChange={(e) => setForm({ ...form, os_version: e.target.value })} />
                 </label>
               </div>
 
-              {/* Serial Number */}
               <label className="form-control w-full">
                 <div className="label"><span className="label-text">Serial Number</span></div>
-                <input
-                  type="text"
-                  className="input input-bordered w-full"
-                  placeholder="e.g. FTX1234ABCD"
-                  value={form.serial_number}
-                  onChange={(e) => setForm({ ...form, serial_number: e.target.value })}
-                />
+                <input type="text" className="input input-bordered w-full" placeholder="e.g. FTX1234ABCD"
+                  value={form.serial_number} onChange={(e) => setForm({ ...form, serial_number: e.target.value })} />
               </label>
 
-              {/* SSH Credentials */}
               <div className="divider text-xs opacity-60 my-1">SSH Credentials</div>
               <div className="grid grid-cols-2 gap-3">
                 <label className="form-control w-full">
                   <div className="label"><span className="label-text">SSH Username</span></div>
-                  <input
-                    type="text"
-                    className="input input-bordered w-full"
-                    placeholder="admin"
-                    value={form.ssh_user}
-                    onChange={(e) => setForm({ ...form, ssh_user: e.target.value })}
-                  />
+                  <input type="text" className="input input-bordered w-full" placeholder="admin"
+                    value={form.ssh_user} onChange={(e) => setForm({ ...form, ssh_user: e.target.value })} />
                 </label>
                 <label className="form-control w-full">
                   <div className="label"><span className="label-text">SSH Port</span></div>
-                  <input
-                    type="number"
-                    className="input input-bordered w-full"
-                    placeholder="22"
-                    value={form.ssh_port}
-                    onChange={(e) => setForm({ ...form, ssh_port: e.target.value })}
-                  />
+                  <input type="number" className="input input-bordered w-full" placeholder="22"
+                    value={form.ssh_port} onChange={(e) => setForm({ ...form, ssh_port: e.target.value })} />
                 </label>
               </div>
               <label className="form-control w-full">
@@ -587,20 +970,13 @@ const NetBoxDevices: React.FC = () => {
                   <span className="label-text">SSH Password</span>
                   <span className="label-text-alt opacity-50">{isEditing ? 'leave blank to keep existing' : ''}</span>
                 </div>
-                <input
-                  type="password"
-                  className="input input-bordered w-full"
-                  placeholder="••••••••"
-                  value={form.ssh_password}
-                  onChange={(e) => setForm({ ...form, ssh_password: e.target.value })}
-                />
+                <input type="password" className="input input-bordered w-full" placeholder="••••••••"
+                  value={form.ssh_password} onChange={(e) => setForm({ ...form, ssh_password: e.target.value })} />
               </label>
             </div>
 
             <div className="modal-action">
-              <button className="btn btn-ghost" onClick={() => setShowModal(false)}>
-                Cancel
-              </button>
+              <button className="btn btn-ghost" onClick={() => setShowModal(false)}>Cancel</button>
               <button className="btn btn-primary gap-1" onClick={handleSubmit} disabled={isLoading}>
                 {isLoading && <Loader2 className="w-4 h-4 animate-spin" />}
                 {isEditing ? 'Save Changes' : 'Add Device'}
@@ -608,6 +984,156 @@ const NetBoxDevices: React.FC = () => {
             </div>
           </div>
           <div className="modal-backdrop" onClick={() => setShowModal(false)} />
+        </div>
+      )}
+
+      {/* ─── Add Interface Modal ─── */}
+      {showIfaceModal && (
+        <div className="modal modal-open">
+          <div className="modal-box max-w-md">
+            <h3 className="font-bold text-lg mb-4">Add Interface</h3>
+
+            {ifaceFormError && (
+              <div className="alert alert-error alert-sm mb-3">
+                <AlertTriangle className="w-4 h-4" />
+                <span>{ifaceFormError}</span>
+              </div>
+            )}
+
+            <div className="space-y-3">
+              <label className="form-control w-full">
+                <div className="label"><span className="label-text">Interface Name *</span></div>
+                <input type="text" className="input input-bordered w-full"
+                  placeholder="e.g. GigabitEthernet0/0/0"
+                  value={ifaceForm.name}
+                  onChange={(e) => setIfaceForm({ ...ifaceForm, name: e.target.value })} />
+              </label>
+              <div className="grid grid-cols-2 gap-3">
+                <label className="form-control w-full">
+                  <div className="label"><span className="label-text">IP Address</span></div>
+                  <input type="text" className="input input-bordered w-full" placeholder="10.0.1.1"
+                    value={ifaceForm.ip_address}
+                    onChange={(e) => setIfaceForm({ ...ifaceForm, ip_address: e.target.value })} />
+                </label>
+                <label className="form-control w-full">
+                  <div className="label"><span className="label-text">Subnet Mask</span></div>
+                  <input type="text" className="input input-bordered w-full" placeholder="255.255.255.252"
+                    value={ifaceForm.subnet_mask}
+                    onChange={(e) => setIfaceForm({ ...ifaceForm, subnet_mask: e.target.value })} />
+                </label>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <label className="form-control w-full">
+                  <div className="label"><span className="label-text">MAC Address</span></div>
+                  <input type="text" className="input input-bordered w-full" placeholder="00:11:22:33:44:55"
+                    value={ifaceForm.mac_address}
+                    onChange={(e) => setIfaceForm({ ...ifaceForm, mac_address: e.target.value })} />
+                </label>
+                <label className="form-control w-full">
+                  <div className="label"><span className="label-text">Speed</span></div>
+                  <input type="text" className="input input-bordered w-full" placeholder="1Gbps"
+                    value={ifaceForm.speed}
+                    onChange={(e) => setIfaceForm({ ...ifaceForm, speed: e.target.value })} />
+                </label>
+              </div>
+            </div>
+
+            <div className="modal-action">
+              <button className="btn btn-ghost" onClick={() => setShowIfaceModal(false)}>Cancel</button>
+              <button className="btn btn-primary gap-1" onClick={handleSaveInterface}>
+                <Plus className="w-4 h-4" /> Add Interface
+              </button>
+            </div>
+          </div>
+          <div className="modal-backdrop" onClick={() => setShowIfaceModal(false)} />
+        </div>
+      )}
+
+      {/* ─── Add Link Modal ─── */}
+      {showLinkModal && (
+        <div className="modal modal-open">
+          <div className="modal-box max-w-lg">
+            <h3 className="font-bold text-lg mb-4">Add Link (Neighbor Connection)</h3>
+
+            {linkFormError && (
+              <div className="alert alert-error alert-sm mb-3">
+                <AlertTriangle className="w-4 h-4" />
+                <span>{linkFormError}</span>
+              </div>
+            )}
+
+            <div className="space-y-4">
+              {/* Source side */}
+              <div className="p-3 bg-base-200 rounded-lg space-y-2">
+                <p className="text-xs font-semibold opacity-60">Source Device</p>
+                <select
+                  className="select select-bordered select-sm w-full"
+                  value={linkForm.src_device_id}
+                  onChange={(e) => {
+                    const id = Number(e.target.value);
+                    setLinkForm({ ...linkForm, src_device_id: id, src_interface_id: 0 });
+                    loadIfacesForLink(id, 'src');
+                  }}
+                >
+                  <option value={0}>Select device…</option>
+                  {devices.map(d => (
+                    <option key={d.id} value={d.id}>{d.hostname} ({d.management_ip || 'no IP'})</option>
+                  ))}
+                </select>
+                <select
+                  className="select select-bordered select-sm w-full"
+                  value={linkForm.src_interface_id}
+                  onChange={(e) => setLinkForm({ ...linkForm, src_interface_id: Number(e.target.value) })}
+                  disabled={!linkForm.src_device_id}
+                >
+                  <option value={0}>Select interface (optional)…</option>
+                  {srcInterfaces.map(i => (
+                    <option key={i.id} value={i.id}>{i.name} {i.ip_address ? `(${i.ip_address})` : ''}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="text-center opacity-40 text-sm">↕ connected to ↕</div>
+
+              {/* Destination side */}
+              <div className="p-3 bg-base-200 rounded-lg space-y-2">
+                <p className="text-xs font-semibold opacity-60">Destination Device</p>
+                <select
+                  className="select select-bordered select-sm w-full"
+                  value={linkForm.dst_device_id}
+                  onChange={(e) => {
+                    const id = Number(e.target.value);
+                    setLinkForm({ ...linkForm, dst_device_id: id, dst_interface_id: 0 });
+                    loadIfacesForLink(id, 'dst');
+                  }}
+                >
+                  <option value={0}>Select device…</option>
+                  {devices.map(d => (
+                    <option key={d.id} value={d.id}>{d.hostname} ({d.management_ip || 'no IP'})</option>
+                  ))}
+                </select>
+                <select
+                  className="select select-bordered select-sm w-full"
+                  value={linkForm.dst_interface_id}
+                  onChange={(e) => setLinkForm({ ...linkForm, dst_interface_id: Number(e.target.value) })}
+                  disabled={!linkForm.dst_device_id}
+                >
+                  <option value={0}>Select interface (optional)…</option>
+                  {dstInterfaces.map(i => (
+                    <option key={i.id} value={i.id}>{i.name} {i.ip_address ? `(${i.ip_address})` : ''}</option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            <div className="modal-action">
+              <button className="btn btn-ghost" onClick={() => setShowLinkModal(false)}>Cancel</button>
+              <button className="btn btn-primary gap-1" onClick={handleSaveLink}>
+                <Cable className="w-4 h-4" /> Create Link
+              </button>
+            </div>
+          </div>
+          <div className="modal-backdrop" onClick={() => setShowLinkModal(false)} />
         </div>
       )}
     </div>
