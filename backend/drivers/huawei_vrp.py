@@ -57,11 +57,25 @@ RE_VRP_IF_BRIEF_SIMPLE = re.compile(
 )
 
 # display lldp neighbor brief:
-# Local Intf    Neighbor Dev         Neighbor Intf
-# GE0/0/1       R2                    GE0/0/1
-RE_VRP_LLDP = re.compile(
-    r"^(?P<local_if>\S+)\s+(?P<neighbor>\S+)\s+(?P<remote_if>\S+)",
+# Local Interface         Exptime(s) Neighbor Interface      Neighbor Device
+# GE1/0/0                       108  GE1/0/5                 Acc_Huawei_1
+RE_VRP_LLDP_BRIEF = re.compile(
+    r"^(?P<local_if>\S+)\s+(?P<exptime>\d+)\s+(?P<remote_if>\S+)\s+(?P<neighbor>\S+)",
     re.IGNORECASE,
+)
+
+# display lldp neighbor (detail) field extractors
+RE_VRP_LLDP_LOCAL_INTF = re.compile(
+    r"^(?P<intf>\S+)\s+has\s+\d+\s+neighbor", re.IGNORECASE
+)
+RE_VRP_LLDP_SYSTEM_NAME = re.compile(
+    r"System name\s*:\s*(?P<name>\S+)", re.IGNORECASE
+)
+RE_VRP_LLDP_PORT_ID = re.compile(
+    r"Port ID\s*:\s*(?P<port>\S+)", re.IGNORECASE
+)
+RE_VRP_LLDP_MGMT_ADDR = re.compile(
+    r"Management address\s*:\s*(?P<ip>\d+\.\d+\.\d+\.\d+)", re.IGNORECASE
 )
 
 # display arp:
@@ -156,6 +170,73 @@ class HuaweiVRPDriver(SSHDriver):
         )
 
     # ------------------------------------------------------------------
+    # Connection — handle VRP initial password-change prompt
+    # ------------------------------------------------------------------
+
+    def connect(self) -> None:
+        """Connect to a Huawei VRP device with password-change handling.
+
+        Huawei VRP devices with factory-default passwords display a
+        mandatory ``Change now? [Y/N]:`` dialog immediately after SSH
+        login.  The parent ``SSHDriver.connect()`` would send the paging
+        command *into* that dialog, corrupting the shell state.
+
+        This override manages the full sequence:
+            1. SSH connect (with legacy algorithm fallback)
+            2. Open interactive shell
+            3. Read banner — if password-change prompt present, send ``N``
+            4. **Then** send the paging-disable command
+        """
+        import time
+        import paramiko
+
+        if self._client is not None:
+            return  # Already connected
+
+        # --- Step 1: SSH transport (same as parent) ---
+        self._client = paramiko.SSHClient()
+        self._client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        try:
+            self._connect_with_algorithms()
+            logger.info("SSH connected to %s (modern algorithms)", self.host)
+        except (paramiko.SSHException, EOFError):
+            logger.debug("Modern SSH failed for %s, trying legacy...", self.host)
+            try:
+                self._client = paramiko.SSHClient()
+                self._client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+                self._connect_with_algorithms(use_legacy=True)
+                logger.info("SSH connected to %s (legacy algorithms)", self.host)
+            except Exception as e:
+                self._client = None
+                raise ConnectionError(f"Cannot SSH to {self.host}: {e}") from e
+
+        # --- Step 2: Open interactive shell ---
+        try:
+            self._channel = self._client.invoke_shell()
+            time.sleep(1.0)  # wait for banner
+        except Exception as e:
+            logger.warning("Failed to open shell on %s: %s", self.host, e)
+            self._channel = None
+            return
+
+        # --- Step 3: Handle password-change prompt ---
+        banner = self._drain_channel(self._channel, wait=0.5)
+        if "Change now" in banner or "change the password" in banner.lower():
+            logger.info("Huawei %s: declining initial password change", self.host)
+            self._channel.send("N\n")
+            time.sleep(1.5)
+            self._drain_channel(self._channel, wait=0.5)
+
+        # --- Step 4: Disable paging (AFTER password-change is handled) ---
+        paging_cmd = self._get_disable_paging_command()
+        if paging_cmd:
+            self._channel.send(paging_cmd + "\n")
+            time.sleep(0.5)
+            self._drain_channel(self._channel)
+
+        logger.debug("Huawei VRP shell ready on %s", self.host)
+
+    # ------------------------------------------------------------------
     # SSHDriver abstract methods
     # ------------------------------------------------------------------
 
@@ -241,31 +322,119 @@ class HuaweiVRPDriver(SSHDriver):
         return interfaces
 
     def _parse_neighbors(self, raw_output: str) -> List[Neighbor]:
-        """Parse 'display lldp neighbor brief' output."""
+        """Parse 'display lldp neighbor brief' and 'display lldp neighbor' output."""
         neighbors = []
-        in_lldp_section = False
+        seen = set()
+
+        # --- Parse LLDP brief table ---
+        in_brief_section = False
+        for line in raw_output.splitlines():
+            line = line.strip()
+
+            # Detect the brief table header
+            if "Local Interface" in line and "Neighbor" in line:
+                in_brief_section = True
+                continue
+
+            # Skip separator lines (dashes)
+            if in_brief_section and line.startswith("---"):
+                continue
+
+            # End of brief section on empty line or new prompt
+            if in_brief_section and (not line or line.startswith("<")):
+                in_brief_section = False
+                continue
+
+            if not in_brief_section:
+                continue
+
+            m = RE_VRP_LLDP_BRIEF.match(line)
+            if m:
+                local_if = m.group("local_if")
+                remote_if = m.group("remote_if")
+                neighbor = m.group("neighbor")
+                key = (local_if, neighbor, remote_if)
+                if key not in seen:
+                    seen.add(key)
+                    neighbors.append(Neighbor(
+                        local_interface=local_if,
+                        remote_device=neighbor,
+                        remote_interface=remote_if,
+                        discovery_protocol="lldp",
+                    ))
+
+        # --- Parse LLDP detail (enriches with management IPs) ---
+        current_local_intf = ""
+        current_system_name = ""
+        current_port_id = ""
+        current_mgmt_ip = ""
 
         for line in raw_output.splitlines():
             line = line.strip()
 
-            # LLDP table header typically contains "Local Intf"
-            if "Local" in line and ("Neighbor" in line or "Intf" in line):
-                in_lldp_section = True
-                continue
-
-            if not in_lldp_section or not line:
-                continue
-
-            m = RE_VRP_LLDP.match(line)
+            # Local interface header: "GE1/0/0 has 1 neighbor(s):"
+            m = RE_VRP_LLDP_LOCAL_INTF.match(line)
             if m:
-                neighbors.append(Neighbor(
-                    local_interface=m.group("local_if"),
-                    remote_device=m.group("neighbor"),
-                    remote_interface=m.group("remote_if"),
-                    discovery_protocol="lldp",
-                ))
+                # Save previous entry if complete
+                if current_local_intf and current_system_name:
+                    self._enrich_neighbor(
+                        neighbors, current_local_intf,
+                        current_system_name, current_port_id, current_mgmt_ip
+                    )
+                current_local_intf = m.group("intf")
+                current_system_name = ""
+                current_port_id = ""
+                current_mgmt_ip = ""
+                continue
+
+            m = RE_VRP_LLDP_SYSTEM_NAME.search(line)
+            if m:
+                current_system_name = m.group("name")
+                continue
+
+            m = RE_VRP_LLDP_PORT_ID.search(line)
+            if m and "subtype" not in line.lower():
+                current_port_id = m.group("port")
+                continue
+
+            m = RE_VRP_LLDP_MGMT_ADDR.search(line)
+            if m:
+                current_mgmt_ip = m.group("ip")
+                continue
+
+        # Don't forget the last detail entry
+        if current_local_intf and current_system_name:
+            self._enrich_neighbor(
+                neighbors, current_local_intf,
+                current_system_name, current_port_id, current_mgmt_ip
+            )
 
         return neighbors
+
+    def _enrich_neighbor(
+        self,
+        neighbors: List[Neighbor],
+        local_intf: str,
+        system_name: str,
+        port_id: str,
+        mgmt_ip: str,
+    ) -> None:
+        """Update existing neighbor entry with detail info, or add new one."""
+        for n in neighbors:
+            if n.local_interface == local_intf and n.remote_device == system_name:
+                if mgmt_ip:
+                    n.remote_ip = mgmt_ip
+                if port_id and not n.remote_interface:
+                    n.remote_interface = port_id
+                return
+        # Not found in brief — add new
+        neighbors.append(Neighbor(
+            local_interface=local_intf,
+            remote_device=system_name,
+            remote_interface=port_id,
+            remote_ip=mgmt_ip,
+            discovery_protocol="lldp",
+        ))
 
     def _parse_routing_table(self, raw_output: str) -> List[Route]:
         """Parse 'display ip routing-table' output."""

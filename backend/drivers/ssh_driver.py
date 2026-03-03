@@ -154,7 +154,12 @@ class SSHDriver(BaseDriver):
     # ------------------------------------------------------------------
 
     def connect(self) -> None:
-        """Establish SSH connection with automatic legacy algorithm fallback."""
+        """Establish SSH connection with automatic legacy algorithm fallback.
+
+        Opens a persistent interactive shell immediately after authentication
+        to prevent network devices (e.g. Cisco IOL) from closing the
+        transport when no channel is requested quickly enough.
+        """
         if self._client is not None:
             return  # Already connected
 
@@ -165,20 +170,46 @@ class SSHDriver(BaseDriver):
         try:
             self._connect_with_algorithms()
             logger.info(f"SSH connected to {self.host} (modern algorithms)")
-            return
-        except paramiko.SSHException:
+        except (paramiko.SSHException, EOFError):
             logger.debug(f"Modern SSH failed for {self.host}, trying legacy...")
+            # Fallback to legacy algorithms
+            try:
+                # Must recreate client — transport is in a bad state after failure
+                self._client = paramiko.SSHClient()
+                self._client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+                self._connect_with_algorithms(use_legacy=True)
+                logger.info(f"SSH connected to {self.host} (legacy algorithms)")
+            except Exception as e:
+                self._client = None
+                raise ConnectionError(f"Cannot SSH to {self.host}: {e}") from e
 
-        # Fallback to legacy algorithms
+        # Open a persistent interactive shell immediately so the device
+        # doesn't close the transport (network equipment sends EOF if no
+        # channel is opened quickly after SSH auth).
         try:
-            self._connect_with_algorithms(use_legacy=True)
-            logger.info(f"SSH connected to {self.host} (legacy algorithms)")
+            self._channel = self._client.invoke_shell()
+            time.sleep(0.5)
+            # Disable paging on the persistent shell
+            paging_cmd = self._get_disable_paging_command()
+            if paging_cmd:
+                self._channel.send(paging_cmd + "\n")
+                time.sleep(0.3)
+                # Drain the banner + paging-disable output
+                self._drain_channel(self._channel)
+            logger.debug(f"Persistent interactive shell opened on {self.host}")
         except Exception as e:
-            self._client = None
-            raise ConnectionError(f"Cannot SSH to {self.host}: {e}") from e
+            logger.warning(f"Failed to open shell on {self.host}: {e}")
+            # Don't fail connect — some devices may not need this
+            self._channel = None
 
     def _connect_with_algorithms(self, use_legacy: bool = False) -> None:
-        """Connect with specified algorithm set."""
+        """Connect with specified algorithm set.
+
+        When ``use_legacy`` is True, disables the SHA-2 RSA pubkey
+        algorithms so Paramiko falls back to plain ``ssh-rsa`` host-key
+        verification — required by Huawei VRP and older Cisco IOS devices
+        that only offer ``ssh-rsa``, CBC ciphers, and SHA-1 KEX.
+        """
         connect_kwargs = {
             "hostname": self.host,
             "port": self.port,
@@ -194,17 +225,10 @@ class SSHDriver(BaseDriver):
             connect_kwargs["key_filename"] = self.key_file
 
         if use_legacy:
-            connect_kwargs["disabled_algorithms"] = {}
-            transport_kwargs = {
-                "disabled_algorithms": {
-                    "kex": [],
-                    "keys": [],
-                    "ciphers": [],
-                }
+            # Disable SHA-2 RSA variants so Paramiko offers plain ssh-rsa
+            connect_kwargs["disabled_algorithms"] = {
+                "pubkeys": ["rsa-sha2-256", "rsa-sha2-512"],
             }
-            # We can't directly set algorithms in connect(), so we handle
-            # this via transport after connection for older paramiko versions.
-            # Modern paramiko supports the `disabled_algorithms` parameter.
 
         self._client.connect(**connect_kwargs)
 
@@ -230,22 +254,42 @@ class SSHDriver(BaseDriver):
         if self._client is None:
             return False
         transport = self._client.get_transport()
-        return transport is not None and transport.is_active()
+        if transport is None or not transport.is_active():
+            return False
+        # Also verify the persistent shell channel is open
+        if self._channel is not None and self._channel.closed:
+            return False
+        return True
 
     # ------------------------------------------------------------------
     # Command execution
     # ------------------------------------------------------------------
 
+    def _drain_channel(self, channel, wait: float = 0.3) -> str:
+        """Read and discard any pending output from a channel."""
+        time.sleep(wait)
+        output = b""
+        while channel.recv_ready():
+            output += channel.recv(65536)
+        return output.decode(errors="ignore")
+
     def execute_command(self, command: str, timeout: int = None) -> str:
         """
-        Execute a single CLI command and return the output.
-        Automatically handles paging disable on first use.
+        Execute a single CLI command via the persistent shell and return output.
+        Falls back to exec_command if no shell is available.
         """
         if not self.is_alive():
             raise ConnectionError(f"Not connected to {self.host}")
 
         timeout = timeout or self.COMMAND_TIMEOUT
 
+        # Prefer the persistent shell (required for most network devices)
+        if self._channel is not None and not self._channel.closed:
+            self._channel.send(command.strip() + "\n")
+            output = self._read_channel(self._channel, timeout=timeout)
+            return output
+
+        # Fallback to exec_command (works for Linux/servers)
         try:
             stdin, stdout, stderr = self._client.exec_command(
                 command.strip(),
@@ -263,7 +307,7 @@ class SSHDriver(BaseDriver):
 
     def execute_commands(self, commands: List[str], timeout: int = None) -> str:
         """
-        Execute multiple commands in an interactive shell session.
+        Execute multiple commands in the persistent interactive shell session.
         Returns the combined output from all commands.
         """
         if not self.is_alive():
@@ -271,15 +315,21 @@ class SSHDriver(BaseDriver):
 
         timeout = timeout or self.COMMAND_TIMEOUT
 
-        # Open interactive shell
-        channel = self._client.invoke_shell()
-        time.sleep(0.5)
-
-        # Disable paging first
-        paging_cmd = self._get_disable_paging_command()
-        if paging_cmd:
-            channel.send(paging_cmd + "\n")
+        # Use the persistent shell channel opened during connect()
+        channel = self._channel
+        if channel is None or channel.closed:
+            # Fallback: open a new shell if the persistent one is gone
+            channel = self._client.invoke_shell()
             time.sleep(0.5)
+            paging_cmd = self._get_disable_paging_command()
+            if paging_cmd:
+                channel.send(paging_cmd + "\n")
+                time.sleep(0.5)
+                self._drain_channel(channel)
+            self._channel = channel
+
+        # Drain any leftover output from previous commands
+        self._drain_channel(channel, wait=0.1)
 
         # Send all commands
         for cmd in commands:
@@ -288,7 +338,6 @@ class SSHDriver(BaseDriver):
 
         # Read all output with deadline
         output = self._read_channel(channel, timeout=timeout)
-        channel.close()
 
         return output
 

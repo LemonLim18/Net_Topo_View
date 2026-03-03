@@ -189,6 +189,24 @@ class DeploymentRepository:
                 (status.value, stage.value, error, job_id)
             )
             
+    def list_jobs(self) -> List[Dict]:
+        """Return all jobs joined with request title and device hostname."""
+        with self.db._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT j.id, j.request_id, j.device_id, j.status, j.stage,
+                       j.error_message, j.execution_engine,
+                       j.created_at, j.updated_at,
+                       cr.title AS request_title,
+                       d.hostname AS hostname
+                FROM jobs j
+                LEFT JOIN change_requests cr ON cr.id = j.request_id
+                LEFT JOIN devices d ON d.id = j.device_id
+                ORDER BY j.id DESC
+                """
+            ).fetchall()
+            return [dict(r) for r in rows]
+
     def update_request_status(self, req_id: int, status: RequestStatus):
         """Update overall request status."""
         with self.db._connect() as conn:

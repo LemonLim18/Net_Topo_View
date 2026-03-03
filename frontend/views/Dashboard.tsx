@@ -14,7 +14,8 @@ import SSHConnectModal from '../components/SSHConnectModal';
 import { CONTROLLER_NODE_ID, CONTROLLER_NODE_DATA, mockTopologyData as PLANNED_TOPOLOGY_DATA } from '../constants';
 import { useWebSocket } from '../src/hooks/useWebSocket';
 import { API_CONFIG } from '../src/config';
-import { Terminal, Info } from 'lucide-react';
+import { topologyApi } from '../src/services/api';
+import { Terminal, Info, RefreshCw } from 'lucide-react';
 import { Toast } from '../src/utils/swal';
 import { sshApi } from '../src/services/api';
 
@@ -28,7 +29,9 @@ const expandInterfaceName = (abbr: string): string => {
 };
 
 const processTopologyData = (data: TopologyData | null) => {
-    if (!data) return { nodes: [], links: [] };
+    if (!data) { console.debug('[Topo] processTopologyData called with null'); return { nodes: [], links: [] }; }
+    const nodeKeys = Object.keys(data.nodes);
+    console.debug(`[Topo] processTopologyData: ${nodeKeys.length} nodes:`, nodeKeys);
 
     const nodes: D3Node[] = Object.keys(data.nodes).map(nodeId => ({
         id: nodeId,
@@ -152,9 +155,63 @@ const Dashboard: React.FC = () => {
       sessionId?: string;
     } | null>(null);
 
-    const { status, topology: realTimeTopology } = useWebSocket({
+    const { status, topology: realTimeTopology, setTopology: setWsTopology } = useWebSocket({
         url: API_CONFIG.WS_URL,
     });
+
+    // --- Refresh / Manual Crawl state ---
+    const [isRefreshing, setIsRefreshing] = useState(false);
+
+    const handleRefreshTopology = useCallback(async () => {
+        setIsRefreshing(true);
+        try {
+            // 1. Trigger a new crawl on the backend
+            await topologyApi.crawl();
+            Toast.success('Crawl Triggered', 'Network discovery started. Topology will update via WebSocket when done.');
+
+            // 2. Poll for the result — SSH crawls may take 15-60s depending on device count.
+            //    We poll every 5s up to 60s, stopping early once we get nodes.
+            let attempts = 0;
+            const maxAttempts = 12;  // 12 × 5s = 60s
+            const pollInterval = setInterval(async () => {
+                attempts++;
+                try {
+                    const freshTopo = await topologyApi.get();
+                    const nodeCount = freshTopo?.nodes ? Object.keys(freshTopo.nodes).length : 0;
+                    console.log(`[Refresh] Poll attempt ${attempts}/${maxAttempts}: ${nodeCount} nodes`);
+                    if (nodeCount > 0) {
+                        setWsTopology(freshTopo);
+                        Toast.success('Topology Loaded', `${nodeCount} nodes discovered.`);
+                        clearInterval(pollInterval);
+                        setIsRefreshing(false);
+                    } else if (attempts >= maxAttempts) {
+                        clearInterval(pollInterval);
+                        setIsRefreshing(false);
+                        Toast.error('No Nodes Found', 'Crawl completed but discovered 0 nodes. Check backend logs for SSH/connection errors.');
+                    }
+                } catch {
+                    if (attempts >= maxAttempts) {
+                        clearInterval(pollInterval);
+                        setIsRefreshing(false);
+                    }
+                }
+            }, 5000);
+        } catch (err: any) {
+            Toast.error('Crawl Failed', err.message || 'Could not trigger network crawl.');
+            
+            // Fallback: just fetch the existing topology via REST
+            try {
+                const existingTopo = await topologyApi.get();
+                if (existingTopo && existingTopo.nodes && Object.keys(existingTopo.nodes).length > 0) {
+                    setWsTopology(existingTopo);
+                    Toast.success('Topology Loaded', `Loaded cached topology with ${Object.keys(existingTopo.nodes).length} nodes.`);
+                }
+            } catch {
+                // nothing more we can do
+            }
+            setIsRefreshing(false);
+        }
+    }, [setWsTopology]);
     
     const isLoading = status === 'connecting' || (status === 'connected' && !realTimeTopology);
 
@@ -409,6 +466,15 @@ const Dashboard: React.FC = () => {
                     <button className={`btn join-item btn-sm ${vizEngine === 'd3' ? 'btn-active' : ''}`} onClick={() => setVizEngine('d3')}>D3.js</button>
                     <button className={`btn join-item btn-sm ${vizEngine === 'cytoscape' ? 'btn-active' : ''}`} onClick={() => setVizEngine('cytoscape')}>Cytoscape</button>
                 </div>
+                <button
+                    className={`btn btn-sm btn-outline btn-primary gap-1 ${isRefreshing ? 'btn-disabled' : ''}`}
+                    onClick={handleRefreshTopology}
+                    disabled={isRefreshing}
+                    title="Trigger a fresh network crawl and reload topology"
+                >
+                    <RefreshCw size={14} className={isRefreshing ? 'animate-spin' : ''} />
+                    {isRefreshing ? 'Scanning...' : 'Refresh Topology'}
+                </button>
             </div>
 
             <div className="grow relative overflow-hidden">

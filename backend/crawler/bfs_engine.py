@@ -28,7 +28,7 @@ import logging
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from crawler.poll import poll_device
 from crawler.parsers.cisco import normalize_interface_name
@@ -114,6 +114,7 @@ def crawl_topology(
     driver_type: str = "cisco_ios",
     jump_host: Optional[dict] = None,
     workers: int = 10,
+    cred_overrides: Optional[Dict[str, Tuple[str, str]]] = None,
 ) -> Dict:
     """
     BFS-discover the full network topology from *seeds*.
@@ -157,6 +158,7 @@ def crawl_topology(
                     driver_type,
                     hop_chain=chain,
                     jump_host=jump_host,
+                    cred_overrides=cred_overrides,
                 ): (ip, chain)
                 for ip, chain in batch
             }

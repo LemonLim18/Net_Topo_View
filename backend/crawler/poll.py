@@ -11,8 +11,11 @@ topology JSON.
 
 import logging
 import re
+import time
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
+
+import paramiko
 
 from drivers.factory import DriverFactory
 from drivers.base import BaseDriver
@@ -22,6 +25,147 @@ logger = logging.getLogger("crawler.poll")
 
 # Used by the BFS engine to detect loopback interfaces for mgmt_ip
 RE_LOOPBACK = re.compile(r"^Loopback", re.IGNORECASE)
+
+# SSH driver fallback order for auto-detection
+_SSH_DRIVERS = ["cisco_ios", "huawei_vrp", "juniper_junos"]
+
+
+# -----------------------------------------------------------------------
+# Vendor auto-detection from SSH prompt
+# -----------------------------------------------------------------------
+
+# Legacy SSH algorithms for older devices (mirrors SSHDriver constants)
+_LEGACY_CIPHERS = [
+    "aes128-cbc", "aes256-cbc", "3des-cbc",
+    "aes128-ctr", "aes256-ctr",
+]
+_LEGACY_KEXS = [
+    "diffie-hellman-group14-sha1",
+    "diffie-hellman-group-exchange-sha1",
+    "diffie-hellman-group1-sha1",
+]
+_LEGACY_HOST_KEYS = ["ssh-rsa", "ssh-dss"]
+
+
+def _ssh_connect_with_fallback(
+    client: paramiko.SSHClient,
+    host_ip: str,
+    port: int,
+    username: str,
+    password: Optional[str],
+    timeout: int = 8,
+) -> None:
+    """Connect with automatic legacy algorithm fallback (like SSHDriver).
+
+    Modern Paramiko (>= 2.9) disables ``ssh-rsa`` host keys by default in
+    favour of ``rsa-sha2-256`` / ``rsa-sha2-512``.  Many Huawei VRP and older
+    Cisco IOS devices **only** offer ``ssh-rsa``, ``diffie-hellman-group14-sha1``
+    KEX, and AES-CBC ciphers — so the negotiation fails with an ``EOFError``.
+
+    Strategy:
+        1. Try with modern defaults.
+        2. On failure, retry with ``disabled_algorithms`` that **forces**
+           Paramiko to fall back to plain ``ssh-rsa`` host-key verification.
+    """
+    connect_kwargs = {
+        "hostname": host_ip,
+        "port": port,
+        "username": username,
+        "password": password,
+        "timeout": timeout,
+        "allow_agent": False,
+        "look_for_keys": False,
+    }
+    try:
+        client.connect(**connect_kwargs)
+    except (paramiko.SSHException, EOFError, Exception) as first_err:
+        logger.debug("Modern SSH failed for %s (%s), trying legacy...", host_ip, first_err)
+        # Close and recreate so transport state is clean
+        try:
+            client.close()
+        except Exception:
+            pass
+        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        # Retry: disable SHA-2 RSA variants so Paramiko offers plain ssh-rsa
+        legacy_kwargs = dict(connect_kwargs)
+        legacy_kwargs["disabled_algorithms"] = {
+            "pubkeys": ["rsa-sha2-256", "rsa-sha2-512"],
+        }
+        try:
+            client.connect(**legacy_kwargs)
+            logger.info("Legacy SSH fallback succeeded for %s", host_ip)
+        except Exception:
+            raise first_err  # raise the original if both fail
+
+
+def detect_vendor_driver(
+    host_ip: str,
+    username: str,
+    password: Optional[str],
+    port: int = 22,
+) -> Optional[str]:
+    """
+    Detect the device vendor by reading the initial SSH shell prompt.
+
+    Opens a short-lived SSH session, reads the first prompt output, and
+    matches against known vendor patterns:
+        - Huawei VRP:  ``<hostname>`` angle-bracket prompt
+        - Juniper Junos: ``user@hostname>`` format
+        - Cisco IOS/XE: ``hostname#`` or ``hostname>`` format
+
+    Returns one of: ``"cisco_ios"``, ``"huawei_vrp"``, ``"juniper_junos"``,
+    or ``None`` if detection fails.
+    """
+    client = paramiko.SSHClient()
+    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    try:
+        _ssh_connect_with_fallback(client, host_ip, port, username, password)
+        chan = client.invoke_shell()
+        time.sleep(1.5)  # wait for banner + prompt
+
+        output = ""
+        while chan.recv_ready():
+            output += chan.recv(4096).decode(errors="ignore")
+
+        # Handle Huawei VRP initial password-change prompt
+        if "Change now" in output:
+            chan.send("N\n")
+            time.sleep(1.0)
+            while chan.recv_ready():
+                output += chan.recv(4096).decode(errors="ignore")
+
+        chan.close()
+        client.close()
+
+        # --- Pattern matching ---
+        # Huawei VRP prompt: <Hostname> or Info: ... HUAWEI
+        if re.search(r"<\S+>", output) or re.search(r"HUAWEI|VRP", output, re.IGNORECASE):
+            logger.info("Auto-detected Huawei VRP on %s", host_ip)
+            return "huawei_vrp"
+
+        # Juniper Junos prompt: user@hostname> or {master:0}
+        if re.search(r"\w+@\w+[>%]", output) or re.search(r"JUNOS|{master:", output, re.IGNORECASE):
+            logger.info("Auto-detected Juniper Junos on %s", host_ip)
+            return "juniper_junos"
+
+        # Cisco IOS/XE prompt: Hostname# or Hostname>
+        if re.search(r"\S+[#>]\s*$", output, re.MULTILINE):
+            logger.info("Auto-detected Cisco IOS on %s", host_ip)
+            return "cisco_ios"
+
+        # Fallback: default to cisco_ios (most common)
+        logger.warning("Could not detect vendor for %s, defaulting to cisco_ios. Prompt: %r",
+                        host_ip, output[:200])
+        return "cisco_ios"
+
+    except Exception as e:
+        logger.warning("Vendor detection failed for %s: %s", host_ip, e)
+        return None
+    finally:
+        try:
+            client.close()
+        except Exception:
+            pass
 
 
 # -----------------------------------------------------------------------
@@ -77,9 +221,21 @@ def poll_device(
     driver_type: str = "cisco_ios",
     hop_chain: Optional[List[str]] = None,
     jump_host: Optional[Dict] = None,
+    cred_overrides: Optional[Dict[str, Tuple[str, str]]] = None,
 ) -> Dict:
     """
     Poll a single device using the M1 driver layer.
+
+    When ``driver_type`` is ``"auto"``, the function first opens a
+    short-lived SSH session to read the device prompt and auto-detect
+    the vendor (Cisco IOS / Huawei VRP / Juniper Junos), then polls
+    with the correct driver.
+
+    Args:
+        cred_overrides: Optional dict mapping device IPs to
+            ``(username, password)`` tuples. When the target IP has an
+            entry here, those credentials are used instead of the
+            default ``username``/``password``.
 
     Returns the **same dict shape** as ``mini_nce.py:poll_device()`` so
     the BFS engine can consume it identically::
@@ -94,13 +250,30 @@ def poll_device(
 
     On failure, returns a dict with ``"down": True``.
     """
+    # --- Per-device credential override ---
+    effective_user = username
+    effective_pass = password
+    if cred_overrides and host_ip in cred_overrides:
+        effective_user, effective_pass = cred_overrides[host_ip]
+        logger.info("Using credential override for %s (user=%s)", host_ip, effective_user)
+
+    # --- Auto-detect vendor when driver_type is "auto" ---
+    actual_driver = driver_type
+    if driver_type == "auto":
+        detected = detect_vendor_driver(host_ip, effective_user, effective_pass)
+        if detected is None:
+            logger.warning("Cannot reach %s for vendor detection — marking down", host_ip)
+            return PollResult(hostname=host_ip, down=True).to_dict()
+        actual_driver = detected
+        logger.info("Auto-detected driver for %s: %s", host_ip, actual_driver)
+
     driver: Optional[BaseDriver] = None
     try:
         driver = DriverFactory.create(
-            driver_type,
+            actual_driver,
             host=host_ip,
-            username=username,
-            password=password,
+            username=effective_user,
+            password=effective_pass,
             key_file=key_file,
             hop_chain=hop_chain,
             jump_host=jump_host,

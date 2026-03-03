@@ -5,7 +5,7 @@ import json
 import logging
 import os
 from datetime import datetime
-from typing import List, Optional, Set
+from typing import Dict, List, Optional, Set, Tuple
 
 import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
@@ -109,6 +109,15 @@ CRAWL_KEYFILE  = os.getenv("CRAWL_KEYFILE") or None
 CRAWL_DRIVER   = os.getenv("CRAWL_DRIVER", "cisco_ios")
 CRAWL_JUMP     = None  # set via env JSON if needed
 
+# Per-device credential overrides: "IP:user:pass,IP:user:pass,..."
+_CRAWL_CRED_OVERRIDES: Dict[str, Tuple[str, str]] = {}
+_raw_overrides = os.getenv("CRAWL_CRED_OVERRIDES", "")
+for _entry in _raw_overrides.split(","):
+    _entry = _entry.strip()
+    if _entry.count(":") >= 2:
+        _parts = _entry.split(":", 2)  # IP:user:password (password may contain ':')
+        _CRAWL_CRED_OVERRIDES[_parts[0].strip()] = (_parts[1].strip(), _parts[2].strip())
+
 # Global State
 _current_topology_dict: Optional[dict] = None
 _current_topology_json: Optional[str] = None
@@ -190,6 +199,7 @@ def do_sync_crawl() -> dict:
         driver_type=CRAWL_DRIVER,
         jump_host=CRAWL_JUMP,
         workers=CRAWL_WORKERS,
+        cred_overrides=_CRAWL_CRED_OVERRIDES or None,
     )
 
 def canonical_topology(topo: dict) -> dict:
@@ -466,17 +476,55 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="CogniShield Backend", lifespan=lifespan)
 
-# CORS
+# ---------------------------------------------------------------------------
+# CORS — belt-and-suspenders approach
+# ---------------------------------------------------------------------------
+# 1) Standard CORSMiddleware for normal responses
+# 2) A catch-all middleware that guarantees CORS headers even on unhandled
+#    500 errors (which can bypass CORSMiddleware in some Starlette versions).
+
+_ALLOWED_ORIGINS = [
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+    "http://localhost:3000",
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-    ],
+    allow_origins=_ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+from starlette.requests import Request as StarletteRequest
+from starlette.responses import JSONResponse as StarletteJSONResponse, Response as StarletteResponse
+from starlette.middleware.base import BaseHTTPMiddleware
+
+class CORSErrorCatchMiddleware(BaseHTTPMiddleware):
+    """Catches unhandled exceptions and returns a JSON 500 with CORS headers.
+
+    This sits *outside* CORSMiddleware in the stack so even if Starlette's
+    ServerErrorMiddleware intercepts the exception first, we still inject
+    the correct Access-Control-Allow-Origin header.
+    """
+    async def dispatch(self, request: StarletteRequest, call_next):
+        origin = request.headers.get("origin", "")
+        try:
+            response: StarletteResponse = await call_next(request)
+        except Exception as exc:
+            logger.error("Unhandled exception on %s %s: %s", request.method, request.url.path, exc, exc_info=True)
+            response = StarletteJSONResponse(
+                status_code=500,
+                content={"detail": str(exc) or "Internal Server Error"},
+            )
+        # Guarantee CORS header on every response (including errors)
+        if origin in _ALLOWED_ORIGINS and "access-control-allow-origin" not in response.headers:
+            response.headers["access-control-allow-origin"] = origin
+            response.headers["access-control-allow-credentials"] = "true"
+        return response
+
+app.add_middleware(CORSErrorCatchMiddleware)
 
 # Mount Routers
 app.include_router(crawler_router, prefix="/api/v1")
