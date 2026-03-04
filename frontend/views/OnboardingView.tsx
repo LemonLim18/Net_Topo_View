@@ -1,6 +1,6 @@
 ﻿import React, { useState, useEffect } from 'react';
 import Editor from '@monaco-editor/react';
-import { PackagePlus, Download, RefreshCw, ChevronRight, ChevronLeft, CheckCircle, Terminal, Maximize2, Minimize2 } from 'lucide-react';
+import { PackagePlus, Download, RefreshCw, ChevronRight, ChevronLeft, CheckCircle, Terminal, Maximize2, Minimize2, Copy, Check, Lightbulb } from 'lucide-react';
 import type { ViewId } from '../types';
 
 // ---------------------------------------------------------------------------
@@ -43,6 +43,7 @@ const OnboardingView: React.FC<{ setView: (id: ViewId) => void }> = ({ setView }
 
   const [error, setError]             = useState('');
   const [isFullWidth, setIsFullWidth] = useState(false);
+  const [copied, setCopied]           = useState(false);
 
   // Fetch device list on mount
   useEffect(() => { fetchDevices(); }, []);
@@ -92,6 +93,12 @@ const OnboardingView: React.FC<{ setView: (id: ViewId) => void }> = ({ setView }
     a.click();
     URL.revokeObjectURL(url);
     setStep(3);
+  };
+ 
+  const handleCopy = () => {
+    navigator.clipboard.writeText(config);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
   };
 
   const vendorLabel  = (v: string | null) => VENDOR_LABELS[v ?? ''] ?? v ?? 'Unknown';
@@ -271,8 +278,17 @@ const OnboardingView: React.FC<{ setView: (id: ViewId) => void }> = ({ setView }
               </button>
             </div>
 
-            <div className="alert alert-info text-sm">
-              Edit the script if needed (e.g. change the subnet mask, interface name, or gateway), then click <strong>Download Script</strong> and paste it into the device console.
+            <div className="alert alert-info text-sm py-2">
+              <div className="flex items-center gap-2">
+                <Lightbulb className="h-4 w-4 mr-1"/>
+                <span>
+                  Edit the script if needed (e.g. change the subnet mask, interface name, or gateway), then click 
+                  <span className="inline-flex items-center gap-1 font-bold mx-1">
+                    <Download className="h-3.5 w-3.5" /> Download Script
+                  </span> 
+                  and paste it into the device console.
+                </span>
+              </div>
             </div>
 
             <div className="rounded-lg overflow-hidden border border-base-300 transition-all duration-300" style={{ height: isFullWidth ? '700px' : '480px' }}>
@@ -299,10 +315,16 @@ const OnboardingView: React.FC<{ setView: (id: ViewId) => void }> = ({ setView }
                 <ChevronLeft className="h-4 w-4" />
                 Back
               </button>
-              <button className="btn btn-primary btn-sm gap-2" onClick={handleDownload}>
-                <Download className="h-4 w-4" />
-                Download Script
-              </button>
+              <div className="flex gap-2">
+                <button className="btn btn-ghost btn-sm gap-2" onClick={handleCopy}>
+                  {copied ? <Check className="h-4 w-4 text-success" /> : <Copy className="h-4 w-4" />}
+                  {copied ? 'Copied' : 'Copy All'}
+                </button>
+                <button className="btn btn-primary btn-sm gap-2" onClick={handleDownload}>
+                  <Download className="h-4 w-4" />
+                  Download Script
+                </button>
+              </div>
             </div>
           </div>
         </div>
@@ -326,6 +348,10 @@ const OnboardingView: React.FC<{ setView: (id: ViewId) => void }> = ({ setView }
               <button className="btn btn-ghost btn-sm gap-1" onClick={() => setStep(2)}>
                 <ChevronLeft className="h-4 w-4" />
                 Back to Editor
+              </button>
+              <button className="btn btn-ghost btn-sm gap-2" onClick={handleCopy}>
+                {copied ? <Check className="h-4 w-4 text-success" /> : <Copy className="h-4 w-4" />}
+                {copied ? 'Copied' : 'Copy All'}
               </button>
               <button className="btn btn-primary btn-sm gap-2" onClick={handleDownload}>
                 <Download className="h-4 w-4" />
