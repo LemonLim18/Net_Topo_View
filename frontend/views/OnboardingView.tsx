@@ -1,6 +1,6 @@
 ﻿import React, { useState, useEffect } from 'react';
 import Editor from '@monaco-editor/react';
-import { PackagePlus, Download, RefreshCw, ChevronRight, ChevronLeft, CheckCircle, Terminal } from 'lucide-react';
+import { PackagePlus, Download, RefreshCw, ChevronRight, ChevronLeft, CheckCircle, Terminal, Maximize2, Minimize2 } from 'lucide-react';
 import type { ViewId } from '../types';
 
 // ---------------------------------------------------------------------------
@@ -42,6 +42,7 @@ const OnboardingView: React.FC<{ setView: (id: ViewId) => void }> = ({ setView }
   const [loadingConfig, setLoadingConfig] = useState(false);
 
   const [error, setError]             = useState('');
+  const [isFullWidth, setIsFullWidth] = useState(false);
 
   // Fetch device list on mount
   useEffect(() => { fetchDevices(); }, []);
@@ -97,7 +98,8 @@ const OnboardingView: React.FC<{ setView: (id: ViewId) => void }> = ({ setView }
   const stepLabels   = ['Select Device', 'Review & Edit', 'Download Done'];
 
   return (
-    <div className="p-6 max-w-5xl mx-auto flex flex-col gap-6">
+    <div className="w-full h-full overflow-y-auto">
+      <div className={`p-6 min-h-full flex flex-col gap-6 transition-all duration-300 ${isFullWidth ? 'w-full' : 'max-w-5xl mx-auto'}`}>
 
       {/* Header */}
       <div className="flex items-center gap-3">
@@ -105,8 +107,8 @@ const OnboardingView: React.FC<{ setView: (id: ViewId) => void }> = ({ setView }
         <div>
           <h1 className="text-xl font-bold">Onboard New Device</h1>
           <p className="text-sm opacity-60">
-            Select a registered device, review the generated Day-0 config in the editor, then download the script for console-paste.
-            Only devices pushed to NetBox (status: "Registered") appear here.
+            Select a planned device, review the generated Day-0 config in the editor, then download the script for console-paste.
+            All manually added devices (status: "Planned") appear here.
           </p>
         </div>
       </div>
@@ -132,7 +134,7 @@ const OnboardingView: React.FC<{ setView: (id: ViewId) => void }> = ({ setView }
         <div className="card bg-base-100 shadow">
           <div className="card-body gap-4">
             <div className="flex items-center justify-between">
-              <h2 className="card-title text-base">Select a Registered Device</h2>
+              <h2 className="card-title text-base">Select a Planned Device</h2>
               <button
                 className="btn btn-ghost btn-xs gap-1"
                 onClick={fetchDevices}
@@ -149,9 +151,9 @@ const OnboardingView: React.FC<{ setView: (id: ViewId) => void }> = ({ setView }
                   <PackagePlus className="h-8 w-8 text-base-content/50" strokeWidth={1.5} />
                 </div>
                 <div>
-                  <p className="text-base font-semibold text-base-content">No registered devices ready for onboarding</p>
+                  <p className="text-base font-semibold text-base-content">No planned devices ready for onboarding</p>
                   <p className="mt-1 text-sm text-base-content/50">
-                    Go to Device Inventory, register a device, and push it to NetBox first.
+                    Go to Device Inventory and add a device first. All manually added devices are automatically available for onboarding.
                   </p>
                 </div>
                 <button
@@ -200,7 +202,8 @@ const OnboardingView: React.FC<{ setView: (id: ViewId) => void }> = ({ setView }
                         <td className="font-mono text-xs">{d.ssh_user || <span className="opacity-40 italic">not set</span>}</td>
                         <td>
                           <span className={`badge badge-xs ${
-                            d.status === 'up' ? 'badge-success' :
+                            d.status === 'planned' ? 'badge-info' :
+                            d.status === 'active' ? 'badge-success' :
                             d.status === 'down' ? 'badge-error' : 'badge-ghost'
                           }`}>
                             {d.status}
@@ -258,15 +261,23 @@ const OnboardingView: React.FC<{ setView: (id: ViewId) => void }> = ({ setView }
                 <span className="badge badge-primary badge-sm ml-1">{selected?.hostname}</span>
               </h2>
               <span className="badge badge-ghost badge-sm ml-auto">{vendorLabel(selected?.vendor ?? null)}</span>
+              <button 
+                className="btn btn-ghost btn-xs gap-1 ml-1"
+                onClick={() => setIsFullWidth(!isFullWidth)}
+                title={isFullWidth ? "Standard View" : "Expand View"}
+              >
+                {isFullWidth ? <Minimize2 className="h-3.5 w-3.5" /> : <Maximize2 className="h-3.5 w-3.5" />}
+                {isFullWidth ? "Narrow" : "Full Screen"}
+              </button>
             </div>
 
             <div className="alert alert-info text-sm">
               Edit the script if needed (e.g. change the subnet mask, interface name, or gateway), then click <strong>Download Script</strong> and paste it into the device console.
             </div>
 
-            <div className="rounded-lg overflow-hidden border border-base-300" style={{ height: '420px' }}>
+            <div className="rounded-lg overflow-hidden border border-base-300 transition-all duration-300" style={{ height: isFullWidth ? '700px' : '480px' }}>
               <Editor
-                height="420px"
+                height={isFullWidth ? "700px" : "480px"}
                 defaultLanguage="shell"
                 theme="vs-dark"
                 value={config}
@@ -307,8 +318,8 @@ const OnboardingView: React.FC<{ setView: (id: ViewId) => void }> = ({ setView }
             <h2 className="card-title text-lg">Script Downloaded!</h2>
             <p className="text-sm opacity-70 max-w-md">
               Paste <strong>{filename}</strong> into the device console to bootstrap it.
-              The device status has been changed to <strong>Provisioning</strong>.
-              Once SSH is reachable, the next crawler run will automatically transition it to <strong>Active</strong>.
+              The device remains in <strong>Planned</strong> status so you can revisit this configuration later.
+              Once the device is reachable via SSH, the network crawler will automatically transition it to <strong>Active</strong>.
             </p>
 
             <div className="flex gap-3 mt-2">
@@ -330,6 +341,7 @@ const OnboardingView: React.FC<{ setView: (id: ViewId) => void }> = ({ setView }
           </div>
         </div>
       )}
+      </div>
     </div>
   );
 };

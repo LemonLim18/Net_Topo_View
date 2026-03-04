@@ -299,6 +299,7 @@ export interface DeviceRecord {
   os_version: string | null;
   serial_number: string | null;
   status: string;
+  role: string;
   source: string;
   last_polled: string | null;
   created_at: string | null;
@@ -350,6 +351,7 @@ export const netboxApi = {
     os_version?: string;
     serial_number?: string;
     status?: string;
+    role?: string;
     ssh_user?: string;
     ssh_password?: string;
     ssh_port?: number;
@@ -367,6 +369,7 @@ export const netboxApi = {
     os_version?: string;
     serial_number?: string;
     status?: string;
+    role?: string;
     ssh_user?: string;
     ssh_password?: string;
     ssh_port?: number;

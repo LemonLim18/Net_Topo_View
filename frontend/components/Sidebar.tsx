@@ -134,32 +134,18 @@ const Sidebar: React.FC<SidebarProps> = ({ currentView, setView, user, onLogout,
         <MenuItem id="overview" label="Dashboard" icon={Home} />
 
         <SectionHeader
-          label="Operations"
+          label="Network"
           icon={Activity}
           iconColor="text-primary"
           open={networkOpen}
           onToggle={() => setNetworkOpen(!networkOpen)}
         >
+          <MenuItem id="drift" label="Compliance / Drift" icon={GitCompareArrows} />
+          <MenuItem id="netbox_devices" label="Device Inventory" icon={Server} />
           <MenuItem id="onboarding" label="Onboard Device" icon={PackagePlus} />
+          <MenuItem id="net_perf" label="Performance" icon={Activity} />
           <MenuItem id="template_studio" label="Template Studio" icon={FileCode2} />
           <MenuItem id="topology" label="Topology Map" icon={Network} />
-          <MenuItem id="netbox_devices" label="Device Inventory" icon={Server} />
-          <MenuItem id="drift" label="Compliance / Drift" icon={GitCompareArrows} />
-          <MenuItem id="net_perf" label="Performance" icon={Activity} />
-        </SectionHeader>
-
-        <SectionHeader
-          label="Security"
-          icon={ShieldCheck}
-          iconColor="text-secondary"
-          open={securityOpen}
-          onToggle={() => setSecurityOpen(!securityOpen)}
-        >
-          <MenuItem id="sec_dashboard" label="Security Dashboard" icon={Gauge} />
-          <MenuItem id="sec_events" label="SIEM & Events" icon={ShieldAlert} />
-          <MenuItem id="sec_analysis" label="Threat Analysis" icon={ScanSearch} />
-          <MenuItem id="sec_chat" label="Security Copilot" icon={BotMessageSquare} />
-          <MenuItem id="incidents" label="Incident Response" icon={Siren} />
         </SectionHeader>
 
         <SectionHeader
@@ -176,6 +162,19 @@ const Sidebar: React.FC<SidebarProps> = ({ currentView, setView, user, onLogout,
           <MenuItem id="approval_queue" label="Approval Queue" icon={ListChecks} />
           <MenuItem id="sdn_dashboard" label="SDN Controllers" icon={Network} />
           <MenuItem id="knowledge_base" label="Knowledge Base" icon={BookOpen} />
+        </SectionHeader>
+        <SectionHeader
+          label="Security"
+          icon={ShieldCheck}
+          iconColor="text-secondary"
+          open={securityOpen}
+          onToggle={() => setSecurityOpen(!securityOpen)}
+          >
+          <MenuItem id="sec_dashboard" label="Security Dashboard" icon={Gauge} />
+          <MenuItem id="sec_events" label="SIEM & Events" icon={ShieldAlert} />
+          <MenuItem id="sec_analysis" label="Threat Analysis" icon={ScanSearch} />
+          <MenuItem id="sec_chat" label="Security Copilot" icon={BotMessageSquare} />
+          <MenuItem id="incidents" label="Incident Response" icon={Siren} />
         </SectionHeader>
       </ul>
 

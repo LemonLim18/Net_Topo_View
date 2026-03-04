@@ -69,7 +69,7 @@ async def list_devices():
             status        = d.status,
         )
         for d in devices
-        if d.status == "registered"
+        if d.status == "planned"
     ]
 
 
@@ -80,7 +80,7 @@ async def list_devices():
 @router.post("/generate/{device_id}", response_model=GenerateResponse)
 async def generate_for_device(device_id: int):
     """
-    Look up a registered device and return its Day-0 bootstrap config.
+    Look up a planned device and return its Day-0 bootstrap config.
     The device must already have management_ip, vendor, ssh_user, ssh_password
     set in inventory for a full config to be generated.
     """
@@ -105,25 +105,7 @@ async def generate_for_device(device_id: int):
     config = OnboardingConfigGenerator().generate(params)
     filename = f"{device.hostname}_day0_config.txt"
 
-    # Transition device status to 'provisioning'
-    db = _db()
-    from db.models import Device as DeviceModel
-    updated = DeviceModel(
-        hostname=device.hostname,
-        management_ip=device.management_ip,
-        vendor=device.vendor,
-        model=device.model,
-        os_version=device.os_version,
-        serial_number=device.serial_number,
-        status="provisioning",
-        source=getattr(device, 'source', 'manual'),
-        last_polled=device.last_polled,
-        ssh_user=device.ssh_user,
-        ssh_password=device.ssh_password,
-        ssh_port=device.ssh_port,
-    )
-    db.upsert_device(updated)
-    logger.info("Device '%s' transitioned to 'provisioning'", device.hostname)
+    logger.info("Day-0 config generated for device '%s'", device.hostname)
 
     return GenerateResponse(config=config, filename=filename)
 

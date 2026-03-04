@@ -15,7 +15,6 @@ import {
   Upload,
   Network,
   Cable,
-  CircleDot,
   Clock,
   Cpu,
 } from 'lucide-react';
@@ -35,11 +34,18 @@ const VENDOR_OPTIONS = [
 
 const STATUS_OPTIONS = [
   { value: 'planned', label: 'Planned' },
-  { value: 'registered', label: 'Registered' },
   { value: 'provisioning', label: 'Provisioning' },
   { value: 'active', label: 'Active' },
   { value: 'down', label: 'Down' },
   { value: 'unknown', label: 'Unknown' },
+];
+
+const ROLE_OPTIONS = [
+  // { value: 'network-device', label: 'Network Device' },
+  { value: 'core', label: 'Core Switch' },
+  { value: 'distribution', label: 'Distribution Switch' },
+  { value: 'access', label: 'Access Switch' },
+  { value: 'firewall', label: 'Firewall' },
 ];
 
 const vendorLabel = (v: string | null) => {
@@ -52,14 +58,8 @@ const statusBadge = (status: string) => {
   switch (status) {
     case 'planned':
       return (
-        <span className="badge badge-sm badge-warning gap-1">
-          <CircleDot className="w-3 h-3" /> Planned
-        </span>
-      );
-    case 'registered':
-      return (
         <span className="badge badge-sm badge-info gap-1">
-          <Upload className="w-3 h-3" /> Registered
+          <Upload className="w-3 h-3" /> Planned
         </span>
       );
     case 'provisioning':
@@ -113,6 +113,7 @@ const EMPTY_FORM = {
   os_version: '',
   serial_number: '',
   status: 'planned',
+  role: 'core',
   ssh_user: '',
   ssh_password: '',
   ssh_port: '22',
@@ -136,7 +137,6 @@ const NetBoxDevices: React.FC = () => {
   const [selected, setSelected] = useState<DeviceRecord | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
-  const [isPushing, setIsPushing] = useState(false);
 
   // Interfaces for selected device
   const [interfaces, setInterfaces] = useState<InterfaceRecord[]>([]);
@@ -265,7 +265,8 @@ const NetBoxDevices: React.FC = () => {
       model: d.model || '',
       os_version: d.os_version || '',
       serial_number: d.serial_number || '',
-      status: d.status || 'planned',
+      status: (d.status === 'registered' || !d.status) ? 'planned' : d.status,
+      role: d.role || 'network-device',
       ssh_user: d.ssh_user || '',
       ssh_password: '',
       ssh_port: String(d.ssh_port || 22),
@@ -294,6 +295,7 @@ const NetBoxDevices: React.FC = () => {
           os_version: form.os_version || undefined,
           serial_number: form.serial_number || undefined,
           status: form.status,
+          role: form.role,
           ssh_user: form.ssh_user || undefined,
           ssh_password: form.ssh_password || undefined,
           ssh_port: form.ssh_port ? Number(form.ssh_port) : undefined,
@@ -309,6 +311,7 @@ const NetBoxDevices: React.FC = () => {
           os_version: form.os_version || undefined,
           serial_number: form.serial_number || undefined,
           status: form.status,
+          role: form.role,
           ssh_user: form.ssh_user || undefined,
           ssh_password: form.ssh_password || undefined,
           ssh_port: form.ssh_port ? Number(form.ssh_port) : undefined,
@@ -358,48 +361,6 @@ const NetBoxDevices: React.FC = () => {
       Toast.error('Sync failed', e.message);
     } finally {
       setIsSyncing(false);
-    }
-  };
-
-  // -----------------------------------------------------------------------
-  //  Push to NetBox
-  // -----------------------------------------------------------------------
-
-  const handlePushDevice = async (d: DeviceRecord) => {
-    setIsPushing(true);
-    try {
-      const res = await netboxApi.pushDevice(d.id);
-      Toast.success(`"${d.hostname}" pushed to NetBox`, `Status → Registered`);
-      setSelected(res);
-      fetchDevices();
-    } catch (e: any) {
-      Toast.error('Push failed', e.message);
-    } finally {
-      setIsPushing(false);
-    }
-  };
-
-  const handlePushAll = async () => {
-    const plannedCount = devices.filter(d => d.status === 'planned').length;
-    if (plannedCount === 0) {
-      Toast.warning('No planned devices', 'All devices are already registered or active');
-      return;
-    }
-    const ok = await Confirm.ask(
-      `Push ${plannedCount} device(s) to NetBox?`,
-      'All planned devices will be marked as registered.',
-    );
-    if (!ok) return;
-
-    setIsPushing(true);
-    try {
-      const res = await netboxApi.pushAll();
-      Toast.success(res.message);
-      fetchDevices();
-    } catch (e: any) {
-      Toast.error('Push all failed', e.message);
-    } finally {
-      setIsPushing(false);
     }
   };
 
@@ -525,14 +486,6 @@ const NetBoxDevices: React.FC = () => {
           <span className="badge badge-primary badge-outline">{devices.length} devices</span>
         </div>
         <div className="flex gap-2">
-          <button
-            className="btn btn-sm btn-outline gap-1"
-            onClick={handlePushAll}
-            disabled={isPushing}
-          >
-            {isPushing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Upload className="w-4 h-4" />}
-            Push All to NetBox
-          </button>
           <button className="btn btn-sm btn-outline gap-1" onClick={handleSync} disabled={isSyncing}>
             {isSyncing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
             Sync from NetBox
@@ -635,18 +588,6 @@ const NetBoxDevices: React.FC = () => {
                       <td>{sourceBadge(d.source)}</td>
                       <td className="text-right">
                         <div className="flex gap-1 justify-end">
-                          {d.status === 'planned' && (
-                            <button
-                              className="btn btn-ghost btn-xs text-info"
-                              title="Push to NetBox"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                handlePushDevice(d);
-                              }}
-                            >
-                              <Upload className="w-3.5 h-3.5" />
-                            </button>
-                          )}
                           <button
                             className="btn btn-ghost btn-xs"
                             title="Edit"
@@ -684,15 +625,6 @@ const NetBoxDevices: React.FC = () => {
               <div className="p-4 bg-base-200/50 border-b border-base-300 flex items-center justify-between">
                 <h2 className="font-bold text-lg truncate">{selected.hostname}</h2>
                 <div className="flex gap-1">
-                  {selected.status === 'planned' && (
-                    <button
-                      className="btn btn-xs btn-info gap-1"
-                      onClick={() => handlePushDevice(selected)}
-                      disabled={isPushing}
-                    >
-                      <Upload className="w-3 h-3" /> Push
-                    </button>
-                  )}
                   <button className="btn btn-xs btn-outline gap-1" onClick={() => handleEdit(selected)}>
                     <Edit3 className="w-3 h-3" /> Edit
                   </button>
@@ -735,6 +667,7 @@ const NetBoxDevices: React.FC = () => {
                     <DetailRow label="Hostname" value={selected.hostname} mono />
                     <DetailRow label="Management IP" value={selected.management_ip || '—'} mono />
                     <DetailRow label="Vendor" value={vendorLabel(selected.vendor)} />
+                    <DetailRow label="Role" value={ROLE_OPTIONS.find(r => r.value === selected.role)?.label || selected.role} />
                     <DetailRow label="Model" value={selected.model || '—'} />
                     <DetailRow label="OS Version" value={selected.os_version || '—'} />
                     <DetailRow label="Serial Number" value={selected.serial_number || '—'} mono />
@@ -924,13 +857,16 @@ const NetBoxDevices: React.FC = () => {
                     {VENDOR_OPTIONS.map((o) => (<option key={o.value} value={o.value}>{o.label}</option>))}
                   </select>
                 </label>
-                <label className="form-control w-full">
-                  <div className="label"><span className="label-text">Status</span></div>
-                  <select className="select select-bordered w-full" value={form.status}
-                    onChange={(e) => setForm({ ...form, status: e.target.value })}>
-                    {STATUS_OPTIONS.map((o) => (<option key={o.value} value={o.value}>{o.label}</option>))}
-                  </select>
-                </label>
+                <div className="flex gap-3 w-full">
+                  {/* Status is now handled automatically as 'registered' for manual entries */}
+                  <label className="form-control w-full">
+                    <div className="label"><span className="label-text">Role</span></div>
+                    <select className="select select-bordered w-full" value={form.role}
+                      onChange={(e) => setForm({ ...form, role: e.target.value })}>
+                      {ROLE_OPTIONS.map((o) => (<option key={o.value} value={o.value}>{o.label}</option>))}
+                    </select>
+                  </label>
+                </div>
               </div>
 
               <div className="grid grid-cols-2 gap-3">

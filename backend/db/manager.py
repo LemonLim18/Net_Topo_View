@@ -75,10 +75,16 @@ class DatabaseManager:
         }
         self._topo_lock = threading.Lock()
 
-        # ---- Safe migration: add 'source' column if missing ----
+        # ---- Safe migration: add 'source' and 'role' columns if missing ----
         try:
             with self._connect() as conn:
                 conn.execute("ALTER TABLE devices ADD COLUMN source TEXT DEFAULT 'manual'")
+        except Exception:
+            pass  # column already exists
+
+        try:
+            with self._connect() as conn:
+                conn.execute("ALTER TABLE devices ADD COLUMN role TEXT DEFAULT 'network-device'")
         except Exception:
             pass  # column already exists
 
@@ -184,13 +190,13 @@ class DatabaseManager:
                     """UPDATE devices
                        SET management_ip = ?, vendor = ?, model = ?,
                            os_version = ?, serial_number = ?, status = ?,
-                           source = ?, last_polled = ?, ssh_user = ?,
+                           role = ?, source = ?, last_polled = ?, ssh_user = ?,
                            ssh_password = ?, ssh_port = ?, updated_at = ?
                      WHERE id = ?""",
                     (
                         device.management_ip, device.vendor, device.model,
                         device.os_version, device.serial_number, device.status,
-                        device.source, device.last_polled or now,
+                        device.role, device.source, device.last_polled or now,
                         device.ssh_user, device.ssh_password, device.ssh_port,
                         now, row["id"],
                     ),
@@ -200,14 +206,14 @@ class DatabaseManager:
                 cur2 = conn.execute(
                     """INSERT INTO devices
                        (hostname, management_ip, vendor, model, os_version,
-                        serial_number, status, source, last_polled,
+                        serial_number, status, role, source, last_polled,
                         ssh_user, ssh_password, ssh_port,
                         created_at, updated_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
                         device.hostname, device.management_ip, device.vendor,
                         device.model, device.os_version, device.serial_number,
-                        device.status, device.source, device.last_polled or now,
+                        device.status, device.role, device.source, device.last_polled or now,
                         device.ssh_user, device.ssh_password, device.ssh_port,
                         now, now,
                     ),
@@ -250,6 +256,7 @@ class DatabaseManager:
             os_version=row["os_version"],
             serial_number=row["serial_number"],
             status=row["status"],
+            role=row["role"] if "role" in keys else "network-device",
             source=row["source"] if "source" in keys else "manual",
             last_polled=row["last_polled"],
             ssh_user=row["ssh_user"] if "ssh_user" in keys else None,

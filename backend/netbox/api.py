@@ -32,6 +32,7 @@ class DeviceCreate(BaseModel):
     os_version: Optional[str] = None
     serial_number: Optional[str] = None
     status: str = "planned"
+    role: str = "network-device"
     ssh_user: Optional[str] = None
     ssh_password: Optional[str] = None
     ssh_port: int = 22
@@ -44,6 +45,7 @@ class DeviceUpdate(BaseModel):
     os_version: Optional[str] = None
     serial_number: Optional[str] = None
     status: Optional[str] = None
+    role: Optional[str] = None
     ssh_user: Optional[str] = None
     ssh_password: Optional[str] = None
     ssh_port: Optional[int] = None
@@ -86,6 +88,7 @@ def _device_dict(d: Device) -> dict:
         "os_version": d.os_version,
         "serial_number": d.serial_number,
         "status": d.status,
+        "role": d.role,
         "source": d.source,
         "last_polled": d.last_polled,
         "ssh_user": d.ssh_user,
@@ -121,7 +124,8 @@ async def get_device(device_id: int):
 async def create_device(body: DeviceCreate, background_tasks: BackgroundTasks):
     """Create a new device in the local inventory.
 
-    Best-effort push to NetBox is attempted if the client is available.
+    If status is 'registered', auto-pushes to NetBox (creates all
+    prerequisite objects like Site, Manufacturer, DeviceType, etc.).
     """
     db = _db()
 
@@ -130,6 +134,22 @@ async def create_device(body: DeviceCreate, background_tasks: BackgroundTasks):
     if existing:
         raise HTTPException(409, f"Device with hostname '{body.hostname}' already exists (id={existing.id})")
 
+    # Auto-push to NetBox (all manual entries sync immediately)
+    status = body.status or "planned"
+    try:
+        nb = NetBoxClient.get_client()
+        if nb and nb.api:
+            nb.create_device(
+                name=body.hostname,
+                mgmt_ip=body.management_ip,
+                vendor=body.vendor or "cisco_ios",
+                model=body.model,
+                role=body.role,
+            )
+            logger.info("Auto-pushed device '%s' to NetBox on registration", body.hostname)
+    except Exception as e:
+        logger.warning("Auto-push for '%s' failed: %s — still registering locally", body.hostname, e)
+
     device = Device(
         hostname=body.hostname,
         management_ip=body.management_ip,
@@ -137,7 +157,8 @@ async def create_device(body: DeviceCreate, background_tasks: BackgroundTasks):
         model=body.model,
         os_version=body.os_version,
         serial_number=body.serial_number,
-        status=body.status,
+        status=status,
+        role=body.role,
         source="manual",
         ssh_user=body.ssh_user,
         ssh_password=body.ssh_password,
@@ -150,21 +171,49 @@ async def create_device(body: DeviceCreate, background_tasks: BackgroundTasks):
 
 @router.put("/devices/{device_id}")
 async def update_device(device_id: int, body: DeviceUpdate):
-    """Update an existing device."""
+    """Update an existing device.
+
+    If the status transitions to 'registered', auto-pushes to NetBox.
+    """
     db = _db()
     existing = db.get_device_by_id(device_id)
     if not existing:
         raise HTTPException(404, "Device not found")
 
+    new_status = body.status if body.status is not None else existing.status
+    hostname = body.hostname if body.hostname is not None else existing.hostname
+    mgmt_ip = body.management_ip if body.management_ip is not None else existing.management_ip
+    vendor = body.vendor if body.vendor is not None else existing.vendor
+    model = body.model if body.model is not None else existing.model
+    role = body.role if body.role is not None else existing.role
+
+    # Auto-push or Sync to NetBox
+    try:
+        nb = NetBoxClient.get_client()
+        if nb and nb.api:
+            # We sync to NetBox regardless of status (Planned/Active/Down)
+            # to ensure the single source of truth stays updated.
+            nb.update_device(
+                name=hostname,
+                mgmt_ip=mgmt_ip,
+                vendor=vendor or "cisco_ios",
+                model=model,
+                role=role,
+            )
+            logger.info("Synced updates for device '%s' to NetBox", hostname)
+    except Exception as e:
+        logger.warning("Auto-sync for '%s' failed: %s — still updating locally", hostname, e)
+
     device = Device(
         id=device_id,
-        hostname=body.hostname if body.hostname is not None else existing.hostname,
-        management_ip=body.management_ip if body.management_ip is not None else existing.management_ip,
-        vendor=body.vendor if body.vendor is not None else existing.vendor,
-        model=body.model if body.model is not None else existing.model,
+        hostname=hostname,
+        management_ip=mgmt_ip,
+        vendor=vendor,
+        model=model,
         os_version=body.os_version if body.os_version is not None else existing.os_version,
         serial_number=body.serial_number if body.serial_number is not None else existing.serial_number,
-        status=body.status if body.status is not None else existing.status,
+        status=new_status,
+        role=role,
         source=existing.source,
         last_polled=existing.last_polled,
         ssh_user=body.ssh_user if body.ssh_user is not None else existing.ssh_user,
@@ -371,20 +420,15 @@ async def push_device_to_netbox(device_id: int):
     if not d:
         raise HTTPException(404, "Device not found")
 
-    # Push to NetBox
+    # Push to NetBox (auto-creates prerequisites)
     try:
         nb = NetBoxClient.get_client()
         if nb and nb.api:
-            vendor_to_platform = {
-                "cisco_ios": "cisco-ios",
-                "cisco_xe": "cisco-xe",
-                "huawei_vrp": "huawei-vrp",
-                "juniper_junos": "juniper-junos",
-            }
             nb.create_device(
                 name=d.hostname,
                 mgmt_ip=d.management_ip,
-                platform_slug=vendor_to_platform.get(d.vendor, d.vendor),
+                vendor=d.vendor or "cisco_ios",
+                model=d.model,
             )
             logger.info("Pushed device '%s' to NetBox", d.hostname)
         else:
@@ -427,16 +471,11 @@ async def push_all_to_netbox():
         try:
             nb = NetBoxClient.get_client()
             if nb and nb.api:
-                vendor_to_platform = {
-                    "cisco_ios": "cisco-ios",
-                    "cisco_xe": "cisco-xe",
-                    "huawei_vrp": "huawei-vrp",
-                    "juniper_junos": "juniper-junos",
-                }
                 nb.create_device(
                     name=d.hostname,
                     mgmt_ip=d.management_ip,
-                    platform_slug=vendor_to_platform.get(d.vendor, d.vendor),
+                    vendor=d.vendor or "cisco_ios",
+                    model=d.model,
                 )
         except Exception as e:
             logger.warning("NetBox push for '%s' failed: %s", d.hostname, e)
@@ -530,7 +569,8 @@ def _try_push_to_netbox(device_data: DeviceCreate, action: str = "create"):
                 nb.create_device(
                     name=device_data.hostname,
                     mgmt_ip=device_data.management_ip,
-                    platform_slug=device_data.vendor,
+                    vendor=device_data.vendor or "cisco_ios",
+                    model=device_data.model,
                 )
     except Exception as e:
         logger.warning("Best-effort NetBox push failed (%s): %s", action, e)

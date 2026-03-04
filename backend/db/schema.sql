@@ -24,6 +24,7 @@ CREATE TABLE IF NOT EXISTS devices (
     os_version      TEXT,
     serial_number   TEXT,
     status          TEXT    DEFAULT 'unknown',  -- planned | registered | provisioning | active | down | unknown
+    role            TEXT    DEFAULT 'network-device', -- core | distribution | access | network-device
     source          TEXT    DEFAULT 'manual',   -- manual | crawler | netbox
     last_polled     TEXT,                       -- ISO-8601 timestamp
     ssh_user        TEXT,                       -- SSH login username
