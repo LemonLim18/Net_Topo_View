@@ -28,11 +28,49 @@ import { Bot } from 'lucide-react';
 
 import type { ViewId, User, AppDomain } from '../types';
 
+const CURRENT_VIEW_KEY = 'currentView';
+const SELECTED_DEVICE_KEY = 'selectedDeviceId';
+
+const isViewId = (value: string | null): value is ViewId => {
+  if (!value) return false;
+  return [
+    'overview',
+    'dashboard',
+    'topology',
+    'netbox_devices',
+    'drift',
+    'net_perf',
+    'net_chat',
+    'knowledge_base',
+    'ansible_studio',
+    'device_detail',
+    'sec_dashboard',
+    'sec_events',
+    'sec_analysis',
+    'sec_chat',
+    'incidents',
+    'onboarding',
+    'intent_history',
+    'sdn_dashboard',
+    'playbook_comparison',
+    'approval_queue',
+    'template_studio',
+  ].includes(value);
+};
+
 
 const App: React.FC = () => {
   const [theme, setTheme] = useState(() => localStorage.getItem('theme') || 'night');
-  const [view, setView] = useState<ViewId>('overview');
-  const [selectedDeviceId, setSelectedDeviceId] = useState<number | null>(null);
+  const [view, setView] = useState<ViewId>(() => {
+    const saved = localStorage.getItem(CURRENT_VIEW_KEY);
+    return isViewId(saved) ? saved : 'overview';
+  });
+  const [selectedDeviceId, setSelectedDeviceId] = useState<number | null>(() => {
+    const saved = localStorage.getItem(SELECTED_DEVICE_KEY);
+    if (!saved) return null;
+    const parsed = Number(saved);
+    return Number.isFinite(parsed) ? parsed : null;
+  });
   const [user, setUser] = useState<User | null>(null);
   const [authChecked, setAuthChecked] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
@@ -72,11 +110,23 @@ const App: React.FC = () => {
 
   useEffect(() => {
     try {
-      localStorage.setItem('currentView', view);
+      localStorage.setItem(CURRENT_VIEW_KEY, view);
     } catch (e) {
       // ignore storage errors
     }
   }, [view]);
+
+  useEffect(() => {
+    try {
+      if (selectedDeviceId === null) {
+        localStorage.removeItem(SELECTED_DEVICE_KEY);
+      } else {
+        localStorage.setItem(SELECTED_DEVICE_KEY, String(selectedDeviceId));
+      }
+    } catch (e) {
+      // ignore storage errors
+    }
+  }, [selectedDeviceId]);
 
   useEffect(() => {
     localStorage.setItem('aiPanelOpen', JSON.stringify(aiPanelOpen));

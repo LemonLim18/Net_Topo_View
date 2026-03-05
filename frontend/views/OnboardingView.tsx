@@ -3,6 +3,12 @@ import Editor from '@monaco-editor/react';
 import { PackagePlus, Download, RefreshCw, ChevronRight, ChevronLeft, CheckCircle, Terminal, Maximize2, Minimize2, Copy, Check, Lightbulb } from 'lucide-react';
 import type { ViewId } from '../types';
 
+const ONBOARDING_STEP_KEY = 'onboarding.step';
+const ONBOARDING_SELECTED_DEVICE_KEY = 'onboarding.selectedDeviceId';
+const ONBOARDING_CONFIG_KEY = 'onboarding.config';
+const ONBOARDING_FILENAME_KEY = 'onboarding.filename';
+const ONBOARDING_FULL_WIDTH_KEY = 'onboarding.fullWidth';
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -29,20 +35,27 @@ const VENDOR_LABELS: Record<string, string> = {
 // ---------------------------------------------------------------------------
 
 const OnboardingView: React.FC<{ setView: (id: ViewId) => void }> = ({ setView }) => {
-  const [step, setStep]               = useState<1 | 2 | 3>(1);
+  const [step, setStep]               = useState<1 | 2 | 3>(() => {
+    const raw = Number(localStorage.getItem(ONBOARDING_STEP_KEY));
+    return raw === 1 || raw === 2 || raw === 3 ? raw : 1;
+  });
 
   // Step 1 state
   const [devices, setDevices]         = useState<DeviceSummary[]>([]);
   const [loadingDevices, setLoadingDevices] = useState(false);
   const [selected, setSelected]       = useState<DeviceSummary | null>(null);
+  const [persistedSelectedDeviceId]   = useState<number | null>(() => {
+    const raw = Number(localStorage.getItem(ONBOARDING_SELECTED_DEVICE_KEY));
+    return Number.isFinite(raw) ? raw : null;
+  });
 
   // Step 2 state
-  const [config, setConfig]           = useState('');
-  const [filename, setFilename]       = useState('day0_config.txt');
+  const [config, setConfig]           = useState(() => localStorage.getItem(ONBOARDING_CONFIG_KEY) || '');
+  const [filename, setFilename]       = useState(() => localStorage.getItem(ONBOARDING_FILENAME_KEY) || 'day0_config.txt');
   const [loadingConfig, setLoadingConfig] = useState(false);
 
   const [error, setError]             = useState('');
-  const [isFullWidth, setIsFullWidth] = useState(false);
+  const [isFullWidth, setIsFullWidth] = useState(() => localStorage.getItem(ONBOARDING_FULL_WIDTH_KEY) === 'true');
   const [copied, setCopied]           = useState(false);
 
   // Fetch device list on mount
@@ -56,12 +69,41 @@ const OnboardingView: React.FC<{ setView: (id: ViewId) => void }> = ({ setView }
       if (!res.ok) throw new Error(`Server error ${res.status}`);
       const data: DeviceSummary[] = await res.json();
       setDevices(data);
+
+      if (!selected && persistedSelectedDeviceId) {
+        const restored = data.find(d => d.id === persistedSelectedDeviceId) || null;
+        setSelected(restored);
+      }
     } catch (e: any) {
       setError(e.message ?? 'Failed to load devices');
     } finally {
       setLoadingDevices(false);
     }
   };
+
+  useEffect(() => {
+    localStorage.setItem(ONBOARDING_STEP_KEY, String(step));
+  }, [step]);
+
+  useEffect(() => {
+    if (selected?.id) {
+      localStorage.setItem(ONBOARDING_SELECTED_DEVICE_KEY, String(selected.id));
+    } else {
+      localStorage.removeItem(ONBOARDING_SELECTED_DEVICE_KEY);
+    }
+  }, [selected]);
+
+  useEffect(() => {
+    localStorage.setItem(ONBOARDING_CONFIG_KEY, config);
+  }, [config]);
+
+  useEffect(() => {
+    localStorage.setItem(ONBOARDING_FILENAME_KEY, filename);
+  }, [filename]);
+
+  useEffect(() => {
+    localStorage.setItem(ONBOARDING_FULL_WIDTH_KEY, String(isFullWidth));
+  }, [isFullWidth]);
 
   const handleGenerate = async () => {
     if (!selected) return;
@@ -359,7 +401,12 @@ const OnboardingView: React.FC<{ setView: (id: ViewId) => void }> = ({ setView }
               </button>
               <button
                 className="btn btn-ghost btn-sm"
-                onClick={() => { setSelected(null); setConfig(''); setStep(1); }}
+                onClick={() => {
+                  setSelected(null);
+                  setConfig('');
+                  setFilename('day0_config.txt');
+                  setStep(1);
+                }}
               >
                 Onboard Another
               </button>

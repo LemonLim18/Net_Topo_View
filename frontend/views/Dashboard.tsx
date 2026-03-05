@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useCallback } from 'react';
+import React, { useState, useMemo, useCallback, useEffect } from 'react';
 import type { D3Node, D3Link, TopologyData } from '../types';
 import NetworkGraph from '../components/NetworkGraph';
 import NetworkGraphCytoscape from '../components/NetworkGraphCytoscape';
@@ -11,15 +11,35 @@ import SSHTerminalPanel from '../components/SSHTerminalPanel';
 import type { SSHTab } from '../components/SSHTerminalPanel';
 import type { SSHConnectionState } from '../components/SSHTerminal';
 import SSHConnectModal from '../components/SSHConnectModal';
-import { CONTROLLER_NODE_ID, CONTROLLER_NODE_DATA, mockTopologyData as PLANNED_TOPOLOGY_DATA } from '../constants';
+import { CONTROLLER_NODE_ID, CONTROLLER_NODE_DATA } from '../constants';
 import { useWebSocket } from '../src/hooks/useWebSocket';
 import { API_CONFIG } from '../src/config';
-import { topologyApi } from '../src/services/api';
-import { Terminal, Info, RefreshCw } from 'lucide-react';
+import { topologyApi, netboxApi, type DeviceRecord, type InterfaceRecord, type LinkRecord } from '../src/services/api';
+import { Terminal, Info, RefreshCw, Cable, X } from 'lucide-react';
 import { Toast } from '../src/utils/swal';
 import { sshApi } from '../src/services/api';
 
 type TopologyView = 'actual' | 'planned' | 'diff';
+
+const DASHBOARD_VIEW_KEY = 'dashboard.topologyView';
+const DASHBOARD_NODE_KEY = 'dashboard.selectedNodeId';
+const DASHBOARD_PANEL_HEIGHT_KEY = 'dashboard.panelHeight';
+const DASHBOARD_GRID_VISIBLE_KEY = 'dashboard.gridVisible';
+const DASHBOARD_SSH_PANEL_HEIGHT_KEY = 'dashboard.sshPanelHeight';
+const DASHBOARD_SSH_MINIMIZED_KEY = 'dashboard.sshMinimized';
+
+type ConnectStage = 'idle' | 'source-interface' | 'target-device' | 'target-interface' | 'saving';
+
+interface ConnectFlowState {
+    stage: ConnectStage;
+    sourceNodeId: string | null;
+    sourceDeviceId: number | null;
+    sourceInterfaceId: number | null;
+    targetNodeId: string | null;
+    targetDeviceId: number | null;
+    targetInterfaceId: number | null;
+    error: string | null;
+}
 
 // Helper to convert abbreviated interface names to full names
 const expandInterfaceName = (abbr: string): string => {
@@ -127,11 +147,24 @@ const processTopologyData = (data: TopologyData | null) => {
 };
 
 const Dashboard: React.FC = () => {
-    const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
-    const [panelHeight, setPanelHeight] = useState(window.innerHeight * 0.4);
-    const [isGridVisible, setIsGridVisible] = useState(true);
-    const [topologyView, setTopologyView] = useState<TopologyView>('diff');
-    const [vizEngine, setVizEngine] = useState<'d3' | 'cytoscape'>('d3');
+    const [selectedNodeId, setSelectedNodeId] = useState<string | null>(() => {
+        return localStorage.getItem(DASHBOARD_NODE_KEY);
+    });
+    const [panelHeight, setPanelHeight] = useState(() => {
+        const raw = Number(localStorage.getItem(DASHBOARD_PANEL_HEIGHT_KEY));
+        if (Number.isFinite(raw) && raw > 120) return raw;
+        return window.innerHeight * 0.4;
+    });
+    const [isGridVisible, setIsGridVisible] = useState(() => {
+        const raw = localStorage.getItem(DASHBOARD_GRID_VISIBLE_KEY);
+        return raw === null ? true : raw === 'true';
+    });
+    const [topologyView, setTopologyView] = useState<TopologyView>(() => {
+        const raw = localStorage.getItem(DASHBOARD_VIEW_KEY);
+        if (raw === 'actual' || raw === 'planned' || raw === 'diff') return raw;
+        return 'diff';
+    });
+    const [vizEngine] = useState<'d3' | 'cytoscape'>('d3');
     const theme = localStorage.getItem('theme') || 'night';
 
     // --- Context Menu state ---
@@ -144,8 +177,15 @@ const Dashboard: React.FC = () => {
     // --- SSH Terminal state ---
     const [sshTabs, setSshTabs] = useState<SSHTab[]>([]);
     const [activeSSHTab, setActiveSSHTab] = useState<string | null>(null);
-    const [sshPanelHeight, setSshPanelHeight] = useState(300);
-    const [sshMinimized, setSshMinimized] = useState(false);
+    const [sshPanelHeight, setSshPanelHeight] = useState(() => {
+        const raw = Number(localStorage.getItem(DASHBOARD_SSH_PANEL_HEIGHT_KEY));
+        if (Number.isFinite(raw) && raw > 120) return raw;
+        return 300;
+    });
+    const [sshMinimized, setSshMinimized] = useState(() => {
+        const raw = localStorage.getItem(DASHBOARD_SSH_MINIMIZED_KEY);
+        return raw === 'true';
+    });
     const [tabStates, setTabStates] = useState<Record<string, SSHConnectionState>>({});
 
     // --- SSH Connect Modal state ---
@@ -158,6 +198,88 @@ const Dashboard: React.FC = () => {
     const { status, topology: realTimeTopology, setTopology: setWsTopology } = useWebSocket({
         url: API_CONFIG.WS_URL,
     });
+
+    // --- Planned topology from local DB ---
+    const [plannedTopology, setPlannedTopology] = useState<TopologyData | null>(null);
+    const [connectFlow, setConnectFlow] = useState<ConnectFlowState>({
+        stage: 'idle',
+        sourceNodeId: null,
+        sourceDeviceId: null,
+        sourceInterfaceId: null,
+        targetNodeId: null,
+        targetDeviceId: null,
+        targetInterfaceId: null,
+        error: null,
+    });
+    const [connectDevices, setConnectDevices] = useState<DeviceRecord[]>([]);
+    const [connectLinks, setConnectLinks] = useState<LinkRecord[]>([]);
+    const [sourceInterfaces, setSourceInterfaces] = useState<InterfaceRecord[]>([]);
+    const [targetInterfaces, setTargetInterfaces] = useState<InterfaceRecord[]>([]);
+
+    const resetConnectFlow = useCallback(() => {
+        setConnectFlow({
+            stage: 'idle',
+            sourceNodeId: null,
+            sourceDeviceId: null,
+            sourceInterfaceId: null,
+            targetNodeId: null,
+            targetDeviceId: null,
+            targetInterfaceId: null,
+            error: null,
+        });
+        setSourceInterfaces([]);
+        setTargetInterfaces([]);
+    }, []);
+
+    const refreshConnectData = useCallback(async () => {
+        const [devResp, linkResp] = await Promise.all([
+            netboxApi.listDevices(),
+            netboxApi.listLinks(),
+        ]);
+        setConnectDevices(devResp.devices || []);
+        setConnectLinks(linkResp.links || []);
+        return { devices: devResp.devices || [], links: linkResp.links || [] };
+    }, []);
+
+    useEffect(() => {
+        const fetchPlanned = async () => {
+            try {
+                const data = await netboxApi.getLocalPlannedTopology();
+                setPlannedTopology(data as any as TopologyData);
+            } catch (e) {
+                console.warn('[Topo] Failed to fetch local planned topology:', e);
+            }
+        };
+        fetchPlanned();
+    }, []);
+
+    useEffect(() => {
+        if (selectedNodeId) {
+            localStorage.setItem(DASHBOARD_NODE_KEY, selectedNodeId);
+        } else {
+            localStorage.removeItem(DASHBOARD_NODE_KEY);
+        }
+    }, [selectedNodeId]);
+
+    useEffect(() => {
+        localStorage.setItem(DASHBOARD_VIEW_KEY, topologyView);
+    }, [topologyView]);
+
+    useEffect(() => {
+        localStorage.setItem(DASHBOARD_PANEL_HEIGHT_KEY, String(panelHeight));
+    }, [panelHeight]);
+
+    useEffect(() => {
+        localStorage.setItem(DASHBOARD_GRID_VISIBLE_KEY, String(isGridVisible));
+    }, [isGridVisible]);
+
+    useEffect(() => {
+        localStorage.setItem(DASHBOARD_SSH_PANEL_HEIGHT_KEY, String(sshPanelHeight));
+    }, [sshPanelHeight]);
+
+    useEffect(() => {
+        localStorage.setItem(DASHBOARD_SSH_MINIMIZED_KEY, String(sshMinimized));
+    }, [sshMinimized]);
 
     // --- Refresh / Manual Crawl state ---
     const [isRefreshing, setIsRefreshing] = useState(false);
@@ -216,7 +338,7 @@ const Dashboard: React.FC = () => {
     const isLoading = status === 'connecting' || (status === 'connected' && !realTimeTopology);
 
     const graphData = useMemo(() => {
-        const planned = processTopologyData(PLANNED_TOPOLOGY_DATA);
+        const planned = processTopologyData(plannedTopology);
         const actual = processTopologyData(realTimeTopology);
 
         if (topologyView === 'planned') return planned;
@@ -258,7 +380,7 @@ const Dashboard: React.FC = () => {
 
         return { nodes: Array.from(nodeMap.values()), links: Array.from(linkMap.values()) };
 
-    }, [topologyView, realTimeTopology]);
+    }, [topologyView, realTimeTopology, plannedTopology]);
 
     const selectedNodeData = useMemo(() => {
         if (!selectedNodeId) return null;
@@ -268,8 +390,46 @@ const Dashboard: React.FC = () => {
     }, [selectedNodeId, graphData.nodes]);
 
     const handleNodeClick = useCallback((nodeId: string) => {
+        // Connect-mode override: clicking a node selects target device instead of opening details.
+        if (connectFlow.stage === 'target-device') {
+            if (!nodeId || nodeId === CONTROLLER_NODE_ID) return;
+            if (nodeId === connectFlow.sourceNodeId) {
+                setConnectFlow(prev => ({ ...prev, error: 'Target device must be different from source device' }));
+                return;
+            }
+
+            const targetDev = connectDevices.find(d => d.hostname === nodeId);
+            if (!targetDev) {
+                setConnectFlow(prev => ({
+                    ...prev,
+                    error: `Target device '${nodeId}' is not in local inventory. Sync devices to NetBox first.`,
+                }));
+                return;
+            }
+
+            netboxApi.listInterfaces(targetDev.id)
+                .then(resp => {
+                    setTargetInterfaces(resp.interfaces || []);
+                    setConnectFlow(prev => ({
+                        ...prev,
+                        stage: 'target-interface',
+                        targetNodeId: nodeId,
+                        targetDeviceId: targetDev.id,
+                        targetInterfaceId: null,
+                        error: null,
+                    }));
+                })
+                .catch((err: any) => {
+                    setConnectFlow(prev => ({
+                        ...prev,
+                        error: err?.message || 'Failed to load target interfaces',
+                    }));
+                });
+            return;
+        }
+
         setSelectedNodeId(prevId => (prevId === nodeId ? null : nodeId));
-    }, []);
+    }, [connectFlow.stage, connectFlow.sourceNodeId, connectDevices]);
     
     const handlePanelClose = useCallback(() => setSelectedNodeId(null), []);
 
@@ -298,6 +458,76 @@ const Dashboard: React.FC = () => {
     }, []);
 
     const closeContextMenu = useCallback(() => setContextMenu(null), []);
+
+    const getInterfaceStatus = useCallback((ifaceId: number, selectedIfaceId: number | null) => {
+        const link = connectLinks.find(l => l.src_interface_id === ifaceId || l.dst_interface_id === ifaceId);
+        if (!link || selectedIfaceId === ifaceId) {
+            return { available: true as const, remoteHost: null as string | null };
+        }
+        const remoteHost = link.src_interface_id === ifaceId ? link.dst_hostname : link.src_hostname;
+        return { available: false as const, remoteHost };
+    }, [connectLinks]);
+
+    const startConnectFlow = useCallback(async (sourceNodeId: string) => {
+        try {
+            const { devices } = await refreshConnectData();
+            const srcDev = devices.find(d => d.hostname === sourceNodeId);
+            if (!srcDev) {
+                Toast.error('Connect Failed', `Source device '${sourceNodeId}' is not in local inventory`);
+                return;
+            }
+            const ifaceResp = await netboxApi.listInterfaces(srcDev.id);
+            setSourceInterfaces(ifaceResp.interfaces || []);
+            setConnectFlow({
+                stage: 'source-interface',
+                sourceNodeId,
+                sourceDeviceId: srcDev.id,
+                sourceInterfaceId: null,
+                targetNodeId: null,
+                targetDeviceId: null,
+                targetInterfaceId: null,
+                error: null,
+            });
+        } catch (err: any) {
+            Toast.error('Connect Failed', err?.message || 'Unable to initialize connection workflow');
+        }
+    }, [refreshConnectData]);
+
+    const commitConnection = useCallback(async () => {
+        if (!connectFlow.sourceDeviceId || !connectFlow.targetDeviceId || !connectFlow.sourceInterfaceId || !connectFlow.targetInterfaceId) {
+            setConnectFlow(prev => ({ ...prev, error: 'Source/target interface selection is incomplete' }));
+            return;
+        }
+
+        setConnectFlow(prev => ({ ...prev, stage: 'saving', error: null }));
+        try {
+            await netboxApi.createLink({
+                src_device_id: connectFlow.sourceDeviceId,
+                src_interface_id: connectFlow.sourceInterfaceId,
+                dst_device_id: connectFlow.targetDeviceId,
+                dst_interface_id: connectFlow.targetInterfaceId,
+                discovery_protocol: 'manual',
+            });
+
+            const data = await netboxApi.getLocalPlannedTopology();
+            setPlannedTopology(data as any as TopologyData);
+            await refreshConnectData();
+
+            Toast.success('Connection Created', 'Link created and synchronized to NetBox.');
+            resetConnectFlow();
+        } catch (err: any) {
+            const msg = err?.message || 'Failed to create link';
+            setConnectFlow(prev => ({ ...prev, stage: 'target-interface', error: msg }));
+            Toast.error('Connection Failed', msg);
+        }
+    }, [
+        connectFlow.sourceDeviceId,
+        connectFlow.targetDeviceId,
+        connectFlow.sourceInterfaceId,
+        connectFlow.targetInterfaceId,
+        refreshConnectData,
+        resetConnectFlow,
+    ]);
 
     // --- SSH session launcher ---
     const openSSHTerminal = useCallback(async (hostname: string) => {
@@ -429,12 +659,18 @@ const Dashboard: React.FC = () => {
                 disabled: contextMenu.nodeId === CONTROLLER_NODE_ID,
             },
             {
+                label: 'Connect',
+                icon: <Cable size={14} />,
+                onClick: () => startConnectFlow(contextMenu.nodeId),
+                disabled: contextMenu.nodeId === CONTROLLER_NODE_ID,
+            },
+            {
                 label: 'View Details',
                 icon: <Info size={14} />,
                 onClick: () => handleNodeClick(contextMenu.nodeId),
             },
         ];
-    }, [contextMenu, openSSHTerminal, handleNodeClick]);
+    }, [contextMenu, openSSHTerminal, handleNodeClick, startConnectFlow]);
 
     const statusIndicator = {
         connecting: <><span className="loading loading-ring loading-xs"></span> Connecting...</>,
@@ -504,6 +740,100 @@ const Dashboard: React.FC = () => {
                     />
                 )}
                 <Legend />
+
+                {connectFlow.stage !== 'idle' && (
+                    <div className="absolute top-4 right-4 z-20 w-[360px] card bg-base-100 border border-base-300 shadow-xl">
+                        <div className="card-body p-4 gap-3">
+                            <div className="flex items-center justify-between">
+                                <h3 className="font-semibold text-sm flex items-center gap-2"><Cable size={14} /> Connect Interfaces</h3>
+                                <button className="btn btn-ghost btn-xs" onClick={resetConnectFlow} aria-label="Cancel connect flow">
+                                    <X size={14} />
+                                </button>
+                            </div>
+
+                            <div className="text-xs opacity-70">
+                                {connectFlow.stage === 'source-interface' && `Step 1/3: Select source interface on ${connectFlow.sourceNodeId}`}
+                                {connectFlow.stage === 'target-device' && 'Step 2/3: Click target device on topology graph'}
+                                {connectFlow.stage === 'target-interface' && `Step 3/3: Select target interface on ${connectFlow.targetNodeId}`}
+                                {connectFlow.stage === 'saving' && 'Saving connection...'}
+                            </div>
+
+                            {connectFlow.error && (
+                                <div className="alert alert-error py-2 text-xs">{connectFlow.error}</div>
+                            )}
+
+                            {(connectFlow.stage === 'source-interface' || connectFlow.stage === 'target-device' || connectFlow.stage === 'target-interface' || connectFlow.stage === 'saving') && (
+                                <div className="space-y-2">
+                                    <div className="text-xs font-semibold opacity-70">Source Interface</div>
+                                    <div className="max-h-44 overflow-auto border border-base-300 rounded-md">
+                                        {sourceInterfaces.length === 0 ? (
+                                            <div className="p-3 text-xs opacity-60">No interfaces found</div>
+                                        ) : sourceInterfaces.map((iface) => {
+                                            const status = getInterfaceStatus(iface.id, connectFlow.sourceInterfaceId);
+                                            const selected = connectFlow.sourceInterfaceId === iface.id;
+                                            return (
+                                                <button
+                                                    key={iface.id}
+                                                    className={`w-full px-3 py-2 text-left text-xs flex items-center justify-between border-b border-base-200 last:border-b-0 ${selected ? 'bg-primary text-primary-content' : ''} ${!status.available && !selected ? 'opacity-50 cursor-not-allowed' : ''}`}
+                                                    disabled={(!status.available && !selected) || connectFlow.stage === 'saving'}
+                                                    onClick={() => {
+                                                        setConnectFlow(prev => ({ ...prev, sourceInterfaceId: iface.id, stage: 'target-device', error: null }));
+                                                    }}
+                                                >
+                                                    <span className="truncate">{iface.name}</span>
+                                                    {status.available || selected ? (
+                                                        <span className="badge badge-success badge-xs">Available</span>
+                                                    ) : (
+                                                        <span className="badge badge-neutral badge-xs truncate max-w-[120px]">{status.remoteHost}</span>
+                                                    )}
+                                                </button>
+                                            );
+                                        })}
+                                    </div>
+                                </div>
+                            )}
+
+                            {(connectFlow.stage === 'target-interface' || connectFlow.stage === 'saving') && (
+                                <div className="space-y-2">
+                                    <div className="text-xs font-semibold opacity-70">Target Interface</div>
+                                    <div className="max-h-44 overflow-auto border border-base-300 rounded-md">
+                                        {targetInterfaces.length === 0 ? (
+                                            <div className="p-3 text-xs opacity-60">No interfaces found</div>
+                                        ) : targetInterfaces.map((iface) => {
+                                            const status = getInterfaceStatus(iface.id, connectFlow.targetInterfaceId);
+                                            const selected = connectFlow.targetInterfaceId === iface.id;
+                                            return (
+                                                <button
+                                                    key={iface.id}
+                                                    className={`w-full px-3 py-2 text-left text-xs flex items-center justify-between border-b border-base-200 last:border-b-0 ${selected ? 'bg-primary text-primary-content' : ''} ${!status.available && !selected ? 'opacity-50 cursor-not-allowed' : ''}`}
+                                                    disabled={(!status.available && !selected) || connectFlow.stage === 'saving'}
+                                                    onClick={() => setConnectFlow(prev => ({ ...prev, targetInterfaceId: iface.id, error: null }))}
+                                                >
+                                                    <span className="truncate">{iface.name}</span>
+                                                    {status.available || selected ? (
+                                                        <span className="badge badge-success badge-xs">Available</span>
+                                                    ) : (
+                                                        <span className="badge badge-neutral badge-xs truncate max-w-[120px]">{status.remoteHost}</span>
+                                                    )}
+                                                </button>
+                                            );
+                                        })}
+                                    </div>
+                                </div>
+                            )}
+
+                            {connectFlow.stage === 'target-interface' && (
+                                <button
+                                    className="btn btn-primary btn-sm"
+                                    disabled={!connectFlow.targetInterfaceId || !connectFlow.sourceInterfaceId}
+                                    onClick={commitConnection}
+                                >
+                                    Establish Connection
+                                </button>
+                            )}
+                        </div>
+                    </div>
+                )}
                 <div 
                   className="absolute bottom-0 left-0 right-0 flex flex-col bg-base-100/90 backdrop-blur-sm rounded-t-lg shadow-[0_-8px_20px_rgba(0,0,0,0.25)]"
                   style={{ height: `${panelHeight}px` }}

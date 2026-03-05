@@ -464,6 +464,16 @@ export const netboxApi = {
       device_count?: number;
       timestamp?: string | null;
     }>('/netbox/topology/planned'),
+
+  /** Phase 4b: Get planned topology from LOCAL DB (works without NetBox) */
+  getLocalPlannedTopology: () =>
+    request<{
+      nodes: Record<string, any>;
+      source: string;
+      device_count?: number;
+      seeds?: string[];
+      timestamp?: string | null;
+    }>('/netbox/topology/planned/local'),
 };
 
 // --- M13: Security Module API ---

@@ -257,23 +257,13 @@ class NetBoxClient:
                       model: str = None,
                       site: str = None,
                       role: str = None):
-        """Update an existing device in NetBox.
-        
-        Args:
-            name: Current hostname in NetBox (the key).
-            mgmt_ip: New management IP.
-            vendor/model/site/role: Updated metadata.
-        """
-        if not self.api:
-            return None
+        """Update an existing device in NetBox."""
+        if not self.api: return None
         try:
             device = self.api.dcim.devices.get(name=name)
             if not device:
-                # If it doesn't exist, maybe it was renamed locally?
-                # For now, we fallback to create if missing and status is registered.
                 return self.create_device(name, mgmt_ip, vendor, model, site, role)
 
-            # Update prerequisites if they changed
             updates = {}
             if site:
                 s_id = self._ensure_site(slug=site)
@@ -293,7 +283,6 @@ class NetBoxClient:
                 device.save()
                 logger.info(f"Updated device '{name}' in NetBox with {list(updates.keys())}")
 
-            # Update management IP if provided
             if mgmt_ip:
                 self._assign_management_ip(device, mgmt_ip)
 
@@ -302,33 +291,105 @@ class NetBoxClient:
             logger.error(f"Error updating device in NetBox: {e}")
             return None
 
-    def _assign_management_ip(self, device, mgmt_ip: str):
-        """Create a management interface + IP and assign as primary."""
+    def get_or_create_interface(self, device_name: str, name: str, iface_type: str = "other"):
+        """Ensure an interface exists on a device in NetBox."""
+        if not self.api: return None
         try:
-            # Ensure IP has CIDR notation
-            if "/" not in mgmt_ip:
-                mgmt_ip = f"{mgmt_ip}/24"
-
-            # Create a management interface
-            iface = self.api.dcim.interfaces.create({
+            device = self.api.dcim.devices.get(name=device_name)
+            if not device:
+                logger.warning(f"Device '{device_name}' not found in NetBox — cannot create interface '{name}'")
+                return None
+            
+            iface = self.api.dcim.interfaces.get(device_id=device.id, name=name)
+            if iface:
+                return iface
+            
+            new_iface = self.api.dcim.interfaces.create({
                 "device": device.id,
-                "name": "Management",
-                "type": "virtual",
+                "name": name,
+                "type": iface_type
             })
-
-            # Create the IP address
-            ip = self.api.ipam.ip_addresses.create({
-                "address": mgmt_ip,
-                "assigned_object_type": "dcim.interface",
-                "assigned_object_id": iface.id,
-            })
-
-            # Set as primary IPv4
-            device.primary_ip4 = ip.id
-            device.save()
-            logger.info(f"Assigned management IP {mgmt_ip} to device '{device.name}'")
+            logger.info(f"Created interface '{name}' on device '{device_name}' in NetBox")
+            return new_iface
         except Exception as e:
-            logger.warning(f"Could not assign management IP: {e}")
+            logger.error(f"Error ensuring interface '{name}' on '{device_name}': {e}")
+            return None
+
+    def assign_ip_to_interface(self, device_name: str, interface_name: str, ip_address: str, set_as_primary: bool = False):
+        """Assign an IP address to a specific interface on a device."""
+        if not self.api: return None
+        try:
+            device = self.api.dcim.devices.get(name=device_name)
+            if not device: return None
+
+            iface = self.get_or_create_interface(device_name, interface_name)
+            if not iface: return None
+
+            # Ensure IP has CIDR notation
+            if "/" not in ip_address:
+                ip_with_cidr = f"{ip_address}/24"
+            else:
+                ip_with_cidr = ip_address
+
+            # Check if IP exists
+            ip = self.api.ipam.ip_addresses.get(address=ip_with_cidr)
+            if ip:
+                # Update assignment if needed
+                if ip.assigned_object_id != iface.id:
+                    ip.update({
+                        "assigned_object_type": "dcim.interface",
+                        "assigned_object_id": iface.id
+                    })
+                    ip.save()
+            else:
+                ip = self.api.ipam.ip_addresses.create({
+                    "address": ip_with_cidr,
+                    "assigned_object_type": "dcim.interface",
+                    "assigned_object_id": iface.id
+                })
+
+            if set_as_primary:
+                device.primary_ip4 = ip.id
+                device.save()
+            
+            logger.info(f"Assigned IP {ip_with_cidr} to '{interface_name}' on '{device_name}'")
+            return ip
+        except Exception as e:
+            logger.error(f"Error assigning IP {ip_address} to '{interface_name}' on '{device_name}': {e}")
+            return None
+
+    def create_cable(self, src_device_name: str, src_interface_name: str, 
+                     dst_device_name: str, dst_interface_name: str):
+        """Create a cable (link) between two device interfaces."""
+        if not self.api: return None
+        try:
+            src_iface = self.get_or_create_interface(src_device_name, src_interface_name)
+            dst_iface = self.get_or_create_interface(dst_device_name, dst_interface_name)
+            
+            if not src_iface or not dst_iface:
+                logger.warning(f"Prerequisite interfaces for cable '{src_device_name}:{src_interface_name} -> {dst_device_name}:{dst_interface_name}' missing")
+                return None
+
+            # Check if cable already exists on either side
+            # NetBox cables are unique per termination point
+            if src_iface.cable or dst_iface.cable:
+                logger.info(f"Cable already exists for termination point on '{src_device_name}' or '{dst_device_name}'")
+                return src_iface.cable or dst_iface.cable
+
+            cable = self.api.dcim.cables.create({
+                "a_terminations": [{"object_type": "dcim.interface", "object_id": src_iface.id}],
+                "b_terminations": [{"object_type": "dcim.interface", "object_id": dst_iface.id}],
+                "status": "connected"
+            })
+            logger.info(f"Created cable from {src_device_name}:{src_interface_name} to {dst_device_name}:{dst_interface_name}")
+            return cable
+        except Exception as e:
+            logger.error(f"Error creating cable: {e}")
+            return None
+
+    def _assign_management_ip(self, device, mgmt_ip: str):
+        """Legacy helper for setting primary management IP."""
+        return self.assign_ip_to_interface(device.name, "Management", mgmt_ip, set_as_primary=True)
 
     def delete_device_by_name(self, name: str):
         """Delete a device from NetBox by name (best-effort)."""

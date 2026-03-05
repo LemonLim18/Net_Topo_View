@@ -283,6 +283,18 @@ async def create_interface(device_id: int, body: InterfaceCreate):
              body.mac_address, body.speed, body.status),
         )
         conn.commit()
+        
+        # Auto-sync interface and IP to NetBox
+        try:
+            nb = NetBoxClient.get_client()
+            if nb and nb.api:
+                if body.ip_address:
+                    nb.assign_ip_to_interface(d.hostname, body.name, body.ip_address)
+                else:
+                    nb.get_or_create_interface(d.hostname, body.name)
+        except Exception as e:
+            logger.warning("Interface sync to NetBox for '%s:%s' failed: %s", d.hostname, body.name, e)
+
         row = conn.execute("SELECT * FROM interfaces WHERE id = ?", (cur.lastrowid,)).fetchone()
         return dict(row)
     except sqlite3.IntegrityError:
@@ -377,6 +389,51 @@ async def create_link(body: LinkCreate):
     """Create a link between two device interfaces."""
     conn = _raw_conn()
     try:
+        if body.src_device_id == body.dst_device_id:
+            raise HTTPException(400, "Source and destination devices must be different")
+
+        if not body.src_interface_id or not body.dst_interface_id:
+            raise HTTPException(400, "Both source and destination interfaces are required")
+
+        # Resolve hostnames + interface names before insert so we can validate/sync first.
+        db = _db()
+        src_dev = db.get_device_by_id(body.src_device_id)
+        dst_dev = db.get_device_by_id(body.dst_device_id)
+        if not src_dev or not dst_dev:
+            raise HTTPException(404, "Source or destination device not found")
+
+        src_row = conn.execute(
+            "SELECT name FROM interfaces WHERE id = ? AND device_id = ?",
+            (body.src_interface_id, body.src_device_id),
+        ).fetchone()
+        dst_row = conn.execute(
+            "SELECT name FROM interfaces WHERE id = ? AND device_id = ?",
+            (body.dst_interface_id, body.dst_device_id),
+        ).fetchone()
+        if not src_row or not dst_row:
+            raise HTTPException(400, "Source or destination interface is invalid for the selected device")
+
+        src_iface_name = src_row["name"]
+        dst_iface_name = dst_row["name"]
+
+        # Manual links are strict: NetBox cable creation must succeed.
+        if body.discovery_protocol == "manual":
+            nb = NetBoxClient.get_client()
+            if not nb or not nb.api:
+                raise HTTPException(503, "NetBox connection unavailable; link not created")
+
+            cable = nb.create_cable(
+                src_dev.hostname,
+                src_iface_name,
+                dst_dev.hostname,
+                dst_iface_name,
+            )
+            if cable is None:
+                raise HTTPException(
+                    502,
+                    "NetBox cable sync failed; local link was not created",
+                )
+
         cur = conn.execute(
             """INSERT INTO links (src_device_id, src_interface_id, dst_device_id, dst_interface_id,
                                   discovery_protocol)
@@ -386,9 +443,21 @@ async def create_link(body: LinkCreate):
              body.discovery_protocol),
         )
         conn.commit()
-        return {"id": cur.lastrowid, "created": True}
+        return {
+            "id": cur.lastrowid,
+            "created": True,
+            "netbox_synced": body.discovery_protocol == "manual",
+        }
     except sqlite3.IntegrityError as e:
+        conn.rollback()
         raise HTTPException(409, f"Link already exists or FK violation: {e}")
+    except HTTPException:
+        conn.rollback()
+        raise
+    except Exception as e:
+        conn.rollback()
+        logger.exception("Unexpected error creating link: %s", e)
+        raise HTTPException(500, "Unexpected error creating link")
     finally:
         conn.close()
 
@@ -495,9 +564,40 @@ async def push_all_to_netbox():
             ssh_port=d.ssh_port,
         )
         db.upsert_device(device)
+        
+        # Sync interfaces and links for this device as well
+        try:
+            nb = NetBoxClient.get_client()
+            if nb and nb.api:
+                # Interfaces
+                conn_inner = _raw_conn()
+                ifaces = conn_inner.execute("SELECT * FROM interfaces WHERE device_id = ?", (d.id,)).fetchall()
+                for iface in ifaces:
+                    if iface['ip_address']:
+                        nb.assign_ip_to_interface(d.hostname, iface['name'], iface['ip_address'])
+                    else:
+                        nb.get_or_create_interface(d.hostname, iface['name'])
+                
+                # Links (only manual ones for now during registration)
+                links = conn_inner.execute("""
+                    SELECT l.*, sd.hostname as src_h, dd.hostname as dst_h,
+                           si.name as src_i, di.name as dst_i
+                    FROM links l
+                    JOIN devices sd ON l.src_device_id = sd.id
+                    JOIN devices dd ON l.dst_device_id = dd.id
+                    JOIN interfaces si ON l.src_interface_id = si.id
+                    JOIN interfaces di ON l.dst_interface_id = di.id
+                    WHERE (src_device_id = ? OR dst_device_id = ?) AND l.discovery_protocol = 'manual'
+                """, (d.id, d.id)).fetchall()
+                for link in links:
+                    nb.create_cable(link['src_h'], link['src_i'], link['dst_h'], link['dst_i'])
+                conn_inner.close()
+        except Exception as e:
+            logger.warning("Bulk sync of components for '%s' failed: %s", d.hostname, e)
+
         pushed += 1
 
-    return {"pushed_count": pushed, "message": f"Pushed {pushed} devices to NetBox"}
+    return {"pushed_count": pushed, "message": f"Pushed {pushed} devices/components to NetBox"}
 
 
 # ---------------------------------------------------------------------------
@@ -554,6 +654,115 @@ async def get_planned_topology():
     except Exception as e:
         logger.error("Planned topology fetch failed: %s", e)
         raise HTTPException(500, f"Failed to build planned topology: {e}")
+
+
+# ---------------------------------------------------------------------------
+#  Phase 4b — Planned Topology from Local DB (works without NetBox)
+# ---------------------------------------------------------------------------
+
+@router.get("/topology/planned/local")
+async def get_local_planned_topology():
+    """
+    Build a planned (design-of-record) topology graph from the LOCAL database.
+
+    This uses the devices, interfaces, and links tables stored in SQLite
+    to construct a graph structure compatible with the frontend's topology
+    renderer (same shape as the BFS crawler output).
+
+    Unlike the NetBox-sourced endpoint, this works even when NetBox is offline.
+    """
+    conn = _raw_conn()
+    try:
+        # 1. Fetch all devices
+        devices = conn.execute(
+            "SELECT id, hostname, management_ip FROM devices ORDER BY hostname"
+        ).fetchall()
+
+        nodes = {}
+        device_id_to_hostname = {}
+
+        for dev in devices:
+            device_id_to_hostname[dev["id"]] = dev["hostname"]
+
+            # 2. Fetch interfaces for this device
+            ifaces = conn.execute(
+                "SELECT name, ip_address FROM interfaces WHERE device_id = ? ORDER BY name",
+                (dev["id"],)
+            ).fetchall()
+
+            iface_dict = {}
+            for iface in ifaces:
+                iface_dict[iface["name"]] = iface["ip_address"] or ""
+
+            nodes[dev["hostname"]] = {
+                "mgmt_ip": dev["management_ip"],
+                "interfaceList": [iface_dict] if iface_dict else [{}],
+                "connectedNode": [],
+                "edgeLink": {},
+            }
+
+        # 3. Fetch all links with resolved hostnames and interface names
+        links = conn.execute("""
+            SELECT
+                l.src_device_id, l.dst_device_id,
+                l.src_interface_id, l.dst_interface_id,
+                sd.hostname AS src_hostname,
+                dd.hostname AS dst_hostname,
+                si.name     AS src_iface_name,
+                si.ip_address AS src_iface_ip,
+                di.name     AS dst_iface_name,
+                di.ip_address AS dst_iface_ip
+            FROM links l
+            JOIN devices sd ON l.src_device_id = sd.id
+            JOIN devices dd ON l.dst_device_id = dd.id
+            LEFT JOIN interfaces si ON l.src_interface_id = si.id
+            LEFT JOIN interfaces di ON l.dst_interface_id = di.id
+            ORDER BY sd.hostname
+        """).fetchall()
+
+        # 4. Build edges from links
+        for link in links:
+            src_h = link["src_hostname"]
+            dst_h = link["dst_hostname"]
+            src_iface = link["src_iface_name"] or "unknown"
+            dst_iface = link["dst_iface_name"] or "unknown"
+            dst_ip = link["dst_iface_ip"] or (nodes.get(dst_h, {}).get("mgmt_ip") or "")
+
+            if src_h in nodes:
+                # Add connected node (bidirectional)
+                if dst_h not in nodes[src_h]["connectedNode"]:
+                    nodes[src_h]["connectedNode"].append(dst_h)
+                # Add edge link (src → dst)
+                nodes[src_h]["edgeLink"][src_iface] = {
+                    "remote_node": dst_h,
+                    "remote_interface": dst_iface,
+                    "remote_ip": dst_ip,
+                }
+
+            if dst_h in nodes:
+                # Add reverse connected node
+                if src_h not in nodes[dst_h]["connectedNode"]:
+                    nodes[dst_h]["connectedNode"].append(src_h)
+                # Add reverse edge link (dst → src)
+                src_ip = link["src_iface_ip"] or (nodes.get(src_h, {}).get("mgmt_ip") or "")
+                nodes[dst_h]["edgeLink"][dst_iface] = {
+                    "remote_node": src_h,
+                    "remote_interface": src_iface,
+                    "remote_ip": src_ip,
+                }
+
+        return {
+            "nodes": nodes,
+            "source": "local_db",
+            "device_count": len(nodes),
+            "seeds": [],
+            "timestamp": None,
+        }
+    except Exception as e:
+        logger.error("Local planned topology build failed: %s", e)
+        raise HTTPException(500, f"Failed to build local planned topology: {e}")
+    finally:
+        conn.close()
 
 
 # ---------------------------------------------------------------------------
