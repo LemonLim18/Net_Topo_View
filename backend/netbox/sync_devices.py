@@ -107,6 +107,7 @@ class DeviceSyncer:
                         device_id=device_id,
                         name=nb_iface["name"],
                         ip_address=nb_iface.get("ip_address"),
+                        subnet_mask=nb_iface.get("subnet_mask"),
                         mac_address=nb_iface.get("mac_address"),
                         status="active" if nb_iface.get("ip_address") else "unknown",
                     )

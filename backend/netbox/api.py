@@ -98,6 +98,21 @@ def _device_dict(d: Device) -> dict:
     }
 
 
+def _parse_cidr(ip_str: Optional[str], current_mask: Optional[str]) -> tuple[Optional[str], Optional[str]]:
+    """Auto-split CIDR if provided in the IP string and mask is missing."""
+    if not ip_str or "/" not in ip_str:
+        return ip_str, current_mask
+    try:
+        ip, prefix = ip_str.split("/")
+        p_int = int(prefix)
+        # Convert prefix to mask
+        m = (0xffffffff >> (32 - p_int)) << (32 - p_int)
+        mask = f"{(m >> 24) & 0xff}.{(m >> 16) & 0xff}.{(m >> 8) & 0xff}.{m & 0xff}"
+        return ip, mask if not current_mask else current_mask
+    except Exception:
+        return ip_str, current_mask
+
+
 # ---------------------------------------------------------------------------
 #  Device CRUD endpoints
 # ---------------------------------------------------------------------------
@@ -325,10 +340,13 @@ async def create_interface(device_id: int, body: InterfaceCreate):
 
     conn = _raw_conn()
     try:
+        # Auto-parse CIDR if provided
+        ip_addr, sub_mask = _parse_cidr(body.ip_address, body.subnet_mask)
+        
         cur = conn.execute(
             """INSERT INTO interfaces (device_id, name, ip_address, subnet_mask, mac_address, speed, status)
                VALUES (?, ?, ?, ?, ?, ?, ?)""",
-            (device_id, body.name, body.ip_address, body.subnet_mask,
+            (device_id, body.name, ip_addr, sub_mask,
              body.mac_address, body.speed, body.status),
         )
         conn.commit()
@@ -364,6 +382,16 @@ async def update_interface(device_id: int, iface_id: int, body: InterfaceUpdate)
         if not existing:
             raise HTTPException(404, "Interface not found")
 
+        # Auto-parse CIDR if provided in the IP address update
+        new_ip = body.ip_address if body.ip_address is not None else existing["ip_address"]
+        new_mask = body.subnet_mask if body.subnet_mask is not None else existing["subnet_mask"]
+        
+        # Only auto-parse if the IP address itself is being changed in this request
+        if body.ip_address is not None:
+            new_ip, parsed_mask = _parse_cidr(new_ip, body.subnet_mask)
+            if parsed_mask:
+                new_mask = parsed_mask
+
         conn.execute(
             """UPDATE interfaces
                SET name = ?, ip_address = ?, subnet_mask = ?, mac_address = ?,
@@ -371,8 +399,8 @@ async def update_interface(device_id: int, iface_id: int, body: InterfaceUpdate)
              WHERE id = ?""",
             (
                 body.name if body.name is not None else existing["name"],
-                body.ip_address if body.ip_address is not None else existing["ip_address"],
-                body.subnet_mask if body.subnet_mask is not None else existing["subnet_mask"],
+                new_ip,
+                new_mask,
                 body.mac_address if body.mac_address is not None else existing["mac_address"],
                 body.speed if body.speed is not None else existing["speed"],
                 body.status if body.status is not None else existing["status"],

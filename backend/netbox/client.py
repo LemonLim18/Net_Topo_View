@@ -83,7 +83,7 @@ class NetBoxClient:
         """Fetch all interfaces for a NetBox device, with assigned IPs.
 
         Returns a list of dicts:
-          [{"name": "GE0/0/1", "ip_address": "10.0.1.1", "mac_address": "aa:bb:...", "type": "other"}, ...]
+          [{"name": "GE0/0/1", "ip_address": "10.0.1.1", "subnet_mask": "255.255.255.0", ...}, ...]
         """
         if not self.api:
             return []
@@ -92,18 +92,25 @@ class NetBoxClient:
             result = []
             for iface in ifaces:
                 ip_address = None
+                subnet_mask = None
                 # Fetch IPs assigned to this interface
                 try:
                     ips = list(self.api.ipam.ip_addresses.filter(interface_id=iface.id))
                     if ips:
-                        # Take the first IP and strip CIDR notation
-                        ip_address = str(ips[0].address).split("/")[0]
+                        # Parse CIDR notation (e.g. "10.0.1.1/24")
+                        address_str = str(ips[0].address)
+                        if "/" in address_str:
+                            ip_address, prefix = address_str.split("/")
+                            subnet_mask = self._cidr_to_mask(int(prefix))
+                        else:
+                            ip_address = address_str
                 except Exception:
                     pass
 
                 result.append({
                     "name": iface.name,
                     "ip_address": ip_address,
+                    "subnet_mask": subnet_mask,
                     "mac_address": getattr(iface, "mac_address", None),
                     "type": str(getattr(iface, "type", "other")),
                 })
@@ -111,6 +118,17 @@ class NetBoxClient:
         except Exception as e:
             logger.error(f"Error fetching interfaces for device {nb_device_id}: {e}")
             return []
+
+    def _cidr_to_mask(self, prefix: int) -> str:
+        """Convert a CIDR prefix length (0-32) to a dotted-decimal mask."""
+        try:
+            mask = (0xffffffff >> (32 - prefix)) << (32 - prefix)
+            return (
+                f"{(mask >> 24) & 0xff}.{(mask >> 16) & 0xff}."
+                f"{(mask >> 8) & 0xff}.{mask & 0xff}"
+            )
+        except Exception:
+            return "255.255.255.0" # Fallback
 
     # ------------------------------------------------------------------
     #  Auto-create prerequisite helpers

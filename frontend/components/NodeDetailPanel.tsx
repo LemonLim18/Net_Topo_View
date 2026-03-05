@@ -1,13 +1,14 @@
 import React from 'react';
 import type { D3Node } from '../types';
-import { X } from 'lucide-react';
+import { X, Edit3 } from 'lucide-react';
 
 interface NodeDetailPanelProps {
   node: (D3Node & { id: string }) | null;
   onClose: () => void;
+  onEditInterface?: (ifaceName: string) => void;
 }
 
-const NodeDetailPanel: React.FC<NodeDetailPanelProps> = ({ node, onClose }) => {
+const NodeDetailPanel: React.FC<NodeDetailPanelProps> = ({ node, onClose, onEditInterface }) => {
   if (!node) {
     return null;
   }
@@ -73,9 +74,20 @@ const NodeDetailPanel: React.FC<NodeDetailPanelProps> = ({ node, onClose }) => {
 
                       const displayName = collapse(ifaceName);
                       return (
-                        <li key={`${objIndex}-${ifaceName}`} className="flex justify-between">
-                          <span>{displayName}</span>
-                          <span>{ipAddress}</span>
+                        <li key={`${objIndex}-${ifaceName}`} className="flex justify-between items-center group/iface">
+                          <div className="flex items-center gap-1.5 overflow-hidden">
+                            <span>{displayName}</span>
+                            {onEditInterface && (
+                              <button 
+                                onClick={() => onEditInterface(ifaceName)}
+                                className="opacity-70 hover:opacity-100! transition-opacity"
+                                title="Edit IP"
+                              >
+                                <Edit3 className="w-3 h-3" />
+                              </button>
+                            )}
+                          </div>
+                          <span className="shrink-0">{ipAddress}</span>
                         </li>
                       );
                     })

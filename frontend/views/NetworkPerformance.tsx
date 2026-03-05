@@ -339,9 +339,18 @@ const ChartCard: React.FC<{
               width={60}
             />
             <Tooltip
-              formatter={(v: number) => [`${v}${yUnit}`, 'Value']}
-              labelFormatter={(l: string) => `Time: ${l}`}
-              contentStyle={{ fontSize: 12 }}
+              formatter={(value: any) => [`${value}${yUnit}`, 'Value']}
+              labelFormatter={(label: any) => `Time: ${label}`}
+              contentStyle={{ 
+                backgroundColor: 'rgba(15, 23, 42, 0.9)', 
+                border: '1px solid rgba(255, 255, 255, 0.1)',
+                borderRadius: '0.75rem',
+                fontSize: '12px',
+                backdropFilter: 'blur(8px)',
+                boxShadow: '0 10px 15px -3px rgba(0, 0, 0, 0.3)',
+              }}
+              itemStyle={{ color: '#e2e8f0' }}
+              labelStyle={{ color: '#94a3b8', fontWeight: 'bold', marginBottom: '4px' }}
             />
             <Area
               type="monotone"

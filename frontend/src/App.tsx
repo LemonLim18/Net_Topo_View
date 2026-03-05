@@ -24,6 +24,7 @@ import SecurityEvents from '../views/SecurityEvents';
 import SecurityAnalysis from '../views/SecurityAnalysis';
 import SecurityDashboard from '../views/SecurityDashboard';
 import { NotificationProvider } from '../contexts/NotificationContext';
+import { DeviceProvider } from '../contexts/DeviceContext';
 import { Bot } from 'lucide-react';
 
 import type { ViewId, User, AppDomain } from '../types';
@@ -230,9 +231,10 @@ const App: React.FC = () => {
 
   return (
     <NotificationProvider>
+      <DeviceProvider>
         <div data-theme={theme} className="w-screen h-screen flex flex-col font-sans">
         <Header theme={theme} setTheme={setTheme} />
-        <div className="flex flex-grow overflow-hidden">
+        <div className="flex grow overflow-hidden">
             <Sidebar 
                 currentView={view} 
                 setView={setView} 
@@ -241,9 +243,9 @@ const App: React.FC = () => {
                 collapsed={sidebarCollapsed}
                 onToggleCollapse={() => setSidebarCollapsed(c => !c)}
             />
-            <main className="flex-grow relative overflow-hidden bg-base-200 flex">
+            <main className="grow relative overflow-hidden bg-base-200 flex">
               {/* Main Content Area */}
-              <div className="flex-grow overflow-hidden relative">
+              <div className="grow overflow-hidden relative">
                 {renderView()}
               </div>
               
@@ -270,6 +272,7 @@ const App: React.FC = () => {
             </main>
         </div>
         </div>
+      </DeviceProvider>
     </NotificationProvider>
   );
 };

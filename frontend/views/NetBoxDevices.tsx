@@ -19,6 +19,7 @@ import {
   Cpu,
 } from 'lucide-react';
 import { netboxApi, type DeviceRecord, type InterfaceRecord, type LinkRecord } from '../src/services/api';
+import { useDeviceContext } from '../contexts/DeviceContext';
 import { Toast, Confirm } from '../src/utils/swal';
 
 const NETBOX_SELECTED_DEVICE_KEY = 'netbox.selectedDeviceId';
@@ -143,19 +144,23 @@ const NetBoxDevices: React.FC = () => {
     return Number.isFinite(raw) ? raw : null;
   });
 
-  // Data
-  const [devices, setDevices] = useState<DeviceRecord[]>([]);
+  // Data from Context
+  const { 
+    devices, 
+    links, 
+    isLoading: isGlobalLoading, 
+    refreshDevices, 
+    refreshLinks, 
+    refreshAll 
+  } = useDeviceContext();
+
   const [selected, setSelected] = useState<DeviceRecord | null>(null);
-  const [isLoading, setIsLoading] = useState(false);
+  const [isActionLoading, setIsActionLoading] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
 
   // Interfaces for selected device
   const [interfaces, setInterfaces] = useState<InterfaceRecord[]>([]);
   const [loadingIfaces, setLoadingIfaces] = useState(false);
-
-  // Links
-  const [links, setLinks] = useState<LinkRecord[]>([]);
-  const [loadingLinks, setLoadingLinks] = useState(false);
 
   // Detail tab
   const [detailTab, setDetailTab] = useState<'info' | 'interfaces' | 'links'>(() => {
@@ -178,6 +183,8 @@ const NetBoxDevices: React.FC = () => {
 
   // Interface modal state
   const [showIfaceModal, setShowIfaceModal] = useState(false);
+  const [isEditingIface, setIsEditingIface] = useState(false);
+  const [editIfaceId, setEditIfaceId] = useState<number | null>(null);
   const [ifaceForm, setIfaceForm] = useState({ ...EMPTY_IFACE_FORM });
   const [ifaceFormError, setIfaceFormError] = useState<string | null>(null);
 
@@ -198,24 +205,17 @@ const NetBoxDevices: React.FC = () => {
   // -----------------------------------------------------------------------
 
   const fetchDevices = useCallback(async () => {
-    setIsLoading(true);
     try {
-      const res = await netboxApi.listDevices();
-      setDevices(res.devices);
-
+      await refreshDevices();
+      
       if (selected?.id) {
-        const refreshedSelected = res.devices.find(d => d.id === selected.id) || null;
-        setSelected(refreshedSelected);
-      } else if (persistedSelectedDeviceId) {
-        const restored = res.devices.find(d => d.id === persistedSelectedDeviceId) || null;
-        setSelected(restored);
+        // We don't have the updated list here yet since setDevices is async,
+        // but we can trust the context will update.
       }
     } catch (e: any) {
       Toast.error('Failed to load devices', e.message);
-    } finally {
-      setIsLoading(false);
     }
-  }, [persistedSelectedDeviceId, selected?.id]);
+  }, [refreshDevices, selected?.id]);
 
   const fetchInterfaces = useCallback(async (deviceId: number) => {
     setLoadingIfaces(true);
@@ -230,18 +230,20 @@ const NetBoxDevices: React.FC = () => {
   }, []);
 
   const fetchLinks = useCallback(async () => {
-    setLoadingLinks(true);
     try {
-      const res = await netboxApi.listLinks();
-      setLinks(res.links);
+      await refreshLinks();
     } catch (e: any) {
       Toast.error('Failed to load links', e.message);
-    } finally {
-      setLoadingLinks(false);
     }
-  }, []);
+  }, [refreshLinks]);
 
-  useEffect(() => { fetchDevices(); }, [fetchDevices]);
+  // Handle selected device hydration from persisted ID
+  useEffect(() => {
+    if (!selected && persistedSelectedDeviceId && devices.length > 0) {
+      const restored = devices.find(d => d.id === persistedSelectedDeviceId) || null;
+      if (restored) setSelected(restored);
+    }
+  }, [devices, persistedSelectedDeviceId, selected]);
 
   useEffect(() => {
     if (selected) {
@@ -330,7 +332,7 @@ const NetBoxDevices: React.FC = () => {
       return;
     }
     setFormError(null);
-    setIsLoading(true);
+    setIsActionLoading(true);
 
     try {
       if (isEditing && editId !== null) {
@@ -370,7 +372,7 @@ const NetBoxDevices: React.FC = () => {
     } catch (e: any) {
       setFormError(e.message || 'Operation failed');
     } finally {
-      setIsLoading(false);
+      setIsActionLoading(false);
     }
   };
 
@@ -381,7 +383,7 @@ const NetBoxDevices: React.FC = () => {
     );
     if (!ok) return;
 
-    setIsLoading(true);
+    setIsActionLoading(true);
     try {
       await netboxApi.deleteDevice(d.id);
       Toast.success(`Device "${d.hostname}" deleted`);
@@ -390,7 +392,7 @@ const NetBoxDevices: React.FC = () => {
     } catch (e: any) {
       Toast.error('Delete failed', e.message);
     } finally {
-      setIsLoading(false);
+      setIsActionLoading(false);
     }
   };
 
@@ -421,6 +423,22 @@ const NetBoxDevices: React.FC = () => {
 
   const handleAddInterface = () => {
     setIfaceForm({ ...EMPTY_IFACE_FORM });
+    setIsEditingIface(false);
+    setEditIfaceId(null);
+    setIfaceFormError(null);
+    setShowIfaceModal(true);
+  };
+
+  const handleEditInterface = (iface: InterfaceRecord) => {
+    setIfaceForm({
+      name: iface.name,
+      ip_address: iface.ip_address || '',
+      subnet_mask: iface.subnet_mask || '255.255.255.0',
+      mac_address: iface.mac_address || '',
+      speed: iface.speed || '',
+    });
+    setIsEditingIface(true);
+    setEditIfaceId(iface.id);
     setIfaceFormError(null);
     setShowIfaceModal(true);
   };
@@ -433,18 +451,29 @@ const NetBoxDevices: React.FC = () => {
     if (!selected) return;
     setIfaceFormError(null);
     try {
-      await netboxApi.createInterface(selected.id, {
-        name: ifaceForm.name,
-        ip_address: ifaceForm.ip_address || undefined,
-        subnet_mask: ifaceForm.subnet_mask || undefined,
-        mac_address: ifaceForm.mac_address || undefined,
-        speed: ifaceForm.speed || undefined,
-      });
-      Toast.success(`Interface "${ifaceForm.name}" added`);
+      if (isEditingIface && editIfaceId) {
+        await netboxApi.updateInterface(selected.id, editIfaceId, {
+          name: ifaceForm.name,
+          ip_address: ifaceForm.ip_address || undefined,
+          subnet_mask: ifaceForm.subnet_mask || undefined,
+          mac_address: ifaceForm.mac_address || undefined,
+          speed: ifaceForm.speed || undefined,
+        });
+        Toast.success(`Interface "${ifaceForm.name}" updated`);
+      } else {
+        await netboxApi.createInterface(selected.id, {
+          name: ifaceForm.name,
+          ip_address: ifaceForm.ip_address || undefined,
+          subnet_mask: ifaceForm.subnet_mask || undefined,
+          mac_address: ifaceForm.mac_address || undefined,
+          speed: ifaceForm.speed || undefined,
+        });
+        Toast.success(`Interface "${ifaceForm.name}" added`);
+      }
       setShowIfaceModal(false);
       fetchInterfaces(selected.id);
     } catch (e: any) {
-      setIfaceFormError(e.message || 'Failed to add interface');
+      setIfaceFormError(e.message || `Failed to ${isEditingIface ? 'update' : 'add'} interface`);
     }
   };
 
@@ -541,8 +570,8 @@ const NetBoxDevices: React.FC = () => {
             {isSyncing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
             Sync from NetBox
           </button>
-          <button className="btn btn-sm btn-outline gap-1" onClick={fetchDevices} disabled={isLoading}>
-            <RefreshCw className={`w-4 h-4 ${isLoading ? 'animate-spin' : ''}`} />
+          <button className="btn btn-sm btn-outline gap-1" onClick={refreshAll} disabled={isGlobalLoading || isActionLoading}>
+            <RefreshCw className={`w-4 h-4 ${(isGlobalLoading || isActionLoading) ? 'animate-spin' : ''}`} />
             Refresh
           </button>
           <button className="btn btn-sm btn-primary gap-1" onClick={handleCreate}>
@@ -607,7 +636,7 @@ const NetBoxDevices: React.FC = () => {
                 </tr>
               </thead>
               <tbody>
-                {isLoading && devices.length === 0 ? (
+                {isGlobalLoading && devices.length === 0 ? (
                   <tr>
                     <td colSpan={6} className="text-center py-12 opacity-50">
                       <Loader2 className="w-6 h-6 animate-spin mx-auto mb-2" />
@@ -774,10 +803,18 @@ const NetBoxDevices: React.FC = () => {
                                 <td className="font-mono text-xs">{iface.name}</td>
                                 <td className="font-mono text-xs">{iface.ip_address || '—'}</td>
                                 <td className="text-xs">{iface.subnet_mask || '—'}</td>
-                                <td className="text-right">
+                                <td className="text-right flex justify-end gap-1">
+                                  <button
+                                    className="btn btn-ghost btn-xs text-primary"
+                                    onClick={() => handleEditInterface(iface)}
+                                    title="Edit Interface"
+                                  >
+                                    <Edit3 className="w-3 h-3" />
+                                  </button>
                                   <button
                                     className="btn btn-ghost btn-xs text-error"
                                     onClick={() => handleDeleteInterface(iface)}
+                                    title="Delete Interface"
                                   >
                                     <Trash2 className="w-3 h-3" />
                                   </button>
@@ -801,7 +838,7 @@ const NetBoxDevices: React.FC = () => {
                       </button>
                     </div>
 
-                    {loadingLinks ? (
+                    {isGlobalLoading ? (
                       <div className="text-center py-6 opacity-50">
                         <Loader2 className="w-5 h-5 animate-spin mx-auto mb-1" />
                         Loading…
@@ -964,8 +1001,8 @@ const NetBoxDevices: React.FC = () => {
 
             <div className="modal-action">
               <button className="btn btn-ghost" onClick={() => setShowModal(false)}>Cancel</button>
-              <button className="btn btn-primary gap-1" onClick={handleSubmit} disabled={isLoading}>
-                {isLoading && <Loader2 className="w-4 h-4 animate-spin" />}
+              <button className="btn btn-primary gap-1" onClick={handleSubmit} disabled={isActionLoading}>
+                {isActionLoading && <Loader2 className="w-4 h-4 animate-spin" />}
                 {isEditing ? 'Save Changes' : 'Add Device'}
               </button>
             </div>
@@ -977,8 +1014,8 @@ const NetBoxDevices: React.FC = () => {
       {/* ─── Add Interface Modal ─── */}
       {showIfaceModal && (
         <div className="modal modal-open">
-          <div className="modal-box max-w-md">
-            <h3 className="font-bold text-lg mb-4">Add Interface</h3>
+          <div className="modal-box max-w-lg">
+            <h3 className="font-bold text-lg mb-4">{isEditingIface ? 'Edit' : 'Add'} Interface</h3>
 
             {ifaceFormError && (
               <div className="alert alert-error alert-sm mb-3">
@@ -1028,7 +1065,8 @@ const NetBoxDevices: React.FC = () => {
             <div className="modal-action">
               <button className="btn btn-ghost" onClick={() => setShowIfaceModal(false)}>Cancel</button>
               <button className="btn btn-primary gap-1" onClick={handleSaveInterface}>
-                <Plus className="w-4 h-4" /> Add Interface
+                {isEditingIface ? <Edit3 className="w-4 h-4" /> : <Plus className="w-4 h-4" />}
+                {isEditingIface ? 'Update' : 'Add'} Interface
               </button>
             </div>
           </div>

@@ -15,6 +15,7 @@ import { CONTROLLER_NODE_ID, CONTROLLER_NODE_DATA } from '../constants';
 import { useWebSocket } from '../src/hooks/useWebSocket';
 import { API_CONFIG } from '../src/config';
 import { topologyApi, netboxApi, type DeviceRecord, type InterfaceRecord, type LinkRecord } from '../src/services/api';
+import { useDeviceContext } from '../contexts/DeviceContext';
 import { Terminal, Info, RefreshCw, Cable, AlertTriangle } from 'lucide-react';
 import { Toast } from '../src/utils/swal';
 import { sshApi } from '../src/services/api';
@@ -27,6 +28,7 @@ const DASHBOARD_PANEL_HEIGHT_KEY = 'dashboard.panelHeight';
 const DASHBOARD_GRID_VISIBLE_KEY = 'dashboard.gridVisible';
 const DASHBOARD_SSH_PANEL_HEIGHT_KEY = 'dashboard.sshPanelHeight';
 const DASHBOARD_SSH_MINIMIZED_KEY = 'dashboard.sshMinimized';
+const DASHBOARD_PLANNED_CACHE_KEY = 'dashboard.plannedTopologyCache';
 
 // Helper to convert abbreviated interface names to full names
 const expandInterfaceName = (abbr: string): string => {
@@ -41,8 +43,10 @@ const InterfaceSelect: React.FC<{
   value: number;
   onChange: (val: number) => void;
   disabled?: boolean;
+  compact?: boolean;
   onCreateIface?: () => void;
-}> = ({ interfaces, value, onChange, disabled, onCreateIface }) => {
+  onEditIface?: (iface: InterfaceRecord) => void;
+}> = ({ interfaces, value, onChange, disabled, compact, onCreateIface, onEditIface }) => {
   const selected = interfaces.find(i => i.id === value);
 
   // Separate available from unavailable
@@ -72,12 +76,12 @@ const InterfaceSelect: React.FC<{
         tabIndex={0} 
         className={`select select-bordered select-sm w-full flex items-center justify-between text-xs cursor-pointer ${disabled ? 'btn-disabled opacity-50' : ''}`}
       >
-        <div className="truncate flex-1 text-left">
+        <div className="truncate flex-1 text-left min-w-0 pr-1">
           {value === 0 ? <span className="text-base-content/50">Select interface…</span> : 
             selected ? (
-              <div className="flex justify-between items-center w-full pr-2">
-                <span>{selected.name} {selected.ip_address ? `(${selected.ip_address})` : ''}</span>
-                {/* <span className="badge badge-success badge-xs opacity-80 scale-90 px-1">Available</span> */}
+              <div className="flex items-center gap-1.5 min-w-0 overflow-hidden">
+                <span className="truncate">{selected.name}</span>
+                {selected.ip_address && <span className="text-primary font-bold opacity-60 text-[10px] shrink-0">({selected.ip_address})</span>}
               </div>
             ) : 'Select interface…'}
         </div>
@@ -104,14 +108,37 @@ const InterfaceSelect: React.FC<{
             </li>
           )}
           {availableIfaces.map(i => (
-            <li key={i.id}>
-              <a 
-                onClick={() => handleSelect(i.id)}
-                className={`flex justify-between items-center py-1.5 ${value === i.id ? 'bg-primary text-primary-content' : ''}`}
-              >
-                <span className="text-xs text-left">{i.name} {i.ip_address ? <span className="opacity-70 text-[10px]">({i.ip_address})</span> : ''}</span>
-                {value !== i.id && <span className="badge badge-success badge-xs opacity-80 scale-90 px-1">Available</span>}
-              </a>
+            <li key={i.id} className="group mr-1.5">
+              <div className="flex items-center p-0">
+                <a 
+                  onClick={() => handleSelect(i.id)}
+                  className={`flex-1 flex justify-between items-center py-1.5 px-3 min-w-0 ${value === i.id ? 'bg-primary text-primary-content rounded-r-none' : ''}`}
+                >
+                  <div className="flex flex-col flex-1 min-w-0 mr-2">
+                    <span className="text-[11px] font-semibold truncate leading-tight">{i.name}</span>
+                    {i.ip_address && <span className={`text-[9px] truncate ${value === i.id ? 'text-primary-content/70' : 'opacity-60'}`}>{i.ip_address}</span>}
+                  </div>
+                  {value !== i.id && (
+                    <div className="flex items-center justify-center shrink-0 min-w-5" title="Available">
+                      {compact ? (
+                        <div className="w-1.5 h-1.5 rounded-full bg-success animate-pulse shadow-[0_0_5px_rgba(52,211,153,0.5)]"></div>
+                      ) : (
+                        <span className="badge badge-success badge-xs h-3.5 min-h-0 text-[9px] opacity-70 px-1 border-none">Available</span>
+                      )}
+                    </div>
+                  )}
+                </a>
+                {onEditIface && (
+                  <button 
+                    type="button"
+                    onClick={(e) => { e.stopPropagation(); onEditIface(i); }}
+                    className={`p-1.5 transition-opacity ${value === i.id ? 'bg-primary text-primary-content rounded-l-none' : 'text-base-content opacity-50 hover:opacity-100!'}`}
+                    title="Edit IP"
+                  >
+                    <svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path><path d="M18.5 2.5a2.121 2.121 0 1 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path></svg>
+                  </button>
+                )}
+              </div>
             </li>
           ))}
 
@@ -125,12 +152,28 @@ const InterfaceSelect: React.FC<{
             </li>
           )}
           {connectedIfaces.map(i => (
-            <li key={i.id} className="disabled">
-              <span className="flex justify-between items-center opacity-40 py-1.5 px-4 cursor-not-allowed">
-                <span className="text-xs text-left">{i.name} {i.ip_address ? <span className="text-[10px]">({i.ip_address})</span> : ''}</span>
-                {/* <span className="badge badge-ghost badge-xs scale-90 px-1 border-none bg-base-300">Connected to: {i.connected_to?.device.name}</span> */}
-                <span className="badge badge-ghost badge-xs scale-90 px-1 border-none bg-base-300">Connected: {i.connected_to?.device.name}</span>
-              </span>
+            <li key={i.id} className="disabled group mr-1.5">
+              <div className="flex items-center p-0">
+                <span className="flex-1 flex justify-between items-center py-1.5 px-3 min-w-0 opacity-40 cursor-not-allowed">
+                  <div className="flex flex-col flex-1 min-w-0 mr-2">
+                    <span className="text-[11px] font-semibold truncate leading-tight">{i.name}</span>
+                    {i.ip_address && <span className="text-[9px] truncate opacity-80">{i.ip_address}</span>}
+                  </div>
+                  <span className="badge badge-ghost badge-xs h-3.5 min-h-0 text-[8px] shrink-0 px-1 truncate max-w-[60px]" title={`Connected to ${i.connected_to?.device.name}`}>
+                    {i.connected_to?.device.name}
+                  </span>
+                </span>
+                {onEditIface && (
+                  <button 
+                    type="button"
+                    onClick={(e) => { e.stopPropagation(); onEditIface(i); }}
+                    className="p-1.5 text-base-content cursor-pointer opacity-70 hover:opacity-100! transition-opacity"
+                    title="Edit IP"
+                  >
+                    <svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path><path d="M18.5 2.5a2.121 2.121 0 1 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path></svg>
+                  </button>
+                )}
+              </div>
             </li>
           ))}
 
@@ -315,10 +358,18 @@ const Dashboard: React.FC = () => {
         url: API_CONFIG.WS_URL,
     });
 
+    // --- Data from Context ---
+    const { 
+        devices: connectDevices, 
+        links: allLinks, 
+        refreshAll: refreshConnectData 
+    } = useDeviceContext();
+    
     // --- Planned topology from local DB ---
-    const [plannedTopology, setPlannedTopology] = useState<TopologyData | null>(null);
-    const [connectDevices, setConnectDevices] = useState<DeviceRecord[]>([]);
-    const [allLinks, setAllLinks] = useState<LinkRecord[]>([]);
+    const [plannedTopology, setPlannedTopology] = useState<TopologyData | null>(() => {
+        const cached = localStorage.getItem(DASHBOARD_PLANNED_CACHE_KEY);
+        return cached ? JSON.parse(cached) : null;
+    });
     
     // --- Standard Add Link Modal state ---
     const [showLinkModal, setShowLinkModal] = useState(false);
@@ -355,9 +406,11 @@ const Dashboard: React.FC = () => {
         document.addEventListener('mouseup', handleMouseUp);
     }, [linkDrawerWidth]);
     
+    const [ifaceFormError, setIfaceFormError] = useState<string | null>(null);
+    
     // --- Interface Creation Modal state ---
     const [showIfaceModal, setShowIfaceModal] = useState(false);
-    const [ifaceCreateSide, setIfaceCreateSide] = useState<'src' | 'dst'>('src');
+    const [ifaceCreateSide, setIfaceCreateSide] = useState<'src' | 'dst' | null>(null);
     const [ifaceForm, setIfaceForm] = useState({
       name: '',
       ip_address: '',
@@ -365,23 +418,24 @@ const Dashboard: React.FC = () => {
       mac_address: '',
       speed: '',
     });
-    const [ifaceFormError, setIfaceFormError] = useState<string | null>(null);
 
-    const refreshConnectData = useCallback(async () => {
-        const [devResp, linkResp] = await Promise.all([
-            netboxApi.listDevices(),
-            netboxApi.listLinks(),
-        ]);
-        setConnectDevices(devResp.devices || []);
-        setAllLinks(linkResp.links || []);
-        return { devices: devResp.devices || [], links: linkResp.links || [] };
-    }, []);
+    // --- Interface Edit Modal state ---
+    const [showEditIfaceModal, setShowEditIfaceModal] = useState(false);
+    const [editingIface, setEditingIface] = useState<InterfaceRecord | null>(null);
+    const [editIfaceForm, setEditIfaceForm] = useState({
+      ip_address: '',
+    });
+    const [editIfaceFormError, setEditIfaceFormError] = useState<string | null>(null);
+
+    // refreshConnectData is now the context's refreshAll
 
     useEffect(() => {
         const fetchPlanned = async () => {
             try {
                 const data = await netboxApi.getLocalPlannedTopology();
-                setPlannedTopology(data as any as TopologyData);
+                const topoData = data as any as TopologyData;
+                setPlannedTopology(topoData);
+                localStorage.setItem(DASHBOARD_PLANNED_CACHE_KEY, JSON.stringify(topoData));
             } catch (e) {
                 console.warn('[Topo] Failed to fetch local planned topology:', e);
             }
@@ -516,7 +570,7 @@ const Dashboard: React.FC = () => {
 
         return { nodes: Array.from(nodeMap.values()), links: Array.from(linkMap.values()) };
 
-    }, [topologyView, realTimeTopology, plannedTopology]);
+    }, [topologyView, realTimeTopology, plannedTopology, allLinks, connectDevices]);
 
     const selectedNodeData = useMemo(() => {
         if (!selectedNodeId) return null;
@@ -559,8 +613,8 @@ const Dashboard: React.FC = () => {
 
     const openLinkModal = useCallback(async (sourceNodeId: string) => {
         try {
-            const { devices } = await refreshConnectData();
-            const srcDev = devices.find(d => d.hostname === sourceNodeId);
+            await refreshConnectData();
+            const srcDev = connectDevices.find((d: DeviceRecord) => d.hostname === sourceNodeId);
             if (!srcDev) {
                 Toast.error('Connect Failed', `Source device '${sourceNodeId}' is not in local inventory`);
                 return;
@@ -678,6 +732,68 @@ const Dashboard: React.FC = () => {
         } catch (e: any) {
             setIfaceFormError(e.message || 'Failed to create interface');
         }
+    };
+
+    const openEditIfaceModal = (iface: InterfaceRecord) => {
+      setEditingIface(iface);
+      setEditIfaceForm({ ip_address: iface.ip_address || '' });
+      setEditIfaceFormError(null);
+      setShowEditIfaceModal(true);
+    };
+
+    const handleEditPanelInterface = useCallback(async (ifaceName: string) => {
+        if (!selectedNodeId) return;
+        
+        // Find the device in connectDevices
+        const dev = connectDevices.find(d => d.hostname === selectedNodeId);
+        if (!dev) {
+            Toast.error('Edit Failed', `Device '${selectedNodeId}' not found in inventory.`);
+            return;
+        }
+
+        try {
+            // Fetch interfaces to get the ID
+            const res = await netboxApi.listInterfaces(dev.id);
+            // Match name exactly or abbreviated form
+            const iface = res.interfaces.find(i => 
+                i.name === ifaceName || 
+                expandInterfaceName(i.name) === expandInterfaceName(ifaceName) ||
+                i.name === expandInterfaceName(ifaceName)
+            );
+            
+            if (!iface) {
+                Toast.error('Edit Failed', `Interface '${ifaceName}' not found in NetBox for ${dev.hostname}`);
+                return;
+            }
+
+            openEditIfaceModal(iface);
+        } catch (err: any) {
+            Toast.error('Failed to load interface', err.message);
+        }
+    }, [selectedNodeId, connectDevices]);
+
+    const handleUpdateInterface = async () => {
+      if (!editingIface) return;
+      
+      try {
+        await netboxApi.updateInterface(editingIface.device_id, editingIface.id, {
+          ip_address: editIfaceForm.ip_address,
+        });
+        
+        // Refresh interface lists in the drawer if those devices are currently active
+        if (linkForm.src_device_id === editingIface.device_id) loadIfacesForLink(editingIface.device_id, 'src');
+        if (linkForm.dst_device_id === editingIface.device_id) loadIfacesForLink(editingIface.device_id, 'dst');
+        
+        // Refresh global inventory and planned topology
+        refreshConnectData();
+        const freshPlanned = await netboxApi.getLocalPlannedTopology();
+        setPlannedTopology(freshPlanned as any as TopologyData);
+        
+        Toast.success('Interface Updated', `Updated IP address for ${editingIface.name}`);
+        setShowEditIfaceModal(false);
+      } catch (e: any) {
+        setEditIfaceFormError(e.message || 'Failed to update interface');
+      }
     };
 
     // --- SSH session launcher ---
@@ -912,7 +1028,11 @@ const Dashboard: React.FC = () => {
                         showStatus={topologyView === 'diff'}
                     />
                 </div>
-                <NodeDetailPanel node={selectedNodeData} onClose={handlePanelClose} />
+                    <NodeDetailPanel 
+                        node={selectedNodeData} 
+                        onClose={handlePanelClose} 
+                        onEditInterface={handleEditPanelInterface}
+                    />
 
                 {/* SSH Terminal Panel */}
                 <SSHTerminalPanel
@@ -966,7 +1086,7 @@ const Dashboard: React.FC = () => {
                             <button className="btn btn-ghost btn-xs btn-circle" onClick={() => setShowLinkModal(false)}>✕</button>
                         </div>
 
-                        <div className="flex-1 overflow-y-auto p-4 space-y-5 scrollbar-thin">
+                        <div className="flex-1 overflow-y-auto p-4  scrollbar-thin">
                             {linkFormError && (
                                 <div className="alert alert-error mb-2 p-3 text-xs">
                                     <AlertTriangle className="w-4 h-4" />
@@ -975,7 +1095,7 @@ const Dashboard: React.FC = () => {
                             )}
                             
                             {/* Source side */}
-                            <div className="p-4 bg-base-200 rounded-xl border border-base-300 space-y-3">
+                            <div className="px-4 py-6 bg-base-200 rounded-xl border border-base-300 space-y-3">
                                 <p className="text-[10px] font-bold opacity-60 uppercase tracking-widest flex items-center gap-1">
                                     <span className="w-1.5 h-1.5 rounded-full bg-primary"></span>
                                     Source
@@ -1000,23 +1120,26 @@ const Dashboard: React.FC = () => {
                                   value={linkForm.src_interface_id}
                                   onChange={(val) => setLinkForm({ ...linkForm, src_interface_id: val })}
                                   disabled={!linkForm.src_device_id}
+                                  compact={linkDrawerWidth < 400}
                                   onCreateIface={() => {
                                       setIfaceCreateSide('src');
                                       setIfaceForm({ name: '', ip_address: '', subnet_mask: '255.255.255.0', mac_address: '', speed: '' });
                                       setIfaceFormError(null);
                                       setShowIfaceModal(true);
                                   }}
+                                  onEditIface={openEditIfaceModal}
                                 />
                             </div>
 
-                            <div className="flex justify-center -my-3 relative z-10">
+                            <div className="flex -my-2 justify-center items-center gap-2 relative z-10">
                                 <div className="bg-base-100 rounded-full border border-base-300 p-1.5 shadow-sm relative -translate-y-0.5">
-                                  <Cable className="w-4 h-4 opacity-40 rotate-90" />
+                                  <Cable className="w-6 h-6 opacity-40 rotate-90" />
                                 </div>
+                                {/* <div className='text-center opacity-40 text-xs'>Connect</div> */}
                             </div>
 
                             {/* Destination side */}
-                            <div className="p-4 bg-base-200 rounded-xl border border-base-300 space-y-3">
+                            <div className="px-4 py-6 bg-base-200 rounded-xl border border-base-300 space-y-3">
                                 <p className="text-[10px] font-bold opacity-60 uppercase tracking-widest flex items-center gap-1">
                                     <span className="w-1.5 h-1.5 rounded-full bg-secondary"></span>
                                     Destination
@@ -1041,12 +1164,14 @@ const Dashboard: React.FC = () => {
                                   value={linkForm.dst_interface_id}
                                   onChange={(val) => setLinkForm({ ...linkForm, dst_interface_id: val })}
                                   disabled={!linkForm.dst_device_id}
+                                  compact={linkDrawerWidth < 400}
                                   onCreateIface={() => {
                                       setIfaceCreateSide('dst');
                                       setIfaceForm({ name: '', ip_address: '', subnet_mask: '255.255.255.0', mac_address: '', speed: '' });
                                       setIfaceFormError(null);
                                       setShowIfaceModal(true);
                                   }}
+                                  onEditIface={openEditIfaceModal}
                                 />
                             </div>
                         </div>
@@ -1141,6 +1266,45 @@ const Dashboard: React.FC = () => {
                             >
                                 Add Interface
                             </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+            {/* --- Edit Interface Modal --- */}
+            {showEditIfaceModal && (
+                <div className="modal modal-open">
+                    <div className="modal-box max-w-md bg-base-200 border border-base-content/10 shadow-2xl p-0 overflow-hidden">
+                        <div className="bg-linear-to-r from-primary/10 to-base-content/5 p-6 border-b border-base-content/5">
+                            <h3 className="text-lg font-bold flex items-center gap-2">
+                                <Cable className="w-5 h-5 text-primary" />
+                                Edit Interface IP
+                            </h3>
+                            <p className="text-xs opacity-60 mt-1">Updating {editingIface?.name}</p>
+                        </div>
+
+                        <div className="p-6 space-y-4">
+                            {editIfaceFormError && (
+                                <div className="alert alert-error text-xs p-3 flex gap-2">
+                                    <AlertTriangle className="w-4 h-4 shrink-0" />
+                                    <span>{editIfaceFormError}</span>
+                                </div>
+                            )}
+
+                            <div>
+                                <label className="block text-[10px] uppercase tracking-wider font-bold opacity-50 mb-1.5 ml-1">IP Address</label>
+                                <input 
+                                    type="text" 
+                                    placeholder="e.g. 192.168.1.1" 
+                                    className="input input-bordered w-full bg-base-300/50 text-sm focus:border-primary transition-all"
+                                    value={editIfaceForm.ip_address}
+                                    onChange={(e) => setEditIfaceForm(prev => ({ ...prev, ip_address: e.target.value }))}
+                                />
+                            </div>
+                        </div>
+
+                        <div className="bg-base-300/30 p-4 flex justify-end gap-3 border-t border-base-content/5">
+                            <button className="btn btn-ghost btn-sm text-xs" onClick={() => setShowEditIfaceModal(false)}>Cancel</button>
+                            <button className="btn btn-primary btn-sm text-xs px-6" onClick={handleUpdateInterface}>Update IP</button>
                         </div>
                     </div>
                 </div>
