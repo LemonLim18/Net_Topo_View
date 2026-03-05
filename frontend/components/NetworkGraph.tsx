@@ -73,9 +73,12 @@ const NetworkGraph: React.FC<NetworkGraphProps> = ({ nodes, links, onNodeClick, 
 
     if (!simulationRef.current) {
       simulationRef.current = d3.forceSimulation<D3Node, D3Link>()
-        .force("charge", d3.forceManyBody().strength(-900))
-        .force("collide", d3.forceCollide().radius(50))
-        .force("link", d3.forceLink<D3Node, D3Link>().id(d => d.id).distance(250).strength(0.6));
+        .force("charge", d3.forceManyBody().strength(-1200)) // Stronger repulsion to avoid clumping
+        .force("collide", d3.forceCollide().radius(70)) // Increase breathing room between nodes
+        .force("link", d3.forceLink<D3Node, D3Link>().id(d => d.id).distance(250).strength(0.3)) // Looser links
+        .force("x", d3.forceX(width / 2).strength(0.05)) // Gentle centering force
+        .force("y", d3.forceY(height / 2).strength(0.05))
+        .velocityDecay(0.7); // Higher friction keeps the graph stable during interaction
     }
     const simulation = simulationRef.current;
 
@@ -104,6 +107,13 @@ const NetworkGraph: React.FC<NetworkGraphProps> = ({ nodes, links, onNodeClick, 
         if (typeof prev.vy === 'number') n.vy = prev.vy;
         if (prev.fx !== undefined) n.fx = prev.fx as any;
         if (prev.fy !== undefined) n.fy = prev.fy as any;
+      } else if (n.x === undefined || n.y === undefined) {
+        // Initial scatter to avoid center clumping for new nodes
+        const scatterRadius = Math.min(width, height) * 0.3;
+        const angle = Math.random() * 2 * Math.PI;
+        const r = Math.sqrt(Math.random()) * scatterRadius;
+        n.x = (width / 2) + r * Math.cos(angle);
+        n.y = (height / 2) + r * Math.sin(angle);
       }
     });
 
@@ -254,7 +264,7 @@ const NetworkGraph: React.FC<NetworkGraphProps> = ({ nodes, links, onNodeClick, 
             })
             .call(d3.drag<SVGGElement, D3Node>()
               .on('start', (event, d) => {
-                if (!event.active) simulation.alphaTarget(0.3).restart();
+                if (!event.active) simulation.alphaTarget(0.1).restart(); // Moderate pulse for snappy response
                 d.fx = d.x;
                 d.fy = d.y;
               })

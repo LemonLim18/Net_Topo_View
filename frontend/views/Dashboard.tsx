@@ -429,19 +429,23 @@ const Dashboard: React.FC = () => {
 
     // refreshConnectData is now the context's refreshAll
 
-    useEffect(() => {
-        const fetchPlanned = async () => {
-            try {
-                const data = await netboxApi.getLocalPlannedTopology();
-                const topoData = data as any as TopologyData;
-                setPlannedTopology(topoData);
+    const fetchPlanned = useCallback(async (updateCache = false) => {
+        try {
+            const data = await netboxApi.getLocalPlannedTopology();
+            const topoData = data as any as TopologyData;
+            setPlannedTopology(topoData);
+            
+            if (updateCache) {
                 localStorage.setItem(DASHBOARD_PLANNED_CACHE_KEY, JSON.stringify(topoData));
-            } catch (e) {
-                console.warn('[Topo] Failed to fetch local planned topology:', e);
             }
-        };
-        fetchPlanned();
+        } catch (e) {
+            console.warn('[Topo] Failed to fetch local planned topology:', e);
+        }
     }, []);
+
+    useEffect(() => {
+        fetchPlanned(false); // Initial load -> Don't update cache
+    }, [fetchPlanned]);
 
     useEffect(() => {
         if (selectedNodeId) {
@@ -477,9 +481,13 @@ const Dashboard: React.FC = () => {
     const handleRefreshTopology = useCallback(async () => {
         setIsRefreshing(true);
         try {
-            // 1. Trigger a new crawl on the backend
+            // 1. Trigger cache-updating refresh of devices/links
+            await refreshConnectData(true);
+            await fetchPlanned(true);
+
+            // 2. Trigger a new crawl on the backend
             await topologyApi.crawl();
-            Toast.success('Crawl Triggered', 'Network discovery started. Topology will update via WebSocket when done.');
+            Toast.success('Crawl Triggered', 'Manual refresh started. Cache updated, topology will update via WebSocket when done.');
 
             // 2. Poll for the result — SSH crawls may take 15-60s depending on device count.
             //    We poll every 5s up to 60s, stopping early once we get nodes.

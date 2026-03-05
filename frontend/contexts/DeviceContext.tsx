@@ -5,9 +5,9 @@ interface DeviceContextType {
   devices: DeviceRecord[];
   links: LinkRecord[];
   isLoading: boolean;
-  refreshDevices: () => Promise<void>;
-  refreshLinks: () => Promise<void>;
-  refreshAll: () => Promise<void>;
+  refreshDevices: (updateCache?: boolean) => Promise<void>;
+  refreshLinks: (updateCache?: boolean) => Promise<void>;
+  refreshAll: (updateCache?: boolean) => Promise<void>;
 }
 
 const DeviceContext = createContext<DeviceContextType | undefined>(undefined);
@@ -27,45 +27,49 @@ export const DeviceProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   const [isLoading, setIsLoading] = useState(false);
   const [hasLoadedInitially, setHasLoadedInitially] = useState(false);
 
-  const refreshDevices = useCallback(async () => {
+  const refreshDevices = useCallback(async (updateCache = false) => {
     try {
       const res = await netboxApi.listDevices();
       const newDevices = res.devices || [];
       setDevices(newDevices);
-      localStorage.setItem(CACHE_KEY_DEVICES, JSON.stringify(newDevices));
+      if (updateCache) {
+        localStorage.setItem(CACHE_KEY_DEVICES, JSON.stringify(newDevices));
+      }
     } catch (e) {
       console.error('[DeviceContext] Failed to refresh devices:', e);
     }
   }, []);
 
-  const refreshLinks = useCallback(async () => {
+  const refreshLinks = useCallback(async (updateCache = false) => {
     try {
       const res = await netboxApi.listLinks();
       const newLinks = res.links || [];
       setLinks(newLinks);
-      localStorage.setItem(CACHE_KEY_LINKS, JSON.stringify(newLinks));
+      if (updateCache) {
+        localStorage.setItem(CACHE_KEY_LINKS, JSON.stringify(newLinks));
+      }
     } catch (e) {
       console.error('[DeviceContext] Failed to refresh links:', e);
     }
   }, []);
 
-  const refreshAll = useCallback(async () => {
+  const refreshAll = useCallback(async (updateCache = false) => {
     // Only show loader if we have no cached data, otherwise refresh silently in background
     const hasData = devices.length > 0 || links.length > 0;
     if (!hasData) setIsLoading(true);
     
     try {
-      await Promise.all([refreshDevices(), refreshLinks()]);
+      await Promise.all([refreshDevices(updateCache), refreshLinks(updateCache)]);
       setHasLoadedInitially(true);
     } finally {
       setIsLoading(false);
     }
   }, [devices.length, links.length, refreshDevices, refreshLinks]);
 
-  // Initial load on mount
+  // Initial load on mount - does NOT update cache (trusted updates only)
   useEffect(() => {
     if (!hasLoadedInitially) {
-      refreshAll();
+      refreshAll(false);
     }
   }, [hasLoadedInitially, refreshAll]);
 

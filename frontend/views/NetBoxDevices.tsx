@@ -27,6 +27,7 @@ const NETBOX_DETAIL_TAB_KEY = 'netbox.detailTab';
 const NETBOX_SEARCH_KEY = 'netbox.search';
 const NETBOX_FILTER_VENDOR_KEY = 'netbox.filterVendor';
 const NETBOX_FILTER_STATUS_KEY = 'netbox.filterStatus';
+const NETBOX_INTERFACES_CACHE_KEY = 'netbox.interfacesCache';
 
 // ---------------------------------------------------------------------------
 //  Helpers
@@ -159,7 +160,17 @@ const NetBoxDevices: React.FC = () => {
   const [isSyncing, setIsSyncing] = useState(false);
 
   // Interfaces for selected device
-  const [interfaces, setInterfaces] = useState<InterfaceRecord[]>([]);
+  const [interfaces, setInterfaces] = useState<InterfaceRecord[]>(() => {
+    try {
+      const cached = localStorage.getItem(NETBOX_INTERFACES_CACHE_KEY);
+      const selId = localStorage.getItem(NETBOX_SELECTED_DEVICE_KEY);
+      if (cached && selId) {
+        const cacheObj = JSON.parse(cached);
+        return cacheObj[selId] || [];
+      }
+    } catch (e) { /* ignore */ }
+    return [];
+  });
   const [loadingIfaces, setLoadingIfaces] = useState(false);
 
   // Detail tab
@@ -204,9 +215,9 @@ const NetBoxDevices: React.FC = () => {
   //  Data fetching
   // -----------------------------------------------------------------------
 
-  const fetchDevices = useCallback(async () => {
+  const fetchDevices = useCallback(async (updateCache = false) => {
     try {
-      await refreshDevices();
+      await refreshDevices(updateCache);
       
       if (selected?.id) {
         // We don't have the updated list here yet since setDevices is async,
@@ -217,11 +228,42 @@ const NetBoxDevices: React.FC = () => {
     }
   }, [refreshDevices, selected?.id]);
 
-  const fetchInterfaces = useCallback(async (deviceId: number) => {
-    setLoadingIfaces(true);
+  const fetchInterfaces = useCallback(async (deviceId: number, updateCache = false) => {
+    // 1. Try to load from cache immediately to avoid spinner
+    let cacheFound = false;
+    try {
+      const cachedRaw = localStorage.getItem(NETBOX_INTERFACES_CACHE_KEY);
+      if (cachedRaw) {
+        const cacheObj = JSON.parse(cachedRaw);
+        const cachedIfaces = cacheObj[deviceId];
+        if (cachedIfaces && Array.isArray(cachedIfaces)) {
+          setInterfaces(cachedIfaces);
+          cacheFound = true;
+        }
+      }
+    } catch (e) { /* ignore cache read errors */ }
+
+    // 2. Only show spinner if no cached data for this device
+    if (!cacheFound) {
+      setInterfaces([]); // Clear if no cache to avoid showing previous device data
+      setLoadingIfaces(true);
+    }
+    
     try {
       const res = await netboxApi.listInterfaces(deviceId);
-      setInterfaces(res.interfaces);
+      const newIfaces = res.interfaces || [];
+      setInterfaces(newIfaces);
+      
+      // Update persistent cache ONLY if updateCache is true (Sync or Manual Refresh)
+      if (updateCache) {
+        try {
+          const cachedRaw = localStorage.getItem(NETBOX_INTERFACES_CACHE_KEY);
+          const cacheObj = cachedRaw ? JSON.parse(cachedRaw) : {};
+          cacheObj[deviceId] = newIfaces;
+          localStorage.setItem(NETBOX_INTERFACES_CACHE_KEY, JSON.stringify(cacheObj));
+        } catch (ce) { /* ignore cache write errors */ }
+      }
+      
     } catch (e: any) {
       Toast.error('Failed to load interfaces', e.message);
     } finally {
@@ -229,9 +271,9 @@ const NetBoxDevices: React.FC = () => {
     }
   }, []);
 
-  const fetchLinks = useCallback(async () => {
+  const fetchLinks = useCallback(async (updateCache = false) => {
     try {
-      await refreshLinks();
+      await refreshLinks(updateCache);
     } catch (e: any) {
       Toast.error('Failed to load links', e.message);
     }
@@ -368,7 +410,7 @@ const NetBoxDevices: React.FC = () => {
         Toast.success(`Device "${created.hostname}" added`, `ID ${created.id}`);
       }
       setShowModal(false);
-      fetchDevices();
+      fetchDevices(true); // Mutation (Create/Edit) -> Update cache
     } catch (e: any) {
       setFormError(e.message || 'Operation failed');
     } finally {
@@ -388,7 +430,7 @@ const NetBoxDevices: React.FC = () => {
       await netboxApi.deleteDevice(d.id);
       Toast.success(`Device "${d.hostname}" deleted`);
       if (selected?.id === d.id) setSelected(null);
-      fetchDevices();
+      fetchDevices(true); // Mutation (Delete) -> Update cache
     } catch (e: any) {
       Toast.error('Delete failed', e.message);
     } finally {
@@ -409,7 +451,7 @@ const NetBoxDevices: React.FC = () => {
         // Legacy 'accepted' or other statuses — treat as success
         Toast.success('Sync completed');
       }
-      fetchDevices();
+      fetchDevices(true); // Explicit Sync -> Update cache
     } catch (e: any) {
       Toast.error('Sync failed', e.message);
     } finally {
@@ -471,7 +513,7 @@ const NetBoxDevices: React.FC = () => {
         Toast.success(`Interface "${ifaceForm.name}" added`);
       }
       setShowIfaceModal(false);
-      fetchInterfaces(selected.id);
+      fetchInterfaces(selected.id, true); // Mutation (Add/Edit Interface) -> Update cache
     } catch (e: any) {
       setIfaceFormError(e.message || `Failed to ${isEditingIface ? 'update' : 'add'} interface`);
     }
@@ -487,7 +529,7 @@ const NetBoxDevices: React.FC = () => {
     try {
       await netboxApi.deleteInterface(selected.id, iface.id);
       Toast.success(`Interface "${iface.name}" deleted`);
-      fetchInterfaces(selected.id);
+      fetchInterfaces(selected.id, true); // Mutation (Delete Interface) -> Update cache
     } catch (e: any) {
       Toast.error('Delete failed', e.message);
     }
@@ -503,7 +545,7 @@ const NetBoxDevices: React.FC = () => {
     setSrcInterfaces([]);
     setDstInterfaces([]);
     setShowLinkModal(true);
-    fetchLinks();
+    fetchLinks(true); // Open modal -> Update cache (as it involves fresh interface loading soon)
   };
 
   const loadIfacesForLink = async (deviceId: number, side: 'src' | 'dst') => {
@@ -531,7 +573,7 @@ const NetBoxDevices: React.FC = () => {
       });
       Toast.success('Link created');
       setShowLinkModal(false);
-      fetchLinks();
+      fetchLinks(true); // Mutation (Create Link) -> Update cache
     } catch (e: any) {
       setLinkFormError(e.message || 'Failed to create link');
     }
@@ -546,7 +588,7 @@ const NetBoxDevices: React.FC = () => {
     try {
       await netboxApi.deleteLink(link.id);
       Toast.success('Link deleted');
-      fetchLinks();
+      fetchLinks(true); // Mutation (Delete Link) -> Update cache
     } catch (e: any) {
       Toast.error('Delete failed', e.message);
     }
@@ -570,7 +612,7 @@ const NetBoxDevices: React.FC = () => {
             {isSyncing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
             Sync from NetBox
           </button>
-          <button className="btn btn-sm btn-outline gap-1" onClick={refreshAll} disabled={isGlobalLoading || isActionLoading}>
+            <button className="btn btn-sm btn-outline gap-1" onClick={() => refreshAll(true)} disabled={isGlobalLoading || isActionLoading}>
             <RefreshCw className={`w-4 h-4 ${(isGlobalLoading || isActionLoading) ? 'animate-spin' : ''}`} />
             Refresh
           </button>
@@ -776,7 +818,7 @@ const NetBoxDevices: React.FC = () => {
                       </button>
                     </div>
 
-                    {loadingIfaces ? (
+                    {(loadingIfaces && interfaces.length === 0) ? (
                       <div className="text-center py-6 opacity-50">
                         <Loader2 className="w-5 h-5 animate-spin mx-auto mb-1" />
                         Loading…
@@ -838,7 +880,7 @@ const NetBoxDevices: React.FC = () => {
                       </button>
                     </div>
 
-                    {isGlobalLoading ? (
+                    {(isGlobalLoading && links.length === 0) ? (
                       <div className="text-center py-6 opacity-50">
                         <Loader2 className="w-5 h-5 animate-spin mx-auto mb-1" />
                         Loading…
