@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, BackgroundTasks, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from typing import Optional, List
 from starlette.concurrency import run_in_threadpool
@@ -121,7 +121,7 @@ async def get_device(device_id: int):
 
 
 @router.post("/devices")
-async def create_device(body: DeviceCreate, background_tasks: BackgroundTasks):
+async def create_device(body: DeviceCreate):
     """Create a new device in the local inventory.
 
     If status is 'registered', auto-pushes to NetBox (creates all
@@ -227,11 +227,21 @@ async def update_device(device_id: int, body: DeviceUpdate):
 
 @router.delete("/devices/{device_id}")
 async def delete_device(device_id: int):
-    """Delete a device from the local inventory."""
+    """Delete a device from the local inventory and NetBox."""
     db = _db()
     existing = db.get_device_by_id(device_id)
     if not existing:
         raise HTTPException(404, "Device not found")
+
+    # Best-effort delete from NetBox
+    try:
+        nb = NetBoxClient.get_client()
+        if nb and nb.api:
+            nb.delete_device_by_name(existing.hostname)
+            logger.info("Deleted device '%s' from NetBox", existing.hostname)
+    except Exception as e:
+        logger.warning("NetBox delete for '%s' failed: %s — still deleting locally", existing.hostname, e)
+
     db.delete_device(device_id)
     return {"deleted": True, "id": device_id, "hostname": existing.hostname}
 
@@ -339,7 +349,9 @@ async def update_interface(device_id: int, iface_id: int, body: InterfaceUpdate)
 
 @router.delete("/devices/{device_id}/interfaces/{iface_id}")
 async def delete_interface(device_id: int, iface_id: int):
-    """Remove an interface."""
+    """Remove an interface from the local inventory and NetBox."""
+    db = _db()
+    device = db.get_device_by_id(device_id)
     conn = _raw_conn()
     try:
         existing = conn.execute(
@@ -348,6 +360,16 @@ async def delete_interface(device_id: int, iface_id: int):
         ).fetchone()
         if not existing:
             raise HTTPException(404, "Interface not found")
+
+        # Best-effort delete from NetBox
+        if device:
+            try:
+                nb = NetBoxClient.get_client()
+                if nb and nb.api:
+                    nb.delete_interface_by_name(device.hostname, existing["name"])
+            except Exception as e:
+                logger.warning("NetBox interface delete for '%s:%s' failed: %s", device.hostname, existing["name"], e)
+
         conn.execute("DELETE FROM interfaces WHERE id = ?", (iface_id,))
         conn.commit()
         return {"deleted": True, "id": iface_id}
@@ -605,32 +627,34 @@ async def push_all_to_netbox():
 # ---------------------------------------------------------------------------
 
 @router.post("/sync/devices")
-async def sync_devices(background_tasks: BackgroundTasks):
+async def sync_devices():
     """
-    Triggers a manual sync of all devices from NetBox.
-    Runs in a background task so it never blocks the event loop.
+    Sync all devices from NetBox into the local inventory.
+    Runs in a thread pool so it doesn't block the event loop,
+    but waits for the result before responding.
     """
     def _run():
         db = DatabaseManager(DB_PATH)
         syncer = DeviceSyncer(db)
-        syncer.sync_all_devices()
+        return syncer.sync_all_devices()
 
-    background_tasks.add_task(_run)
-    return {"status": "accepted", "message": "NetBox device sync started in background"}
+    result = await run_in_threadpool(_run)
+    return result or {"status": "success", "synced_count": 0}
 
 @router.post("/sync/topology")
-async def sync_topology(background_tasks: BackgroundTasks):
+async def sync_topology():
     """
-    Triggers a manual sync of topology (cables) from NetBox.
-    Runs in a background task so it never blocks the event loop.
+    Sync topology (cables) from NetBox into the local inventory.
+    Runs in a thread pool so it doesn't block the event loop,
+    but waits for the result before responding.
     """
     def _run():
         db = DatabaseManager(DB_PATH)
         syncer = TopologySyncer(db)
-        syncer.sync_connections()
+        return syncer.sync_connections()
 
-    background_tasks.add_task(_run)
-    return {"status": "accepted", "message": "NetBox topology sync started in background"}
+    result = await run_in_threadpool(_run)
+    return result or {"status": "success"}
 
 
 # ---------------------------------------------------------------------------

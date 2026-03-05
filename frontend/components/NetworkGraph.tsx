@@ -26,6 +26,8 @@ const NetworkGraph: React.FC<NetworkGraphProps> = ({ nodes, links, onNodeClick, 
   // Preserve node positions between updates so switching views doesn't
   // cause the layout to jump. Map node.id -> position/velocity/fixed state.
   const positionsRef = useRef<Map<string, { x?: number; y?: number; vx?: number; vy?: number; fx?: number | null; fy?: number | null }>>(new Map());
+  const graphSignatureRef = useRef<string>('');
+  const hasInitializedLayoutRef = useRef(false);
   
   useEffect(() => {
     if (!containerRef.current || !svgRef.current) return;
@@ -77,6 +79,20 @@ const NetworkGraph: React.FC<NetworkGraphProps> = ({ nodes, links, onNodeClick, 
     }
     const simulation = simulationRef.current;
 
+    const linkKey = (link: D3Link) => {
+      const source = link.source as D3Node | string;
+      const target = link.target as D3Node | string;
+      const sourceId = typeof source === 'string' ? source : source.id;
+      const targetId = typeof target === 'string' ? target : target.id;
+      return `${sourceId}->${targetId}`;
+    };
+
+    const nodeIds = nodes.map(n => n.id).sort();
+    const linkIds = links.map(linkKey).sort();
+    const graphSignature = JSON.stringify({ nodeIds, linkIds });
+    const topologyShapeChanged = graphSignatureRef.current !== graphSignature;
+    graphSignatureRef.current = graphSignature;
+
     // Before applying nodes to the simulation, reapply any previously
     // remembered positions so existing layout is preserved across view changes.
     nodes.forEach(n => {
@@ -88,6 +104,13 @@ const NetworkGraph: React.FC<NetworkGraphProps> = ({ nodes, links, onNodeClick, 
         if (typeof prev.vy === 'number') n.vy = prev.vy;
         if (prev.fx !== undefined) n.fx = prev.fx as any;
         if (prev.fy !== undefined) n.fy = prev.fy as any;
+      }
+    });
+
+    const liveNodeIds = new Set(nodes.map(n => n.id));
+    Array.from(positionsRef.current.keys()).forEach(id => {
+      if (!liveNodeIds.has(id)) {
+        positionsRef.current.delete(id);
       }
     });
 
@@ -280,51 +303,55 @@ const NetworkGraph: React.FC<NetworkGraphProps> = ({ nodes, links, onNodeClick, 
       return 'stroke-2 stroke-current transition-all duration-300';
     });
 
-    simulation.on('tick', () => {
+    const renderPositions = () => {
       linkG.each(function(d) {
         const source = d.source as D3Node;
         const target = d.target as D3Node;
         if (!source.x || !source.y || !target.x || !target.y) return;
-        
+
         const el = d3.select(this);
         el.select('line').attr('x1', source.x).attr('y1', source.y).attr('x2', target.x).attr('y2', target.y);
 
         const dx = target.x - source.x;
         const dy = target.y - source.y;
         const angle = Math.atan2(dy, dx);
-        
-        const nodeRadius = 45; 
+
+        const nodeRadius = 45;
         const offset = 15;
         const yThreshold = 30;
 
-        if (source.y > target.y + yThreshold) { 
-            el.select('text.source-label')
-              .attr('transform', `translate(${source.x}, ${source.y - 65})`)
-              .attr('text-anchor', 'middle');
+        if (source.y > target.y + yThreshold) {
+          el.select('text.source-label')
+            .attr('transform', `translate(${source.x}, ${source.y - 65})`)
+            .attr('text-anchor', 'middle');
         } else {
-            const perpOffset = dx >= 0 ? offset : -offset;
-            const sourceLabelX = source.x + nodeRadius * Math.cos(angle) + perpOffset * Math.sin(angle);
-            const sourceLabelY = source.y + nodeRadius * Math.sin(angle) - perpOffset * Math.cos(angle);
-            el.select('text.source-label')
-              .attr('transform', `translate(${sourceLabelX}, ${sourceLabelY})`)
-              .attr('text-anchor', dx >= 0 ? 'start' : 'end');
+          const perpOffset = dx >= 0 ? offset : -offset;
+          const sourceLabelX = source.x + nodeRadius * Math.cos(angle) + perpOffset * Math.sin(angle);
+          const sourceLabelY = source.y + nodeRadius * Math.sin(angle) - perpOffset * Math.cos(angle);
+          el.select('text.source-label')
+            .attr('transform', `translate(${sourceLabelX}, ${sourceLabelY})`)
+            .attr('text-anchor', dx >= 0 ? 'start' : 'end');
         }
 
         if (target.y > source.y + yThreshold) {
-            el.select('text.target-label')
-              .attr('transform', `translate(${target.x}, ${target.y - 65})`)
-              .attr('text-anchor', 'middle');
+          el.select('text.target-label')
+            .attr('transform', `translate(${target.x}, ${target.y - 65})`)
+            .attr('text-anchor', 'middle');
         } else {
-            const perpOffset = dx >= 0 ? offset : -offset;
-            const targetLabelX = target.x - nodeRadius * Math.cos(angle) + perpOffset * Math.sin(angle);
-            const targetLabelY = target.y - nodeRadius * Math.sin(angle) - perpOffset * Math.cos(angle);
-            el.select('text.target-label')
-              .attr('transform', `translate(${targetLabelX}, ${targetLabelY})`)
-              .attr('text-anchor', dx >= 0 ? 'end' : 'start');
+          const perpOffset = dx >= 0 ? offset : -offset;
+          const targetLabelX = target.x - nodeRadius * Math.cos(angle) + perpOffset * Math.sin(angle);
+          const targetLabelY = target.y - nodeRadius * Math.sin(angle) - perpOffset * Math.cos(angle);
+          el.select('text.target-label')
+            .attr('transform', `translate(${targetLabelX}, ${targetLabelY})`)
+            .attr('text-anchor', dx >= 0 ? 'end' : 'start');
         }
       });
 
       node.attr('transform', d => `translate(${d.x},${d.y})`);
+    };
+
+    simulation.on('tick', () => {
+      renderPositions();
 
       // Remember positions after each tick so we can restore them on next update
       const simNodes = simulation.nodes();
@@ -333,7 +360,17 @@ const NetworkGraph: React.FC<NetworkGraphProps> = ({ nodes, links, onNodeClick, 
       });
     });
 
-    simulation.alpha(1).restart();
+    renderPositions();
+
+    if (!hasInitializedLayoutRef.current) {
+      hasInitializedLayoutRef.current = true;
+      simulation.alpha(0.9).restart();
+    } else if (topologyShapeChanged) {
+      simulation.alpha(0.22).restart();
+    } else {
+      simulation.alpha(0);
+      simulation.stop();
+    }
 
     return () => {
       try {

@@ -867,8 +867,16 @@ interface AIChatProps {
     domain: AppDomain;
 }
 
+const getSidebarKey = (domain: AppDomain) => `aichat.${domain}.sidebarOpen`;
+const getDraftKey = (domain: AppDomain) => `aichat.${domain}.draft`;
+
 const GeminiChat: React.FC<AIChatProps> = ({ domain }) => {
-  const [isSidebarOpen, setIsSidebarOpen] = useState(true);
+  const [isSidebarOpen, setIsSidebarOpen] = useState(() => {
+    const raw = localStorage.getItem(getSidebarKey(domain));
+    if (raw === 'true') return true;
+    if (raw === 'false') return false;
+    return true;
+  });
   const [messages, setMessages] = useState<Message[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [sessions, setSessions] = useState<ChatSession[]>([]);
@@ -888,6 +896,19 @@ const GeminiChat: React.FC<AIChatProps> = ({ domain }) => {
   useEffect(() => {
     scrollToBottom();
   }, [messages]);
+
+  useEffect(() => {
+    localStorage.setItem(getSidebarKey(domain), String(isSidebarOpen));
+  }, [domain, isSidebarOpen]);
+
+  useEffect(() => {
+    const raw = localStorage.getItem(getSidebarKey(domain));
+    if (raw === 'true' || raw === 'false') {
+      setIsSidebarOpen(raw === 'true');
+      return;
+    }
+    setIsSidebarOpen(window.innerWidth > 768);
+  }, [domain]);
 
   // Initialize first chat on load if none exists
   useEffect(() => {
@@ -1258,6 +1279,7 @@ const GeminiChat: React.FC<AIChatProps> = ({ domain }) => {
               disabled={isLoading} 
               isGenerating={isLoading}
               onStop={handleStopGeneration}
+              persistKey={getDraftKey(domain)}
            />
         </div>
 

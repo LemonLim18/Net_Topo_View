@@ -1,0 +1,8 @@
+views/Dashboard.tsx(17,80): error TS6133: 'LinkRecord' is declared but its value is never read.
+views/IntentHistoryView.tsx(62,45): error TS6133: 'setView' is declared but its value is never read.
+views/NetworkPerformance.tsx(342,15): error TS2322: Type '(v: number) => [string, "Value"]' is not assignable to type 'Formatter<number, "Value">'.
+  Types of parameters 'v' and 'value' are incompatible.
+    Type 'number | undefined' is not assignable to type 'number'.
+      Type 'undefined' is not assignable to type 'number'.
+views/SDNDashboardView.tsx(8,8): error TS6133: 'React' is declared but its value is never read.
+views/SDNDashboardView.tsx(28,42): error TS6133: 'setView' is declared but its value is never read.

@@ -318,6 +318,7 @@ export interface InterfaceRecord {
   mac_address: string | null;
   speed: string | null;
   status: string;
+  connected_to?: { device: { id: number; name: string }; interface: { id: number; name: string } } | null;
   created_at: string | null;
   updated_at: string | null;
 }

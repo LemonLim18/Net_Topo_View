@@ -18,6 +18,11 @@ import {
 import { configApi } from '../src/services/api';
 import { Toast, Confirm } from '../src/utils/swal';
 
+const TEMPLATE_TABS_KEY = 'templateStudio.tabs';
+const TEMPLATE_ACTIVE_TAB_KEY = 'templateStudio.activeTabId';
+const TEMPLATE_EXPANDED_VENDORS_KEY = 'templateStudio.expandedVendors';
+const TEMPLATE_VARIABLES_KEY = 'templateStudio.variables';
+
 // ---------------------------------------------------------------------------
 //  Types
 // ---------------------------------------------------------------------------
@@ -43,21 +48,76 @@ interface OpenTab {
 // ---------------------------------------------------------------------------
 
 const TemplateStudioView: React.FC = () => {
+  const getStoredTabs = (): OpenTab[] => {
+    try {
+      const raw = localStorage.getItem(TEMPLATE_TABS_KEY);
+      if (!raw) return [];
+      const parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed)) return [];
+      return parsed.filter((t: any) =>
+        typeof t?.id === 'string' &&
+        typeof t?.vendor === 'string' &&
+        typeof t?.feature === 'string' &&
+        typeof t?.content === 'string' &&
+        typeof t?.originalContent === 'string'
+      ).map((t: any) => ({
+        id: t.id,
+        vendor: t.vendor,
+        feature: t.feature,
+        content: t.content,
+        originalContent: t.originalContent,
+        isDirty: Boolean(t.isDirty),
+      }));
+    } catch {
+      return [];
+    }
+  };
+
+  const getStoredExpandedVendors = (): Set<string> => {
+    try {
+      const raw = localStorage.getItem(TEMPLATE_EXPANDED_VENDORS_KEY);
+      if (!raw) return new Set();
+      const parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed)) return new Set();
+      return new Set(parsed.filter((v: any) => typeof v === 'string'));
+    } catch {
+      return new Set();
+    }
+  };
+
+  const getStoredVariables = (): Record<string, string> => {
+    try {
+      const raw = localStorage.getItem(TEMPLATE_VARIABLES_KEY);
+      if (!raw) return {};
+      const parsed = JSON.parse(raw);
+      if (!parsed || typeof parsed !== 'object') return {};
+      const next: Record<string, string> = {};
+      Object.entries(parsed).forEach(([key, value]) => {
+        if (typeof value === 'string') next[key] = value;
+      });
+      return next;
+    } catch {
+      return {};
+    }
+  };
+
+  const hasStoredExpandedRef = useRef(Boolean(localStorage.getItem(TEMPLATE_EXPANDED_VENDORS_KEY)));
+
   // File tree
   const [templates, setTemplates] = useState<TemplateInfo[]>([]);
   const [loadingTree, setLoadingTree] = useState(false);
-  const [expandedVendors, setExpandedVendors] = useState<Set<string>>(new Set());
+  const [expandedVendors, setExpandedVendors] = useState<Set<string>>(() => getStoredExpandedVendors());
 
   // Editor tabs
-  const [tabs, setTabs] = useState<OpenTab[]>([]);
-  const [activeTabId, setActiveTabId] = useState<string | null>(null);
+  const [tabs, setTabs] = useState<OpenTab[]>(() => getStoredTabs());
+  const [activeTabId, setActiveTabId] = useState<string | null>(() => localStorage.getItem(TEMPLATE_ACTIVE_TAB_KEY));
 
   // Preview
   const [previewContent, setPreviewContent] = useState<string>('');
   const [isRendering, setIsRendering] = useState(false);
 
   // Variables panel
-  const [variables, setVariables] = useState<Record<string, string>>({});
+  const [variables, setVariables] = useState<Record<string, string>>(() => getStoredVariables());
 
   // Modals
   const [showNewModal, setShowNewModal] = useState(false);
@@ -80,8 +140,10 @@ const TemplateStudioView: React.FC = () => {
       const res = await configApi.listTemplates();
       setTemplates(res);
       // Auto-expand all vendors
-      const vendors = new Set(res.map(t => t.vendor));
-      setExpandedVendors(vendors);
+      if (!hasStoredExpandedRef.current) {
+        const vendors = new Set(res.map(t => t.vendor));
+        setExpandedVendors(vendors);
+      }
     } catch (e: any) {
       Toast.error('Failed to load templates', e.message);
     } finally {
@@ -90,6 +152,35 @@ const TemplateStudioView: React.FC = () => {
   }, []);
 
   useEffect(() => { fetchTemplates(); }, [fetchTemplates]);
+
+  useEffect(() => {
+    localStorage.setItem(TEMPLATE_TABS_KEY, JSON.stringify(tabs));
+  }, [tabs]);
+
+  useEffect(() => {
+    if (activeTabId) localStorage.setItem(TEMPLATE_ACTIVE_TAB_KEY, activeTabId);
+    else localStorage.removeItem(TEMPLATE_ACTIVE_TAB_KEY);
+  }, [activeTabId]);
+
+  useEffect(() => {
+    const vendors = Array.from(expandedVendors);
+    localStorage.setItem(TEMPLATE_EXPANDED_VENDORS_KEY, JSON.stringify(vendors));
+    hasStoredExpandedRef.current = true;
+  }, [expandedVendors]);
+
+  useEffect(() => {
+    localStorage.setItem(TEMPLATE_VARIABLES_KEY, JSON.stringify(variables));
+  }, [variables]);
+
+  useEffect(() => {
+    if (!tabs.length) {
+      if (activeTabId !== null) setActiveTabId(null);
+      return;
+    }
+    if (!activeTabId || !tabs.some(t => t.id === activeTabId)) {
+      setActiveTabId(tabs[tabs.length - 1].id);
+    }
+  }, [tabs, activeTabId]);
 
   // -----------------------------------------------------------------------
   //  Variable extraction

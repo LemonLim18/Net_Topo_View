@@ -14,8 +14,8 @@ import SSHConnectModal from '../components/SSHConnectModal';
 import { CONTROLLER_NODE_ID, CONTROLLER_NODE_DATA } from '../constants';
 import { useWebSocket } from '../src/hooks/useWebSocket';
 import { API_CONFIG } from '../src/config';
-import { topologyApi, netboxApi, type DeviceRecord, type InterfaceRecord, type LinkRecord } from '../src/services/api';
-import { Terminal, Info, RefreshCw, Cable, X } from 'lucide-react';
+import { topologyApi, netboxApi, type DeviceRecord, type InterfaceRecord } from '../src/services/api';
+import { Terminal, Info, RefreshCw, Cable, AlertTriangle } from 'lucide-react';
 import { Toast } from '../src/utils/swal';
 import { sshApi } from '../src/services/api';
 
@@ -28,24 +28,123 @@ const DASHBOARD_GRID_VISIBLE_KEY = 'dashboard.gridVisible';
 const DASHBOARD_SSH_PANEL_HEIGHT_KEY = 'dashboard.sshPanelHeight';
 const DASHBOARD_SSH_MINIMIZED_KEY = 'dashboard.sshMinimized';
 
-type ConnectStage = 'idle' | 'source-interface' | 'target-device' | 'target-interface' | 'saving';
-
-interface ConnectFlowState {
-    stage: ConnectStage;
-    sourceNodeId: string | null;
-    sourceDeviceId: number | null;
-    sourceInterfaceId: number | null;
-    targetNodeId: string | null;
-    targetDeviceId: number | null;
-    targetInterfaceId: number | null;
-    error: string | null;
-}
-
 // Helper to convert abbreviated interface names to full names
 const expandInterfaceName = (abbr: string): string => {
   if (abbr.startsWith('Et')) return abbr.replace('Et', 'Ethernet');
   if (abbr.startsWith('Lo')) return abbr.replace('Lo', 'Loopback');
   return abbr;
+};
+
+// --- Custom Interface Dropdown to support Badges ---
+const InterfaceSelect: React.FC<{
+  interfaces: InterfaceRecord[];
+  value: number;
+  onChange: (val: number) => void;
+  disabled?: boolean;
+  onCreateIface?: () => void;
+}> = ({ interfaces, value, onChange, disabled, onCreateIface }) => {
+  const selected = interfaces.find(i => i.id === value);
+
+  // Separate available from unavailable
+  const availableIfaces = interfaces.filter(i => !i.connected_to);
+  const connectedIfaces = interfaces.filter(i => i.connected_to);
+
+  const closeDropdown = () => {
+    const elem = document.activeElement as HTMLElement;
+    if (elem) elem.blur();
+  };
+
+  const handleSelect = (id: number) => {
+    onChange(id);
+    closeDropdown();
+  };
+
+  const handleCreate = () => {
+    if (onCreateIface) {
+      onCreateIface();
+      closeDropdown();
+    }
+  };
+
+  return (
+    <div className="dropdown w-full iface-dropdown">
+      <label 
+        tabIndex={0} 
+        className={`select select-bordered select-sm w-full flex items-center justify-between text-xs cursor-pointer ${disabled ? 'btn-disabled opacity-50' : ''}`}
+      >
+        <div className="truncate flex-1 text-left">
+          {value === 0 ? <span className="text-base-content/50">Select interface…</span> : 
+            selected ? (
+              <div className="flex justify-between items-center w-full pr-2">
+                <span>{selected.name} {selected.ip_address ? `(${selected.ip_address})` : ''}</span>
+                {/* <span className="badge badge-success badge-xs opacity-80 scale-90 px-1">Available</span> */}
+              </div>
+            ) : 'Select interface…'}
+        </div>
+      </label>
+      
+      {!disabled && (
+        <ul tabIndex={0} className="dropdown-content z-100 menu p-2 shadow bg-base-200 border border-base-300 rounded-box w-full max-h-64 flex-nowrap overflow-y-auto mt-1">
+          <li>
+            <a onClick={() => handleSelect(0)} className={value === 0 ? 'bg-base-300' : ''}>
+              <span className="text-base-content/50 text-xs text-left">Select interface…</span>
+            </a>
+          </li>
+          
+          {availableIfaces.length === 0 && connectedIfaces.length === 0 && (
+             <li className="disabled"><span className="opacity-50 text-[10px] italic p-3 text-left">No interfaces found</span></li>
+          )}
+          
+          {availableIfaces.length > 0 && (
+            <li className="menu-title px-4 py-1">
+              <div className="flex items-center gap-2 text-success/80 text-[10px] tracking-wider uppercase">
+                <span className="w-1.5 h-1.5 rounded-full bg-success animate-pulse shrink-0"></span>
+                <span>Available</span>
+              </div>
+            </li>
+          )}
+          {availableIfaces.map(i => (
+            <li key={i.id}>
+              <a 
+                onClick={() => handleSelect(i.id)}
+                className={`flex justify-between items-center py-1.5 ${value === i.id ? 'bg-primary text-primary-content' : ''}`}
+              >
+                <span className="text-xs text-left">{i.name} {i.ip_address ? <span className="opacity-70 text-[10px]">({i.ip_address})</span> : ''}</span>
+                {value !== i.id && <span className="badge badge-success badge-xs opacity-80 scale-90 px-1">Available</span>}
+              </a>
+            </li>
+          ))}
+
+          {connectedIfaces.length > 0 && (
+            <li className="menu-title mt-2 opacity-50 text-[10px] uppercase tracking-wider text-left">Already Connected</li>
+          )}
+          {connectedIfaces.map(i => (
+            <li key={i.id} className="disabled">
+              <span className="flex justify-between items-center opacity-50 py-1.5 px-4">
+                <span className="text-xs text-left">{i.name} {i.ip_address ? <span className="text-[10px]">({i.ip_address})</span> : ''}</span>
+                <span className="badge badge-neutral badge-xs opacity-70 scale-90 px-1">Connected to: {i.connected_to?.device.name}</span>
+              </span>
+            </li>
+          ))}
+
+          {onCreateIface && (
+            <li className="p-1.5 mt-1 border-t border-base-content/5">
+              <button 
+                type="button" 
+                onClick={handleCreate} 
+                className="flex items-center gap-2 px-3 py-1.5 w-full text-[11px] font-semibold text-primary hover:bg-primary/10 rounded-lg transition-colors"
+              >
+                <div className="w-4 h-4 rounded-md flex items-center justify-center bg-primary/20 text-primary shrink-0">
+                  <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+                </div>
+                <span>Create Interface</span>
+              </button>
+            </li>
+          )}
+        </ul>
+      )}
+    </div>
+  );
 };
 
 const processTopologyData = (data: TopologyData | null) => {
@@ -201,44 +300,61 @@ const Dashboard: React.FC = () => {
 
     // --- Planned topology from local DB ---
     const [plannedTopology, setPlannedTopology] = useState<TopologyData | null>(null);
-    const [connectFlow, setConnectFlow] = useState<ConnectFlowState>({
-        stage: 'idle',
-        sourceNodeId: null,
-        sourceDeviceId: null,
-        sourceInterfaceId: null,
-        targetNodeId: null,
-        targetDeviceId: null,
-        targetInterfaceId: null,
-        error: null,
-    });
     const [connectDevices, setConnectDevices] = useState<DeviceRecord[]>([]);
-    const [connectLinks, setConnectLinks] = useState<LinkRecord[]>([]);
-    const [sourceInterfaces, setSourceInterfaces] = useState<InterfaceRecord[]>([]);
-    const [targetInterfaces, setTargetInterfaces] = useState<InterfaceRecord[]>([]);
+    
+    // --- Standard Add Link Modal state ---
+    const [showLinkModal, setShowLinkModal] = useState(false);
+    const [linkForm, setLinkForm] = useState({
+        src_device_id: 0,
+        src_interface_id: 0,
+        dst_device_id: 0,
+        dst_interface_id: 0,
+    });
+    const [linkFormError, setLinkFormError] = useState<string | null>(null);
+    const [srcInterfaces, setSrcInterfaces] = useState<InterfaceRecord[]>([]);
+    const [dstInterfaces, setDstInterfaces] = useState<InterfaceRecord[]>([]);
+    
+    // --- Drawer Resizer State ---
+    const [linkDrawerWidth, setLinkDrawerWidth] = useState(450);
 
-    const resetConnectFlow = useCallback(() => {
-        setConnectFlow({
-            stage: 'idle',
-            sourceNodeId: null,
-            sourceDeviceId: null,
-            sourceInterfaceId: null,
-            targetNodeId: null,
-            targetDeviceId: null,
-            targetInterfaceId: null,
-            error: null,
-        });
-        setSourceInterfaces([]);
-        setTargetInterfaces([]);
-    }, []);
+    const handleLinkDrawerDragStart = useCallback((e: React.MouseEvent) => {
+        e.preventDefault();
+        const startX = e.clientX;
+        const startWidth = linkDrawerWidth;
+
+        const handleMouseMove = (moveEvent: MouseEvent) => {
+            const deltaX = startX - moveEvent.clientX; // calculate how far we moved mouse left
+            const newWidth = Math.max(300, Math.min(startWidth + deltaX, window.innerWidth - 100));
+            setLinkDrawerWidth(newWidth);
+        };
+
+        const handleMouseUp = () => {
+            document.removeEventListener('mousemove', handleMouseMove);
+            document.removeEventListener('mouseup', handleMouseUp);
+        };
+        
+        document.addEventListener('mousemove', handleMouseMove);
+        document.addEventListener('mouseup', handleMouseUp);
+    }, [linkDrawerWidth]);
+    
+    // --- Interface Creation Modal state ---
+    const [showIfaceModal, setShowIfaceModal] = useState(false);
+    const [ifaceCreateSide, setIfaceCreateSide] = useState<'src' | 'dst'>('src');
+    const [ifaceForm, setIfaceForm] = useState({
+      name: '',
+      ip_address: '',
+      subnet_mask: '255.255.255.0',
+      mac_address: '',
+      speed: '',
+    });
+    const [ifaceFormError, setIfaceFormError] = useState<string | null>(null);
 
     const refreshConnectData = useCallback(async () => {
-        const [devResp, linkResp] = await Promise.all([
+        const [devResp] = await Promise.all([
             netboxApi.listDevices(),
-            netboxApi.listLinks(),
         ]);
         setConnectDevices(devResp.devices || []);
-        setConnectLinks(linkResp.links || []);
-        return { devices: devResp.devices || [], links: linkResp.links || [] };
+        return { devices: devResp.devices || [] };
     }, []);
 
     useEffect(() => {
@@ -390,46 +506,8 @@ const Dashboard: React.FC = () => {
     }, [selectedNodeId, graphData.nodes]);
 
     const handleNodeClick = useCallback((nodeId: string) => {
-        // Connect-mode override: clicking a node selects target device instead of opening details.
-        if (connectFlow.stage === 'target-device') {
-            if (!nodeId || nodeId === CONTROLLER_NODE_ID) return;
-            if (nodeId === connectFlow.sourceNodeId) {
-                setConnectFlow(prev => ({ ...prev, error: 'Target device must be different from source device' }));
-                return;
-            }
-
-            const targetDev = connectDevices.find(d => d.hostname === nodeId);
-            if (!targetDev) {
-                setConnectFlow(prev => ({
-                    ...prev,
-                    error: `Target device '${nodeId}' is not in local inventory. Sync devices to NetBox first.`,
-                }));
-                return;
-            }
-
-            netboxApi.listInterfaces(targetDev.id)
-                .then(resp => {
-                    setTargetInterfaces(resp.interfaces || []);
-                    setConnectFlow(prev => ({
-                        ...prev,
-                        stage: 'target-interface',
-                        targetNodeId: nodeId,
-                        targetDeviceId: targetDev.id,
-                        targetInterfaceId: null,
-                        error: null,
-                    }));
-                })
-                .catch((err: any) => {
-                    setConnectFlow(prev => ({
-                        ...prev,
-                        error: err?.message || 'Failed to load target interfaces',
-                    }));
-                });
-            return;
-        }
-
         setSelectedNodeId(prevId => (prevId === nodeId ? null : nodeId));
-    }, [connectFlow.stage, connectFlow.sourceNodeId, connectDevices]);
+    }, []);
     
     const handlePanelClose = useCallback(() => setSelectedNodeId(null), []);
 
@@ -459,16 +537,7 @@ const Dashboard: React.FC = () => {
 
     const closeContextMenu = useCallback(() => setContextMenu(null), []);
 
-    const getInterfaceStatus = useCallback((ifaceId: number, selectedIfaceId: number | null) => {
-        const link = connectLinks.find(l => l.src_interface_id === ifaceId || l.dst_interface_id === ifaceId);
-        if (!link || selectedIfaceId === ifaceId) {
-            return { available: true as const, remoteHost: null as string | null };
-        }
-        const remoteHost = link.src_interface_id === ifaceId ? link.dst_hostname : link.src_hostname;
-        return { available: false as const, remoteHost };
-    }, [connectLinks]);
-
-    const startConnectFlow = useCallback(async (sourceNodeId: string) => {
+    const openLinkModal = useCallback(async (sourceNodeId: string) => {
         try {
             const { devices } = await refreshConnectData();
             const srcDev = devices.find(d => d.hostname === sourceNodeId);
@@ -476,58 +545,94 @@ const Dashboard: React.FC = () => {
                 Toast.error('Connect Failed', `Source device '${sourceNodeId}' is not in local inventory`);
                 return;
             }
+            
             const ifaceResp = await netboxApi.listInterfaces(srcDev.id);
-            setSourceInterfaces(ifaceResp.interfaces || []);
-            setConnectFlow({
-                stage: 'source-interface',
-                sourceNodeId,
-                sourceDeviceId: srcDev.id,
-                sourceInterfaceId: null,
-                targetNodeId: null,
-                targetDeviceId: null,
-                targetInterfaceId: null,
-                error: null,
+            setSrcInterfaces(ifaceResp.interfaces || []);
+            setDstInterfaces([]);
+            
+            setLinkForm({
+                src_device_id: srcDev.id,
+                src_interface_id: 0,
+                dst_device_id: 0,
+                dst_interface_id: 0,
             });
+            setLinkFormError(null);
+            setShowLinkModal(true);
         } catch (err: any) {
-            Toast.error('Connect Failed', err?.message || 'Unable to initialize connection workflow');
+            Toast.error('Connect Failed', err?.message || 'Unable to open connection modal');
         }
     }, [refreshConnectData]);
 
-    const commitConnection = useCallback(async () => {
-        if (!connectFlow.sourceDeviceId || !connectFlow.targetDeviceId || !connectFlow.sourceInterfaceId || !connectFlow.targetInterfaceId) {
-            setConnectFlow(prev => ({ ...prev, error: 'Source/target interface selection is incomplete' }));
+    const loadIfacesForLink = async (deviceId: number, side: 'src' | 'dst') => {
+        if (!deviceId) return;
+        try {
+            const res = await netboxApi.listInterfaces(deviceId);
+            if (side === 'src') setSrcInterfaces(res.interfaces || []);
+            else setDstInterfaces(res.interfaces || []);
+        } catch { /* ignore */ }
+    };
+
+    const handleSaveLink = async () => {
+        if (!linkForm.src_device_id || !linkForm.dst_device_id) {
+            setLinkFormError('Both source and destination devices are required');
             return;
         }
-
-        setConnectFlow(prev => ({ ...prev, stage: 'saving', error: null }));
+        setLinkFormError(null);
         try {
             await netboxApi.createLink({
-                src_device_id: connectFlow.sourceDeviceId,
-                src_interface_id: connectFlow.sourceInterfaceId,
-                dst_device_id: connectFlow.targetDeviceId,
-                dst_interface_id: connectFlow.targetInterfaceId,
+                src_device_id: linkForm.src_device_id,
+                src_interface_id: linkForm.src_interface_id || undefined,
+                dst_device_id: linkForm.dst_device_id,
+                dst_interface_id: linkForm.dst_interface_id || undefined,
                 discovery_protocol: 'manual',
             });
-
+            
             const data = await netboxApi.getLocalPlannedTopology();
             setPlannedTopology(data as any as TopologyData);
             await refreshConnectData();
 
-            Toast.success('Connection Created', 'Link created and synchronized to NetBox.');
-            resetConnectFlow();
-        } catch (err: any) {
-            const msg = err?.message || 'Failed to create link';
-            setConnectFlow(prev => ({ ...prev, stage: 'target-interface', error: msg }));
-            Toast.error('Connection Failed', msg);
+            Toast.success('Link created', 'Connection synchronized to NetBox.');
+            setShowLinkModal(false);
+        } catch (e: any) {
+            setLinkFormError(e.message || 'Failed to create link');
         }
-    }, [
-        connectFlow.sourceDeviceId,
-        connectFlow.targetDeviceId,
-        connectFlow.sourceInterfaceId,
-        connectFlow.targetInterfaceId,
-        refreshConnectData,
-        resetConnectFlow,
-    ]);
+    };
+
+    const handleSaveInterface = async () => {
+        const targetDeviceId = ifaceCreateSide === 'src' ? linkForm.src_device_id : linkForm.dst_device_id;
+        if (!targetDeviceId) {
+            setIfaceFormError('Target device not selected.');
+            return;
+        }
+
+        if (!ifaceForm.name.trim()) {
+            setIfaceFormError('Interface name is required.');
+            return;
+        }
+
+        try {
+            const iface = await netboxApi.createInterface(targetDeviceId, {
+                ...ifaceForm,
+                status: 'planned'
+            });
+
+            Toast.success('Interface Created', `Created ${iface.name}`);
+            
+            // Reload interfaces and auto-select
+            const res = await netboxApi.listInterfaces(targetDeviceId);
+            if (ifaceCreateSide === 'src') {
+                setSrcInterfaces(res.interfaces || []);
+                setLinkForm(prev => ({ ...prev, src_interface_id: iface.id }));
+            } else {
+                setDstInterfaces(res.interfaces || []);
+                setLinkForm(prev => ({ ...prev, dst_interface_id: iface.id }));
+            }
+            
+            setShowIfaceModal(false);
+        } catch (e: any) {
+            setIfaceFormError(e.message || 'Failed to create interface');
+        }
+    };
 
     // --- SSH session launcher ---
     const openSSHTerminal = useCallback(async (hostname: string) => {
@@ -661,7 +766,7 @@ const Dashboard: React.FC = () => {
             {
                 label: 'Connect',
                 icon: <Cable size={14} />,
-                onClick: () => startConnectFlow(contextMenu.nodeId),
+                onClick: () => openLinkModal(contextMenu.nodeId),
                 disabled: contextMenu.nodeId === CONTROLLER_NODE_ID,
             },
             {
@@ -670,7 +775,7 @@ const Dashboard: React.FC = () => {
                 onClick: () => handleNodeClick(contextMenu.nodeId),
             },
         ];
-    }, [contextMenu, openSSHTerminal, handleNodeClick, startConnectFlow]);
+    }, [contextMenu, openSSHTerminal, handleNodeClick, openLinkModal]);
 
     const statusIndicator = {
         connecting: <><span className="loading loading-ring loading-xs"></span> Connecting...</>,
@@ -741,99 +846,7 @@ const Dashboard: React.FC = () => {
                 )}
                 <Legend />
 
-                {connectFlow.stage !== 'idle' && (
-                    <div className="absolute top-4 right-4 z-20 w-[360px] card bg-base-100 border border-base-300 shadow-xl">
-                        <div className="card-body p-4 gap-3">
-                            <div className="flex items-center justify-between">
-                                <h3 className="font-semibold text-sm flex items-center gap-2"><Cable size={14} /> Connect Interfaces</h3>
-                                <button className="btn btn-ghost btn-xs" onClick={resetConnectFlow} aria-label="Cancel connect flow">
-                                    <X size={14} />
-                                </button>
-                            </div>
-
-                            <div className="text-xs opacity-70">
-                                {connectFlow.stage === 'source-interface' && `Step 1/3: Select source interface on ${connectFlow.sourceNodeId}`}
-                                {connectFlow.stage === 'target-device' && 'Step 2/3: Click target device on topology graph'}
-                                {connectFlow.stage === 'target-interface' && `Step 3/3: Select target interface on ${connectFlow.targetNodeId}`}
-                                {connectFlow.stage === 'saving' && 'Saving connection...'}
-                            </div>
-
-                            {connectFlow.error && (
-                                <div className="alert alert-error py-2 text-xs">{connectFlow.error}</div>
-                            )}
-
-                            {(connectFlow.stage === 'source-interface' || connectFlow.stage === 'target-device' || connectFlow.stage === 'target-interface' || connectFlow.stage === 'saving') && (
-                                <div className="space-y-2">
-                                    <div className="text-xs font-semibold opacity-70">Source Interface</div>
-                                    <div className="max-h-44 overflow-auto border border-base-300 rounded-md">
-                                        {sourceInterfaces.length === 0 ? (
-                                            <div className="p-3 text-xs opacity-60">No interfaces found</div>
-                                        ) : sourceInterfaces.map((iface) => {
-                                            const status = getInterfaceStatus(iface.id, connectFlow.sourceInterfaceId);
-                                            const selected = connectFlow.sourceInterfaceId === iface.id;
-                                            return (
-                                                <button
-                                                    key={iface.id}
-                                                    className={`w-full px-3 py-2 text-left text-xs flex items-center justify-between border-b border-base-200 last:border-b-0 ${selected ? 'bg-primary text-primary-content' : ''} ${!status.available && !selected ? 'opacity-50 cursor-not-allowed' : ''}`}
-                                                    disabled={(!status.available && !selected) || connectFlow.stage === 'saving'}
-                                                    onClick={() => {
-                                                        setConnectFlow(prev => ({ ...prev, sourceInterfaceId: iface.id, stage: 'target-device', error: null }));
-                                                    }}
-                                                >
-                                                    <span className="truncate">{iface.name}</span>
-                                                    {status.available || selected ? (
-                                                        <span className="badge badge-success badge-xs">Available</span>
-                                                    ) : (
-                                                        <span className="badge badge-neutral badge-xs truncate max-w-[120px]">{status.remoteHost}</span>
-                                                    )}
-                                                </button>
-                                            );
-                                        })}
-                                    </div>
-                                </div>
-                            )}
-
-                            {(connectFlow.stage === 'target-interface' || connectFlow.stage === 'saving') && (
-                                <div className="space-y-2">
-                                    <div className="text-xs font-semibold opacity-70">Target Interface</div>
-                                    <div className="max-h-44 overflow-auto border border-base-300 rounded-md">
-                                        {targetInterfaces.length === 0 ? (
-                                            <div className="p-3 text-xs opacity-60">No interfaces found</div>
-                                        ) : targetInterfaces.map((iface) => {
-                                            const status = getInterfaceStatus(iface.id, connectFlow.targetInterfaceId);
-                                            const selected = connectFlow.targetInterfaceId === iface.id;
-                                            return (
-                                                <button
-                                                    key={iface.id}
-                                                    className={`w-full px-3 py-2 text-left text-xs flex items-center justify-between border-b border-base-200 last:border-b-0 ${selected ? 'bg-primary text-primary-content' : ''} ${!status.available && !selected ? 'opacity-50 cursor-not-allowed' : ''}`}
-                                                    disabled={(!status.available && !selected) || connectFlow.stage === 'saving'}
-                                                    onClick={() => setConnectFlow(prev => ({ ...prev, targetInterfaceId: iface.id, error: null }))}
-                                                >
-                                                    <span className="truncate">{iface.name}</span>
-                                                    {status.available || selected ? (
-                                                        <span className="badge badge-success badge-xs">Available</span>
-                                                    ) : (
-                                                        <span className="badge badge-neutral badge-xs truncate max-w-[120px]">{status.remoteHost}</span>
-                                                    )}
-                                                </button>
-                                            );
-                                        })}
-                                    </div>
-                                </div>
-                            )}
-
-                            {connectFlow.stage === 'target-interface' && (
-                                <button
-                                    className="btn btn-primary btn-sm"
-                                    disabled={!connectFlow.targetInterfaceId || !connectFlow.sourceInterfaceId}
-                                    onClick={commitConnection}
-                                >
-                                    Establish Connection
-                                </button>
-                            )}
-                        </div>
-                    </div>
-                )}
+                {/* Replaced floating connection panel with a standard modal dialog below */}
                 <div 
                   className="absolute bottom-0 left-0 right-0 flex flex-col bg-base-100/90 backdrop-blur-sm rounded-t-lg shadow-[0_-8px_20px_rgba(0,0,0,0.25)]"
                   style={{ height: `${panelHeight}px` }}
@@ -883,6 +896,170 @@ const Dashboard: React.FC = () => {
                 onConnect={handleSSHConnect}
                 onClose={() => setSshConnectTarget(null)}
             />
+
+            {showLinkModal && (
+                <div className="fixed top-16 bottom-0 right-0 z-50 flex pointer-events-none" style={{ width: `${linkDrawerWidth}px` }}>
+                    <div className="relative w-full h-full bg-base-100 shadow-2xl flex flex-col border-l border-base-300 pointer-events-auto overflow-hidden">
+                        
+                        {/* Drag Handle */}
+                        <div 
+                            className="absolute left-0 top-0 bottom-0 w-2 cursor-col-resize hover:bg-primary/20 transition-colors z-60"
+                            onMouseDown={handleLinkDrawerDragStart}
+                        />
+
+                        <div className="p-4 border-b border-base-200 flex justify-between items-center bg-base-200/50">
+                            <h3 className="font-bold text-base flex items-center gap-2">
+                                <Cable size={18} className="text-primary" />
+                                Add Link (Neighbor)
+                            </h3>
+                            <button className="btn btn-ghost btn-xs btn-circle" onClick={() => setShowLinkModal(false)}>✕</button>
+                        </div>
+
+                        <div className="flex-1 overflow-y-auto p-4 space-y-5 scrollbar-thin">
+                            {linkFormError && (
+                                <div className="alert alert-error mb-2 p-3 text-xs">
+                                    <AlertTriangle className="w-4 h-4" />
+                                    <span>{linkFormError}</span>
+                                </div>
+                            )}
+                            
+                            {/* Source side */}
+                            <div className="p-4 bg-base-200 rounded-xl border border-base-300 space-y-3">
+                                <p className="text-[10px] font-bold opacity-60 uppercase tracking-widest flex items-center gap-1">
+                                    <span className="w-1.5 h-1.5 rounded-full bg-primary"></span>
+                                    Source
+                                </p>
+                                <select
+                                    className="select select-bordered select-sm w-full text-xs"
+                                    value={linkForm.src_device_id}
+                                    onChange={(e) => {
+                                        const id = Number(e.target.value);
+                                        setLinkForm({ ...linkForm, src_device_id: id, src_interface_id: 0 });
+                                        loadIfacesForLink(id, 'src');
+                                    }}
+                                >
+                                    <option value={0}>Select source device…</option>
+                                    {connectDevices.map(d => (
+                                        <option key={d.id} value={d.id}>{d.hostname} ({d.management_ip || 'no IP'})</option>
+                                    ))}
+                                </select>
+                                
+                                <InterfaceSelect 
+                                  interfaces={srcInterfaces.filter(i => !i.name.toLowerCase().includes('management'))}
+                                  value={linkForm.src_interface_id}
+                                  onChange={(val) => setLinkForm({ ...linkForm, src_interface_id: val })}
+                                  disabled={!linkForm.src_device_id}
+                                  onCreateIface={() => {
+                                      setIfaceCreateSide('src');
+                                      setIfaceForm({ name: '', ip_address: '', subnet_mask: '255.255.255.0', mac_address: '', speed: '' });
+                                      setIfaceFormError(null);
+                                      setShowIfaceModal(true);
+                                  }}
+                                />
+                            </div>
+
+                            <div className="flex justify-center -my-3 relative z-10">
+                                <div className="bg-base-100 rounded-full border border-base-300 p-1.5 shadow-sm relative -translate-y-0.5">
+                                  <Cable className="w-4 h-4 opacity-40 rotate-90" />
+                                </div>
+                            </div>
+
+                            {/* Destination side */}
+                            <div className="p-4 bg-base-200 rounded-xl border border-base-300 space-y-3">
+                                <p className="text-[10px] font-bold opacity-60 uppercase tracking-widest flex items-center gap-1">
+                                    <span className="w-1.5 h-1.5 rounded-full bg-secondary"></span>
+                                    Destination
+                                </p>
+                                <select
+                                    className="select select-bordered select-sm w-full text-xs"
+                                    value={linkForm.dst_device_id}
+                                    onChange={(e) => {
+                                        const id = Number(e.target.value);
+                                        setLinkForm({ ...linkForm, dst_device_id: id, dst_interface_id: 0 });
+                                        loadIfacesForLink(id, 'dst');
+                                    }}
+                                >
+                                    <option value={0}>Select destination device…</option>
+                                    {connectDevices.map(d => (
+                                        <option key={d.id} value={d.id}>{d.hostname} ({d.management_ip || 'no IP'})</option>
+                                    ))}
+                                </select>
+                                
+                                <InterfaceSelect 
+                                  interfaces={dstInterfaces.filter(i => !i.name.toLowerCase().includes('management'))}
+                                  value={linkForm.dst_interface_id}
+                                  onChange={(val) => setLinkForm({ ...linkForm, dst_interface_id: val })}
+                                  disabled={!linkForm.dst_device_id}
+                                  onCreateIface={() => {
+                                      setIfaceCreateSide('dst');
+                                      setIfaceForm({ name: '', ip_address: '', subnet_mask: '255.255.255.0', mac_address: '', speed: '' });
+                                      setIfaceFormError(null);
+                                      setShowIfaceModal(true);
+                                  }}
+                                />
+                            </div>
+                        </div>
+
+                        <div className="p-4 border-t border-base-200 bg-base-100">
+                            <button 
+                                className="btn btn-primary btn-sm w-full gap-2 text-xs" 
+                                onClick={handleSaveLink}
+                                disabled={!linkForm.src_device_id || !linkForm.src_interface_id || !linkForm.dst_device_id || !linkForm.dst_interface_id}
+                            >
+                                <Cable className="w-4 h-4" /> Create Link
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* --- Add Interface Modal --- */}
+            {showIfaceModal && (
+                <div className="fixed inset-0 z-60 flex items-center justify-center">
+                  <div className="absolute inset-0 bg-black/60 backdrop-blur-sm transition-opacity" onClick={() => setShowIfaceModal(false)} />
+                  <div className="modal-box relative max-w-md shadow-2xl">
+                    <h3 className="font-bold text-lg mb-4">Add Interface</h3>
+        
+                    {ifaceFormError && (
+                      <div className="alert alert-error alert-sm mb-3">
+                        <AlertTriangle className="w-4 h-4" />
+                        <span>{ifaceFormError}</span>
+                      </div>
+                    )}
+        
+                    <div className="space-y-4">
+                      <label className="form-control w-full">
+                        <div className="label"><span className="label-text">Interface Name *</span></div>
+                        <input type="text" className="input input-bordered w-full"
+                          placeholder="e.g. GigabitEthernet0/0/0"
+                          value={ifaceForm.name}
+                          onChange={(e) => setIfaceForm({ ...ifaceForm, name: e.target.value })} />
+                      </label>
+                      <div className="grid grid-cols-2 gap-3">
+                        <label className="form-control w-full">
+                          <div className="label"><span className="label-text">IP Address (optional)</span></div>
+                          <input type="text" className="input input-bordered w-full" placeholder="10.0.1.1"
+                            value={ifaceForm.ip_address}
+                            onChange={(e) => setIfaceForm({ ...ifaceForm, ip_address: e.target.value })} />
+                        </label>
+                        <label className="form-control w-full">
+                          <div className="label"><span className="label-text">Subnet Mask</span></div>
+                          <input type="text" className="input input-bordered w-full" placeholder="255.255.255.252"
+                            value={ifaceForm.subnet_mask}
+                            onChange={(e) => setIfaceForm({ ...ifaceForm, subnet_mask: e.target.value })} />
+                        </label>
+                      </div>
+                    </div>
+        
+                    <div className="modal-action mt-6">
+                      <button className="btn btn-ghost" onClick={() => setShowIfaceModal(false)}>Cancel</button>
+                      <button className="btn btn-primary" onClick={handleSaveInterface}>
+                        Add Interface
+                      </button>
+                    </div>
+                  </div>
+                </div>
+            )}
         </div>
     );
 };

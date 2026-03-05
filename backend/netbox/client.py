@@ -79,6 +79,39 @@ class NetBoxClient:
             logger.error(f"Error fetching cables: {e}")
             return []
 
+    def get_interfaces_for_device(self, nb_device_id: int):
+        """Fetch all interfaces for a NetBox device, with assigned IPs.
+
+        Returns a list of dicts:
+          [{"name": "GE0/0/1", "ip_address": "10.0.1.1", "mac_address": "aa:bb:...", "type": "other"}, ...]
+        """
+        if not self.api:
+            return []
+        try:
+            ifaces = list(self.api.dcim.interfaces.filter(device_id=nb_device_id))
+            result = []
+            for iface in ifaces:
+                ip_address = None
+                # Fetch IPs assigned to this interface
+                try:
+                    ips = list(self.api.ipam.ip_addresses.filter(interface_id=iface.id))
+                    if ips:
+                        # Take the first IP and strip CIDR notation
+                        ip_address = str(ips[0].address).split("/")[0]
+                except Exception:
+                    pass
+
+                result.append({
+                    "name": iface.name,
+                    "ip_address": ip_address,
+                    "mac_address": getattr(iface, "mac_address", None),
+                    "type": str(getattr(iface, "type", "other")),
+                })
+            return result
+        except Exception as e:
+            logger.error(f"Error fetching interfaces for device {nb_device_id}: {e}")
+            return []
+
     # ------------------------------------------------------------------
     #  Auto-create prerequisite helpers
     # ------------------------------------------------------------------
@@ -404,4 +437,22 @@ class NetBoxClient:
             return False
         except Exception as e:
             logger.error(f"Error deleting device from NetBox: {e}")
+            return False
+
+    def delete_interface_by_name(self, device_name: str, interface_name: str):
+        """Delete an interface from NetBox by device + interface name (best-effort)."""
+        if not self.api:
+            return False
+        try:
+            device = self.api.dcim.devices.get(name=device_name)
+            if not device:
+                return False
+            iface = self.api.dcim.interfaces.get(device_id=device.id, name=interface_name)
+            if iface:
+                iface.delete()
+                logger.info(f"Deleted interface '{interface_name}' from device '{device_name}' in NetBox")
+                return True
+            return False
+        except Exception as e:
+            logger.error(f"Error deleting interface from NetBox: {e}")
             return False

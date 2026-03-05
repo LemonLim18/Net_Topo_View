@@ -21,6 +21,12 @@ import {
 import { netboxApi, type DeviceRecord, type InterfaceRecord, type LinkRecord } from '../src/services/api';
 import { Toast, Confirm } from '../src/utils/swal';
 
+const NETBOX_SELECTED_DEVICE_KEY = 'netbox.selectedDeviceId';
+const NETBOX_DETAIL_TAB_KEY = 'netbox.detailTab';
+const NETBOX_SEARCH_KEY = 'netbox.search';
+const NETBOX_FILTER_VENDOR_KEY = 'netbox.filterVendor';
+const NETBOX_FILTER_STATUS_KEY = 'netbox.filterStatus';
+
 // ---------------------------------------------------------------------------
 //  Helpers
 // ---------------------------------------------------------------------------
@@ -132,6 +138,11 @@ const EMPTY_IFACE_FORM = {
 // ---------------------------------------------------------------------------
 
 const NetBoxDevices: React.FC = () => {
+  const [persistedSelectedDeviceId] = useState<number | null>(() => {
+    const raw = Number(localStorage.getItem(NETBOX_SELECTED_DEVICE_KEY));
+    return Number.isFinite(raw) ? raw : null;
+  });
+
   // Data
   const [devices, setDevices] = useState<DeviceRecord[]>([]);
   const [selected, setSelected] = useState<DeviceRecord | null>(null);
@@ -147,12 +158,16 @@ const NetBoxDevices: React.FC = () => {
   const [loadingLinks, setLoadingLinks] = useState(false);
 
   // Detail tab
-  const [detailTab, setDetailTab] = useState<'info' | 'interfaces' | 'links'>('info');
+  const [detailTab, setDetailTab] = useState<'info' | 'interfaces' | 'links'>(() => {
+    const raw = localStorage.getItem(NETBOX_DETAIL_TAB_KEY);
+    if (raw === 'info' || raw === 'interfaces' || raw === 'links') return raw;
+    return 'info';
+  });
 
   // Search / filter
-  const [search, setSearch] = useState('');
-  const [filterVendor, setFilterVendor] = useState('');
-  const [filterStatus, setFilterStatus] = useState('');
+  const [search, setSearch] = useState(() => localStorage.getItem(NETBOX_SEARCH_KEY) || '');
+  const [filterVendor, setFilterVendor] = useState(() => localStorage.getItem(NETBOX_FILTER_VENDOR_KEY) || '');
+  const [filterStatus, setFilterStatus] = useState(() => localStorage.getItem(NETBOX_FILTER_STATUS_KEY) || '');
 
   // Device modal state
   const [showModal, setShowModal] = useState(false);
@@ -187,12 +202,20 @@ const NetBoxDevices: React.FC = () => {
     try {
       const res = await netboxApi.listDevices();
       setDevices(res.devices);
+
+      if (selected?.id) {
+        const refreshedSelected = res.devices.find(d => d.id === selected.id) || null;
+        setSelected(refreshedSelected);
+      } else if (persistedSelectedDeviceId) {
+        const restored = res.devices.find(d => d.id === persistedSelectedDeviceId) || null;
+        setSelected(restored);
+      }
     } catch (e: any) {
       Toast.error('Failed to load devices', e.message);
     } finally {
       setIsLoading(false);
     }
-  }, []);
+  }, [persistedSelectedDeviceId, selected?.id]);
 
   const fetchInterfaces = useCallback(async (deviceId: number) => {
     setLoadingIfaces(true);
@@ -227,6 +250,30 @@ const NetBoxDevices: React.FC = () => {
       setInterfaces([]);
     }
   }, [selected, fetchInterfaces]);
+
+  useEffect(() => {
+    if (selected?.id) {
+      localStorage.setItem(NETBOX_SELECTED_DEVICE_KEY, String(selected.id));
+    } else {
+      localStorage.removeItem(NETBOX_SELECTED_DEVICE_KEY);
+    }
+  }, [selected]);
+
+  useEffect(() => {
+    localStorage.setItem(NETBOX_DETAIL_TAB_KEY, detailTab);
+  }, [detailTab]);
+
+  useEffect(() => {
+    localStorage.setItem(NETBOX_SEARCH_KEY, search);
+  }, [search]);
+
+  useEffect(() => {
+    localStorage.setItem(NETBOX_FILTER_VENDOR_KEY, filterVendor);
+  }, [filterVendor]);
+
+  useEffect(() => {
+    localStorage.setItem(NETBOX_FILTER_STATUS_KEY, filterStatus);
+  }, [filterStatus]);
 
   // -----------------------------------------------------------------------
   //  Filtering
@@ -352,9 +399,13 @@ const NetBoxDevices: React.FC = () => {
     try {
       const res = await netboxApi.syncFromNetbox();
       if (res.status === 'success') {
-        Toast.success(`Synced ${res.synced_count ?? 0} devices from NetBox`);
-      } else {
+        const ifaceMsg = (res as any).interface_count ? `, ${(res as any).interface_count} interfaces` : '';
+        Toast.success(`Synced ${res.synced_count ?? 0} devices${ifaceMsg} from NetBox`);
+      } else if (res.status === 'skipped') {
         Toast.warning('Sync skipped', (res as any).reason || 'no connection');
+      } else {
+        // Legacy 'accepted' or other statuses — treat as success
+        Toast.success('Sync completed');
       }
       fetchDevices();
     } catch (e: any) {
@@ -1023,7 +1074,7 @@ const NetBoxDevices: React.FC = () => {
                   disabled={!linkForm.src_device_id}
                 >
                   <option value={0}>Select interface (optional)…</option>
-                  {srcInterfaces.map(i => (
+                  {srcInterfaces.filter(i => i.name !== 'Management').map(i => (
                     <option key={i.id} value={i.id}>{i.name} {i.ip_address ? `(${i.ip_address})` : ''}</option>
                   ))}
                 </select>
@@ -1055,7 +1106,7 @@ const NetBoxDevices: React.FC = () => {
                   disabled={!linkForm.dst_device_id}
                 >
                   <option value={0}>Select interface (optional)…</option>
-                  {dstInterfaces.map(i => (
+                  {dstInterfaces.filter(i => i.name !== 'Management').map(i => (
                     <option key={i.id} value={i.id}>{i.name} {i.ip_address ? `(${i.ip_address})` : ''}</option>
                   ))}
                 </select>

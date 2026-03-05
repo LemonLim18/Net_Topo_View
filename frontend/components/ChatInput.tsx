@@ -6,10 +6,14 @@ interface ChatInputProps {
   disabled?: boolean;
   isGenerating?: boolean;
   onStop?: () => void;
+  persistKey?: string;
 }
 
-export const ChatInput: React.FC<ChatInputProps> = ({ onSend, disabled, isGenerating, onStop }) => {
-  const [text, setText] = useState('');
+export const ChatInput: React.FC<ChatInputProps> = ({ onSend, disabled, isGenerating, onStop, persistKey }) => {
+  const [text, setText] = useState(() => {
+    if (!persistKey) return '';
+    return localStorage.getItem(persistKey) || '';
+  });
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   // Auto-resize textarea
@@ -20,11 +24,21 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSend, disabled, isGenera
     }
   }, [text]);
 
+  useEffect(() => {
+    if (!persistKey) return;
+    if (text) {
+      localStorage.setItem(persistKey, text);
+    } else {
+      localStorage.removeItem(persistKey);
+    }
+  }, [persistKey, text]);
+
   const handleSubmit = (e?: React.FormEvent) => {
     e?.preventDefault();
     if (text.trim() && !disabled) {
       onSend(text.trim());
       setText('');
+      if (persistKey) localStorage.removeItem(persistKey);
       if (textareaRef.current) {
         textareaRef.current.style.height = 'auto';
       }

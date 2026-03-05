@@ -11,6 +11,11 @@ import type {
 import type { SSHConnectionState } from '../components/SSHTerminal';
 import type { User }               from '../types';
 
+const ANSIBLE_TABS_KEY = 'ansible.tabs';
+const ANSIBLE_ACTIVE_TAB_KEY = 'ansible.activeTabId';
+const ANSIBLE_TERMINAL_HEIGHT_KEY = 'ansible.terminalHeight';
+const ANSIBLE_TERMINAL_MIN_KEY = 'ansible.terminalMinimized';
+
 interface AnsibleStudioViewProps {
   user: User | null;
 }
@@ -18,9 +23,34 @@ interface AnsibleStudioViewProps {
 const AnsibleStudioView: React.FC<AnsibleStudioViewProps> = ({ user }) => {
   const userRole = (user as any)?.role ?? 'viewer';
 
+  const getStoredTabs = (): AnsibleTab[] => {
+    try {
+      const raw = localStorage.getItem(ANSIBLE_TABS_KEY);
+      if (!raw) return [];
+      const parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed)) return [];
+      return parsed.filter((t: any) =>
+        typeof t?.id === 'string' &&
+        typeof t?.path === 'string' &&
+        typeof t?.name === 'string' &&
+        typeof t?.content === 'string'
+      ).map((t: any) => ({
+        id: t.id,
+        path: t.path,
+        name: t.name,
+        content: t.content,
+        isDirty: Boolean(t.isDirty),
+        isReadOnly: Boolean(t.isReadOnly),
+        jobId: typeof t.jobId === 'number' ? t.jobId : undefined,
+      }));
+    } catch {
+      return [];
+    }
+  };
+
   // ── Playbook / editor state ──────────────────────────────────────────────
-  const [tabs, setTabs]               = useState<AnsibleTab[]>([]);
-  const [activeTabId, setActiveTabId] = useState<string | null>(null);
+  const [tabs, setTabs]               = useState<AnsibleTab[]>(() => getStoredTabs());
+  const [activeTabId, setActiveTabId] = useState<string | null>(() => localStorage.getItem(ANSIBLE_ACTIVE_TAB_KEY));
   const [activeJobId, setActiveJobId] = useState<number | null>(null);
   const [job, setJob]                 = useState<AnsibleJob | null>(null);
   const [checkResult, setCheckResult] = useState<AnsibleCheckResult | null>(null);
@@ -38,8 +68,11 @@ const AnsibleStudioView: React.FC<AnsibleStudioViewProps> = ({ user }) => {
   const [sshTabs, setSshTabs]             = useState<SSHTab[]>([]);
   const [activeSshTab, setActiveSshTab]   = useState<string | null>(null);
   const [sshTabStates, setSshTabStates]   = useState<Record<string, SSHConnectionState>>({});
-  const [terminalHeight, setTerminalHeight] = useState(220);
-  const [terminalMinimized, setTerminalMinimized] = useState(true);
+  const [terminalHeight, setTerminalHeight] = useState(() => {
+    const raw = Number(localStorage.getItem(ANSIBLE_TERMINAL_HEIGHT_KEY));
+    return Number.isFinite(raw) && raw >= 140 ? raw : 220;
+  });
+  const [terminalMinimized, setTerminalMinimized] = useState(() => localStorage.getItem(ANSIBLE_TERMINAL_MIN_KEY) !== 'false');
   const [pendingHostname, setPendingHostname] = useState('');
   const [pendingHost, setPendingHost]         = useState('');
   const [modalOpen, setModalOpen]             = useState(false);
@@ -64,6 +97,33 @@ const AnsibleStudioView: React.FC<AnsibleStudioViewProps> = ({ user }) => {
   useEffect(() => {
     if (activeJobId) refreshJob(activeJobId);
   }, [activeJobId, refreshJob]);
+
+  useEffect(() => {
+    localStorage.setItem(ANSIBLE_TABS_KEY, JSON.stringify(tabs));
+  }, [tabs]);
+
+  useEffect(() => {
+    if (activeTabId) localStorage.setItem(ANSIBLE_ACTIVE_TAB_KEY, activeTabId);
+    else localStorage.removeItem(ANSIBLE_ACTIVE_TAB_KEY);
+  }, [activeTabId]);
+
+  useEffect(() => {
+    localStorage.setItem(ANSIBLE_TERMINAL_HEIGHT_KEY, String(terminalHeight));
+  }, [terminalHeight]);
+
+  useEffect(() => {
+    localStorage.setItem(ANSIBLE_TERMINAL_MIN_KEY, String(terminalMinimized));
+  }, [terminalMinimized]);
+
+  useEffect(() => {
+    if (!tabs.length) {
+      if (activeTabId !== null) setActiveTabId(null);
+      return;
+    }
+    if (!activeTabId || !tabs.some(t => t.id === activeTabId)) {
+      setActiveTabId(tabs[tabs.length - 1].id);
+    }
+  }, [tabs, activeTabId]);
 
   // ── Tab management ───────────────────────────────────────────────────────
   const openTab = useCallback((id: string, name: string, content: string, isDirty = false, isReadOnly = false, jobId?: number) => {
