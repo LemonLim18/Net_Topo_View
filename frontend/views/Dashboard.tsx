@@ -14,7 +14,7 @@ import SSHConnectModal from '../components/SSHConnectModal';
 import { CONTROLLER_NODE_ID, CONTROLLER_NODE_DATA } from '../constants';
 import { useWebSocket } from '../src/hooks/useWebSocket';
 import { API_CONFIG } from '../src/config';
-import { topologyApi, netboxApi, type DeviceRecord, type InterfaceRecord } from '../src/services/api';
+import { topologyApi, netboxApi, type DeviceRecord, type InterfaceRecord, type LinkRecord } from '../src/services/api';
 import { Terminal, Info, RefreshCw, Cable, AlertTriangle } from 'lucide-react';
 import { Toast } from '../src/utils/swal';
 import { sshApi } from '../src/services/api';
@@ -116,13 +116,20 @@ const InterfaceSelect: React.FC<{
           ))}
 
           {connectedIfaces.length > 0 && (
-            <li className="menu-title mt-2 opacity-50 text-[10px] uppercase tracking-wider text-left">Already Connected</li>
+            <li className="menu-title px-4 py-1 mt-2">
+              <div className="flex items-center gap-2 text-base-content/40 text-[10px] tracking-wider uppercase">
+                <span className="w-1.5 h-1.5 rounded-full bg-base-content/30 shrink-0"></span>
+                {/* <span>Already Connected (Unavailable)</span> */}
+                <span>Unavailable</span>
+              </div>
+            </li>
           )}
           {connectedIfaces.map(i => (
             <li key={i.id} className="disabled">
-              <span className="flex justify-between items-center opacity-50 py-1.5 px-4">
+              <span className="flex justify-between items-center opacity-40 py-1.5 px-4 cursor-not-allowed">
                 <span className="text-xs text-left">{i.name} {i.ip_address ? <span className="text-[10px]">({i.ip_address})</span> : ''}</span>
-                <span className="badge badge-neutral badge-xs opacity-70 scale-90 px-1">Connected to: {i.connected_to?.device.name}</span>
+                {/* <span className="badge badge-ghost badge-xs scale-90 px-1 border-none bg-base-300">Connected to: {i.connected_to?.device.name}</span> */}
+                <span className="badge badge-ghost badge-xs scale-90 px-1 border-none bg-base-300">Connected: {i.connected_to?.device.name}</span>
               </span>
             </li>
           ))}
@@ -147,10 +154,14 @@ const InterfaceSelect: React.FC<{
   );
 };
 
-const processTopologyData = (data: TopologyData | null) => {
+const processTopologyData = (data: TopologyData | null, deviceLinks: LinkRecord[] = [], devices: DeviceRecord[] = []) => {
     if (!data) { console.debug('[Topo] processTopologyData called with null'); return { nodes: [], links: [] }; }
     const nodeKeys = Object.keys(data.nodes);
     console.debug(`[Topo] processTopologyData: ${nodeKeys.length} nodes:`, nodeKeys);
+
+    // Create a hostname to device ID map for matching links
+    const hostnameToId = new Map<string, number>();
+    devices.forEach(d => hostnameToId.set(d.hostname, d.id));
 
     const nodes: D3Node[] = Object.keys(data.nodes).map(nodeId => ({
         id: nodeId,
@@ -174,16 +185,21 @@ const processTopologyData = (data: TopologyData | null) => {
                     const localIfaceFull = expandInterfaceName(localIfaceAbbr);
                     const remoteIfaceFull = expandInterfaceName(linkInfo.remote_interface);
                     
-                    // interfaceList is an array of objects where each object may contain
-                    // multiple interface entries. Previously the code compared only the
-                    // first key of each object which failed to find the correct entry
-                    // unless it happened to be first. Use hasOwnProperty to check for
-                    // the presence of the exact interface key instead.
                     const sourceEntry = sourceDetails.interfaceList.find(iface => Object.prototype.hasOwnProperty.call(iface, localIfaceFull));
                     const sourceIp = sourceEntry ? sourceEntry[localIfaceFull] : 'N/A';
 
                     const targetEntry = targetDetails.interfaceList.find(iface => Object.prototype.hasOwnProperty.call(iface, remoteIfaceFull));
                     const targetIp = targetEntry ? targetEntry[remoteIfaceFull] : 'N/A';
+
+                    // Try to find matching NetBox Link Record for deletion support
+                    const srcDevId = hostnameToId.get(sourceId);
+                    const dstDevId = hostnameToId.get(targetId);
+                    const netboxLink = deviceLinks.find(l => 
+                        (l.src_device_id === srcDevId && l.dst_device_id === dstDevId && 
+                         (l.src_interface_name === localIfaceAbbr || l.src_interface_name === localIfaceFull)) ||
+                        (l.src_device_id === dstDevId && l.dst_device_id === srcDevId &&
+                         (l.src_interface_name === linkInfo.remote_interface || l.src_interface_name === remoteIfaceFull))
+                    );
 
                     links.push({
                         source: sourceId,
@@ -193,6 +209,7 @@ const processTopologyData = (data: TopologyData | null) => {
                         sourceIp,
                         targetIp,
                         info: linkInfo,
+                        netboxLinkId: netboxLink?.id
                     });
                     linkSet.add(linkKey1);
                 }
@@ -301,6 +318,7 @@ const Dashboard: React.FC = () => {
     // --- Planned topology from local DB ---
     const [plannedTopology, setPlannedTopology] = useState<TopologyData | null>(null);
     const [connectDevices, setConnectDevices] = useState<DeviceRecord[]>([]);
+    const [allLinks, setAllLinks] = useState<LinkRecord[]>([]);
     
     // --- Standard Add Link Modal state ---
     const [showLinkModal, setShowLinkModal] = useState(false);
@@ -315,7 +333,7 @@ const Dashboard: React.FC = () => {
     const [dstInterfaces, setDstInterfaces] = useState<InterfaceRecord[]>([]);
     
     // --- Drawer Resizer State ---
-    const [linkDrawerWidth, setLinkDrawerWidth] = useState(450);
+    const [linkDrawerWidth, setLinkDrawerWidth] = useState(300);
 
     const handleLinkDrawerDragStart = useCallback((e: React.MouseEvent) => {
         e.preventDefault();
@@ -350,11 +368,13 @@ const Dashboard: React.FC = () => {
     const [ifaceFormError, setIfaceFormError] = useState<string | null>(null);
 
     const refreshConnectData = useCallback(async () => {
-        const [devResp] = await Promise.all([
+        const [devResp, linkResp] = await Promise.all([
             netboxApi.listDevices(),
+            netboxApi.listLinks(),
         ]);
         setConnectDevices(devResp.devices || []);
-        return { devices: devResp.devices || [] };
+        setAllLinks(linkResp.links || []);
+        return { devices: devResp.devices || [], links: linkResp.links || [] };
     }, []);
 
     useEffect(() => {
@@ -454,8 +474,8 @@ const Dashboard: React.FC = () => {
     const isLoading = status === 'connecting' || (status === 'connected' && !realTimeTopology);
 
     const graphData = useMemo(() => {
-        const planned = processTopologyData(plannedTopology);
-        const actual = processTopologyData(realTimeTopology);
+        const planned = processTopologyData(plannedTopology, allLinks, connectDevices);
+        const actual = processTopologyData(realTimeTopology, allLinks, connectDevices);
 
         if (topologyView === 'planned') return planned;
         if (topologyView === 'actual') return actual;
@@ -589,7 +609,13 @@ const Dashboard: React.FC = () => {
             
             const data = await netboxApi.getLocalPlannedTopology();
             setPlannedTopology(data as any as TopologyData);
-            await refreshConnectData();
+            
+            // Refresh interfaces for both sides to show "Connected" status immediately
+            await Promise.all([
+                loadIfacesForLink(linkForm.src_device_id, 'src'),
+                loadIfacesForLink(linkForm.dst_device_id, 'dst'),
+                refreshConnectData()
+            ]);
 
             Toast.success('Link created', 'Connection synchronized to NetBox.');
             setShowLinkModal(false);
@@ -597,6 +623,24 @@ const Dashboard: React.FC = () => {
             setLinkFormError(e.message || 'Failed to create link');
         }
     };
+
+    const handleDeleteLink = useCallback(async (linkId: number) => {
+        try {
+            await netboxApi.deleteLink(linkId);
+            Toast.success('Link Deleted', 'Connection removed from NetBox.');
+            
+            // Refresh everything
+            const data = await netboxApi.getLocalPlannedTopology();
+            setPlannedTopology(data as any as TopologyData);
+            await refreshConnectData();
+            
+            // If the add link side-panel is open, refresh those lists too
+            if (linkForm.src_device_id) loadIfacesForLink(linkForm.src_device_id, 'src');
+            if (linkForm.dst_device_id) loadIfacesForLink(linkForm.dst_device_id, 'dst');
+        } catch (e: any) {
+            Toast.error('Delete Failed', e.message || 'Unable to delete link');
+        }
+    }, [refreshConnectData]);
 
     const handleSaveInterface = async () => {
         const targetDeviceId = ifaceCreateSide === 'src' ? linkForm.src_device_id : linkForm.dst_device_id;
@@ -619,12 +663,14 @@ const Dashboard: React.FC = () => {
             Toast.success('Interface Created', `Created ${iface.name}`);
             
             // Reload interfaces and auto-select
-            const res = await netboxApi.listInterfaces(targetDeviceId);
+            await Promise.all([
+                loadIfacesForLink(targetDeviceId, ifaceCreateSide!),
+                refreshConnectData()
+            ]);
+            
             if (ifaceCreateSide === 'src') {
-                setSrcInterfaces(res.interfaces || []);
                 setLinkForm(prev => ({ ...prev, src_interface_id: iface.id }));
             } else {
-                setDstInterfaces(res.interfaces || []);
                 setLinkForm(prev => ({ ...prev, dst_interface_id: iface.id }));
             }
             
@@ -756,17 +802,17 @@ const Dashboard: React.FC = () => {
     // --- Context Menu actions ---
     const contextMenuActions: ContextMenuAction[] = useMemo(() => {
         if (!contextMenu) return [];
-        return [
-            {
-                label: 'SSH Terminal',
-                icon: <Terminal size={14} />,
-                onClick: () => openSSHTerminal(contextMenu.nodeId),
-                disabled: contextMenu.nodeId === CONTROLLER_NODE_ID,
-            },
+        return [      
             {
                 label: 'Connect',
                 icon: <Cable size={14} />,
                 onClick: () => openLinkModal(contextMenu.nodeId),
+                disabled: contextMenu.nodeId === CONTROLLER_NODE_ID,
+            },
+            {
+                label: 'SSH Terminal',
+                icon: <Terminal size={14} />,
+                onClick: () => openSSHTerminal(contextMenu.nodeId),
                 disabled: contextMenu.nodeId === CONTROLLER_NODE_ID,
             },
             {
@@ -859,7 +905,12 @@ const Dashboard: React.FC = () => {
                     >
                         <div className="w-12 h-1.5 bg-base-300/70 rounded-full"></div>
                     </div>
-                    <TopologyTable links={graphData.links} onNodeClick={handleNodeClick} showStatus={topologyView === 'diff'}/>
+                    <TopologyTable 
+                        links={graphData.links} 
+                        onNodeClick={handleNodeClick} 
+                        onDeleteLink={handleDeleteLink}
+                        showStatus={topologyView === 'diff'}
+                    />
                 </div>
                 <NodeDetailPanel node={selectedNodeData} onClose={handlePanelClose} />
 
@@ -1015,49 +1066,83 @@ const Dashboard: React.FC = () => {
 
             {/* --- Add Interface Modal --- */}
             {showIfaceModal && (
-                <div className="fixed inset-0 z-60 flex items-center justify-center">
-                  <div className="absolute inset-0 bg-black/60 backdrop-blur-sm transition-opacity" onClick={() => setShowIfaceModal(false)} />
-                  <div className="modal-box relative max-w-md shadow-2xl">
-                    <h3 className="font-bold text-lg mb-4">Add Interface</h3>
-        
-                    {ifaceFormError && (
-                      <div className="alert alert-error alert-sm mb-3">
-                        <AlertTriangle className="w-4 h-4" />
-                        <span>{ifaceFormError}</span>
-                      </div>
-                    )}
-        
-                    <div className="space-y-4">
-                      <label className="form-control w-full">
-                        <div className="label"><span className="label-text">Interface Name *</span></div>
-                        <input type="text" className="input input-bordered w-full"
-                          placeholder="e.g. GigabitEthernet0/0/0"
-                          value={ifaceForm.name}
-                          onChange={(e) => setIfaceForm({ ...ifaceForm, name: e.target.value })} />
-                      </label>
-                      <div className="grid grid-cols-2 gap-3">
-                        <label className="form-control w-full">
-                          <div className="label"><span className="label-text">IP Address (optional)</span></div>
-                          <input type="text" className="input input-bordered w-full" placeholder="10.0.1.1"
-                            value={ifaceForm.ip_address}
-                            onChange={(e) => setIfaceForm({ ...ifaceForm, ip_address: e.target.value })} />
-                        </label>
-                        <label className="form-control w-full">
-                          <div className="label"><span className="label-text">Subnet Mask</span></div>
-                          <input type="text" className="input input-bordered w-full" placeholder="255.255.255.252"
-                            value={ifaceForm.subnet_mask}
-                            onChange={(e) => setIfaceForm({ ...ifaceForm, subnet_mask: e.target.value })} />
-                        </label>
-                      </div>
+                <div className="fixed inset-0 z-60 flex items-center justify-center p-4">
+                    <div className="absolute inset-0 bg-black/60 backdrop-blur-sm transition-opacity" onClick={() => setShowIfaceModal(false)} />
+                    <div className="relative w-full max-w-md bg-base-200 border border-base-300 shadow-2xl rounded-2xl overflow-hidden animate-in fade-in zoom-in duration-200">
+                        <div className="bg-primary/10 px-6 py-4 border-b border-primary/20 flex items-center gap-3">
+                            <div className="w-8 h-8 rounded-lg bg-primary/20 flex items-center justify-center text-primary">
+                                <Cable size={18} />
+                            </div>
+                            <div>
+                                <h3 className="font-bold text-lg leading-tight">Create Interface</h3>
+                                <p className="text-[10px] uppercase tracking-wider opacity-60">Adding to {ifaceCreateSide === 'src' ? 'Source' : 'Destination'} Device</p>
+                            </div>
+                        </div>
+
+                        <div className="p-6 space-y-4">
+                            {ifaceFormError && (
+                                <div className="alert alert-error text-xs py-2 shadow-sm rounded-lg">
+                                    <AlertTriangle size={14} />
+                                    <span>{ifaceFormError}</span>
+                                </div>
+                            )}
+
+                            <div className="form-control">
+                                <label className="label py-1">
+                                    <span className="label-text text-[10px] uppercase font-bold opacity-70">Interface Name</span>
+                                </label>
+                                <input 
+                                    type="text" 
+                                    className="input input-bordered input-sm w-full bg-base-100 focus:input-primary text-xs" 
+                                    placeholder="e.g. Ethernet1/1"
+                                    value={ifaceForm.name}
+                                    onChange={e => setIfaceForm({ ...ifaceForm, name: e.target.value })}
+                                />
+                            </div>
+
+                            <div className="grid grid-cols-2 gap-4">
+                                <div className="form-control">
+                                    <label className="label py-1">
+                                        <span className="label-text text-[10px] uppercase font-bold opacity-70">IP Address</span>
+                                    </label>
+                                    <input 
+                                        type="text" 
+                                        className="input input-bordered input-sm w-full bg-base-100 focus:input-primary text-xs" 
+                                        placeholder="10.0.0.1/24"
+                                        value={ifaceForm.ip_address}
+                                        onChange={e => setIfaceForm({ ...ifaceForm, ip_address: e.target.value })}
+                                    />
+                                </div>
+                                <div className="form-control">
+                                    <label className="label py-1">
+                                        <span className="label-text text-[10px] uppercase font-bold opacity-70">Subnet Mask</span>
+                                    </label>
+                                    <input 
+                                        type="text" 
+                                        className="input input-bordered input-sm w-full bg-base-100 focus:input-primary text-xs" 
+                                        placeholder="255.255.255.0"
+                                        value={ifaceForm.subnet_mask}
+                                        onChange={e => setIfaceForm({ ...ifaceForm, subnet_mask: e.target.value })}
+                                    />
+                                </div>
+                            </div>
+                        </div>
+
+                        <div className="px-6 py-4 bg-base-300/50 border-t border-base-300 flex justify-end gap-2">
+                            <button 
+                                className="btn btn-ghost btn-sm text-xs h-9" 
+                                onClick={() => setShowIfaceModal(false)}
+                            >
+                                Cancel
+                            </button>
+                            <button 
+                                className="btn btn-primary btn-sm text-xs px-6 h-9" 
+                                onClick={handleSaveInterface}
+                            >
+                                Add Interface
+                            </button>
+                        </div>
                     </div>
-        
-                    <div className="modal-action mt-6">
-                      <button className="btn btn-ghost" onClick={() => setShowIfaceModal(false)}>Cancel</button>
-                      <button className="btn btn-primary" onClick={handleSaveInterface}>
-                        Add Interface
-                      </button>
-                    </div>
-                  </div>
                 </div>
             )}
         </div>

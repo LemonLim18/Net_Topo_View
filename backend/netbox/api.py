@@ -259,7 +259,7 @@ def _raw_conn():
 
 @router.get("/devices/{device_id}/interfaces")
 async def list_interfaces(device_id: int):
-    """List all interfaces for a device."""
+    """List all interfaces for a device, including connection status."""
     db = _db()
     d = db.get_device_by_id(device_id)
     if not d:
@@ -267,11 +267,50 @@ async def list_interfaces(device_id: int):
 
     conn = _raw_conn()
     try:
+        # Join with links to find if this interface is connected to another
         rows = conn.execute(
-            "SELECT * FROM interfaces WHERE device_id = ? ORDER BY name",
+            """
+            SELECT i.*, 
+                   l.id as link_id,
+                   l.src_device_id, l.dst_device_id,
+                   l.src_interface_id, l.dst_interface_id,
+                   sd.hostname as src_hostname, dd.hostname as dst_hostname,
+                   si.name as src_iface_name, di.name as dst_iface_name
+            FROM interfaces i
+            LEFT JOIN links l ON (i.id = l.src_interface_id OR i.id = l.dst_interface_id)
+            LEFT JOIN devices sd ON l.src_device_id = sd.id
+            LEFT JOIN devices dd ON l.dst_device_id = dd.id
+            LEFT JOIN interfaces si ON l.src_interface_id = si.id
+            LEFT JOIN interfaces di ON l.dst_interface_id = di.id
+            WHERE i.device_id = ?
+            ORDER BY i.name
+            """,
             (device_id,)
         ).fetchall()
-        return {"interfaces": [dict(r) for r in rows]}
+        
+        interfaces = []
+        for r in rows:
+            iface = dict(r)
+            # Build the connected_to object if a link exists
+            if r["link_id"]:
+                if r["id"] == r["src_interface_id"]:
+                    # This is the source side, so connected to destination
+                    iface["connected_to"] = {
+                        "device": {"id": r["dst_device_id"], "name": r["dst_hostname"]},
+                        "interface": {"id": r["dst_interface_id"], "name": r["dst_iface_name"]}
+                    }
+                else:
+                    # This is the destination side, so connected to source
+                    iface["connected_to"] = {
+                        "device": {"id": r["src_device_id"], "name": r["src_hostname"]},
+                        "interface": {"id": r["src_interface_id"], "name": r["src_iface_name"]}
+                    }
+            else:
+                iface["connected_to"] = None
+            
+            interfaces.append(iface)
+            
+        return {"interfaces": interfaces}
     finally:
         conn.close()
 

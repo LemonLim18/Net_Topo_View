@@ -47,6 +47,7 @@ export interface D3Link extends d3.SimulationLinkDatum<D3Node> {
     sourceIp: string;
     targetIp: string;
     diffStatus?: DiffStatus;
+    netboxLinkId?: number;
     index?: number;
 }
 

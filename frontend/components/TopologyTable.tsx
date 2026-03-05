@@ -1,15 +1,17 @@
 import React, { useState, useMemo } from 'react';
 import type { D3Link, D3Node } from '../types';
+import { Trash2 } from 'lucide-react';
 
 interface TopologyTableProps {
   links: D3Link[];
   onNodeClick: (nodeId: string) => void;
+  onDeleteLink?: (linkId: number) => void;
   showStatus: boolean;
 }
 
 type SortKey = 'source' | 'target' | 'status';
 
-const TopologyTable: React.FC<TopologyTableProps> = ({ links, onNodeClick, showStatus }) => {
+const TopologyTable: React.FC<TopologyTableProps> = ({ links, onNodeClick, onDeleteLink, showStatus }) => {
   const [sortKey, setSortKey] = useState<SortKey>('source');
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('asc');
 
@@ -56,7 +58,7 @@ const TopologyTable: React.FC<TopologyTableProps> = ({ links, onNodeClick, showS
   }
 
   return (
-    <div className="h-full bg-base-100 p-4 overflow-auto">
+    <div className="h-full bg-base-100 px-4 overflow-auto">
         <h3 className="text-lg font-bold mb-2 px-2">Connection List</h3>
         <table className="table table-compact table-zebra w-full">
             <thead>
@@ -66,6 +68,7 @@ const TopologyTable: React.FC<TopologyTableProps> = ({ links, onNodeClick, showS
                 <th onClick={() => handleSort('target')} className="cursor-pointer">Target Node {renderSortArrow('target')}</th>
                 <th>Target Interface</th>
                 {showStatus && <th onClick={() => handleSort('status')} className="cursor-pointer">Status {renderSortArrow('status')}</th>}
+                <th className="text-right">Actions</th>
             </tr>
             </thead>
             <tbody>
@@ -79,6 +82,22 @@ const TopologyTable: React.FC<TopologyTableProps> = ({ links, onNodeClick, showS
                     <td><a onClick={() => onNodeClick(targetId)} className="link link-hover text-secondary">{targetId}</a></td>
                     <td>{link.targetInterface}</td>
                     {showStatus && <td>{statusBadge(link.diffStatus)}</td>}
+                    <td className="text-right">
+                        {link.netboxLinkId && onDeleteLink && (
+                            <button 
+                                onClick={(e) => {
+                                    e.stopPropagation();
+                                    if (confirm('Are you sure you want to delete this link?')) {
+                                        onDeleteLink(link.netboxLinkId!);
+                                    }
+                                }}
+                                className="btn btn-ghost btn-xs text-error hover:bg-error/10"
+                                title="Delete Link from NetBox"
+                            >
+                                <Trash2 size={14} />
+                            </button>
+                        )}
+                    </td>
                 </tr>
                 );
             })}
