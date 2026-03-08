@@ -201,15 +201,35 @@ export const monitorApi = {
   },
 
   /** Phase 10 — Get time-series metric history for charting */
-  getMetricHistory: (device?: string, metric = 'cpu', rangeMinutes = 60) => {
-    const params = new URLSearchParams({ metric, range_minutes: String(rangeMinutes) });
+  getMetricHistory: (
+    device?: string,
+    metric = 'cpu',
+    rangeMinutes = 60,
+    limit = 120,
+    interfaceName?: string,
+    devices?: string[],
+  ) => {
+    const params = new URLSearchParams({ metric, range_minutes: String(rangeMinutes), limit: String(limit) });
     if (device) params.set('device', device);
+    if (interfaceName) params.set('interface', interfaceName);
+    if (devices && devices.length > 0) params.set('devices', devices.join(','));
     return request<{ source: string; metric: string; data: any[] }>(`/monitor/metrics/history?${params}`);
   },
 
   /** Phase 10 — Get per-device summary with CPU/memory enrichment */
   getDeviceSummary: (limit = 50) =>
     request<{ devices: any[] }>(`/monitor/metrics/summary?limit=${limit}`),
+
+  /** Get latest interface snapshot for a selected device */
+  getDeviceInterfaces: (device: string, interfaceName?: string) => {
+    const params = new URLSearchParams({ device });
+    if (interfaceName) params.set('interface', interfaceName);
+    return request<{ device: string; interfaces: any[] }>(`/monitor/metrics/interfaces?${params}`);
+  },
+
+  /** Get IP → sysName hostname mapping from InfluxDB */
+  getDeviceHostnames: () =>
+    request<{ hostnames: Record<string, string> }>('/monitor/metrics/hostnames'),
 };
 
 // --- M3: Config Engine API ---

@@ -38,7 +38,11 @@ const DriftRow: React.FC<{
         </td>
         <td className="font-mono font-semibold">{event.hostname ?? '—'}</td>
         <td>
-          {event.has_drift ? (
+          {event.diff_text === "No actual config snapshots found" ? (
+             <span className="flex items-center gap-1 text-warning">
+              <AlertTriangle className="w-4 h-4" /> Unknown
+            </span>
+          ) : event.has_drift ? (
             <span className="flex items-center gap-1 text-error">
               <AlertTriangle className="w-4 h-4" /> Drifted
             </span>
@@ -96,8 +100,26 @@ const DriftView: React.FC = () => {
 
   const loadEvents = useCallback(async () => {
     try {
-      const res = await driftApi.listEvents(100);
-      setEvents(res.events);
+      // Fetch more events to ensure we capture at least one for every active device
+      const res = await driftApi.listEvents(500);
+      
+      // Aggregate: Keep only the most recent event per device
+      const latestByDevice = new Map<string, DriftEventRecord>();
+      for (const ev of res.events) {
+          const host = ev.hostname;
+          if (!host) continue;
+          const existing = latestByDevice.get(host);
+          if (!existing || new Date(ev.timestamp) > new Date(existing.timestamp)) {
+              latestByDevice.set(host, ev);
+          }
+      }
+      
+      // Sort the unique list by timestamp ascending (newest first)
+      const uniqueEvents = Array.from(latestByDevice.values()).sort(
+          (a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
+      );
+
+      setEvents(uniqueEvents);
     } catch (err: any) {
       Toast.error('Failed to load drift events', err.message);
     } finally {
@@ -144,8 +166,10 @@ const DriftView: React.FC = () => {
   };
 
   // Derived stats
-  const driftCount   = events.filter(e => e.has_drift).length;
-  const totalDevices = new Set(events.map(e => e.hostname)).size;
+  // We exclude "No snapshot" events from the primary "drift" violation count 
+  // so the compliance rate reflects actual verified drift.
+  const driftCount   = events.filter(e => e.has_drift && e.diff_text !== "No actual config snapshots found").length;
+  const totalDevices = events.length; // Now that events are deduplicated, length = unique devices
   const compliancePct = totalDevices > 0
     ? Math.round(((totalDevices - driftCount) / totalDevices) * 100)
     : 100;

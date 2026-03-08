@@ -472,13 +472,13 @@ class IncidentOrchestrator:
                         id=r["id"],
                         event_type=r["event_type"],
                         severity=r["severity"],
-                        source_ip=r.get("source_ip") or "",
-                        dest_ip=r.get("dest_ip") or "",
-                        device_id=r.get("device_id"),
-                        description=r.get("description") or "",
-                        raw_data=json.loads(r["raw_data"]) if r.get("raw_data") else None,
-                        status=r.get("status") or "new",
-                        created_at=r.get("created_at"),
+                        source_ip=r["source_ip"] or "",
+                        dest_ip=r["dest_ip"] or "",
+                        device_id=r["device_id"],
+                        description=r["description"] or "",
+                        raw_data=json.loads(r["raw_data"]) if r["raw_data"] else None,
+                        status=r["status"] or "new",
+                        created_at=r["created_at"],
                     )
                     for r in rows
                 ]

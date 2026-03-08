@@ -29,3 +29,5 @@ google-genai
 ansible-runner>=2.3
 netmiko>=4.3
 ansible-lint>=6.22         # optional: playbook linting in builder.py
+
+influxdb-client
