@@ -6,6 +6,7 @@
       "description": "List of VLANs to configure",
       "items": {
         "type": "object",
+        "required": ["id"],
         "properties": {
           "id": { "type": "integer", "description": "VLAN ID (1-4094)" },
           "name": { "type": "string", "description": "VLAN name" },

@@ -1,5 +1,5 @@
 {
-  "required": ["router_id", "networks"],
+  "required": ["process_id", "router_id", "networks"],
   "properties": {
     "process_id": { "type": "integer", "description": "OSPF process ID" },
     "router_id": { "type": "string", "description": "Router ID in x.x.x.x format" },
@@ -8,6 +8,7 @@
       "description": "List of networks to advertise",
       "items": {
         "type": "object",
+        "required": ["network", "wildcard", "area"],
         "properties": {
           "network": { "type": "string", "description": "Network address" },
           "wildcard": { "type": "string", "description": "Wildcard mask" },

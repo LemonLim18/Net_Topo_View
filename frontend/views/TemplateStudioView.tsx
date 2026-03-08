@@ -1,4 +1,5 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import Editor, { type Monaco } from '@monaco-editor/react';
 import {
   FileCode2,
   FolderOpen,
@@ -22,6 +23,185 @@ const TEMPLATE_TABS_KEY = 'templateStudio.tabs';
 const TEMPLATE_ACTIVE_TAB_KEY = 'templateStudio.activeTabId';
 const TEMPLATE_EXPANDED_VENDORS_KEY = 'templateStudio.expandedVendors';
 const TEMPLATE_VARIABLES_KEY = 'templateStudio.variables';
+const TEMPLATE_EDITOR_LANGUAGE = 'nettopo-jinja';
+
+const TEMPLATE_EXPR_KEYWORDS = new Set([
+  'if', 'else', 'elif', 'endif', 'for', 'endfor', 'in', 'is', 'defined', 'and', 'or', 'not',
+  'true', 'false', 'none', 'set', 'with', 'without', 'loop', 'block', 'endblock', 'macro',
+  'endmacro', 'filter', 'endfilter', 'include', 'extends', 'import', 'from', 'as', 'recursive',
+]);
+
+const TEMPLATE_EXPR_LITERALS = new Set([
+  'full', 'half', 'auto', 'input', 'output', 'any', 'permit', 'deny', 'tcp', 'udp', 'icmp', 'ip',
+  'low', 'default', 'remainder', 'strict', 'high', 'transmit', 'drop', 'accept', 'reject', 'discard',
+]);
+
+interface SchemaProperty {
+  type?: string;
+  description?: string;
+  items?: SchemaProperty;
+  properties?: Record<string, SchemaProperty>;
+  required?: string[];
+}
+
+function ensureTemplateEditorLanguage(monaco: Monaco) {
+  if (!monaco.languages.getLanguages().some((lang) => lang.id === TEMPLATE_EDITOR_LANGUAGE)) {
+    monaco.languages.register({
+      id: TEMPLATE_EDITOR_LANGUAGE,
+      extensions: ['.j2', '.jinja2'],
+      aliases: ['Jinja2', 'jinja2'],
+    });
+
+    monaco.languages.setLanguageConfiguration(TEMPLATE_EDITOR_LANGUAGE, {
+      comments: { blockComment: ['{#', '#}'] },
+      brackets: [['{', '}'], ['[', ']'], ['(', ')']],
+      autoClosingPairs: [
+        { open: '{', close: '}' },
+        { open: '[', close: ']' },
+        { open: '(', close: ')' },
+        { open: '"', close: '"' },
+        { open: "'", close: "'" },
+      ],
+      surroundingPairs: [
+        { open: '{', close: '}' },
+        { open: '[', close: ']' },
+        { open: '(', close: ')' },
+        { open: '"', close: '"' },
+        { open: "'", close: "'" },
+      ],
+    });
+
+    monaco.languages.setMonarchTokensProvider(TEMPLATE_EDITOR_LANGUAGE, {
+      tokenizer: {
+        root: [
+          [/\{#-?[\s\S]*?-?#\}/, 'comment'],
+          [/\{\{-?/, { token: 'delimiter', next: '@expression' }],
+          [/\{%-?/, { token: 'delimiter', next: '@statement' }],
+          [/[^\{]+/, ''],
+          [/\{/, ''],
+        ],
+        expression: [
+          [/-?\}\}/, { token: 'delimiter', next: '@pop' }],
+          { include: '@tagBody' },
+        ],
+        statement: [
+          [/-?%\}/, { token: 'delimiter', next: '@pop' }],
+          { include: '@tagBody' },
+        ],
+        tagBody: [
+          [/\s+/, ''],
+          [/"([^"\\]|\\.)*"/, 'string'],
+          [/'([^'\\]|\\.)*'/, 'string'],
+          [/\|[a-zA-Z_][a-zA-Z0-9_]*/, 'predefined'],
+          [/\.[a-zA-Z_][a-zA-Z0-9_]*/, 'variable.member'],
+          [/\b(if|else|elif|endif|for|endfor|in|is|defined|and|or|not|true|false|none|set|with|without|block|endblock|macro|endmacro|filter|endfilter|include|extends|import|from|as)\b/, 'keyword'],
+          [/\b\d+(?:\.\d+)?\b/, 'number'],
+          [/[a-zA-Z_][a-zA-Z0-9_]*/, 'variable.name'],
+          [/[-+*=<>!]+/, 'operator'],
+          [/[()\[\],:]/, 'delimiter.bracket'],
+        ],
+      },
+    });
+  }
+
+  monaco.editor.defineTheme('nettopo-jinja-dark', {
+    base: 'vs-dark',
+    inherit: true,
+    rules: [
+      { token: 'comment', foreground: '6B7280' },
+      { token: 'delimiter', foreground: 'F59E0B' },
+      { token: 'delimiter.bracket', foreground: 'FBBF24' },
+      { token: 'keyword', foreground: 'C084FC' },
+      { token: 'string', foreground: '86EFAC' },
+      { token: 'number', foreground: 'FCA5A5' },
+      { token: 'variable.name', foreground: '60A5FA' },
+      { token: 'variable.member', foreground: '22D3EE' },
+      { token: 'predefined', foreground: '7DD3FC' },
+      { token: 'operator', foreground: 'F9A8D4' },
+    ],
+    colors: {
+      'editor.background': '#0b1220',
+      'editorLineNumber.foreground': '#475569',
+      'editorLineNumber.activeForeground': '#cbd5e1',
+      'editorGutter.background': '#0b1220',
+      'editor.selectionBackground': '#1d4ed833',
+      'editor.inactiveSelectionBackground': '#33415555',
+      'editorCursor.foreground': '#f8fafc',
+      'editorIndentGuide.background1': '#1e293b',
+      'editorIndentGuide.activeBackground1': '#334155',
+    },
+  });
+}
+
+function extractTemplateVariables(content: string): string[] {
+  const roots = new Set<string>();
+  const loopAliases = new Set<string>();
+
+  for (const match of content.matchAll(/\{%\s*for\s+([a-zA-Z_][a-zA-Z0-9_]*)\s+in\s+([a-zA-Z_][a-zA-Z0-9_]*)/g)) {
+    const alias = match[1];
+    const collection = match[2];
+    loopAliases.add(alias);
+    roots.add(collection);
+  }
+
+  for (const match of content.matchAll(/\{[{%][\s\S]*?[}%]\}/g)) {
+    const block = match[0];
+    for (const token of block.matchAll(/\b([a-zA-Z_][a-zA-Z0-9_]*)\b/g)) {
+      const name = token[1];
+      const prevChar = block[token.index! - 1];
+      if (prevChar === '.') continue;
+      if (loopAliases.has(name)) continue;
+      if (TEMPLATE_EXPR_KEYWORDS.has(name)) continue;
+      if (TEMPLATE_EXPR_LITERALS.has(name)) continue;
+      roots.add(name);
+    }
+  }
+
+  return Array.from(roots).sort((a, b) => a.localeCompare(b));
+}
+
+function schemaPlaceholder(schema?: SchemaProperty, fieldName?: string): string {
+  if (!schema?.type) return fieldName || '';
+  if (schema.type === 'array') {
+    if (schema.items?.type === 'object' && schema.items.properties) {
+      const sample = Object.fromEntries(Object.keys(schema.items.properties).map((key) => [key, '']));
+      return JSON.stringify([sample], null, 2);
+    }
+    return JSON.stringify([], null, 2);
+  }
+  if (schema.type === 'object') {
+    return JSON.stringify({}, null, 2);
+  }
+  if (schema.type === 'boolean') return 'true or false';
+  return schema.description || fieldName || '';
+}
+
+function coerceSchemaValue(raw: string, schema?: SchemaProperty): any {
+  const trimmed = raw.trim();
+  if (!trimmed) return undefined;
+  switch (schema?.type) {
+    case 'integer': {
+      const value = Number.parseInt(trimmed, 10);
+      if (Number.isNaN(value)) throw new Error('Expected an integer');
+      return value;
+    }
+    case 'number': {
+      const value = Number.parseFloat(trimmed);
+      if (Number.isNaN(value)) throw new Error('Expected a number');
+      return value;
+    }
+    case 'boolean': {
+      if (trimmed === 'true') return true;
+      if (trimmed === 'false') return false;
+      throw new Error('Expected true or false');
+    }
+    case 'array':
+    case 'object':
+      return JSON.parse(trimmed);
+    default:
+      return trimmed;
+  }
+}
 
 // ---------------------------------------------------------------------------
 //  Types
@@ -118,6 +298,8 @@ const TemplateStudioView: React.FC = () => {
 
   // Variables panel
   const [variables, setVariables] = useState<Record<string, string>>(() => getStoredVariables());
+  const [activeSchema, setActiveSchema] = useState<any>(null);
+  const [validationErrors, setValidationErrors] = useState<Record<string, string>>({});
 
   // Modals
   const [showNewModal, setShowNewModal] = useState(false);
@@ -126,9 +308,14 @@ const TemplateStudioView: React.FC = () => {
   const [newContent, setNewContent] = useState('');
   const [newError, setNewError] = useState<string | null>(null);
 
-  const editorRef = useRef<HTMLTextAreaElement>(null);
-
   const activeTab = tabs.find(t => t.id === activeTabId) ?? null;
+  const schemaProperties = activeSchema?.properties || {};
+  const promptFields = useMemo(() => {
+    if (!activeTab) return [] as string[];
+    const extracted = extractTemplateVariables(activeTab.content);
+    const schemaKeys = Object.keys(schemaProperties);
+    return Array.from(new Set([...schemaKeys, ...extracted])).sort((a, b) => a.localeCompare(b));
+  }, [activeTab, schemaProperties]);
 
   // -----------------------------------------------------------------------
   //  Data fetching
@@ -186,28 +373,39 @@ const TemplateStudioView: React.FC = () => {
   //  Variable extraction
   // -----------------------------------------------------------------------
 
-  const extractVariables = useCallback((content: string): string[] => {
-    const regex = /\{\{\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*\}\}/g;
-    const vars = new Set<string>();
-    let match;
-    while ((match = regex.exec(content)) !== null) {
-      vars.add(match[1]);
+  // Update schema when active tab changes
+  useEffect(() => {
+    if (!activeTab) {
+      setActiveSchema(null);
+      setValidationErrors({});
+      return;
     }
-    return Array.from(vars);
-  }, []);
 
-  // Update variables when active tab changes
+    // Reset errors when switching
+    setValidationErrors({});
+
+    // Fetch schema for validation
+    const loadSchema = async () => {
+      try {
+        const schema = await configApi.getSchema(activeTab.feature);
+        setActiveSchema(schema);
+      } catch (e) {
+        setActiveSchema(null);
+      }
+    };
+    loadSchema();
+  }, [activeTab?.id]);
+
   useEffect(() => {
     if (!activeTab) return;
-    const vars = extractVariables(activeTab.content);
-    setVariables(prev => {
+    setVariables((prev) => {
       const next: Record<string, string> = {};
-      for (const v of vars) {
-        next[v] = prev[v] || '';
-      }
+      promptFields.forEach((field) => {
+        next[field] = prev[field] ?? '';
+      });
       return next;
     });
-  }, [activeTab?.content, extractVariables]);
+  }, [activeTab?.id, promptFields]);
 
   // -----------------------------------------------------------------------
   //  File tree actions
@@ -309,9 +507,39 @@ const TemplateStudioView: React.FC = () => {
 
   const renderPreview = async () => {
     if (!activeTab) return;
+
+    // Validate required fields
+    const errors: Record<string, string> = {};
+    const requiredFields = activeSchema?.required || [];
+    const params: Record<string, any> = {};
+    
+    requiredFields.forEach((field: string) => {
+      if (!variables[field] || variables[field].trim() === '') {
+        errors[field] = `${field} is required`;
+      }
+    });
+
+    promptFields.forEach((field) => {
+      const raw = variables[field];
+      const fieldSchema = schemaProperties[field] as SchemaProperty | undefined;
+      if (!raw || raw.trim() === '') return;
+      try {
+        params[field] = coerceSchemaValue(raw, fieldSchema);
+      } catch (error: any) {
+        errors[field] = error?.message || 'Invalid value';
+      }
+    });
+
+    if (Object.keys(errors).length > 0) {
+      setValidationErrors(errors);
+      Toast.error('Validation Failed', 'Please fill in all required fields');
+      return;
+    }
+
+    setValidationErrors({});
     setIsRendering(true);
     try {
-      const res = await configApi.render(activeTab.vendor, activeTab.feature, variables);
+      const res = await configApi.render(activeTab.vendor, activeTab.feature, params);
       setPreviewContent(res.config);
     } catch (e: any) {
       setPreviewContent(`Error: ${e.message}`);
@@ -525,13 +753,26 @@ const TemplateStudioView: React.FC = () => {
           {/* Editor area */}
           <div className="grow overflow-hidden relative">
             {activeTab ? (
-              <textarea
-                ref={editorRef}
-                className="w-full h-full p-4 bg-base-100 font-mono text-sm resize-none outline-none border-0"
+              <Editor
+                height="100%"
+                beforeMount={ensureTemplateEditorLanguage}
+                language={TEMPLATE_EDITOR_LANGUAGE}
+                theme="nettopo-jinja-dark"
+                path={`${activeTab.vendor}/${activeTab.feature}.j2`}
                 value={activeTab.content}
-                onChange={(e) => updateContent(e.target.value)}
-                spellCheck={false}
-                style={{ tabSize: 4 }}
+                onChange={(value) => updateContent(value ?? '')}
+                options={{
+                  minimap: { enabled: false },
+                  wordWrap: 'on',
+                  fontSize: 13,
+                  lineNumbers: 'on',
+                  scrollBeyondLastLine: false,
+                  automaticLayout: true,
+                  tabSize: 2,
+                  renderWhitespace: 'boundary',
+                  folding: true,
+                  padding: { top: 12, bottom: 12 },
+                }}
               />
             ) : (
               <div className="flex flex-col items-center justify-center h-full opacity-40 gap-3">
@@ -559,26 +800,96 @@ const TemplateStudioView: React.FC = () => {
               <div className="border-b border-base-300 p-3 shrink-0 overflow-y-auto" style={{ maxHeight: '45%' }}>
                 <div className="flex items-center justify-between mb-2">
                   <span className="text-xs font-bold uppercase opacity-60">Template Variables</span>
-                  <span className="badge badge-xs badge-ghost">{Object.keys(variables).length}</span>
+                  <span className="badge badge-xs badge-ghost">{promptFields.length}</span>
                 </div>
-                {Object.keys(variables).length === 0 ? (
+                {promptFields.length === 0 ? (
                   <p className="text-xs opacity-40">No {'{{ variables }}'} found in template</p>
                 ) : (
                   <div className="space-y-2">
-                    {Object.entries(variables).map(([key, val]) => (
-                      <label key={key} className="form-control w-full">
-                        <div className="label py-0">
-                          <span className="label-text text-xs font-mono">{`{{ ${key} }}`}</span>
+                    {promptFields.map((key) => {
+                      const val = variables[key] ?? '';
+                      const fieldSchema = schemaProperties[key] as SchemaProperty | undefined;
+                      const fieldType = fieldSchema?.type || 'string';
+                      const isRequired = activeSchema?.required?.includes(key);
+                      const hasError = !!validationErrors[key];
+                      
+                      return (
+                        <div key={key} className="form-control w-full">
+                          <label className="label py-0">
+                            <span className="label-text text-xs font-mono">
+                              {`{{ ${key} }}`}
+                              {isRequired && <span className="text-error ml-1">*</span>}
+                            </span>
+                            <span className="label-text-alt text-[10px] opacity-50 uppercase">{fieldType}</span>
+                          </label>
+                          {fieldType === 'boolean' ? (
+                            <select
+                              className={`select select-bordered select-xs w-full font-mono ${hasError ? 'select-error' : ''}`}
+                              value={val}
+                              onChange={(e) => {
+                                setVariables(prev => ({ ...prev, [key]: e.target.value }));
+                                if (validationErrors[key]) {
+                                  setValidationErrors(prev => {
+                                    const next = { ...prev };
+                                    delete next[key];
+                                    return next;
+                                  });
+                                }
+                              }}
+                            >
+                              <option value="">Unset</option>
+                              <option value="true">true</option>
+                              <option value="false">false</option>
+                            </select>
+                          ) : fieldType === 'array' || fieldType === 'object' ? (
+                            <textarea
+                              className={`textarea textarea-bordered w-full font-mono text-xs min-h-24 ${hasError ? 'textarea-error' : ''}`}
+                              placeholder={schemaPlaceholder(fieldSchema, key)}
+                              value={val}
+                              onChange={(e) => {
+                                setVariables(prev => ({ ...prev, [key]: e.target.value }));
+                                if (validationErrors[key]) {
+                                  setValidationErrors(prev => {
+                                    const next = { ...prev };
+                                    delete next[key];
+                                    return next;
+                                  });
+                                }
+                              }}
+                            />
+                          ) : (
+                            <input
+                              type={fieldType === 'integer' || fieldType === 'number' ? 'number' : 'text'}
+                              className={`input input-bordered input-xs w-full font-mono ${hasError ? 'input-error' : ''}`}
+                              placeholder={schemaPlaceholder(fieldSchema, key)}
+                              value={val}
+                              onChange={(e) => {
+                                setVariables(prev => ({ ...prev, [key]: e.target.value }));
+                                if (validationErrors[key]) {
+                                  setValidationErrors(prev => {
+                                    const next = { ...prev };
+                                    delete next[key];
+                                    return next;
+                                  });
+                                }
+                              }}
+                            />
+                          )}
+                          {fieldSchema?.description && (
+                            <div className="label py-0 w-full">
+                              <span className="label-text-alt text-[10px] opacity-50">{fieldSchema.description}</span>
+                            </div>
+                          )}
+                          {hasError && (
+                            <div className="label py-0 w-full">
+                              <span className="label-text-alt text-error text-[10px] mt-0.5">
+                                {validationErrors[key]}
+                              </span>
+                            </div>
+                          )}
                         </div>
-                        <input
-                          type="text"
-                          className="input input-bordered input-xs w-full font-mono"
-                          placeholder={key}
-                          value={val}
-                          onChange={(e) => setVariables(prev => ({ ...prev, [key]: e.target.value }))}
-                        />
-                      </label>
-                    ))}
+                      );
+                    })}
                   </div>
                 )}
               </div>

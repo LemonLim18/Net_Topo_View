@@ -1,0 +1,23 @@
+{
+  "required": ["acl_name", "rules"],
+  "properties": {
+    "acl_name": { "type": "string", "description": "Firewall filter name" },
+    "rules": {
+      "type": "array",
+      "description": "List of firewall rules / filter terms",
+      "items": {
+        "type": "object",
+        "required": ["action"],
+        "properties": {
+          "seq": { "type": "integer", "description": "Rule sequence / term order" },
+          "action": { "type": "string", "description": "accept, discard, reject, etc." },
+          "protocol": { "type": "string", "description": "Protocol such as tcp, udp, icmp" },
+          "source": { "type": "string", "description": "Source prefix or 'any'" },
+          "destination": { "type": "string", "description": "Destination prefix or 'any'" },
+          "port": { "type": "string", "description": "Destination port or port range" },
+          "log": { "type": "boolean", "description": "Log matching traffic" }
+        }
+      }
+    }
+  }
+}

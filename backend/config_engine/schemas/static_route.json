@@ -6,6 +6,7 @@
       "description": "List of static routes",
       "items": {
         "type": "object",
+        "required": ["prefix", "next_hop"],
         "properties": {
           "prefix": { "type": "string", "description": "Destination network" },
           "mask": { "type": "string", "description": "Subnet mask (Cisco/Huawei)" },

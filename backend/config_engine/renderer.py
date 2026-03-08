@@ -214,6 +214,7 @@ class TemplateRenderer:
     def _validate_params(self, feature: str, params: dict) -> List[str]:
         """
         Validate parameters against the JSON schema for a feature.
+        Performs basic type coercion (e.g. string "1500" to int 1500) where possible.
         Returns a list of error messages (empty = valid).
         """
         schema = self.get_schema(feature)
@@ -229,30 +230,72 @@ class TemplateRenderer:
                 desc = properties.get(field, {}).get("description", field)
                 errors.append(f"Missing required parameter: '{field}' ({desc})")
 
-        # Type checking for provided params
+        # Type checking and coercion for provided params
         for field, value in params.items():
             if field in properties:
                 expected_type = properties[field].get("type")
-                if expected_type and not self._check_type(value, expected_type):
-                    errors.append(
-                        f"Parameter '{field}' should be type '{expected_type}', "
-                        f"got '{type(value).__name__}'"
-                    )
+                if not expected_type:
+                    continue
+
+                coerced_value, err_msg = self._coerce_value(value, expected_type)
+                if err_msg:
+                    errors.append(f"Parameter '{field}' {err_msg}")
+                else:
+                    params[field] = coerced_value
 
         return errors
 
     @staticmethod
-    def _check_type(value: Any, expected: str) -> bool:
-        """Check if a Python value matches a JSON schema type."""
-        type_map = {
-            "string": str,
-            "integer": int,
-            "number": (int, float),
-            "boolean": bool,
-            "array": list,
-            "object": dict,
-        }
-        expected_type = type_map.get(expected)
-        if expected_type is None:
-            return True  # Unknown type, skip check
-        return isinstance(value, expected_type)
+    def _coerce_value(value: Any, expected: str) -> (Any, Optional[str]):
+        """
+        Attempt to coerce a value to the expected JSON schema type.
+        Returns (coerced_value, None) on success, or (value, error_message) on failure.
+        """
+        if expected == "string":
+            return str(value), None
+        
+        if expected == "integer":
+            if isinstance(value, int):
+                return value, None
+            try:
+                # Handle numeric strings
+                if isinstance(value, str):
+                    if value.strip() == "": return 0, None # Allow empty as 0 for numbers
+                    return int(value), None
+                return int(value), None
+            except (ValueError, TypeError):
+                return value, f"should be type 'integer', got '{type(value).__name__}'"
+
+        if expected == "number":
+            if isinstance(value, (int, float)):
+                return value, None
+            try:
+                if isinstance(value, str):
+                    if value.strip() == "": return 0.0, None
+                    return float(value), None
+                return float(value), None
+            except (ValueError, TypeError):
+                return value, f"should be type 'number', got '{type(value).__name__}'"
+
+        if expected == "boolean":
+            if isinstance(value, bool):
+                return value, None
+            if isinstance(value, str):
+                val_lower = value.lower().strip()
+                if val_lower in ("true", "1", "yes", "on"):
+                    return True, None
+                if val_lower in ("false", "0", "no", "off", ""):
+                    return False, None
+            return bool(value), None
+
+        if expected == "array":
+            if isinstance(value, list):
+                return value, None
+            return value, f"should be type 'array', got '{type(value).__name__}'"
+
+        if expected == "object":
+            if isinstance(value, dict):
+                return value, None
+            return value, f"should be type 'object', got '{type(value).__name__}'"
+
+        return value, None

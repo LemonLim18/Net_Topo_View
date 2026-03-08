@@ -8,6 +8,7 @@
       "description": "List of ACL rules",
       "items": {
         "type": "object",
+        "required": ["action", "source"],
         "properties": {
           "seq": { "type": "integer", "description": "Sequence number" },
           "action": { "type": "string", "description": "permit or deny" },
