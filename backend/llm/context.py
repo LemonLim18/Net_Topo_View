@@ -224,7 +224,7 @@ class ContextBuilder:
         routing_decision: Optional[QueryRoutingDecision] = None,
     ) -> str:
         """
-        Build the fused network-context bundle (inventory + telemetry + SDN).
+        Build the fused network-context bundle with source-of-truth planned state.
 
         Returns:
             A markdown-formatted block ready for LLM injection, or empty
@@ -241,10 +241,19 @@ class ContextBuilder:
 
         try:
             from rag.context_bundle import ContextBundleBuilder
-            builder = ContextBundleBuilder(db_manager=self._db)
+            from netbox.client import NetBoxClient
+
+            builder = ContextBundleBuilder(
+                db_manager=self._db,
+                netbox_client=NetBoxClient.get_client(),
+            )
             bundle = builder.build_bundle(
                 device_hostnames=device_hostnames,
                 include_inventory=(
+                    routing_decision.include_inventory
+                    if routing_decision is not None else True
+                ),
+                include_planned_topology=(
                     routing_decision.include_inventory
                     if routing_decision is not None else True
                 ),

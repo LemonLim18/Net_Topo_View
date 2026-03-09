@@ -31,6 +31,7 @@ from llm.context_contract import (
     CONTEXT_DOMAIN_INVENTORY,
     CONTEXT_DOMAIN_INCIDENTS,
     CONTEXT_DOMAIN_KNOWLEDGE,
+    CONTEXT_DOMAIN_PLANNED_TOPOLOGY,
     CONTEXT_DOMAIN_SDN,
     CONTEXT_DOMAIN_TELEMETRY,
     FreshnessMetadata,
@@ -61,11 +62,27 @@ class InventoryContext:
     interfaces: List[Dict[str, Any]] = field(default_factory=list)
     total_devices: int = 0
     source: str = "local_db"  # "local_db" | "netbox"
+    source_detail: str = "Using local DB fallback for planned inventory."
     freshness: FreshnessMetadata = field(
         default_factory=lambda: missing_freshness(
             CONTEXT_DOMAIN_INVENTORY,
             "local_db",
             "planned_inventory",
+        )
+    )
+
+
+@dataclass
+class PlannedTopologyContext:
+    topology: Dict[str, Any] = field(default_factory=lambda: {"nodes": {}})
+    links: List[Dict[str, Any]] = field(default_factory=list)
+    source: str = "local_db"
+    source_detail: str = "Using local DB fallback for planned topology."
+    freshness: FreshnessMetadata = field(
+        default_factory=lambda: missing_freshness(
+            CONTEXT_DOMAIN_PLANNED_TOPOLOGY,
+            "local_db",
+            "planned_topology",
         )
     )
 
@@ -159,6 +176,7 @@ class KnowledgeContext:
 class ContextBundle:
     """The unified context payload injected into LLM prompts."""
     inventory: InventoryContext = field(default_factory=InventoryContext)
+    planned_topology: PlannedTopologyContext = field(default_factory=PlannedTopologyContext)
     telemetry: TelemetryContext = field(default_factory=TelemetryContext)
     sdn_state: SDNContext = field(default_factory=SDNContext)
     config_history: ConfigHistoryContext = field(default_factory=ConfigHistoryContext)
@@ -179,6 +197,7 @@ class ContextBundle:
         inv = self.inventory
         if inv.devices:
             lines.append(f"### Inventory ({inv.total_devices} devices, source: {inv.source})")
+            lines.append(f"Source selection: {inv.source_detail}")
             lines.append(f"Freshness: {inv.freshness.to_prompt_text()}")
             for d in inv.devices[:20]:  # Cap at 20 to save tokens
                 status = d.get("status", "unknown")
@@ -188,6 +207,21 @@ class ContextBundle:
                 )
             if inv.interfaces:
                 lines.append(f"\n  Interfaces included: {len(inv.interfaces)}")
+            lines.append("")
+
+        planned = self.planned_topology
+        planned_nodes = planned.topology.get("nodes", {}) if isinstance(planned.topology, dict) else {}
+        if planned.links or planned_nodes:
+            lines.append(
+                f"### Planned Topology ({len(planned_nodes)} devices, {len(planned.links)} links, source: {planned.source})"
+            )
+            lines.append(f"Source selection: {planned.source_detail}")
+            lines.append(f"Freshness: {planned.freshness.to_prompt_text()}")
+            for link in planned.links[:15]:
+                lines.append(
+                    f"- {link.get('src_hostname', '?')}:{link.get('src_interface', '?')} "
+                    f"-> {link.get('dst_hostname', '?')}:{link.get('dst_interface', '?')}"
+                )
             lines.append("")
 
         # Telemetry
@@ -298,6 +332,7 @@ class ContextBundleBuilder:
         device_hostnames: Optional[List[str]] = None,
         vendor_filter: Optional[str] = None,
         include_inventory: bool = True,
+        include_planned_topology: bool = True,
         include_telemetry: bool = True,
         include_sdn: bool = True,
         include_config: bool = True,
@@ -327,6 +362,9 @@ class ContextBundleBuilder:
         # 1. Inventory (NetBox preferred, local DB fallback)
         if include_inventory:
             bundle.inventory = self._fetch_inventory(device_hostnames, vendor_filter)
+
+        if include_planned_topology:
+            bundle.planned_topology = self._fetch_planned_topology(device_hostnames)
 
         # 2. Telemetry (InfluxDB)
         if include_telemetry:
@@ -377,6 +415,19 @@ class ContextBundleBuilder:
 
     # ---- Inventory (UC06) ----
 
+    def _get_netbox_client(self):
+        if self._netbox is not None:
+            return self._netbox
+
+        try:
+            from netbox.client import NetBoxClient
+
+            client = NetBoxClient.get_client()
+            self._netbox = client
+            return client
+        except Exception:
+            return None
+
     def _fetch_inventory(
         self,
         hostnames: Optional[List[str]] = None,
@@ -386,10 +437,12 @@ class ContextBundleBuilder:
         ctx = InventoryContext()
 
         # Try NetBox first
-        if self._netbox is not None:
+        netbox_client = self._get_netbox_client()
+        if netbox_client is not None and getattr(netbox_client, "api", None):
             try:
                 ctx = self._fetch_netbox_inventory(hostnames, vendor_filter)
                 ctx.source = "netbox"
+                ctx.source_detail = "Using NetBox as the source of truth for planned inventory."
                 return ctx
             except Exception as e:
                 logger.warning("NetBox inventory fetch failed, falling back to local DB: %s", e)
@@ -399,6 +452,7 @@ class ContextBundleBuilder:
             try:
                 ctx = self._fetch_local_inventory(hostnames, vendor_filter)
                 ctx.source = "local_db"
+                ctx.source_detail = "NetBox unavailable or not authoritative for this query; using local DB fallback for planned inventory."
             except Exception as e:
                 logger.warning("Local DB inventory fetch failed: %s", e)
 
@@ -413,10 +467,12 @@ class ContextBundleBuilder:
         ctx = InventoryContext(source="netbox")
         last_updated_candidates: List[str] = []
 
+        client = self._get_netbox_client()
+        if client is None or not getattr(client, "api", None):
+            return ctx
+
         try:
-            from netbox.client import NetBoxClient
-            client = self._netbox if self._netbox else NetBoxClient()
-            nb = client._nb  # pynetbox Api object
+            nb = client.api
 
             # Fetch devices
             filters: Dict[str, Any] = {}
@@ -431,14 +487,18 @@ class ContextBundleBuilder:
                 last_updated = getattr(dev, "last_updated", None)
                 if last_updated:
                     last_updated_candidates.append(str(last_updated))
+                primary_ip = getattr(dev, "primary_ip4", None) or getattr(dev, "primary_ip", None)
+                role = getattr(dev, "role", None)
+                platform = getattr(dev, "platform", None)
+                device_type = getattr(dev, "device_type", None)
                 ctx.devices.append({
                     "hostname": str(dev.name),
-                    "management_ip": str(dev.primary_ip) if dev.primary_ip else None,
-                    "vendor": str(dev.platform) if dev.platform else "unknown",
-                    "model": str(dev.device_type) if dev.device_type else None,
-                    "role": str(dev.role) if dev.role else None,
+                    "management_ip": str(primary_ip).split("/")[0] if primary_ip else None,
+                    "vendor": str(getattr(platform, "slug", platform or "unknown")),
+                    "model": str(getattr(device_type, "model", device_type or "")) or None,
+                    "role": str(getattr(role, "slug", role or "")) or None,
                     "site": str(dev.site) if dev.site else None,
-                    "status": str(dev.status) if dev.status else "unknown",
+                    "status": str(getattr(dev.status, "value", dev.status)) if dev.status else "unknown",
                     "serial": str(dev.serial) if dev.serial else None,
                 })
 
@@ -448,14 +508,14 @@ class ContextBundleBuilder:
             if hostnames and len(hostnames) <= 10:
                 for dev in devices:
                     try:
-                        ifaces = list(nb.dcim.interfaces.filter(device=dev.name))
-                        for iface in ifaces[:20]:  # Cap per device
+                        for iface in client.get_interfaces_for_device(dev.id)[:20]:
                             ctx.interfaces.append({
                                 "device": str(dev.name),
-                                "name": str(iface.name),
-                                "type": str(iface.type) if iface.type else None,
-                                "enabled": bool(iface.enabled),
-                                "mac_address": str(iface.mac_address) if iface.mac_address else None,
+                                "name": iface.get("name"),
+                                "ip_address": iface.get("ip_address"),
+                                "subnet_mask": iface.get("subnet_mask"),
+                                "type": iface.get("type"),
+                                "mac_address": iface.get("mac_address"),
                             })
                     except Exception:
                         pass
@@ -473,6 +533,129 @@ class ContextBundleBuilder:
         )
 
         return ctx
+
+    def _fetch_planned_topology(
+        self,
+        hostnames: Optional[List[str]] = None,
+    ) -> PlannedTopologyContext:
+        ctx = PlannedTopologyContext()
+        netbox_client = self._get_netbox_client()
+
+        if self._db is not None and netbox_client is not None and getattr(netbox_client, "api", None):
+            try:
+                from netbox.sync_topology import TopologySyncer
+
+                planned = TopologySyncer(self._db).get_planned_topology()
+                nodes = planned.get("nodes", {}) if isinstance(planned, dict) else {}
+                if hostnames:
+                    allowed = set(hostnames)
+                    nodes = {name: data for name, data in nodes.items() if name in allowed}
+                if nodes:
+                    ctx.topology = {**planned, "nodes": nodes}
+                    ctx.links = self._planned_topology_links_from_nodes(nodes)
+                    captured_at = planned.get("timestamp")
+                    ctx.source = "netbox"
+                    ctx.source_detail = "Using NetBox planned topology as the source of truth."
+                    ctx.freshness = compute_freshness(
+                        domain=CONTEXT_DOMAIN_PLANNED_TOPOLOGY,
+                        captured_at=captured_at,
+                        ingested_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                        source="netbox",
+                        scope="planned_topology",
+                        confidence=0.9 if ctx.links or nodes else 0.0,
+                    )
+                    return ctx
+            except Exception as exc:
+                logger.warning("NetBox planned topology fetch failed, falling back to local DB: %s", exc)
+
+        if self._db is None:
+            return ctx
+
+        try:
+            with self._db._connect() as conn:
+                rows = conn.execute(
+                    "SELECT sd.hostname AS src_hostname, si.name AS src_interface, dd.hostname AS dst_hostname, di.name AS dst_interface, l.discovery_protocol, l.updated_at "
+                    "FROM links l "
+                    "LEFT JOIN devices sd ON sd.id = l.src_device_id "
+                    "LEFT JOIN devices dd ON dd.id = l.dst_device_id "
+                    "LEFT JOIN interfaces si ON si.id = l.src_interface_id "
+                    "LEFT JOIN interfaces di ON di.id = l.dst_interface_id "
+                    "ORDER BY sd.hostname, dd.hostname"
+                ).fetchall()
+
+            links = [dict(row) for row in rows]
+            if hostnames:
+                allowed = set(hostnames)
+                links = [
+                    link for link in links
+                    if link.get("src_hostname") in allowed or link.get("dst_hostname") in allowed
+                ]
+
+            nodes: Dict[str, Dict[str, Any]] = {}
+            for link in links:
+                src_hostname = link.get("src_hostname")
+                dst_hostname = link.get("dst_hostname")
+                if src_hostname:
+                    nodes.setdefault(src_hostname, {"connectedNode": [], "edgeLink": {}})
+                if dst_hostname:
+                    nodes.setdefault(dst_hostname, {"connectedNode": [], "edgeLink": {}})
+
+            ctx.topology = {"nodes": nodes}
+            ctx.links = links
+            ctx.source = "local_db"
+            ctx.source_detail = "NetBox unavailable or missing planned topology data; using local DB fallback for planned topology."
+            captured_at = max((link.get("updated_at") for link in links if link.get("updated_at")), default=None)
+            ctx.freshness = compute_freshness(
+                domain=CONTEXT_DOMAIN_PLANNED_TOPOLOGY,
+                captured_at=captured_at,
+                ingested_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                source="local_db",
+                scope="planned_topology",
+                confidence=0.75 if links else 0.0,
+            )
+        except Exception as exc:
+            logger.debug("Planned topology local fallback failed: %s", exc)
+
+        return ctx
+
+    @staticmethod
+    def _planned_topology_links_from_nodes(nodes: Dict[str, Any]) -> List[Dict[str, Any]]:
+        links: List[Dict[str, Any]] = []
+        seen = set()
+
+        for src_hostname, node in nodes.items():
+            if not isinstance(node, dict):
+                continue
+            for src_interface, edge in (node.get("edgeLink") or {}).items():
+                if not isinstance(edge, dict):
+                    continue
+                dst_hostname = edge.get("remote_node")
+                dst_interface = edge.get("remote_interface")
+                if not dst_hostname:
+                    continue
+                key = tuple(sorted((str(src_hostname), str(dst_hostname)))) + tuple(
+                    sorted((str(src_interface), str(dst_interface or "?")))
+                )
+                if key in seen:
+                    continue
+                seen.add(key)
+                links.append(
+                    {
+                        "src_hostname": src_hostname,
+                        "src_interface": src_interface,
+                        "dst_hostname": dst_hostname,
+                        "dst_interface": dst_interface,
+                    }
+                )
+
+        return sorted(
+            links,
+            key=lambda link: (
+                str(link.get("src_hostname") or ""),
+                str(link.get("dst_hostname") or ""),
+                str(link.get("src_interface") or ""),
+            ),
+        )
 
     def _fetch_local_inventory(
         self,
@@ -498,7 +681,7 @@ class ContextBundleBuilder:
 
             rows = conn.execute(
                 f"SELECT hostname, management_ip, vendor, model, os_version, "
-                f"serial_number, status FROM devices{where_sql} LIMIT 50",
+                f"serial_number, status, role FROM devices{where_sql} LIMIT 50",
                 params,
             ).fetchall()
 
