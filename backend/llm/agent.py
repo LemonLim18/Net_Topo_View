@@ -82,7 +82,7 @@ No intent pipeline is needed for read-only operations.
 ## Available Query Tools
 - `get_topology_summary` — overview of all devices and links
 - `get_device_details(hostname)` — interfaces, neighbors, edge links
-- `list_all_devices` — hostname + status + management IP for every device
+- `list_all_devices(scope)` — device listing for `live`, `inventory`, or `both` scope with explicit source labeling
 - `find_path(source, destination)` — shortest path between devices
 - `get_device_running_config(hostname)` — last known running-config snapshot
 - `get_audit_log(limit)` — recent configuration change history

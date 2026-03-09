@@ -174,6 +174,9 @@ def _inventory_records_from_local_db() -> List[Dict[str, Any]]:
     if not _db_manager:
         return []
 
+    if not hasattr(_db_manager, "get_all_devices"):
+        return []
+
     devices = []
     for device in _db_manager.get_all_devices():
         devices.append(
@@ -380,33 +383,135 @@ def get_device_details(hostname: str) -> str:
     return json.dumps(details, ensure_ascii=False)
 
 
-def list_all_devices() -> str:
+def _get_live_device_records() -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    if not _db_manager:
+        return [], {}
+
+    topo = _db_manager.get_topology()
+    if not topo or not topo.get("nodes"):
+        return [], topo or {}
+
+    devices = []
+    timestamp = topo.get("timestamp")
+    for hostname, data in topo.get("nodes", {}).items():
+        if not isinstance(data, dict):
+            continue
+        devices.append(
+            {
+                "hostname": hostname,
+                "management_ip": data.get("mgmt_ip", "N/A"),
+                "status": "down" if data.get("down") else "up",
+                "scope": "live",
+                "source_label": "crawler_cache",
+                "captured_at": timestamp,
+            }
+        )
+
+    return devices, topo
+
+
+def list_all_devices(scope: str = "live") -> str:
     """
-    List all discovered devices with their hostnames, status,
-    and management IPs.
+    List devices with explicit scope semantics: live, inventory, or both.
     """
     if not _db_manager:
         return json.dumps({"error": "Database not available"})
 
-    topo = _db_manager.get_topology()
-    if not topo or not topo.get("nodes"):
-        return json.dumps({"devices": [], "message": "No devices discovered"})
+    normalized_scope = (scope or "live").strip().lower()
+    if normalized_scope not in {"live", "inventory", "both"}:
+        return json.dumps(
+            {
+                "error": "Invalid scope. Use one of: live, inventory, both",
+                "scope_requested": normalized_scope,
+            },
+            ensure_ascii=False,
+        )
 
-    devices = []
-    for hostname, data in topo.get("nodes", {}).items():
-        if not isinstance(data, dict):
-            continue
-        devices.append({
-            "hostname": hostname,
-            "status": "down" if data.get("down") else "up",
-            "mgmt_ip": data.get("mgmt_ip", "N/A"),
-        })
+    live_devices, topo = _get_live_device_records()
+    inventory_devices, inventory_source = _get_inventory_records()
 
-    return json.dumps({
-        "devices": devices,
-        "total": len(devices),
-        "source_metadata": _topology_source_metadata(topo),
-    })
+    if normalized_scope == "live":
+        return json.dumps(
+            {
+                "devices": live_devices,
+                "total": len(live_devices),
+                "scope_requested": "live",
+                "source_used": "crawler_cache",
+                "source_metadata": _topology_source_metadata(topo),
+            },
+            ensure_ascii=False,
+        )
+
+    inventory_captured_at = max(
+        (record.get("updated_at") for record in inventory_devices if record.get("updated_at")),
+        default=None,
+    )
+    if normalized_scope == "inventory":
+        scoped_devices = []
+        for record in inventory_devices:
+            scoped = dict(record)
+            scoped["scope"] = "inventory"
+            scoped["source_label"] = inventory_source
+            scoped["captured_at"] = record.get("updated_at")
+            scoped_devices.append(scoped)
+
+        return json.dumps(
+            {
+                "devices": scoped_devices,
+                "total": len(scoped_devices),
+                "scope_requested": "inventory",
+                "source_used": inventory_source,
+                "source_metadata": _inventory_source_metadata(inventory_source, inventory_captured_at),
+            },
+            ensure_ascii=False,
+        )
+
+    merged: List[Dict[str, Any]] = []
+    live_map = {str(device.get("hostname")): device for device in live_devices}
+    inventory_map = {str(device.get("hostname")): device for device in inventory_devices}
+    for hostname in sorted(set(live_map) | set(inventory_map)):
+        live_device = live_map.get(hostname)
+        inventory_device = inventory_map.get(hostname)
+        source_labels = []
+        scopes_present = []
+        if live_device is not None:
+            scopes_present.append("live")
+            source_labels.append("crawler_cache")
+        if inventory_device is not None:
+            scopes_present.append("inventory")
+            source_labels.append(inventory_source)
+
+        merged.append(
+            {
+                "hostname": hostname,
+                "scopes_present": scopes_present,
+                "source_labels": source_labels,
+                "live": live_device,
+                "inventory": (
+                    {
+                        **inventory_device,
+                        "scope": "inventory",
+                        "source_label": inventory_source,
+                        "captured_at": inventory_device.get("updated_at"),
+                    }
+                    if inventory_device is not None else None
+                ),
+            }
+        )
+
+    return json.dumps(
+        {
+            "devices": merged,
+            "total": len(merged),
+            "scope_requested": "both",
+            "source_used": ["crawler_cache", inventory_source],
+            "source_metadata": {
+                "live": _topology_source_metadata(topo),
+                "inventory": _inventory_source_metadata(inventory_source, inventory_captured_at),
+            },
+        },
+        ensure_ascii=False,
+    )
 
 
 def get_context_health() -> str:
@@ -1494,7 +1599,10 @@ def register_all_tools(registry) -> None:
     )
     registry.register(
         list_all_devices,
-        description="List all discovered network devices with status and management IPs.",
+        description="List devices with explicit scope semantics: live discovery, source-of-truth inventory, or both.",
+        param_descriptions={
+            "scope": "Device scope to return: live, inventory, or both",
+        },
     )
     registry.register(
         list_inventory_devices,

@@ -196,3 +196,28 @@ def test_get_planned_topology_prefers_netbox(monkeypatch):
     assert payload["total"] == 1
     assert payload["topology"]["device_count"] == 2
     assert payload["captured_at"] == "2026-03-09T10:15:00+00:00"
+
+
+def test_list_all_devices_supports_inventory_scope():
+    network_tools.set_db_manager(_InventoryFakeDb())
+    payload = json.loads(network_tools.list_all_devices(scope="inventory"))
+
+    assert payload["scope_requested"] == "inventory"
+    assert payload["source_used"] == "local_db"
+    assert payload["devices"][0]["scope"] == "inventory"
+    assert payload["devices"][0]["source_label"] == "local_db"
+
+
+def test_list_all_devices_supports_both_scope_without_flattening():
+    network_tools.set_db_manager(_InventoryFakeDb())
+    payload = json.loads(network_tools.list_all_devices(scope="both"))
+
+    assert payload["scope_requested"] == "both"
+    r1 = next(device for device in payload["devices"] if device["hostname"] == "R1")
+    fw1 = next(device for device in payload["devices"] if device["hostname"] == "FW1")
+    sw1 = next(device for device in payload["devices"] if device["hostname"] == "SW1")
+
+    assert r1["live"]["scope"] == "live"
+    assert r1["inventory"]["scope"] == "inventory"
+    assert fw1["inventory"] is None
+    assert sw1["live"] is None

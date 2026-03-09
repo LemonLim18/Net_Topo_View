@@ -84,5 +84,6 @@ def test_topology_tool_returns_source_metadata():
     payload = json.loads(network_tools.list_all_devices())
 
     assert payload["total"] == 2
+    assert payload["scope_requested"] == "live"
     assert payload["source_metadata"]["source"] == "crawler_cache"
     assert payload["source_metadata"]["scope"] == "live_topology"
