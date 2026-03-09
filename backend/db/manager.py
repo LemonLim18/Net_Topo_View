@@ -38,8 +38,9 @@ from llm.context_contract import (
     CONTEXT_DOMAIN_CONFIG,
     CONTEXT_DOMAIN_DRIFT,
     CONTEXT_DOMAIN_LIVE_TOPOLOGY,
+    CONTEXT_DOMAIN_SECURITY,
 )
-from llm.context_state import get_context_state_manager
+from llm.refresh_fabric import publish_context_refresh_event
 
 logger = logging.getLogger("db.manager")
 
@@ -168,11 +169,13 @@ class DatabaseManager:
         """
         with self._topo_lock:
             self._topo_cache = topo_dict
-        get_context_state_manager().invalidate(
-            domain=CONTEXT_DOMAIN_LIVE_TOPOLOGY,
+        publish_context_refresh_event(
             source="crawler_cache",
+            action="topology_cache_replaced",
             summary=f"topology cache replaced with {len(topo_dict.get('nodes', {}))} nodes",
+            domains=(CONTEXT_DOMAIN_LIVE_TOPOLOGY,),
             event_type="refresh",
+            refresh_mode="none",
             metadata={
                 "timestamp": topo_dict.get("timestamp"),
                 "node_count": len(topo_dict.get("nodes", {})),
@@ -425,11 +428,13 @@ class DatabaseManager:
             )
             snapshot_id = cur.lastrowid
 
-        get_context_state_manager().invalidate(
-            domain=CONTEXT_DOMAIN_CONFIG,
+        publish_context_refresh_event(
             source="config_snapshot_writer",
+            action="config_snapshot_saved",
             summary=f"config snapshot saved for device_id={snapshot.device_id}",
+            domains=(CONTEXT_DOMAIN_CONFIG,),
             event_type="refresh",
+            refresh_mode="none",
             metadata={
                 "device_id": snapshot.device_id,
                 "snapshot_id": snapshot_id,
@@ -507,13 +512,15 @@ class DatabaseManager:
             )
             event_id = cur.lastrowid
 
-        get_context_state_manager().invalidate(
-            domain=CONTEXT_DOMAIN_DRIFT,
+        publish_context_refresh_event(
             source="drift_detector",
+            action="drift_event_saved",
             summary=(
                 f"drift {'detected' if event.has_drift else 'checked'} for device_id={event.device_id}"
             ),
+            domains=(CONTEXT_DOMAIN_DRIFT,),
             event_type="refresh",
+            refresh_mode="none",
             metadata={
                 "device_id": event.device_id,
                 "drift_event_id": event_id,
@@ -578,7 +585,25 @@ class DatabaseManager:
                 (event_type, severity, source_ip, dest_ip,
                  device_id, description, raw_data, now),
             )
-            return cur.lastrowid
+            event_id = cur.lastrowid
+
+        publish_context_refresh_event(
+            source="security_event_store",
+            action="security_event_inserted",
+            summary=f"security event recorded: {event_type}",
+            domains=(CONTEXT_DOMAIN_SECURITY,),
+            event_type="refresh",
+            refresh_mode="none",
+            metadata={
+                "security_event_id": event_id,
+                "event_type": event_type,
+                "severity": severity,
+                "source_ip": source_ip,
+                "dest_ip": dest_ip,
+                "device_id": device_id,
+            },
+        )
+        return event_id
 
     # =============================================================
     # Utility

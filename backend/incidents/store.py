@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 from typing import List, Optional
 
 from llm.context_contract import CONTEXT_DOMAIN_INCIDENTS
-from llm.context_state import get_context_state_manager
+from llm.refresh_fabric import publish_context_refresh_event
 
 logger = logging.getLogger("incidents.store")
 
@@ -33,11 +33,13 @@ def _row_to_dict(row) -> dict:
 
 
 def _invalidate_incident_context(summary: str, metadata: dict) -> None:
-    get_context_state_manager().invalidate(
-        domain=CONTEXT_DOMAIN_INCIDENTS,
+    publish_context_refresh_event(
         source="incident_store",
+        action="incident_state_changed",
         summary=summary,
+        domains=(CONTEXT_DOMAIN_INCIDENTS,),
         event_type="refresh",
+        refresh_mode="none",
         metadata=metadata,
     )
 

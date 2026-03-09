@@ -6,10 +6,8 @@ from fastapi import APIRouter, HTTPException, Request, Header
 from pydantic import BaseModel
 from typing import Dict, Any, Optional
 
-from db.manager import DatabaseManager
 from llm.context_contract import CONTEXT_DOMAIN_INVENTORY, CONTEXT_DOMAIN_PLANNED_TOPOLOGY
-from llm.context_state import get_context_state_manager
-from netbox.sync_devices import DeviceSyncer
+from llm.refresh_fabric import publish_context_refresh_event
 
 logger = logging.getLogger("netbox.webhook")
 router = APIRouter()
@@ -49,37 +47,25 @@ async def netbox_webhook(
         data = payload.get("data")
         
         logger.info(f"Received NetBox Webhook: {event} {model} ({data.get('name')})")
-        state = get_context_state_manager()
+        domains = []
+        refresh_targets = []
         if model in {"device", "interface", "ipaddress"}:
-            state.invalidate(
-                domain=CONTEXT_DOMAIN_INVENTORY,
-                source="netbox_webhook",
-                summary=f"{event} {model}",
-                metadata={"model": model, "event": event, "name": data.get("name")},
-            )
+            domains.append(CONTEXT_DOMAIN_INVENTORY)
+            refresh_targets.append("inventory")
         if model in {"device", "cable", "interface"}:
-            state.invalidate(
-                domain=CONTEXT_DOMAIN_PLANNED_TOPOLOGY,
-                source="netbox_webhook",
-                summary=f"{event} {model}",
-                metadata={"model": model, "event": event, "name": data.get("name")},
-            )
+            domains.append(CONTEXT_DOMAIN_PLANNED_TOPOLOGY)
+            refresh_targets.append("planned_topology")
 
-        # 3. Handle Events
-        db = DatabaseManager("db/netauto.db")
-        
-        if model == "device":
-             # Incremental sync could be done here, but for safety we resync all or specific device
-             # For MVP, let's trigger a full sync in background or just log it
-             syncer = DeviceSyncer(db)
-             # In production, use background task: background_tasks.add_task(syncer.sync_all_devices)
-             syncer.sync_all_devices()
-             
-        elif model == "cable":
-             # Trigger topology sync
-             pass
+        publication = publish_context_refresh_event(
+            source="netbox_webhook",
+            action=f"netbox_{event}_{model}",
+            summary=f"{event} {model}",
+            domains=tuple(domains),
+            refresh_targets=tuple(refresh_targets),
+            metadata={"model": model, "event": event, "name": data.get("name")},
+        )
 
-        return {"status": "processed"}
+        return {"status": "processed", "publication": publication}
 
     except Exception as e:
         logger.error(f"Error processing webhook: {e}")

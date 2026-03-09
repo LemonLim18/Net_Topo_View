@@ -1,0 +1,137 @@
+from __future__ import annotations
+
+import threading
+import uuid
+from collections import deque
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from typing import Deque, Dict, Iterable, Optional, Sequence
+
+from llm.context_state import ContextStateManager, get_context_state_manager
+from llm.refresh_state import RefreshStateManager, get_refresh_state_manager
+
+
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def _normalize_names(values: Iterable[str]) -> tuple[str, ...]:
+    seen = set()
+    normalized = []
+    for value in values:
+        item = (value or "").strip()
+        if not item or item in seen:
+            continue
+        seen.add(item)
+        normalized.append(item)
+    return tuple(normalized)
+
+
+@dataclass(frozen=True)
+class RefreshFabricEvent:
+    source: str
+    action: str
+    summary: str
+    domains: Sequence[str]
+    metadata: Dict[str, object] = field(default_factory=dict)
+    refresh_targets: Sequence[str] = field(default_factory=tuple)
+    event_type: str = "invalidate"
+    refresh_mode: str = "async"
+
+
+class RefreshFabric:
+    def __init__(
+        self,
+        context_state: Optional[ContextStateManager] = None,
+        refresh_state: Optional[RefreshStateManager] = None,
+    ) -> None:
+        self._context_state = context_state or get_context_state_manager()
+        self._refresh_state = refresh_state or get_refresh_state_manager()
+        self._lock = threading.Lock()
+        self._recent_publications: Deque[Dict[str, object]] = deque(maxlen=200)
+
+    def publish(self, event: RefreshFabricEvent) -> Dict[str, object]:
+        event_id = f"evt-{uuid.uuid4().hex[:10]}"
+        timestamp = _utc_now()
+        domains = _normalize_names(event.domains)
+        refresh_targets = _normalize_names(event.refresh_targets)
+        metadata = dict(event.metadata)
+        metadata.setdefault("action", event.action)
+        metadata.setdefault("event_source", event.source)
+        metadata.setdefault("event_id", event_id)
+
+        versions: Dict[str, int] = {}
+        for domain in domains:
+            versions[domain] = self._context_state.invalidate(
+                domain=domain,
+                source=event.source,
+                summary=event.summary,
+                event_type=event.event_type,
+                metadata=metadata,
+            )
+
+        requested_by = f"fabric:{event.source}:{event.action}"
+        refresh_jobs = []
+        if event.refresh_mode != "none":
+            for target in refresh_targets:
+                if event.refresh_mode == "sync":
+                    result = self._refresh_state.run_refresh(target, requested_by=requested_by)
+                    refresh_jobs.append({"target": target, "mode": "sync", "result": result})
+                else:
+                    job = self._refresh_state.start_refresh_job(target, requested_by=requested_by)
+                    refresh_jobs.append({"target": target, "mode": "async", "job": job})
+
+        publication = {
+            "event_id": event_id,
+            "timestamp": timestamp,
+            "source": event.source,
+            "action": event.action,
+            "summary": event.summary,
+            "domains": list(domains),
+            "versions": versions,
+            "event_type": event.event_type,
+            "refresh_mode": event.refresh_mode,
+            "refresh_targets": list(refresh_targets),
+            "refresh_jobs": refresh_jobs,
+            "metadata": metadata,
+        }
+        with self._lock:
+            self._recent_publications.appendleft(publication)
+        return publication
+
+    def snapshot(self) -> Dict[str, object]:
+        with self._lock:
+            recent_events = list(self._recent_publications)[:20]
+        return {"recent_publications": recent_events}
+
+
+_REFRESH_FABRIC = RefreshFabric()
+
+
+def get_refresh_fabric() -> RefreshFabric:
+    return _REFRESH_FABRIC
+
+
+def publish_context_refresh_event(
+    *,
+    source: str,
+    action: str,
+    summary: str,
+    domains: Sequence[str],
+    metadata: Optional[Dict[str, object]] = None,
+    refresh_targets: Sequence[str] = (),
+    event_type: str = "invalidate",
+    refresh_mode: str = "async",
+) -> Dict[str, object]:
+    return get_refresh_fabric().publish(
+        RefreshFabricEvent(
+            source=source,
+            action=action,
+            summary=summary,
+            domains=tuple(domains),
+            metadata=dict(metadata or {}),
+            refresh_targets=tuple(refresh_targets),
+            event_type=event_type,
+            refresh_mode=refresh_mode,
+        )
+    )

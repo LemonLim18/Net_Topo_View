@@ -10,8 +10,8 @@ from enum import Enum
 from typing import List, Optional, Any, Dict
 from pydantic import BaseModel, Field
 
-from llm.context_contract import CONTEXT_DOMAIN_LIVE_TOPOLOGY
-from llm.context_state import get_context_state_manager
+from llm.context_contract import CONTEXT_DOMAIN_DEPLOYMENT, CONTEXT_DOMAIN_LIVE_TOPOLOGY
+from llm.refresh_fabric import publish_context_refresh_event
 
 
 class RequestStatus(str, Enum):
@@ -121,7 +121,17 @@ class DeploymentRepository:
                 """,
                 (req.title, req.description, req.status.value, req.requester)
             )
-            return cur.lastrowid
+            request_id = cur.lastrowid
+        publish_context_refresh_event(
+            source="deployment_repository",
+            action="change_request_created",
+            summary=f"change request created: {request_id}",
+            domains=(CONTEXT_DOMAIN_DEPLOYMENT,),
+            event_type="refresh",
+            refresh_mode="none",
+            metadata={"request_id": request_id, "status": req.status.value, "title": req.title},
+        )
+        return request_id
 
     def get_request(self, request_id: int) -> Optional[ChangeRequest]:
         """Get a Change Request by ID (without joining jobs)."""
@@ -151,7 +161,23 @@ class DeploymentRepository:
                 """,
                 (job.request_id, job.device_id, job.status.value, job.stage.value)
             )
-            return cur.lastrowid
+            job_id = cur.lastrowid
+        publish_context_refresh_event(
+            source="deployment_repository",
+            action="deployment_job_created",
+            summary=f"deployment job created: {job_id}",
+            domains=(CONTEXT_DOMAIN_DEPLOYMENT,),
+            event_type="refresh",
+            refresh_mode="none",
+            metadata={
+                "job_id": job_id,
+                "request_id": job.request_id,
+                "device_id": job.device_id,
+                "status": job.status.value,
+                "stage": job.stage.value,
+            },
+        )
+        return job_id
 
     def log_step(self, job_id: int, stage: PipelineStage, details: str) -> int:
         """Log a new step for a job."""
@@ -204,21 +230,29 @@ class DeploymentRepository:
             device = self.db.get_device_by_id(device_id)
             hostname = device.hostname if device else None
 
+        domains = [CONTEXT_DOMAIN_DEPLOYMENT]
+        refresh_targets = ()
         if stage in (PipelineStage.APPLY, PipelineStage.COMMIT, PipelineStage.ROLLBACK):
-            get_context_state_manager().invalidate(
-                domain=CONTEXT_DOMAIN_LIVE_TOPOLOGY,
-                source="deployment_pipeline",
-                summary=f"deployment {stage.value} for job {job_id}",
-                event_type="invalidate",
-                metadata={
-                    "job_id": job_id,
-                    "device_id": device_id,
-                    "hostname": hostname,
-                    "status": status.value,
-                    "stage": stage.value,
-                    "error": error,
-                },
-            )
+            domains.append(CONTEXT_DOMAIN_LIVE_TOPOLOGY)
+        if stage in (PipelineStage.COMMIT, PipelineStage.ROLLBACK):
+            refresh_targets = ("live_topology",)
+
+        publish_context_refresh_event(
+            source="deployment_pipeline",
+            action="deployment_job_status_updated",
+            summary=f"deployment {stage.value} for job {job_id}",
+            domains=tuple(domains),
+            event_type="invalidate",
+            refresh_targets=refresh_targets,
+            metadata={
+                "job_id": job_id,
+                "device_id": device_id,
+                "hostname": hostname,
+                "status": status.value,
+                "stage": stage.value,
+                "error": error,
+            },
+        )
             
     def list_jobs(self) -> List[Dict]:
         """Return all jobs joined with request title and device hostname."""
@@ -245,3 +279,12 @@ class DeploymentRepository:
                 "UPDATE change_requests SET status = ?, updated_at = datetime('now') WHERE id = ?",
                 (status.value, req_id)
             )
+        publish_context_refresh_event(
+            source="deployment_repository",
+            action="change_request_status_updated",
+            summary=f"change request status updated: {req_id} -> {status.value}",
+            domains=(CONTEXT_DOMAIN_DEPLOYMENT,),
+            event_type="refresh",
+            refresh_mode="none",
+            metadata={"request_id": req_id, "status": status.value},
+        )

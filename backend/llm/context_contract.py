@@ -13,6 +13,8 @@ CONTEXT_DOMAIN_TELEMETRY = "telemetry"
 CONTEXT_DOMAIN_CONFIG = "config_history"
 CONTEXT_DOMAIN_INCIDENTS = "incidents"
 CONTEXT_DOMAIN_DRIFT = "drift"
+CONTEXT_DOMAIN_DEPLOYMENT = "deployment_status"
+CONTEXT_DOMAIN_SECURITY = "security_events"
 CONTEXT_DOMAIN_KNOWLEDGE = "knowledge_base"
 CONTEXT_DOMAIN_SDN = "sdn_state"
 
@@ -129,6 +131,14 @@ AUTHORITY_MATRIX: Dict[str, ContextDomainContract] = {
         live_max_age_minutes=30,
         warm_max_age_minutes=240,
     ),
+    CONTEXT_DOMAIN_DEPLOYMENT: ContextDomainContract(
+        domain=CONTEXT_DOMAIN_DEPLOYMENT,
+        canonical_sources=("deployment_repository",),
+        fallback_sources=("job_status_cache",),
+        description="Change request, deployment job, and intent execution state.",
+        live_max_age_minutes=10,
+        warm_max_age_minutes=60,
+    ),
     CONTEXT_DOMAIN_INCIDENTS: ContextDomainContract(
         domain=CONTEXT_DOMAIN_INCIDENTS,
         canonical_sources=("incident_store",),
@@ -144,6 +154,14 @@ AUTHORITY_MATRIX: Dict[str, ContextDomainContract] = {
         description="Detected divergence between intended and actual configuration state.",
         live_max_age_minutes=30,
         warm_max_age_minutes=240,
+    ),
+    CONTEXT_DOMAIN_SECURITY: ContextDomainContract(
+        domain=CONTEXT_DOMAIN_SECURITY,
+        canonical_sources=("security_events", "threshold_alerts"),
+        fallback_sources=("threat_cache",),
+        description="Threat detections, rogue device findings, and threshold-driven security alerts.",
+        live_max_age_minutes=5,
+        warm_max_age_minutes=30,
     ),
     CONTEXT_DOMAIN_KNOWLEDGE: ContextDomainContract(
         domain=CONTEXT_DOMAIN_KNOWLEDGE,

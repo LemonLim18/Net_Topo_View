@@ -5,7 +5,7 @@ from starlette.concurrency import run_in_threadpool
 from db.manager import DatabaseManager
 from db.models import Device
 from llm.context_contract import CONTEXT_DOMAIN_INVENTORY, CONTEXT_DOMAIN_PLANNED_TOPOLOGY
-from llm.context_state import get_context_state_manager
+from llm.refresh_fabric import publish_context_refresh_event
 from netbox.sync_devices import DeviceSyncer
 from netbox.sync_topology import TopologySyncer
 from netbox.client import NetBoxClient
@@ -23,17 +23,12 @@ def _db() -> DatabaseManager:
 
 
 def _invalidate_inventory_context(source: str, summary: str, metadata: Optional[dict] = None) -> None:
-    state = get_context_state_manager()
-    state.invalidate(
-        domain=CONTEXT_DOMAIN_INVENTORY,
+    publish_context_refresh_event(
         source=source,
+        action="inventory_mutation",
         summary=summary,
-        metadata=metadata,
-    )
-    state.invalidate(
-        domain=CONTEXT_DOMAIN_PLANNED_TOPOLOGY,
-        source=source,
-        summary=summary,
+        domains=(CONTEXT_DOMAIN_INVENTORY, CONTEXT_DOMAIN_PLANNED_TOPOLOGY),
+        refresh_targets=("inventory", "planned_topology"),
         metadata=metadata,
     )
 
@@ -396,6 +391,11 @@ async def create_interface(device_id: int, body: InterfaceCreate):
             logger.warning("Interface sync to NetBox for '%s:%s' failed: %s", d.hostname, body.name, e)
 
         row = conn.execute("SELECT * FROM interfaces WHERE id = ?", (cur.lastrowid,)).fetchone()
+        _invalidate_inventory_context(
+            source="netbox_api",
+            summary=f"interface created: {d.hostname}:{body.name}",
+            metadata={"hostname": d.hostname, "interface": body.name, "operation": "create_interface"},
+        )
         return dict(row)
     except sqlite3.IntegrityError:
         raise HTTPException(409, f"Interface '{body.name}' already exists on this device")
@@ -406,6 +406,7 @@ async def create_interface(device_id: int, body: InterfaceCreate):
 @router.put("/devices/{device_id}/interfaces/{iface_id}")
 async def update_interface(device_id: int, iface_id: int, body: InterfaceUpdate):
     """Update an interface."""
+    db = _db()
     conn = _raw_conn()
     try:
         existing = conn.execute(
@@ -442,6 +443,17 @@ async def update_interface(device_id: int, iface_id: int, body: InterfaceUpdate)
         )
         conn.commit()
         row = conn.execute("SELECT * FROM interfaces WHERE id = ?", (iface_id,)).fetchone()
+        device = db.get_device_by_id(device_id)
+        _invalidate_inventory_context(
+            source="netbox_api",
+            summary=f"interface updated: {(device.hostname if device else device_id)}:{row['name']}",
+            metadata={
+                "device_id": device_id,
+                "iface_id": iface_id,
+                "interface": row["name"],
+                "operation": "update_interface",
+            },
+        )
         return dict(row)
     finally:
         conn.close()
@@ -472,6 +484,16 @@ async def delete_interface(device_id: int, iface_id: int):
 
         conn.execute("DELETE FROM interfaces WHERE id = ?", (iface_id,))
         conn.commit()
+        _invalidate_inventory_context(
+            source="netbox_api",
+            summary=f"interface deleted: {(device.hostname if device else device_id)}:{existing['name']}",
+            metadata={
+                "device_id": device_id,
+                "iface_id": iface_id,
+                "interface": existing["name"],
+                "operation": "delete_interface",
+            },
+        )
         return {"deleted": True, "id": iface_id}
     finally:
         conn.close()
@@ -565,6 +587,16 @@ async def create_link(body: LinkCreate):
              body.discovery_protocol),
         )
         conn.commit()
+        _invalidate_inventory_context(
+            source="netbox_api",
+            summary=f"link created: {src_dev.hostname}:{src_iface_name} -> {dst_dev.hostname}:{dst_iface_name}",
+            metadata={
+                "link_id": cur.lastrowid,
+                "src_hostname": src_dev.hostname,
+                "dst_hostname": dst_dev.hostname,
+                "operation": "create_link",
+            },
+        )
         return {
             "id": cur.lastrowid,
             "created": True,
@@ -589,11 +621,36 @@ async def delete_link(link_id: int):
     """Remove a link."""
     conn = _raw_conn()
     try:
-        existing = conn.execute("SELECT id FROM links WHERE id = ?", (link_id,)).fetchone()
+        existing = conn.execute(
+            """
+            SELECT l.id, sd.hostname AS src_hostname, dd.hostname AS dst_hostname,
+                   si.name AS src_interface_name, di.name AS dst_interface_name
+            FROM links l
+            JOIN devices sd ON l.src_device_id = sd.id
+            JOIN devices dd ON l.dst_device_id = dd.id
+            LEFT JOIN interfaces si ON l.src_interface_id = si.id
+            LEFT JOIN interfaces di ON l.dst_interface_id = di.id
+            WHERE l.id = ?
+            """,
+            (link_id,),
+        ).fetchone()
         if not existing:
             raise HTTPException(404, "Link not found")
         conn.execute("DELETE FROM links WHERE id = ?", (link_id,))
         conn.commit()
+        _invalidate_inventory_context(
+            source="netbox_api",
+            summary=(
+                f"link deleted: {existing['src_hostname']}:{existing['src_interface_name']} -> "
+                f"{existing['dst_hostname']}:{existing['dst_interface_name']}"
+            ),
+            metadata={
+                "link_id": link_id,
+                "src_hostname": existing["src_hostname"],
+                "dst_hostname": existing["dst_hostname"],
+                "operation": "delete_link",
+            },
+        )
         return {"deleted": True, "id": link_id}
     finally:
         conn.close()
@@ -644,6 +701,11 @@ async def push_device_to_netbox(device_id: int):
     )
     db.upsert_device(device)
     updated = db.get_device_by_id(device_id)
+    _invalidate_inventory_context(
+        source="netbox_api",
+        summary=f"device pushed to NetBox: {d.hostname}",
+        metadata={"hostname": d.hostname, "operation": "push_device"},
+    )
     return {"pushed": True, **_device_dict(updated)}
 
 
@@ -718,6 +780,13 @@ async def push_all_to_netbox():
             logger.warning("Bulk sync of components for '%s' failed: %s", d.hostname, e)
 
         pushed += 1
+
+    if pushed:
+        _invalidate_inventory_context(
+            source="netbox_api",
+            summary=f"bulk device push completed: {pushed} devices",
+            metadata={"operation": "push_all", "pushed_count": pushed},
+        )
 
     return {"pushed_count": pushed, "message": f"Pushed {pushed} devices/components to NetBox"}
 

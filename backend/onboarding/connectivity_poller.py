@@ -13,6 +13,8 @@ from typing import Callable, Dict, Optional
 from db.manager import DatabaseManager
 from db.models import Device
 from db.repositories.device_repo import DeviceRepository
+from llm.context_contract import CONTEXT_DOMAIN_INVENTORY, CONTEXT_DOMAIN_PLANNED_TOPOLOGY
+from llm.refresh_fabric import publish_context_refresh_event
 
 logger = logging.getLogger("onboarding.poller")
 
@@ -75,6 +77,19 @@ class ConnectivityPoller:
             "params":       params,
             "broadcast":    None,
         }
+        publish_context_refresh_event(
+            source="onboarding_poller",
+            action="onboarding_session_started",
+            summary=f"onboarding session started for device_id={device_id}",
+            domains=(CONTEXT_DOMAIN_INVENTORY, CONTEXT_DOMAIN_PLANNED_TOPOLOGY),
+            event_type="refresh",
+            refresh_mode="none",
+            metadata={
+                "device_id": device_id,
+                "hostname": params.get("hostname"),
+                "mgmt_ip": params.get("mgmt_ip"),
+            },
+        )
         logger.info("Onboarding session started for device_id=%d", device_id)
         return device_id
 
@@ -154,6 +169,19 @@ class ConnectivityPoller:
                     )
                     repo.save(device)
                     session["status"] = STATUS_REGISTERED
+                    publish_context_refresh_event(
+                        source="onboarding_poller",
+                        action="onboarding_device_registered",
+                        summary=f"onboarding device registered: {params['hostname']}",
+                        domains=(CONTEXT_DOMAIN_INVENTORY, CONTEXT_DOMAIN_PLANNED_TOPOLOGY),
+                        event_type="refresh",
+                        refresh_mode="none",
+                        metadata={
+                            "device_id": device_id,
+                            "hostname": params["hostname"],
+                            "mgmt_ip": params["mgmt_ip"],
+                        },
+                    )
                     await _emit("registered", f"Device '{params['hostname']}' registered in inventory (id={device_id})")
                 except Exception as exc:
                     logger.exception("Failed to update device record: %s", exc)
