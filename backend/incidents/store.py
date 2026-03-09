@@ -10,8 +10,11 @@ from __future__ import annotations
 import json
 import logging
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List, Optional
+
+from llm.context_contract import CONTEXT_DOMAIN_INCIDENTS
+from llm.context_state import get_context_state_manager
 
 logger = logging.getLogger("incidents.store")
 
@@ -19,7 +22,7 @@ _INC_PREFIX = "INC"
 
 
 def _new_id() -> str:
-    now = datetime.utcnow().strftime("%Y-%m%d")
+    now = datetime.now(timezone.utc).strftime("%Y-%m%d")
     short = str(uuid.uuid4())[:8].upper()
     return f"{_INC_PREFIX}-{now}-{short}"
 
@@ -27,6 +30,16 @@ def _new_id() -> str:
 def _row_to_dict(row) -> dict:
     """sqlite3.Row → plain dict."""
     return dict(row)
+
+
+def _invalidate_incident_context(summary: str, metadata: dict) -> None:
+    get_context_state_manager().invalidate(
+        domain=CONTEXT_DOMAIN_INCIDENTS,
+        source="incident_store",
+        summary=summary,
+        event_type="refresh",
+        metadata=metadata,
+    )
 
 
 class IncidentStore:
@@ -100,7 +113,7 @@ class IncidentStore:
     ) -> str:
         """Create a new open incident, return its id."""
         inc_id = _new_id()
-        now = datetime.utcnow().isoformat()
+        now = datetime.now(timezone.utc).isoformat()
         m = metrics or {}
         sql = """
         INSERT INTO incidents
@@ -117,6 +130,15 @@ class IncidentStore:
                 detected_at or now, now, now,
             ))
         logger.info("Created incident %s (%s/%s)", inc_id, anomaly_type, severity)
+        _invalidate_incident_context(
+            summary=f"incident created: {inc_id}",
+            metadata={
+                "incident_id": inc_id,
+                "anomaly_type": anomaly_type,
+                "severity": severity,
+                "affected_devices": affected_devices,
+            },
+        )
         return inc_id
 
     def update_analysis(
@@ -134,7 +156,7 @@ class IncidentStore:
         estimated_impact: str = "",
         rollback_plan: str = "",
     ) -> bool:
-        now = datetime.utcnow().isoformat()
+        now = datetime.now(timezone.utc).isoformat()
         sql = """
         UPDATE incidents SET
             logs=?, configs=?, telemetry_snapshot=?,
@@ -155,7 +177,19 @@ class IncidentStore:
                 estimated_impact, rollback_plan,
                 now, inc_id,
             ))
-        return cur.rowcount > 0
+        updated = cur.rowcount > 0
+        if updated:
+            _invalidate_incident_context(
+                summary=f"incident updated: {inc_id}",
+                metadata={
+                    "incident_id": inc_id,
+                    "status": "investigating",
+                    "has_logs": bool(logs),
+                    "has_configs": bool(configs),
+                    "has_telemetry": bool(telemetry),
+                },
+            )
+        return updated
 
     def set_status(
         self,
@@ -163,14 +197,25 @@ class IncidentStore:
         status: str,
         approver: str | None = None,
     ) -> bool:
-        now = datetime.utcnow().isoformat()
+        now = datetime.now(timezone.utc).isoformat()
         resolved_at = now if status in ("resolved", "dismissed") else None
         sql = (
             "UPDATE incidents SET status=?, approver=?, resolved_at=?, updated_at=? WHERE id=?"
         )
         with self._connect() as conn:
             cur = conn.execute(sql, (status, approver, resolved_at, now, inc_id))
-        return cur.rowcount > 0
+        updated = cur.rowcount > 0
+        if updated:
+            _invalidate_incident_context(
+                summary=f"incident status changed: {inc_id} -> {status}",
+                metadata={
+                    "incident_id": inc_id,
+                    "status": status,
+                    "approver": approver,
+                    "resolved_at": resolved_at,
+                },
+            )
+        return updated
 
     def get(self, inc_id: str) -> Optional[dict]:
         with self._connect() as conn:

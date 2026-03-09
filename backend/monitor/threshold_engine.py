@@ -24,6 +24,9 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
+from llm.context_contract import CONTEXT_DOMAIN_TELEMETRY
+from llm.context_state import get_context_state_manager
+
 logger = logging.getLogger("monitor.threshold_engine")
 
 router = APIRouter(prefix="/monitor/thresholds", tags=["Threshold Monitoring"])
@@ -485,6 +488,23 @@ def _maybe_create_alert(rule: dict, breach: dict) -> None:
             "VALUES (?, ?, ?, ?, ?, ?)",
             (rule_id, device, breach.get("metric"), breach.get("value"),
              rule.get("threshold"), rule.get("severity", "warning")),
+        )
+
+        get_context_state_manager().invalidate(
+            domain=CONTEXT_DOMAIN_TELEMETRY,
+            source="threshold_engine",
+            summary=(
+                f"telemetry threshold breach for {breach.get('metric', 'unknown')} on {device}"
+            ),
+            event_type="invalidate",
+            metadata={
+                "rule_id": rule_id,
+                "device": device,
+                "metric": breach.get("metric"),
+                "value": breach.get("value"),
+                "threshold": rule.get("threshold"),
+                "severity": rule.get("severity", "warning"),
+            },
         )
 
         # If auto-remediation is enabled, try to trigger an incident

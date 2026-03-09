@@ -10,6 +10,9 @@ from enum import Enum
 from typing import List, Optional, Any, Dict
 from pydantic import BaseModel, Field
 
+from llm.context_contract import CONTEXT_DOMAIN_LIVE_TOPOLOGY
+from llm.context_state import get_context_state_manager
+
 
 class RequestStatus(str, Enum):
     DRAFT = "draft"
@@ -179,6 +182,15 @@ class DeploymentRepository:
 
     def update_job_status(self, job_id: int, status: JobStatus, stage: PipelineStage, error: str = None):
         """Update job status/stage."""
+        device_id = None
+        hostname = None
+        with self.db._connect() as conn:
+            row = conn.execute(
+                "SELECT device_id FROM jobs WHERE id = ?",
+                (job_id,),
+            ).fetchone()
+            if row:
+                device_id = row["device_id"]
         with self.db._connect() as conn:
             conn.execute(
                 """
@@ -187,6 +199,25 @@ class DeploymentRepository:
                 WHERE id = ?
                 """,
                 (status.value, stage.value, error, job_id)
+            )
+        if device_id is not None:
+            device = self.db.get_device_by_id(device_id)
+            hostname = device.hostname if device else None
+
+        if stage in (PipelineStage.APPLY, PipelineStage.COMMIT, PipelineStage.ROLLBACK):
+            get_context_state_manager().invalidate(
+                domain=CONTEXT_DOMAIN_LIVE_TOPOLOGY,
+                source="deployment_pipeline",
+                summary=f"deployment {stage.value} for job {job_id}",
+                event_type="invalidate",
+                metadata={
+                    "job_id": job_id,
+                    "device_id": device_id,
+                    "hostname": hostname,
+                    "status": status.value,
+                    "stage": stage.value,
+                    "error": error,
+                },
             )
             
     def list_jobs(self) -> List[Dict]:

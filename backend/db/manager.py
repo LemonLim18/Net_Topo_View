@@ -34,7 +34,11 @@ from .models import (
     Link,
     TopologyNode,
 )
-from llm.context_contract import CONTEXT_DOMAIN_LIVE_TOPOLOGY
+from llm.context_contract import (
+    CONTEXT_DOMAIN_CONFIG,
+    CONTEXT_DOMAIN_DRIFT,
+    CONTEXT_DOMAIN_LIVE_TOPOLOGY,
+)
 from llm.context_state import get_context_state_manager
 
 logger = logging.getLogger("db.manager")
@@ -404,6 +408,10 @@ class DatabaseManager:
     # CONFIG SNAPSHOTS  (persistent)
     # =============================================================
     def save_config_snapshot(self, snapshot: ConfigSnapshot) -> int:
+        captured_at = (
+            snapshot.captured_at
+            or datetime.now(tz=TZ_UTC8).isoformat(timespec="seconds")
+        )
         with self._connect() as conn:
             cur = conn.execute(
                 """INSERT INTO config_snapshots
@@ -412,11 +420,23 @@ class DatabaseManager:
                 (
                     snapshot.device_id, snapshot.config_text,
                     snapshot.config_hash,
-                    snapshot.captured_at
-                    or datetime.now(tz=TZ_UTC8).isoformat(timespec="seconds"),
+                    captured_at,
                 ),
             )
-            return cur.lastrowid
+            snapshot_id = cur.lastrowid
+
+        get_context_state_manager().invalidate(
+            domain=CONTEXT_DOMAIN_CONFIG,
+            source="config_snapshot_writer",
+            summary=f"config snapshot saved for device_id={snapshot.device_id}",
+            event_type="refresh",
+            metadata={
+                "device_id": snapshot.device_id,
+                "snapshot_id": snapshot_id,
+                "captured_at": captured_at,
+            },
+        )
+        return snapshot_id
 
     def get_config_history(self, device_id: int, limit: int = 10) -> List[ConfigSnapshot]:
         with self._connect() as conn:
@@ -475,16 +495,35 @@ class DatabaseManager:
     # DRIFT EVENTS (persistent)
     # =============================================================
     def save_drift_event(self, event: DriftEvent) -> int:
+        event_timestamp = event.timestamp or datetime.now(tz=TZ_UTC8).isoformat(timespec="seconds")
         with self._connect() as conn:
             cur = conn.execute(
                 """INSERT INTO drift_events (device_id, has_drift, severity, diff_text, timestamp)
                    VALUES (?, ?, ?, ?, ?)""",
                 (
                     event.device_id, event.has_drift, event.severity, event.diff_text,
-                    event.timestamp or datetime.now(tz=TZ_UTC8).isoformat(timespec="seconds"),
+                    event_timestamp,
                 ),
             )
-            return cur.lastrowid
+            event_id = cur.lastrowid
+
+        get_context_state_manager().invalidate(
+            domain=CONTEXT_DOMAIN_DRIFT,
+            source="drift_detector",
+            summary=(
+                f"drift {'detected' if event.has_drift else 'checked'} for device_id={event.device_id}"
+            ),
+            event_type="refresh",
+            metadata={
+                "device_id": event.device_id,
+                "drift_event_id": event_id,
+                "hostname": event.hostname,
+                "has_drift": event.has_drift,
+                "severity": event.severity,
+                "timestamp": event_timestamp,
+            },
+        )
+        return event_id
 
     def get_drift_events(self, device_id: Optional[int] = None, limit: int = 50) -> List[DriftEvent]:
         with self._connect() as conn:
