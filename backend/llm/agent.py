@@ -884,6 +884,7 @@ class NetworkAgent:
 
     def _network_context_cache_key(
         self,
+        user_message: Optional[str] = None,
         routing_decision=None,
         device_hostnames: Optional[List[str]] = None,
     ) -> str:
@@ -898,6 +899,7 @@ class NetworkAgent:
                 "include_telemetry": getattr(decision, "include_telemetry", None),
                 "include_sdn": getattr(decision, "include_sdn", None),
                 "device_hostnames": sorted(device_hostnames or []),
+                "query_hint": (user_message or "").strip().lower()[:160],
             },
             sort_keys=True,
         )
@@ -909,6 +911,7 @@ class NetworkAgent:
         device_hostnames: Optional[List[str]] = None,
     ) -> str:
         cache_key = self._network_context_cache_key(
+            user_message=user_message,
             routing_decision=routing_decision,
             device_hostnames=device_hostnames,
         )

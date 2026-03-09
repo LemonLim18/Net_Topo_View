@@ -1,5 +1,6 @@
 from rag.context_bundle import ContextBundleBuilder
 from llm.context import ContextBuilder
+from llm.context_contract import classify_query
 
 
 class _FakeSnapshot:
@@ -125,6 +126,19 @@ class _FakeConn:
                 ]
             )
 
+        if "select j.id, j.updated_at, j.status, j.stage, d.hostname from jobs j left join devices d on d.id = j.device_id" in query_text:
+            return _Rows(
+                rows=[
+                    {
+                        "id": 21,
+                        "updated_at": "2026-03-09T10:14:00+00:00",
+                        "status": "running",
+                        "stage": "apply",
+                        "hostname": "R1",
+                    }
+                ]
+            )
+
         if "from security_events se left join devices d on d.id = se.device_id" in query_text:
             return _Rows(
                 rows=[
@@ -190,10 +204,40 @@ class _FakeIncidentStore:
                 "severity": "high",
                 "status": "open",
                 "affected_devices": '["R1"]',
+                "metrics_current": 92.5,
+                "metrics_baseline": 31.0,
+                "metrics_threshold": 80.0,
+                "detected_at": "2026-03-09T10:08:00+00:00",
+                "telemetry_snapshot": {"cpu_usage": 92.5},
                 "updated_at": "2026-03-09T10:09:00+00:00",
                 "created_at": "2026-03-09T10:09:00+00:00",
             }
         ]
+
+
+class _FakeUrlOpenResponse:
+    def __init__(self, body: str):
+        self._body = body.encode("utf-8")
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def read(self):
+        return self._body
+
+
+def _fake_influx_response(*args, **kwargs):
+    csv_body = """#group,false,false,true,true,false,false,true,true,true,true,false,false
+#datatype,string,long,dateTime:RFC3339,dateTime:RFC3339,dateTime:RFC3339,string,string,string,string,double,string,string
+#default,_result,,,,,,,,,,,
+,result,table,_start,_stop,_time,_value,_field,_measurement,agent_host,unit
+,,0,2026-03-09T09:55:00Z,2026-03-09T10:00:00Z,2026-03-09T09:59:00Z,82.5,cpu_usage,cpu,10.0.0.1,percent
+,,0,2026-03-09T09:55:00Z,2026-03-09T10:00:00Z,2026-03-09T09:58:00Z,71.0,memory_usage,mem,10.0.0.1,percent
+"""
+    return _FakeUrlOpenResponse(csv_body)
 
 
 class _FakeKnowledgeStore:
@@ -396,3 +440,83 @@ def test_context_bundle_emits_freshness_warnings_for_missing_or_partial_context(
     assert "Freshness Warnings" in text
     assert "Telemetry" in text
     assert "Missing recent config snapshots for: R2" in text
+
+
+def test_context_bundle_uses_short_window_for_live_queries(monkeypatch):
+    monkeypatch.setattr("incidents.store.IncidentStore", _FakeIncidentStore)
+    monkeypatch.setattr("llm.vector_store.KnowledgeVectorStore", _FakeKnowledgeStore)
+    monkeypatch.setattr("rag.context_bundle.INFLUXDB_TOKEN", "token")
+    monkeypatch.setattr("urllib.request.urlopen", _fake_influx_response)
+
+    builder = ContextBundleBuilder(db_manager=_FakeDb())
+    decision = classify_query("is R1 up right now?")
+    bundle = builder.build_bundle(
+        device_hostnames=["R1"],
+        query="is R1 up right now?",
+        routing_decision=decision,
+        include_sdn=False,
+    )
+
+    assert bundle.telemetry.policy_name == "live_now"
+    assert bundle.telemetry.query_range == "-5m"
+    assert bundle.telemetry.sample_strategy == "latest"
+
+
+def test_context_bundle_uses_longer_window_for_trend_queries(monkeypatch):
+    monkeypatch.setattr("incidents.store.IncidentStore", _FakeIncidentStore)
+    monkeypatch.setattr("llm.vector_store.KnowledgeVectorStore", _FakeKnowledgeStore)
+    monkeypatch.setattr("rag.context_bundle.INFLUXDB_TOKEN", "token")
+    monkeypatch.setattr("urllib.request.urlopen", _fake_influx_response)
+
+    builder = ContextBundleBuilder(db_manager=_FakeDb())
+    bundle = builder.build_bundle(
+        device_hostnames=["R1"],
+        query="show cpu trend over the last 24h for R1",
+        routing_decision=classify_query("show cpu trend over the last 24h for R1"),
+        include_sdn=False,
+    )
+
+    assert bundle.telemetry.policy_name == "trend_analysis"
+    assert bundle.telemetry.query_range == "-24h"
+    assert bundle.telemetry.aggregate_every == "30m"
+
+
+def test_context_bundle_adds_incident_baselines_for_troubleshooting_queries(monkeypatch):
+    monkeypatch.setattr("incidents.store.IncidentStore", _FakeIncidentStore)
+    monkeypatch.setattr("llm.vector_store.KnowledgeVectorStore", _FakeKnowledgeStore)
+    monkeypatch.setattr("rag.context_bundle.INFLUXDB_TOKEN", "token")
+    monkeypatch.setattr("urllib.request.urlopen", _fake_influx_response)
+
+    query = "why is R1 having a latency spike incident right now?"
+    builder = ContextBundleBuilder(db_manager=_FakeDb())
+    bundle = builder.build_bundle(
+        device_hostnames=["R1"],
+        query=query,
+        routing_decision=classify_query(query),
+        include_sdn=False,
+    )
+    text = bundle.to_prompt_text()
+
+    assert bundle.telemetry.policy_name == "incident_focus"
+    assert bundle.telemetry.query_range == "-60m"
+    assert bundle.telemetry.anomaly_baselines[0]["baseline"] == 31.0
+    assert bundle.telemetry.change_markers
+    assert "Recent anomaly baselines" in text
+    assert "Pre-change markers" in text
+
+
+def test_context_builder_passes_query_into_adaptive_telemetry_policy(monkeypatch):
+    monkeypatch.setattr("incidents.store.IncidentStore", _FakeIncidentStore)
+    monkeypatch.setattr("llm.vector_store.KnowledgeVectorStore", _FakeKnowledgeStore)
+    monkeypatch.setattr("rag.context_bundle.INFLUXDB_TOKEN", "token")
+    monkeypatch.setattr("urllib.request.urlopen", _fake_influx_response)
+
+    builder = ContextBuilder(db_manager=_FakeDb())
+    text = builder.build_network_bundle_context(
+        device_hostnames=["R1"],
+        query="show cpu trend over the last 24h for R1",
+        routing_decision=classify_query("show cpu trend over the last 24h for R1"),
+    )
+
+    assert "policy: trend_analysis" in text
+    assert "range: -24h" in text

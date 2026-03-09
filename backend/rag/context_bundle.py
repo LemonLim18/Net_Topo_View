@@ -20,6 +20,7 @@ import io
 import json
 import logging
 import os
+import re
 import urllib.request
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
@@ -35,6 +36,8 @@ from llm.context_contract import (
     CONTEXT_DOMAIN_SDN,
     CONTEXT_DOMAIN_TELEMETRY,
     FreshnessMetadata,
+    QueryClass,
+    QueryRoutingDecision,
     compute_freshness,
     missing_freshness,
 )
@@ -93,6 +96,12 @@ class TelemetryContext:
     metrics: List[Dict[str, Any]] = field(default_factory=list)
     source: str = "influxdb"
     query_range: str = "-15m"
+    policy_name: str = "recent_latest"
+    retrieval_reason: str = "default telemetry window"
+    sample_strategy: str = "latest"
+    aggregate_every: Optional[str] = None
+    anomaly_baselines: List[Dict[str, Any]] = field(default_factory=list)
+    change_markers: List[Dict[str, Any]] = field(default_factory=list)
     freshness: FreshnessMetadata = field(
         default_factory=lambda: missing_freshness(
             CONTEXT_DOMAIN_TELEMETRY,
@@ -100,6 +109,17 @@ class TelemetryContext:
             "device_metrics",
         )
     )
+
+
+@dataclass(frozen=True)
+class TelemetryQueryPolicy:
+    name: str
+    query_range: str
+    sample_strategy: str
+    retrieval_reason: str
+    aggregate_every: Optional[str] = None
+    include_incident_baselines: bool = False
+    include_change_markers: bool = False
 
 
 @dataclass
@@ -275,15 +295,30 @@ class ContextBundle:
 
         # Telemetry
         tel = self.telemetry
-        if tel.metrics:
-            lines.append(f"### Telemetry (range: {tel.query_range}, source: {tel.source})")
+        if tel.metrics or tel.anomaly_baselines or tel.change_markers:
+            lines.append(
+                f"### Telemetry (policy: {tel.policy_name}, range: {tel.query_range}, source: {tel.source})"
+            )
+            lines.append(f"Policy reason: {tel.retrieval_reason}")
             lines.append(f"Freshness: {tel.freshness.to_prompt_text()}")
             for m in tel.metrics[:15]:
                 lines.append(
                     f"- {m.get('device', '?')}: "
                     f"{m.get('metric', '?')} = {m.get('value', '?')} "
-                    f"({m.get('unit', '')})"
+                    f"({m.get('unit', '')}) at {m.get('timestamp', 'unknown')}"
                 )
+            if tel.anomaly_baselines:
+                lines.append("Recent anomaly baselines:")
+                for anomaly in tel.anomaly_baselines[:8]:
+                    lines.append(
+                        f"- {anomaly.get('incident_id', '?')}: {anomaly.get('anomaly_type', 'unknown')} current={anomaly.get('current', '?')} baseline={anomaly.get('baseline', '?')} threshold={anomaly.get('threshold', '?')} detected_at={anomaly.get('detected_at', 'unknown')}"
+                    )
+            if tel.change_markers:
+                lines.append("Pre-change markers:")
+                for marker in tel.change_markers[:8]:
+                    lines.append(
+                        f"- {marker.get('hostname', 'unknown')}: {marker.get('marker_type', 'change')} at {marker.get('captured_at', marker.get('updated_at', 'unknown'))}"
+                    )
             lines.append("")
 
         # SDN State
@@ -430,6 +465,8 @@ class ContextBundleBuilder:
         include_drift: bool = True,
         include_knowledge: bool = True,
         include_freshness_warnings: bool = True,
+        query: Optional[str] = None,
+        routing_decision: Optional[QueryRoutingDecision] = None,
     ) -> ContextBundle:
         """
         Build a complete context bundle, optionally scoped to specific devices.
@@ -460,7 +497,12 @@ class ContextBundleBuilder:
         # 2. Telemetry (InfluxDB)
         if include_telemetry:
             device_ips = self._resolve_device_ips(bundle.inventory.devices, device_hostnames)
-            bundle.telemetry = self._fetch_telemetry(device_ips)
+            bundle.telemetry = self._fetch_telemetry(
+                device_ips,
+                hostnames=device_hostnames,
+                query=query,
+                routing_decision=routing_decision,
+            )
 
         # 3. SDN State
         if include_sdn:
@@ -832,9 +874,147 @@ class ContextBundleBuilder:
 
     # ---- Telemetry (UC07) ----
 
-    def _fetch_telemetry(self, device_ips: List[str]) -> TelemetryContext:
+    def _extract_explicit_telemetry_range(self, query: str) -> Optional[str]:
+        normalized = (query or "").lower()
+        match = re.search(r"(?:last|past)\s+(\d+)\s*(m|min|mins|minute|minutes|h|hr|hrs|hour|hours|d|day|days|w|week|weeks)", normalized)
+        if match:
+            amount = int(match.group(1))
+            unit = match.group(2)
+            if unit.startswith("m"):
+                return f"-{amount}m"
+            if unit.startswith("h"):
+                return f"-{amount}h"
+            if unit.startswith("d"):
+                return f"-{amount}d"
+            if unit.startswith("w"):
+                return f"-{amount}w"
+
+        aliases = {
+            "today": "-24h",
+            "last day": "-24h",
+            "last 24h": "-24h",
+            "last week": "-7d",
+            "this week": "-7d",
+            "last hour": "-1h",
+        }
+        for phrase, value in aliases.items():
+            if phrase in normalized:
+                return value
+        return None
+
+    @staticmethod
+    def _suggest_aggregate_window(query_range: str) -> str:
+        if query_range.endswith("w") or query_range.endswith("d"):
+            return "30m"
+        if query_range.endswith("h"):
+            hours = int(query_range[1:-1]) if query_range[1:-1].isdigit() else 1
+            if hours >= 12:
+                return "30m"
+            return "5m" if hours <= 2 else "15m"
+        return "1m"
+
+    def _select_telemetry_policy(
+        self,
+        query: Optional[str] = None,
+        routing_decision: Optional[QueryRoutingDecision] = None,
+    ) -> TelemetryQueryPolicy:
+        normalized_query = (query or "").lower()
+        explicit_range = self._extract_explicit_telemetry_range(normalized_query)
+        trend_triggers = (
+            "trend",
+            "over time",
+            "history",
+            "historical",
+            "last ",
+            "past ",
+            "baseline",
+            "over the",
+        )
+        incident_triggers = (
+            "incident",
+            "anomaly",
+            "alert",
+            "breach",
+            "spike",
+            "latency",
+            "packet loss",
+            "errors",
+            "root cause",
+        )
+
+        query_class = getattr(routing_decision, "query_class", QueryClass.GENERAL.value)
+
+        if query_class == QueryClass.LIVE_ONLY.value:
+            return TelemetryQueryPolicy(
+                name="live_now",
+                query_range=explicit_range or "-5m",
+                sample_strategy="latest",
+                retrieval_reason="live operational query should prefer the shortest recent telemetry window",
+                aggregate_every="1m",
+            )
+
+        if query_class == QueryClass.TROUBLESHOOTING.value or any(trigger in normalized_query for trigger in incident_triggers):
+            query_range = explicit_range or "-60m"
+            return TelemetryQueryPolicy(
+                name="incident_focus",
+                query_range=query_range,
+                sample_strategy="incident_focus",
+                retrieval_reason="incident-style troubleshooting should pull recent anomalies and pre-change baselines",
+                aggregate_every=self._suggest_aggregate_window(query_range),
+                include_incident_baselines=True,
+                include_change_markers=True,
+            )
+
+        if any(trigger in normalized_query for trigger in trend_triggers):
+            query_range = explicit_range or "-6h"
+            return TelemetryQueryPolicy(
+                name="trend_analysis",
+                query_range=query_range,
+                sample_strategy="trend",
+                retrieval_reason="trend questions should use a longer telemetry horizon with aggregated samples",
+                aggregate_every=self._suggest_aggregate_window(query_range),
+                include_change_markers=True,
+            )
+
+        if query_class == QueryClass.CHANGE_PLANNING.value:
+            return TelemetryQueryPolicy(
+                name="pre_change_check",
+                query_range=explicit_range or "-30m",
+                sample_strategy="latest",
+                retrieval_reason="change-planning should confirm recent device health before execution",
+                aggregate_every="5m",
+                include_change_markers=True,
+            )
+
+        return TelemetryQueryPolicy(
+            name="recent_latest",
+            query_range=explicit_range or "-15m",
+            sample_strategy="latest",
+            retrieval_reason="default telemetry policy uses a recent operational window",
+            aggregate_every="5m",
+        )
+
+    def _fetch_telemetry(
+        self,
+        device_ips: List[str],
+        hostnames: Optional[List[str]] = None,
+        query: Optional[str] = None,
+        routing_decision: Optional[QueryRoutingDecision] = None,
+    ) -> TelemetryContext:
         """Fetch latest telemetry from InfluxDB for the given device IPs."""
         ctx = TelemetryContext()
+        policy = self._select_telemetry_policy(query=query, routing_decision=routing_decision)
+        ctx.query_range = policy.query_range
+        ctx.policy_name = policy.name
+        ctx.retrieval_reason = policy.retrieval_reason
+        ctx.sample_strategy = policy.sample_strategy
+        ctx.aggregate_every = policy.aggregate_every
+
+        if policy.include_incident_baselines:
+            ctx.anomaly_baselines = self._fetch_incident_telemetry_baselines(hostnames)
+
+        if policy.include_change_markers:
+            ctx.change_markers = self._fetch_pre_change_markers(hostnames)
 
         if not INFLUXDB_TOKEN or not device_ips:
             return ctx
@@ -842,9 +1022,28 @@ class ContextBundleBuilder:
         try:
             # Build Flux query for target devices
             ip_filter = " or ".join(f'r.agent_host == "{ip}"' for ip in device_ips[:10])
-            flux_query = f'''
+            if policy.sample_strategy == "trend":
+                flux_query = f'''
 from(bucket: "{INFLUXDB_BUCKET}")
-  |> range(start: -15m)
+  |> range(start: {policy.query_range})
+  |> filter(fn: (r) => r._measurement == "snmp" or r._measurement == "interface" or r._measurement == "cpu" or r._measurement == "mem")
+  |> filter(fn: (r) => {ip_filter})
+  |> aggregateWindow(every: {policy.aggregate_every or "5m"}, fn: mean, createEmpty: false)
+  |> tail(n: 60)
+'''
+            elif policy.sample_strategy == "incident_focus":
+                flux_query = f'''
+from(bucket: "{INFLUXDB_BUCKET}")
+  |> range(start: {policy.query_range})
+  |> filter(fn: (r) => r._measurement == "snmp" or r._measurement == "interface" or r._measurement == "cpu" or r._measurement == "mem")
+  |> filter(fn: (r) => {ip_filter})
+  |> aggregateWindow(every: {policy.aggregate_every or "5m"}, fn: last, createEmpty: false)
+  |> tail(n: 40)
+'''
+            else:
+                flux_query = f'''
+from(bucket: "{INFLUXDB_BUCKET}")
+  |> range(start: {policy.query_range})
   |> filter(fn: (r) => r._measurement == "snmp" or r._measurement == "interface" or r._measurement == "cpu" or r._measurement == "mem")
   |> filter(fn: (r) => {ip_filter})
   |> last()
@@ -876,6 +1075,7 @@ from(bucket: "{INFLUXDB_BUCKET}")
                         "device": row.get("agent_host") or row.get("host") or row.get("source") or "?",
                         "metric": row.get("_field") or row.get("_measurement") or "?",
                         "value": row.get("_value") or "?",
+                        "timestamp": metric_time,
                         "unit": row.get("unit") or "",
                     })
 
@@ -892,6 +1092,85 @@ from(bucket: "{INFLUXDB_BUCKET}")
             logger.debug("Telemetry fetch failed (non-critical): %s", e)
 
         return ctx
+
+    def _fetch_incident_telemetry_baselines(
+        self,
+        hostnames: Optional[List[str]] = None,
+    ) -> List[Dict[str, Any]]:
+        baselines: List[Dict[str, Any]] = []
+        try:
+            from incidents.store import IncidentStore
+
+            for row in IncidentStore().list_all(limit=10):
+                affected_devices = row.get("affected_devices") or []
+                if isinstance(affected_devices, str):
+                    try:
+                        affected_devices = json.loads(affected_devices)
+                    except Exception:
+                        affected_devices = [affected_devices]
+                if hostnames and not set(affected_devices).intersection(hostnames):
+                    continue
+                baselines.append(
+                    {
+                        "incident_id": row.get("id"),
+                        "anomaly_type": row.get("anomaly_type"),
+                        "current": row.get("metrics_current"),
+                        "baseline": row.get("metrics_baseline"),
+                        "threshold": row.get("metrics_threshold"),
+                        "detected_at": row.get("detected_at") or row.get("created_at") or row.get("updated_at"),
+                        "telemetry_snapshot": row.get("telemetry_snapshot") or {},
+                    }
+                )
+        except Exception as exc:
+            logger.debug("Incident baseline fetch failed (non-critical): %s", exc)
+        return baselines
+
+    def _fetch_pre_change_markers(
+        self,
+        hostnames: Optional[List[str]] = None,
+    ) -> List[Dict[str, Any]]:
+        markers: List[Dict[str, Any]] = []
+        if self._db is None:
+            return markers
+
+        try:
+            with self._db._connect() as conn:
+                job_rows = conn.execute(
+                    "SELECT j.id, j.updated_at, j.status, j.stage, d.hostname "
+                    "FROM jobs j LEFT JOIN devices d ON d.id = j.device_id "
+                    "ORDER BY j.updated_at DESC LIMIT 10"
+                ).fetchall()
+
+            for row in job_rows:
+                record = dict(row)
+                if hostnames and record.get("hostname") not in hostnames:
+                    continue
+                markers.append(
+                    {
+                        "marker_type": f"deployment_{record.get('stage', 'change')}",
+                        "hostname": record.get("hostname"),
+                        "updated_at": record.get("updated_at"),
+                        "status": record.get("status"),
+                    }
+                )
+
+            for device in self._db.get_all_devices():
+                if hostnames and device.hostname not in hostnames:
+                    continue
+                history = self._db.get_config_history(device.id, limit=1) if device.id else []
+                if not history:
+                    continue
+                markers.append(
+                    {
+                        "marker_type": "config_snapshot",
+                        "hostname": device.hostname,
+                        "captured_at": history[0].captured_at,
+                    }
+                )
+        except Exception as exc:
+            logger.debug("Pre-change marker fetch failed (non-critical): %s", exc)
+
+        return markers[:10]
 
     # ---- SDN State (UC08) ----
 

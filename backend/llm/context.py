@@ -211,6 +211,7 @@ class ContextBuilder:
         if include_bundle:
             bundle_text = self.build_network_bundle_context(
                 device_hostnames,
+                query=query,
                 routing_decision=decision,
             )
             if bundle_text:
@@ -221,6 +222,7 @@ class ContextBuilder:
     def build_network_bundle_context(
         self,
         device_hostnames: Optional[List[str]] = None,
+        query: Optional[str] = None,
         routing_decision: Optional[QueryRoutingDecision] = None,
     ) -> str:
         """
@@ -249,6 +251,8 @@ class ContextBuilder:
             )
             bundle = builder.build_bundle(
                 device_hostnames=device_hostnames,
+                query=query,
+                routing_decision=routing_decision,
                 include_inventory=(
                     routing_decision.include_inventory
                     if routing_decision is not None else True
