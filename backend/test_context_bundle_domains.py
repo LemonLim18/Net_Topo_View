@@ -413,6 +413,25 @@ def test_context_builder_bundle_context_uses_netbox_first(monkeypatch):
     assert "Planned Topology" in text
 
 
+def test_context_bundle_and_builder_include_canonical_semantics(monkeypatch):
+    monkeypatch.setattr("incidents.store.IncidentStore", _FakeIncidentStore)
+    monkeypatch.setattr("llm.vector_store.KnowledgeVectorStore", _FakeKnowledgeStore)
+    monkeypatch.setattr("netbox.client.NetBoxClient.get_client", lambda: type("Client", (), {"api": None})())
+
+    builder = ContextBundleBuilder(db_manager=_FakeDb())
+    bundle = builder.build_bundle(device_hostnames=["R1"], include_telemetry=False, include_sdn=False)
+    bundle_text = bundle.to_prompt_text()
+
+    context_builder = ContextBuilder(db_manager=_FakeDb())
+    source_matrix_text = context_builder.build_source_matrix_context()
+
+    assert bundle.semantics_map["version"] == "phase6_step22_v1"
+    assert bundle.inventory.devices[0]["presence_state"] == "planned_and_live"
+    assert "Canonical Semantics" in bundle_text
+    assert "presence_state" in bundle_text
+    assert "Canonical Semantics" in source_matrix_text
+
+
 def test_context_bundle_includes_step10_operational_domains(monkeypatch):
     monkeypatch.setattr("incidents.store.IncidentStore", _FakeIncidentStore)
     monkeypatch.setattr("llm.vector_store.KnowledgeVectorStore", _FakeKnowledgeStore)

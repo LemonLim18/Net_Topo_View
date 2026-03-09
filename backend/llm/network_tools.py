@@ -17,10 +17,19 @@ from llm.context_contract import (
     CONTEXT_DOMAIN_KNOWLEDGE,
     CONTEXT_DOMAIN_LIVE_TOPOLOGY,
     CONTEXT_DOMAIN_PLANNED_TOPOLOGY,
+    build_source_matrix,
     compute_freshness,
 )
 from llm.context_state import get_context_state_manager
 from llm.refresh_state import get_refresh_state_manager
+from llm.semantics import (
+    annotate_inventory_records,
+    annotate_planned_links,
+    build_canonical_device_matrix,
+    build_canonical_semantics_map,
+    canonical_device_record,
+    device_state_index,
+)
 
 
 logger = logging.getLogger("llm.network_tools")
@@ -411,6 +420,62 @@ def _get_live_device_records() -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
     return devices, topo
 
 
+def _build_canonical_state_payload(hostname: str = "") -> Dict[str, Any]:
+    inventory_records, inventory_source = _get_inventory_records()
+    topo = _db_manager.get_topology() if _db_manager else {}
+    live_nodes = topo.get("nodes", {}) if isinstance(topo, dict) else {}
+    hostnames = [hostname] if hostname else None
+    device_matrix = build_canonical_device_matrix(
+        inventory_records,
+        live_nodes,
+        inventory_source=inventory_source,
+        hostnames=hostnames,
+    )
+
+    planned_only = sorted(device["hostname"] for device in device_matrix if device.get("presence_state") == "planned_only")
+    live_only = sorted(device["hostname"] for device in device_matrix if device.get("presence_state") == "live_only")
+    matching = []
+    for device in device_matrix:
+        if device.get("presence_state") != "planned_and_live":
+            continue
+        matching.append(
+            {
+                "hostname": device["hostname"],
+                "planned_management_ip": device.get("planned_management_ip"),
+                "live_management_ip": device.get("live_management_ip"),
+                "status_match": device.get("management_ip_alignment") == "match",
+                "presence_state": device.get("presence_state"),
+            }
+        )
+
+    inventory_captured_at = max((record.get("updated_at") for record in inventory_records if record.get("updated_at")), default=None)
+    return {
+        "devices": device_matrix,
+        "matching_devices": matching,
+        "planned_only": planned_only,
+        "live_only": live_only,
+        "source_used": inventory_source,
+        "captured_at": inventory_captured_at,
+        "inventory_source_metadata": _inventory_source_metadata(inventory_source, inventory_captured_at),
+        "live_source_metadata": _topology_source_metadata(topo),
+        "semantics_map": build_canonical_semantics_map(),
+        "source_matrix": build_source_matrix(),
+    }
+
+
+def get_canonical_semantics_map() -> str:
+    """
+    Get the shared semantics contract used across tools, MCP, REST, and prompt bundles.
+    """
+    return json.dumps(
+        {
+            "semantics_map": build_canonical_semantics_map(),
+            "source_matrix": build_source_matrix(),
+        },
+        ensure_ascii=False,
+    )
+
+
 def list_all_devices(scope: str = "live") -> str:
     """
     List devices with explicit scope semantics: live, inventory, or both.
@@ -430,15 +495,45 @@ def list_all_devices(scope: str = "live") -> str:
 
     live_devices, topo = _get_live_device_records()
     inventory_devices, inventory_source = _get_inventory_records()
+    live_nodes = topo.get("nodes", {}) if isinstance(topo, dict) else {}
+    device_matrix = build_canonical_device_matrix(inventory_devices, live_nodes, inventory_source=inventory_source)
+    semantics_index = device_state_index(device_matrix)
 
     if normalized_scope == "live":
+        scoped_live = []
+        for device in live_devices:
+            hostname = str(device.get("hostname") or "")
+            semantics = semantics_index.get(
+                hostname,
+                canonical_device_record(
+                    hostname,
+                    live_record=live_nodes.get(hostname),
+                    inventory_source=inventory_source,
+                ),
+            )
+            scoped_live.append(
+                {
+                    **device,
+                    **{
+                        key: semantics[key]
+                        for key in (
+                            "presence_state",
+                            "management_ip_alignment",
+                            "source_scopes",
+                            "source_labels",
+                            "semantics_version",
+                        )
+                    },
+                }
+            )
         return json.dumps(
             {
-                "devices": live_devices,
-                "total": len(live_devices),
+                "devices": scoped_live,
+                "total": len(scoped_live),
                 "scope_requested": "live",
                 "source_used": "crawler_cache",
                 "source_metadata": _topology_source_metadata(topo),
+                "semantics_map": build_canonical_semantics_map(),
             },
             ensure_ascii=False,
         )
@@ -449,7 +544,7 @@ def list_all_devices(scope: str = "live") -> str:
     )
     if normalized_scope == "inventory":
         scoped_devices = []
-        for record in inventory_devices:
+        for record in annotate_inventory_records(inventory_devices, live_nodes, inventory_source):
             scoped = dict(record)
             scoped["scope"] = "inventory"
             scoped["source_label"] = inventory_source
@@ -463,6 +558,7 @@ def list_all_devices(scope: str = "live") -> str:
                 "scope_requested": "inventory",
                 "source_used": inventory_source,
                 "source_metadata": _inventory_source_metadata(inventory_source, inventory_captured_at),
+                "semantics_map": build_canonical_semantics_map(),
             },
             ensure_ascii=False,
         )
@@ -487,6 +583,9 @@ def list_all_devices(scope: str = "live") -> str:
                 "hostname": hostname,
                 "scopes_present": scopes_present,
                 "source_labels": source_labels,
+                "presence_state": semantics_index.get(hostname, {}).get("presence_state", "unknown"),
+                "management_ip_alignment": semantics_index.get(hostname, {}).get("management_ip_alignment", "unknown"),
+                "device_state": semantics_index.get(hostname),
                 "live": live_device,
                 "inventory": (
                     {
@@ -510,6 +609,7 @@ def list_all_devices(scope: str = "live") -> str:
                 "live": _topology_source_metadata(topo),
                 "inventory": _inventory_source_metadata(inventory_source, inventory_captured_at),
             },
+                "semantics_map": build_canonical_semantics_map(),
         },
         ensure_ascii=False,
     )
@@ -713,6 +813,9 @@ def list_inventory_devices(vendor: str = "", status: str = "", limit: int = 50) 
         filtered.append(record)
 
     filtered = sorted(filtered, key=lambda item: str(item.get("hostname") or ""))[: max(limit, 1)]
+    topo = _db_manager.get_topology() if _db_manager else {}
+    live_nodes = topo.get("nodes", {}) if isinstance(topo, dict) else {}
+    filtered = annotate_inventory_records(filtered, live_nodes, source)
     captured_at = max((record.get("updated_at") for record in filtered if record.get("updated_at")), default=None)
     return json.dumps(
         {
@@ -721,6 +824,7 @@ def list_inventory_devices(vendor: str = "", status: str = "", limit: int = 50) 
             "source_used": source,
             "captured_at": captured_at,
             "source_metadata": _inventory_source_metadata(source, captured_at),
+            "semantics_map": build_canonical_semantics_map(),
         },
         ensure_ascii=False,
     )
@@ -733,12 +837,34 @@ def get_inventory_device(hostname: str) -> str:
     netbox_records = _inventory_records_from_netbox()
     record = _find_inventory_record(netbox_records, hostname)
     if record is not None:
+        topo = _db_manager.get_topology() if _db_manager else {}
+        live_nodes = topo.get("nodes", {}) if isinstance(topo, dict) else {}
+        semantics = canonical_device_record(
+            record.get("hostname") or hostname,
+            inventory_record=record,
+            live_record=live_nodes.get(record.get("hostname")),
+            inventory_source="netbox",
+        )
         return json.dumps(
             {
-                "device": record,
+                "device": {
+                    **record,
+                    **{
+                        key: semantics[key]
+                        for key in (
+                            "presence_state",
+                            "live_status",
+                            "management_ip_alignment",
+                            "source_scopes",
+                            "source_labels",
+                            "semantics_version",
+                        )
+                    },
+                },
                 "source_used": "netbox",
                 "captured_at": record.get("updated_at"),
                 "source_metadata": _inventory_source_metadata("netbox", record.get("updated_at")),
+                "semantics_map": build_canonical_semantics_map(),
             },
             ensure_ascii=False,
         )
@@ -746,12 +872,34 @@ def get_inventory_device(hostname: str) -> str:
     local_records = _inventory_records_from_local_db()
     record = _find_inventory_record(local_records, hostname)
     if record is not None:
+        topo = _db_manager.get_topology() if _db_manager else {}
+        live_nodes = topo.get("nodes", {}) if isinstance(topo, dict) else {}
+        semantics = canonical_device_record(
+            record.get("hostname") or hostname,
+            inventory_record=record,
+            live_record=live_nodes.get(record.get("hostname")),
+            inventory_source="local_db",
+        )
         return json.dumps(
             {
-                "device": record,
+                "device": {
+                    **record,
+                    **{
+                        key: semantics[key]
+                        for key in (
+                            "presence_state",
+                            "live_status",
+                            "management_ip_alignment",
+                            "source_scopes",
+                            "source_labels",
+                            "semantics_version",
+                        )
+                    },
+                },
                 "source_used": "local_db",
                 "captured_at": record.get("updated_at"),
                 "source_metadata": _inventory_source_metadata("local_db", record.get("updated_at")),
+                "semantics_map": build_canonical_semantics_map(),
             },
             ensure_ascii=False,
         )
@@ -762,6 +910,7 @@ def get_inventory_device(hostname: str) -> str:
             "source_used": "local_db" if local_records else "netbox",
             "captured_at": None,
             "source_metadata": _inventory_source_metadata("netbox" if netbox_records else "local_db", None, confidence=0.0),
+            "semantics_map": build_canonical_semantics_map(),
         },
         ensure_ascii=False,
     )
@@ -780,13 +929,16 @@ def search_inventory_devices(query: str, limit: int = 20) -> str:
         matches = _search_inventory_records(_inventory_records_from_local_db(), query, limit)
 
     captured_at = max((record.get("updated_at") for record in matches if record.get("updated_at")), default=None)
+    topo = _db_manager.get_topology() if _db_manager else {}
+    live_nodes = topo.get("nodes", {}) if isinstance(topo, dict) else {}
     return json.dumps(
         {
-            "matches": matches,
+            "matches": annotate_inventory_records(matches, live_nodes, source),
             "total": len(matches),
             "source_used": source,
             "captured_at": captured_at,
             "source_metadata": _inventory_source_metadata(source, captured_at),
+            "semantics_map": build_canonical_semantics_map(),
         },
         ensure_ascii=False,
     )
@@ -803,14 +955,21 @@ def get_planned_topology() -> str:
     planned_links = planned["links"]
     source = planned["source"]
     captured_at = planned["captured_at"]
+    inventory_records, inventory_source = _get_inventory_records()
+    topo = _db_manager.get_topology() if _db_manager else {}
+    live_nodes = topo.get("nodes", {}) if isinstance(topo, dict) else {}
+    device_matrix = build_canonical_device_matrix(inventory_records, live_nodes, inventory_source=inventory_source)
+    semantics_index = device_state_index(device_matrix)
     return json.dumps(
         {
             "topology": planned["topology"],
-            "links": planned_links,
+            "links": annotate_planned_links(planned_links, semantics_index),
             "total": len(planned_links),
             "source_used": source,
             "captured_at": captured_at,
             "source_metadata": _planned_topology_source_metadata(source, captured_at, confidence=0.85 if source == "netbox" else 0.75),
+            "canonical_devices": device_matrix,
+            "semantics_map": build_canonical_semantics_map(),
         },
         ensure_ascii=False,
     )
@@ -820,45 +979,7 @@ def compare_planned_vs_live(hostname: str = "") -> str:
     """
     Compare planned inventory devices with live discovered topology, optionally scoped to a hostname.
     """
-    inventory_records, inventory_source = _get_inventory_records()
-    topo = _db_manager.get_topology() if _db_manager else {}
-    live_nodes = topo.get("nodes", {}) if isinstance(topo, dict) else {}
-
-    inventory_names = {str(record.get("hostname")): record for record in inventory_records}
-    live_names = {str(name): data for name, data in live_nodes.items() if isinstance(data, dict)}
-
-    if hostname:
-        inventory_names = {name: record for name, record in inventory_names.items() if name.lower() == hostname.lower()}
-        live_names = {name: record for name, record in live_names.items() if name.lower() == hostname.lower()}
-
-    planned_not_live = sorted(name for name in inventory_names if name not in live_names)
-    live_not_planned = sorted(name for name in live_names if name not in inventory_names)
-    matching = []
-    for name in sorted(set(inventory_names) & set(live_names)):
-        planned = inventory_names[name]
-        live = live_names[name]
-        matching.append(
-            {
-                "hostname": name,
-                "planned_management_ip": planned.get("management_ip"),
-                "live_management_ip": live.get("mgmt_ip"),
-                "status_match": str(planned.get("status") or "").lower() == ("down" if live.get("down") else "active"),
-            }
-        )
-
-    inventory_captured_at = max((record.get("updated_at") for record in inventory_records if record.get("updated_at")), default=None)
-    return json.dumps(
-        {
-            "matching_devices": matching,
-            "planned_only": planned_not_live,
-            "live_only": live_not_planned,
-            "source_used": inventory_source,
-            "captured_at": inventory_captured_at,
-            "inventory_source_metadata": _inventory_source_metadata(inventory_source, inventory_captured_at),
-            "live_source_metadata": _topology_source_metadata(topo),
-        },
-        ensure_ascii=False,
-    )
+    return json.dumps(_build_canonical_state_payload(hostname), ensure_ascii=False)
 
 
 def find_path(source: str, destination: str) -> str:
@@ -1713,6 +1834,10 @@ def register_all_tools(registry) -> None:
         compare_planned_vs_live,
         description="Compare source-of-truth inventory against live topology, optionally scoped to one hostname.",
         param_descriptions={"hostname": "Optional device hostname to scope the comparison"},
+    )
+    registry.register(
+        get_canonical_semantics_map,
+        description="Get the canonical semantics map that defines planned-vs-live state meanings shared across tools, MCP, REST, and prompt bundles.",
     )
     registry.register(
         get_context_health,

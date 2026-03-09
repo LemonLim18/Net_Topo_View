@@ -127,6 +127,24 @@ def test_compare_planned_vs_live_separates_state():
 
     assert payload["planned_only"] == ["SW1"]
     assert payload["live_only"] == ["FW1"]
+    assert payload["semantics_map"]["version"] == "phase6_step22_v1"
+
+
+def test_inventory_surfaces_include_canonical_semantics_fields():
+    network_tools.set_db_manager(_InventoryFakeDb())
+
+    inventory_payload = json.loads(network_tools.list_inventory_devices())
+    device_payload = json.loads(network_tools.get_inventory_device("R1"))
+    planned_payload = json.loads(network_tools.get_planned_topology())
+
+    r1 = next(device for device in inventory_payload["devices"] if device["hostname"] == "R1")
+    sw1 = next(device for device in inventory_payload["devices"] if device["hostname"] == "SW1")
+
+    assert inventory_payload["semantics_map"]["version"] == "phase6_step22_v1"
+    assert r1["presence_state"] == "planned_and_live"
+    assert sw1["presence_state"] == "planned_only"
+    assert device_payload["device"]["management_ip_alignment"] == "match"
+    assert planned_payload["links"][0]["interface_presence_state"] == "planned_only"
 
 
 def test_get_planned_topology_returns_persistent_links():

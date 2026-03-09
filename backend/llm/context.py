@@ -19,6 +19,7 @@ from llm.context_contract import (
     compute_freshness,
 )
 from llm.context_state import get_context_state_manager
+from llm.semantics import build_canonical_semantics_prompt_text
 
 logger = logging.getLogger("llm.context")
 
@@ -283,6 +284,8 @@ class ContextBuilder:
             lines.append(
                 f"- {entry['query_class']}: primary={primary}; fallback={fallback}"
             )
+        lines.append("")
+        lines.append(build_canonical_semantics_prompt_text())
         return "\n".join(lines)
 
     def build_knowledge_context(self, query: str, retriever, k: int = 5) -> str:

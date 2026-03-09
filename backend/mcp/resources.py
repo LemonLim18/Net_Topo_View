@@ -196,6 +196,14 @@ def _build_context_health_payload() -> Dict[str, Any]:
     }
 
 
+def _build_semantics_payload() -> Dict[str, Any]:
+    return _tool_payload(network_tools.get_canonical_semantics_map)
+
+
+def _build_canonical_device_state_payload() -> Dict[str, Any]:
+    return _tool_payload(network_tools.compare_planned_vs_live)
+
+
 def _normalize_event_limit(limit: int) -> int:
     try:
         value = int(limit)
@@ -641,6 +649,18 @@ def get_change_jobs() -> str:
 def get_context_health_resource() -> str:
     """Returns context versioning health and latest sync status."""
     return _json_resource(_build_context_health_payload())
+
+
+@mcp.resource("network://semantics")
+def get_canonical_semantics_resource() -> str:
+    """Returns the canonical planned-vs-live semantics contract shared by tools, prompt bundles, and REST surfaces."""
+    return _json_resource(_build_semantics_payload())
+
+
+@mcp.resource("network://canonical-device-state")
+def get_canonical_device_state_resource() -> str:
+    """Returns the canonical device-state matrix for planned-vs-live comparisons."""
+    return _json_resource(_build_canonical_device_state_payload())
 
 
 @mcp.resource("network://events/topology-change")

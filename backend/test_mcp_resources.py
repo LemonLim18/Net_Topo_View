@@ -197,6 +197,26 @@ def test_context_health_resource_combines_health_and_sync(monkeypatch):
     assert payload["last_sync_status"]["operations"]["inventory"]["status"] == "idle"
 
 
+def test_semantics_resources_return_shared_contract(monkeypatch):
+    monkeypatch.setattr(resources.network_tools, "set_db_manager", lambda db_manager: None)
+    monkeypatch.setattr(
+        resources.network_tools,
+        "get_canonical_semantics_map",
+        lambda: json.dumps({"version": "phase6_step22_v1", "device_presence_states": {"planned_only": "..."}}),
+    )
+    monkeypatch.setattr(
+        resources.network_tools,
+        "compare_planned_vs_live",
+        lambda: json.dumps({"devices": [{"hostname": "R1", "presence_state": "planned_and_live"}], "semantics_map": {"version": "phase6_step22_v1"}}),
+    )
+
+    semantics_payload = json.loads(resources.get_canonical_semantics_resource())
+    device_state_payload = json.loads(resources.get_canonical_device_state_resource())
+
+    assert semantics_payload["version"] == "phase6_step22_v1"
+    assert device_state_payload["devices"][0]["presence_state"] == "planned_and_live"
+
+
 def test_topology_event_resource_filters_durable_context_events(monkeypatch):
     monkeypatch.setattr(resources.network_tools, "set_db_manager", lambda db_manager: None)
     monkeypatch.setattr(

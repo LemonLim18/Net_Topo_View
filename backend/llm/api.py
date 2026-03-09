@@ -20,6 +20,7 @@ Endpoints:
 """
 
 import logging
+import json
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -27,6 +28,7 @@ from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
 from auth.rbac import require_role
+from llm import network_tools
 from llm.refresh_fabric import register_refresh_listener
 
 logger = logging.getLogger("llm.api")
@@ -115,6 +117,19 @@ def _get_agent():
     return _agent
 
 
+async def _run_tool_json(tool_func, *args, **kwargs) -> Dict[str, Any]:
+    _get_agent()
+    raw = await run_in_threadpool(tool_func, *args, **kwargs)
+    if isinstance(raw, str):
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise HTTPException(status_code=500, detail=f"Invalid tool response: {exc}") from exc
+    if isinstance(raw, dict):
+        return raw
+    return {"value": raw}
+
+
 # -----------------------------------------------------------------------
 # Chat Endpoints
 # -----------------------------------------------------------------------
@@ -188,6 +203,37 @@ async def refresh_context():
     agent = _get_agent()
     agent.refresh_context()
     return {"status": "ok", "message": "Network context refreshed"}
+
+
+@router.get("/semantics")
+async def get_canonical_semantics():
+    """Return the canonical planned-vs-live semantics contract used across tools, MCP, and prompt bundles."""
+    return await _run_tool_json(network_tools.get_canonical_semantics_map)
+
+
+@router.get("/canonical-device-state")
+async def get_canonical_device_state(hostname: Optional[str] = None):
+    """Return the canonical planned-vs-live device-state view, optionally filtered to a single hostname."""
+    payload = await _run_tool_json(network_tools.compare_planned_vs_live)
+    if hostname:
+        lowered = hostname.strip().lower()
+        payload["devices"] = [
+            device for device in payload.get("devices", [])
+            if str(device.get("hostname", "")).lower() == lowered
+        ]
+        payload["matching_devices"] = [
+            name for name in payload.get("matching_devices", [])
+            if str(name).lower() == lowered
+        ]
+        payload["planned_only"] = [
+            name for name in payload.get("planned_only", [])
+            if str(name).lower() == lowered
+        ]
+        payload["live_only"] = [
+            name for name in payload.get("live_only", [])
+            if str(name).lower() == lowered
+        ]
+    return payload
 
 
 # -----------------------------------------------------------------------

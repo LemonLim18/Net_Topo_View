@@ -41,6 +41,15 @@ from llm.context_contract import (
     compute_freshness,
     missing_freshness,
 )
+from llm.semantics import (
+    annotate_inventory_interfaces,
+    annotate_inventory_records,
+    annotate_planned_links,
+    build_canonical_device_matrix,
+    build_canonical_semantics_map,
+    build_canonical_semantics_prompt_text,
+    device_state_index,
+)
 
 logger = logging.getLogger("rag.context_bundle")
 
@@ -243,6 +252,7 @@ class ContextBundle:
     drift: DriftContext = field(default_factory=DriftContext)
     knowledge: KnowledgeContext = field(default_factory=KnowledgeContext)
     freshness_warnings: FreshnessWarningsContext = field(default_factory=FreshnessWarningsContext)
+    semantics_map: Dict[str, Any] = field(default_factory=build_canonical_semantics_map)
     timestamp: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     scope_filter: Optional[Dict[str, Any]] = None
 
@@ -252,6 +262,9 @@ class ContextBundle:
     def to_prompt_text(self) -> str:
         """Render the bundle as a human-readable markdown block for the LLM."""
         lines: List[str] = ["## Network Context Bundle", f"*Generated: {self.timestamp}*", ""]
+        lines.append("### Canonical Semantics")
+        lines.append(build_canonical_semantics_prompt_text().replace("## Canonical Semantics\n", ""))
+        lines.append("")
 
         warnings = self.freshness_warnings
         if warnings.warnings:
@@ -272,7 +285,7 @@ class ContextBundle:
                 status = d.get("status", "unknown")
                 lines.append(
                     f"- **{d.get('hostname', '?')}** ({d.get('management_ip', 'N/A')}) "
-                    f"— {d.get('vendor', '?')} {d.get('os_version', '')} [{status}]"
+                    f"— {d.get('vendor', '?')} {d.get('os_version', '')} [{status}] presence={d.get('presence_state', 'unknown')}"
                 )
             if inv.interfaces:
                 lines.append(f"\n  Interfaces included: {len(inv.interfaces)}")
@@ -289,7 +302,7 @@ class ContextBundle:
             for link in planned.links[:15]:
                 lines.append(
                     f"- {link.get('src_hostname', '?')}:{link.get('src_interface', '?')} "
-                    f"-> {link.get('dst_hostname', '?')}:{link.get('dst_interface', '?')}"
+                    f"-> {link.get('dst_hostname', '?')}:{link.get('dst_interface', '?')} presence={link.get('interface_presence_state', 'unknown')}"
                 )
             lines.append("")
 
@@ -541,7 +554,26 @@ class ContextBundleBuilder:
                 include_knowledge=include_knowledge,
             )
 
+        self._apply_canonical_semantics(bundle)
+
         return bundle
+
+    def _apply_canonical_semantics(self, bundle: ContextBundle) -> None:
+        live_nodes = {}
+        if self._db is not None:
+            topo = self._db.get_topology()
+            live_nodes = topo.get("nodes", {}) if isinstance(topo, dict) else {}
+
+        device_matrix = build_canonical_device_matrix(
+            bundle.inventory.devices,
+            live_nodes,
+            inventory_source=bundle.inventory.source,
+        )
+        semantics_index = device_state_index(device_matrix)
+        bundle.inventory.devices = annotate_inventory_records(bundle.inventory.devices, live_nodes, bundle.inventory.source)
+        bundle.inventory.interfaces = annotate_inventory_interfaces(bundle.inventory.interfaces, semantics_index)
+        bundle.planned_topology.links = annotate_planned_links(bundle.planned_topology.links, semantics_index)
+        bundle.semantics_map = build_canonical_semantics_map()
 
     def _resolve_device_ips(
         self,
