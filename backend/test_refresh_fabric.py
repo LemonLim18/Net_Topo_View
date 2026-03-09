@@ -15,6 +15,7 @@ from llm.refresh_fabric import RefreshFabric, RefreshFabricEvent
 from netbox.api import _invalidate_inventory_context
 from netbox.sync_devices import DeviceSyncer
 from netbox.sync_topology import TopologySyncer
+from llm import network_tools
 
 
 class _FakeRefreshState:
@@ -70,6 +71,33 @@ def test_refresh_fabric_notifies_registered_listener():
     )
 
     assert observed == ["topology_changed"]
+
+
+def test_refresh_fabric_records_listener_results_and_sink_payload():
+    state = ContextStateManager()
+    refresh_state = _FakeRefreshState()
+    fabric = RefreshFabric(context_state=state, refresh_state=refresh_state)
+    sink_payloads = []
+    fabric.register_listener(
+        "cache_listener",
+        lambda publication: {"kind": "cache", "name": "network_context_cache", "action": "cleared"},
+    )
+    fabric.register_sink("sink", lambda publication: sink_payloads.append(publication))
+
+    publication = fabric.publish(
+        RefreshFabricEvent(
+            source="unit_test",
+            action="inventory_changed",
+            summary="inventory changed",
+            domains=(CONTEXT_DOMAIN_INVENTORY,),
+            refresh_targets=("inventory",),
+        )
+    )
+
+    assert publication["listener_results"][0]["listener"] == "cache_listener"
+    assert publication["downstream_targets"][0] == {"kind": "refresh_target", "name": "inventory"}
+    assert publication["downstream_targets"][1]["name"] == "network_context_cache"
+    assert sink_payloads[0]["event_id"] == publication["event_id"]
 
 
 def test_db_manager_security_event_publishes_security_domain(tmp_path, monkeypatch):
@@ -131,6 +159,91 @@ def test_deployment_commit_publishes_deployment_and_live_refresh(tmp_path, monke
 
     assert calls[0]["domains"] == (CONTEXT_DOMAIN_DEPLOYMENT, CONTEXT_DOMAIN_LIVE_TOPOLOGY)
     assert calls[0]["refresh_targets"] == ("live_topology",)
+
+
+def test_db_manager_context_event_log_roundtrip(tmp_path):
+    db_path = tmp_path / "eventlog.db"
+    db = DatabaseManager(str(db_path))
+    db.initialize()
+
+    db.append_context_event_log(
+        {
+            "event_id": "evt-123",
+            "source": "netbox_webhook",
+            "action": "netbox_updated_device",
+            "summary": "updated device",
+            "event_type": "invalidate",
+            "domains": [CONTEXT_DOMAIN_INVENTORY],
+            "versions": {CONTEXT_DOMAIN_INVENTORY: 2},
+            "metadata": {"hostname": "R1"},
+            "refresh_mode": "async",
+            "refresh_targets": ["inventory"],
+            "refresh_jobs": [{"target": "inventory"}],
+            "listener_results": [{"listener": "cache", "status": "ok"}],
+            "downstream_targets": [{"kind": "cache", "name": "network_context_cache"}],
+            "timestamp": "2026-03-09T12:00:00+00:00",
+        }
+    )
+
+    entries = db.get_context_event_log(limit=5, source="netbox_webhook", domain=CONTEXT_DOMAIN_INVENTORY)
+    assert entries[0]["event_id"] == "evt-123"
+    assert entries[0]["downstream_targets"][0]["name"] == "network_context_cache"
+
+
+def test_get_context_health_includes_durable_event_log(tmp_path):
+    db_path = tmp_path / "eventhealth.db"
+    db = DatabaseManager(str(db_path))
+    db.initialize()
+    db.append_context_event_log(
+        {
+            "event_id": "evt-ctx-1",
+            "source": "deployment_pipeline",
+            "action": "deployment_job_status_updated",
+            "summary": "deployment commit",
+            "event_type": "invalidate",
+            "domains": [CONTEXT_DOMAIN_DEPLOYMENT],
+            "versions": {CONTEXT_DOMAIN_DEPLOYMENT: 1},
+            "metadata": {},
+            "refresh_mode": "none",
+            "refresh_targets": [],
+            "refresh_jobs": [],
+            "listener_results": [],
+            "downstream_targets": [],
+            "timestamp": "2026-03-09T12:05:00+00:00",
+        }
+    )
+    network_tools.set_db_manager(db)
+
+    payload = __import__("json").loads(network_tools.get_context_health())
+    assert payload["durable_recent_events"][0]["event_id"] == "evt-ctx-1"
+
+
+def test_get_context_event_log_tool_returns_entries(tmp_path):
+    db_path = tmp_path / "eventtool.db"
+    db = DatabaseManager(str(db_path))
+    db.initialize()
+    db.append_context_event_log(
+        {
+            "event_id": "evt-tool-1",
+            "source": "security_event_store",
+            "action": "security_event_inserted",
+            "summary": "security event",
+            "event_type": "refresh",
+            "domains": [CONTEXT_DOMAIN_SECURITY],
+            "versions": {CONTEXT_DOMAIN_SECURITY: 1},
+            "metadata": {},
+            "refresh_mode": "none",
+            "refresh_targets": [],
+            "refresh_jobs": [],
+            "listener_results": [],
+            "downstream_targets": [],
+            "timestamp": "2026-03-09T12:10:00+00:00",
+        }
+    )
+    network_tools.set_db_manager(db)
+
+    payload = __import__("json").loads(network_tools.get_context_event_log(limit=5, source="security_event_store"))
+    assert payload["events"][0]["event_id"] == "evt-tool-1"
 
 
 def test_netbox_device_sync_publishes_refresh_fabric_event(monkeypatch):

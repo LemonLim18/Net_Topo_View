@@ -93,7 +93,10 @@ def setup_agent(agent, pipeline=None, vault=None) -> None:
     _vault = vault
     register_refresh_listener(
         _AGENT_REFRESH_LISTENER,
-        lambda _publication: agent.refresh_context(),
+        lambda _publication: (
+            agent.refresh_context(),
+            {"kind": "cache", "name": "network_context_cache", "component": "llm_agent", "action": "cleared"},
+        )[1],
     )
     logger.info("Chat API initialized with agent (model=%s)", agent.model_name)
     if pipeline:

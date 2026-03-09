@@ -190,6 +190,87 @@ class DatabaseManager:
             return json.loads(json.dumps(self._topo_cache))
 
     # =============================================================
+    # CONTEXT EVENT LOG  (persistent)
+    # =============================================================
+    def append_context_event_log(self, publication: Dict[str, Any]) -> int:
+        event_id = str(publication.get("event_id") or "")
+        if not event_id:
+            raise ValueError("context event publication must include event_id")
+
+        with self._connect() as conn:
+            cur = conn.execute(
+                """INSERT OR REPLACE INTO context_event_log
+                   (event_id, source, action, summary, event_type,
+                    domains_json, versions_json, metadata_json, refresh_mode,
+                    refresh_targets_json, refresh_jobs_json, listener_results_json,
+                    downstream_targets_json, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    event_id,
+                    publication.get("source"),
+                    publication.get("action"),
+                    publication.get("summary"),
+                    publication.get("event_type") or "invalidate",
+                    json.dumps(publication.get("domains", []), ensure_ascii=False),
+                    json.dumps(publication.get("versions", {}), ensure_ascii=False),
+                    json.dumps(publication.get("metadata", {}), ensure_ascii=False),
+                    publication.get("refresh_mode"),
+                    json.dumps(publication.get("refresh_targets", []), ensure_ascii=False),
+                    json.dumps(publication.get("refresh_jobs", []), ensure_ascii=False),
+                    json.dumps(publication.get("listener_results", []), ensure_ascii=False),
+                    json.dumps(publication.get("downstream_targets", []), ensure_ascii=False),
+                    publication.get("timestamp"),
+                ),
+            )
+            return cur.lastrowid
+
+    def get_context_event_log(
+        self,
+        limit: int = 20,
+        source: Optional[str] = None,
+        domain: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        clauses = []
+        params: List[Any] = []
+        if source:
+            clauses.append("source = ?")
+            params.append(source)
+        if domain:
+            clauses.append("domains_json LIKE ?")
+            params.append(f'%"{domain}"%')
+
+        query = "SELECT * FROM context_event_log"
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
+        query += " ORDER BY created_at DESC, id DESC LIMIT ?"
+        params.append(limit)
+
+        with self._connect() as conn:
+            rows = conn.execute(query, params).fetchall()
+
+        entries = []
+        for row in rows:
+            entries.append(
+                {
+                    "event_id": row["event_id"],
+                    "source": row["source"],
+                    "action": row["action"],
+                    "summary": row["summary"],
+                    "event_type": row["event_type"],
+                    "domains": json.loads(row["domains_json"] or "[]"),
+                    "versions": json.loads(row["versions_json"] or "{}"),
+                    "metadata": json.loads(row["metadata_json"] or "{}"),
+                    "refresh_mode": row["refresh_mode"],
+                    "refresh_targets": json.loads(row["refresh_targets_json"] or "[]"),
+                    "refresh_jobs": json.loads(row["refresh_jobs_json"] or "[]"),
+                    "listener_results": json.loads(row["listener_results_json"] or "[]"),
+                    "downstream_targets": json.loads(row["downstream_targets_json"] or "[]"),
+                    "created_at": row["created_at"],
+                }
+            )
+        return entries
+
+    # =============================================================
     # DEVICES  (persistent)
     # =============================================================
     def upsert_device(self, device: Device) -> int:

@@ -21,6 +21,7 @@ load_dotenv()
 from db.manager import DatabaseManager
 from deploy.pipeline import DeploymentPipeline
 from llm.agent import NetworkAgent
+from llm.refresh_fabric import register_refresh_sink
 from llm.refresh_state import get_refresh_state_manager
 
 # --- API Routers ---
@@ -471,6 +472,7 @@ async def lifespan(app: FastAPI):
     _db = db
     _agent = agent
     _vault = vault
+    register_refresh_sink("sqlite_context_event_log", db.append_context_event_log)
     try:
         os.makedirs(TOPOLOGY_SAVE_DIR, exist_ok=True)
         if os.path.exists(CURRENT_TOPOLOGY_FILE):

@@ -5,7 +5,7 @@ import uuid
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Callable, Deque, Dict, Iterable, Optional, Sequence
+from typing import Any, Callable, Deque, Dict, Iterable, Optional, Sequence
 
 from llm.context_state import ContextStateManager, get_context_state_manager
 from llm.refresh_state import RefreshStateManager, get_refresh_state_manager
@@ -25,6 +25,25 @@ def _normalize_names(values: Iterable[str]) -> tuple[str, ...]:
         seen.add(item)
         normalized.append(item)
     return tuple(normalized)
+
+
+def _normalize_downstream_targets(
+    refresh_targets: Sequence[str],
+    listener_results: Sequence[Dict[str, Any]],
+) -> list[Dict[str, object]]:
+    targets: list[Dict[str, object]] = [
+        {"kind": "refresh_target", "name": target}
+        for target in refresh_targets
+    ]
+    for item in listener_results:
+        result = item.get("result")
+        if isinstance(result, dict):
+            targets.append(result)
+        elif isinstance(result, list):
+            for entry in result:
+                if isinstance(entry, dict):
+                    targets.append(entry)
+    return targets
 
 
 @dataclass(frozen=True)
@@ -50,6 +69,7 @@ class RefreshFabric:
         self._lock = threading.Lock()
         self._recent_publications: Deque[Dict[str, object]] = deque(maxlen=200)
         self._listeners: Dict[str, Callable[[Dict[str, object]], None]] = {}
+        self._sinks: Dict[str, Callable[[Dict[str, object]], None]] = {}
 
     def register_listener(self, name: str, callback: Callable[[Dict[str, object]], None]) -> None:
         with self._lock:
@@ -58,6 +78,14 @@ class RefreshFabric:
     def unregister_listener(self, name: str) -> None:
         with self._lock:
             self._listeners.pop(name, None)
+
+    def register_sink(self, name: str, callback: Callable[[Dict[str, object]], None]) -> None:
+        with self._lock:
+            self._sinks[name] = callback
+
+    def unregister_sink(self, name: str) -> None:
+        with self._lock:
+            self._sinks.pop(name, None)
 
     def publish(self, event: RefreshFabricEvent) -> Dict[str, object]:
         event_id = f"evt-{uuid.uuid4().hex[:10]}"
@@ -90,6 +118,31 @@ class RefreshFabric:
                     job = self._refresh_state.start_refresh_job(target, requested_by=requested_by)
                     refresh_jobs.append({"target": target, "mode": "async", "job": job})
 
+        listener_results = []
+        with self._lock:
+            listeners = list(self._listeners.items())
+        for name, listener in listeners:
+            try:
+                result = listener({
+                    "event_id": event_id,
+                    "timestamp": timestamp,
+                    "source": event.source,
+                    "action": event.action,
+                    "summary": event.summary,
+                    "domains": list(domains),
+                    "versions": versions,
+                    "event_type": event.event_type,
+                    "refresh_mode": event.refresh_mode,
+                    "refresh_targets": list(refresh_targets),
+                    "refresh_jobs": refresh_jobs,
+                    "metadata": metadata,
+                })
+                listener_results.append({"listener": name, "status": "ok", "result": result})
+            except Exception as exc:
+                listener_results.append({"listener": name, "status": "error", "error": str(exc)})
+
+        downstream_targets = _normalize_downstream_targets(refresh_targets, listener_results)
+
         publication = {
             "event_id": event_id,
             "timestamp": timestamp,
@@ -102,15 +155,17 @@ class RefreshFabric:
             "refresh_mode": event.refresh_mode,
             "refresh_targets": list(refresh_targets),
             "refresh_jobs": refresh_jobs,
+            "listener_results": listener_results,
+            "downstream_targets": downstream_targets,
             "metadata": metadata,
         }
         with self._lock:
             self._recent_publications.appendleft(publication)
-            listeners = list(self._listeners.values())
+            sinks = list(self._sinks.values())
 
-        for listener in listeners:
+        for sink in sinks:
             try:
-                listener(publication)
+                sink(publication)
             except Exception:
                 continue
         return publication
@@ -134,6 +189,14 @@ def register_refresh_listener(name: str, callback: Callable[[Dict[str, object]],
 
 def unregister_refresh_listener(name: str) -> None:
     get_refresh_fabric().unregister_listener(name)
+
+
+def register_refresh_sink(name: str, callback: Callable[[Dict[str, object]], None]) -> None:
+    get_refresh_fabric().register_sink(name, callback)
+
+
+def unregister_refresh_sink(name: str) -> None:
+    get_refresh_fabric().unregister_sink(name)
 
 
 def publish_context_refresh_event(

@@ -519,7 +519,28 @@ def get_context_health() -> str:
     """
     Get current context versions and the latest invalidation/refresh events.
     """
-    return json.dumps(get_context_state_manager().snapshot(), ensure_ascii=False)
+    snapshot = get_context_state_manager().snapshot()
+    if _db_manager and hasattr(_db_manager, "get_context_event_log"):
+        snapshot["durable_recent_events"] = _db_manager.get_context_event_log(limit=10)
+    return json.dumps(snapshot, ensure_ascii=False)
+
+
+def get_context_event_log(limit: int = 20, source: str = "", domain: str = "") -> str:
+    """
+    Get the durable context event log with downstream invalidation details.
+    """
+    if not _db_manager or not hasattr(_db_manager, "get_context_event_log"):
+        return json.dumps({"events": [], "error": "Context event log unavailable"}, ensure_ascii=False)
+    return json.dumps(
+        {
+            "events": _db_manager.get_context_event_log(
+                limit=limit,
+                source=source or None,
+                domain=domain or None,
+            )
+        },
+        ensure_ascii=False,
+    )
 
 
 def get_last_sync_status() -> str:
@@ -1691,6 +1712,15 @@ def register_all_tools(registry) -> None:
     registry.register(
         get_context_health,
         description="Get context versions, last-updated timestamps, and recent invalidation events across live and planned network state.",
+    )
+    registry.register(
+        get_context_event_log,
+        description="Get the durable context event log, including downstream caches or refresh targets invalidated by each event.",
+        param_descriptions={
+            "limit": "Maximum number of events to return",
+            "source": "Optional source filter such as netbox_webhook or deployment_pipeline",
+            "domain": "Optional context domain filter such as live_topology or planned_inventory",
+        },
     )
     registry.register(
         get_last_sync_status,

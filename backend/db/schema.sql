@@ -311,6 +311,32 @@ CREATE INDEX IF NOT EXISTS idx_intents_type   ON intents(intent_type);
 
 
 -- -----------------------------------------------------------
+-- 16b. Context Event Log (Phase 4 Step 14)
+-- -----------------------------------------------------------
+CREATE TABLE IF NOT EXISTS context_event_log (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_id            TEXT    NOT NULL UNIQUE,
+    source              TEXT    NOT NULL,
+    action              TEXT    NOT NULL,
+    summary             TEXT    NOT NULL,
+    event_type          TEXT    NOT NULL,
+    domains_json        TEXT    NOT NULL,
+    versions_json       TEXT    NOT NULL,
+    metadata_json       TEXT,
+    refresh_mode        TEXT,
+    refresh_targets_json TEXT,
+    refresh_jobs_json   TEXT,
+    listener_results_json TEXT,
+    downstream_targets_json TEXT,
+    created_at          TEXT    DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_context_event_log_created ON context_event_log(created_at);
+CREATE INDEX IF NOT EXISTS idx_context_event_log_source  ON context_event_log(source);
+CREATE INDEX IF NOT EXISTS idx_context_event_log_action  ON context_event_log(action);
+
+
+-- -----------------------------------------------------------
 -- 17. Agent Plans (M25 — Persist plan/execute workflow state)
 -- -----------------------------------------------------------
 CREATE TABLE IF NOT EXISTS agent_plans (
