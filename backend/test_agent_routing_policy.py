@@ -122,6 +122,9 @@ def test_inventory_query_prefetches_inventory_tool():
     assert response["grounding_meta"]["answer_scope"] == "planned"
     assert "local_db" in response["grounding_meta"]["source_used"]
     assert response["grounding_meta"]["source_age"][0]["scope"] == "planned_inventory"
+    assert response["grounding_meta"]["answer_policy"]["name"] == "management_ip_lookup"
+    assert response["grounding_meta"]["answer_policy"]["satisfied"] is True
+    assert response["grounding_meta"]["answer_policy"]["required_tools"] == ["get_inventory_device"]
     assert "Grounding: planned;" in response["content"]
 
 
@@ -246,3 +249,27 @@ def test_agent_rebuilds_context_on_next_turn_without_manual_prompt_refresh():
     second_system_prompt = provider.calls[1]["messages"][0].content
     assert "Management IP: 10.0.0.22" in second_system_prompt
     assert "Management IP: 10.0.0.2\n" not in second_system_prompt
+
+
+def test_required_tool_policy_executes_before_accepting_early_answer():
+    import asyncio
+
+    provider = _FakeProvider()
+    agent = NetworkAgent(db_manager=_AgentFakeDb(), provider=provider, retriever=None)
+
+    original_build_route_plan = agent._build_route_plan
+
+    def _route_plan_without_prefetch(user_message, query_class, hostnames=None):
+        route_plan = original_build_route_plan(user_message, query_class, hostnames)
+        route_plan["prefetch_tools"] = []
+        return route_plan
+
+    agent._build_route_plan = _route_plan_without_prefetch  # type: ignore[method-assign]
+
+    response = asyncio.run(_run_chat_with_agent(agent, "What is the management IP of SW1 in inventory?"))
+
+    assert len(provider.calls) == 2
+    second_call_tool_messages = [message for message in provider.calls[1]["messages"] if message.role == "tool"]
+    assert any(message.name == "get_inventory_device" for message in second_call_tool_messages)
+    assert response["grounding_meta"]["answer_policy"]["satisfied"] is True
+    assert response["grounding_meta"]["answer_policy"]["executed_required_tools"] == ["get_inventory_device"]

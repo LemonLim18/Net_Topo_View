@@ -20,6 +20,7 @@ import logging
 import re
 from typing import Any, Dict, List, Optional
 
+from llm.answer_policy import build_answer_policy, policy_status
 from llm.answer_grounding import build_answer_grounding, format_conflict_summary, format_grounding_summary
 from llm.context_contract import classify_query
 from llm.context_state import get_context_state_manager
@@ -253,10 +254,13 @@ class NetworkAgent:
 
             # If no tool calls, we have a final answer
             if not response.tool_calls:
+                if self._enforce_required_tool_policy(messages, route_plan, tool_results, tool_args):
+                    continue
                 grounding_meta = self._build_grounding_meta(
                     routing_decision.query_class,
                     tool_results,
                     tool_args,
+                    route_plan.get("answer_policy"),
                     knowledge_used=bool(knowledge_ctx),
                 )
                 final_content = self._render_grounded_content(response.content, grounding_meta)
@@ -321,7 +325,8 @@ class NetworkAgent:
                     name=tc.name,
                 ))
 
-        # If we exhausted all rounds, return whatever we have
+        # If we exhausted all rounds, ensure required policy tools have run, then return whatever we have
+        self._enforce_required_tool_policy(messages, route_plan, tool_results, tool_args)
         final_response = await self._provider.generate(
             messages=messages,
             tools=None,  # Force text response
@@ -337,6 +342,7 @@ class NetworkAgent:
                         routing_decision.query_class,
                         tool_results,
                         tool_args,
+                        route_plan.get("answer_policy"),
                         knowledge_used=bool(knowledge_ctx),
                     ),
                 ),
@@ -347,6 +353,7 @@ class NetworkAgent:
             routing_decision.query_class,
             tool_results,
             tool_args,
+            route_plan.get("answer_policy"),
             knowledge_used=bool(knowledge_ctx),
         )
         final_content = self._render_grounded_content(final_response.content, grounding_meta)
@@ -727,6 +734,7 @@ class NetworkAgent:
         instruction = ""
         prefetch_tools: List[ToolCall] = []
         allowed_tools: Optional[List[str]] = None
+        answer_policy = build_answer_policy(user_message, query_class, hostnames)
 
         if query_class == "inventory_only":
             allowed_tools = generic_read_tools + [
@@ -910,6 +918,7 @@ class NetworkAgent:
             "prefetch_tools": prefetch_tools,
             "allowed_tools": allowed_tools,
             "instruction": instruction,
+            "answer_policy": answer_policy,
         }
 
     def _apply_prefetched_route_tools(
@@ -946,6 +955,56 @@ class NetworkAgent:
                     name=tc.name,
                 )
             )
+
+    def _enforce_required_tool_policy(
+        self,
+        messages: List[LLMMessage],
+        route_plan: Dict[str, Any],
+        tool_results: Dict[str, Any],
+        tool_args: Dict[str, Dict[str, Any]],
+    ) -> bool:
+        policy = route_plan.get("answer_policy") or {}
+        status = policy_status(policy, tool_args)
+        if status["satisfied"]:
+            return False
+
+        required_calls: List[ToolCall] = list(policy.get("required_tool_calls") or [])
+        missing_calls = [
+            call
+            for call in required_calls
+            if call.name in status["missing_required_tools"]
+        ]
+        if not missing_calls:
+            return False
+
+        tool_call_summary = ", ".join(
+            f"{tc.name}({json.dumps(tc.arguments, ensure_ascii=False)})"
+            for tc in missing_calls
+        )
+        messages.append(
+            LLMMessage(
+                role="assistant",
+                content=(
+                    "Enforcing authoritative answer policy before final answer: "
+                    f"{tool_call_summary}"
+                ),
+                tool_calls=missing_calls,
+            )
+        )
+
+        for tc in missing_calls:
+            result = self._tools.execute(tc.name, tc.arguments)
+            tool_results[tc.name] = result
+            tool_args[tc.name] = tc.arguments
+            messages.append(
+                LLMMessage(
+                    role="tool",
+                    content=result,
+                    name=tc.name,
+                )
+            )
+
+        return True
 
     def _network_context_cache_key(
         self,
@@ -1011,14 +1070,17 @@ class NetworkAgent:
         query_class: str,
         tool_results: Dict[str, Any],
         tool_args: Optional[Dict[str, Dict[str, Any]]] = None,
+        answer_policy: Optional[Dict[str, Any]] = None,
         knowledge_used: bool = False,
     ) -> Dict[str, Any]:
-        return build_answer_grounding(
+        grounding_meta = build_answer_grounding(
             query_class=query_class,
             tool_results=tool_results,
             tool_args=tool_args,
             knowledge_used=knowledge_used,
         )
+        grounding_meta["answer_policy"] = policy_status(answer_policy or {}, tool_args or {})
+        return grounding_meta
 
     def _render_grounded_content(self, content: str, grounding_meta: Dict[str, Any]) -> str:
         summary = format_grounding_summary(grounding_meta)
