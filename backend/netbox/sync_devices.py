@@ -4,6 +4,7 @@ from db.manager import DatabaseManager
 from db.models import Device, Interface
 from llm.context_contract import CONTEXT_DOMAIN_INVENTORY, CONTEXT_DOMAIN_PLANNED_TOPOLOGY
 from llm.context_state import get_context_state_manager
+from llm.refresh_state import get_refresh_state_manager
 from netbox.client import NetBoxClient
 
 logger = logging.getLogger("netbox.sync_devices")
@@ -46,9 +47,14 @@ class DeviceSyncer:
         Also syncs interfaces and their IP assignments for each device.
         Preserves 'source' for devices that already exist locally.
         """
+        refresh_state = get_refresh_state_manager()
+        refresh_state.record_start("inventory", trigger="netbox_sync")
+
         if not self.nb_client.api:
             logger.warning("NetBox API not initialized. Skipping sync.")
-            return {"status": "skipped", "reason": "no_connection"}
+            result = {"status": "skipped", "reason": "no_connection"}
+            refresh_state.record_skipped("inventory", result=result, trigger="netbox_sync")
+            return result
 
         nb_devices = self.nb_client.get_devices()
         synced_count = 0
@@ -135,7 +141,9 @@ class DeviceSyncer:
             event_type="refresh",
             metadata={"synced_count": synced_count},
         )
-        return {"status": "success", "synced_count": synced_count, "interface_count": iface_count}
+        result = {"status": "success", "synced_count": synced_count, "interface_count": iface_count}
+        refresh_state.record_success("inventory", result=result, trigger="netbox_sync")
+        return result
 
     def _map_platform_to_vendor(self, platform_slug: str) -> str:
         """Maps NetBox platform slugs to internal vendor codes."""

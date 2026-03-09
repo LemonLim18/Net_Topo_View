@@ -20,6 +20,7 @@ from llm.context_contract import (
     compute_freshness,
 )
 from llm.context_state import get_context_state_manager
+from llm.refresh_state import get_refresh_state_manager
 
 
 logger = logging.getLogger("llm.network_tools")
@@ -519,6 +520,58 @@ def get_context_health() -> str:
     Get current context versions and the latest invalidation/refresh events.
     """
     return json.dumps(get_context_state_manager().snapshot(), ensure_ascii=False)
+
+
+def get_last_sync_status() -> str:
+    """
+    Get the latest refresh status across live crawl and source-of-truth sync operations.
+    """
+    refresh_state = get_refresh_state_manager()
+    return json.dumps(
+        {
+            "operations": refresh_state.get_operation_statuses(),
+            "context_versions": get_context_state_manager().snapshot().get("versions", {}),
+        },
+        ensure_ascii=False,
+    )
+
+
+def trigger_context_refresh(target: str = "all", wait: bool = False) -> str:
+    """
+    Trigger refresh execution for live topology, inventory, planned topology, or all.
+    """
+    normalized_target = (target or "all").strip().lower()
+    if normalized_target not in {"all", "live_topology", "inventory", "planned_topology"}:
+        return json.dumps(
+            {
+                "error": "Invalid target. Use one of: all, live_topology, inventory, planned_topology",
+                "target": normalized_target,
+            },
+            ensure_ascii=False,
+        )
+
+    refresh_state = get_refresh_state_manager()
+    if wait:
+        return json.dumps(
+            refresh_state.run_refresh(normalized_target, requested_by="tool_wait"),
+            ensure_ascii=False,
+        )
+
+    return json.dumps(
+        refresh_state.start_refresh_job(normalized_target, requested_by="tool_async"),
+        ensure_ascii=False,
+    )
+
+
+def get_refresh_job_status(job_id: str) -> str:
+    """
+    Get the status of a previously triggered refresh job.
+    """
+    refresh_state = get_refresh_state_manager()
+    job = refresh_state.get_job(job_id)
+    if job is None:
+        return json.dumps({"error": f"Refresh job '{job_id}' not found"}, ensure_ascii=False)
+    return json.dumps(job, ensure_ascii=False)
 
 
 def get_recent_incidents(limit: int = 10, status: str = "") -> str:
@@ -1638,6 +1691,25 @@ def register_all_tools(registry) -> None:
     registry.register(
         get_context_health,
         description="Get context versions, last-updated timestamps, and recent invalidation events across live and planned network state.",
+    )
+    registry.register(
+        get_last_sync_status,
+        description="Get the latest crawl and sync status across live topology and source-of-truth refresh operations.",
+    )
+    registry.register(
+        trigger_context_refresh,
+        description="Trigger a refresh job for live topology, inventory, planned topology, or all sources.",
+        param_descriptions={
+            "target": "Refresh target: all, live_topology, inventory, or planned_topology",
+            "wait": "Whether to wait for completion before returning",
+        },
+    )
+    registry.register(
+        get_refresh_job_status,
+        description="Get the current status and result of a previously triggered refresh job.",
+        param_descriptions={
+            "job_id": "The job identifier returned by trigger_context_refresh",
+        },
     )
     registry.register(
         get_recent_incidents,

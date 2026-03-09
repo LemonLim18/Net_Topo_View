@@ -21,6 +21,7 @@ load_dotenv()
 from db.manager import DatabaseManager
 from deploy.pipeline import DeploymentPipeline
 from llm.agent import NetworkAgent
+from llm.refresh_state import get_refresh_state_manager
 
 # --- API Routers ---
 from crawler.api import router as crawler_router, set_crawl_runner
@@ -28,6 +29,8 @@ from deploy.api import router as deploy_router, setup_pipeline
 from llm.api import router as llm_router, setup_agent
 from monitor.api import router as monitor_router
 from netbox.api import router as netbox_api_router
+from netbox.sync_devices import DeviceSyncer
+from netbox.sync_topology import TopologySyncer
 from netbox.webhook import router as netbox_webhook_router
 from drift.api import router as drift_router
 from config_engine.api import router as config_router
@@ -267,11 +270,19 @@ def save_topology_to_file(topo: dict, filepath: str, sort_keys: bool = False):
 async def run_crawl_and_broadcast(trigger: str = "periodic"):
     global _current_topology_dict, _current_topology_json, _previous_topology_dict
     logger.info(f"Starting crawl (trigger={trigger})")
+    refresh_state = get_refresh_state_manager()
+    refresh_state.record_start("live_topology", trigger=trigger)
     loop = asyncio.get_running_loop()
     try:
         new_topo = await loop.run_in_executor(None, do_sync_crawl)
     except Exception as e:
         logger.exception(f"Crawl failed: {e}")
+        refresh_state.record_failure(
+            "live_topology",
+            str(e),
+            result={"status": "failed", "trigger": trigger},
+            trigger=trigger,
+        )
         return
     
     save_topology_to_file(new_topo, NEW_FETCH_FILE, sort_keys=True)
@@ -332,6 +343,18 @@ async def run_crawl_and_broadcast(trigger: str = "periodic"):
         else:
             logger.info("Topology unchanged. Not broadcasting.")
 
+    refresh_state.record_success(
+        "live_topology",
+        result={
+            "status": "success",
+            "trigger": trigger,
+            "timestamp": new_topo.get("timestamp"),
+            "node_count": len(new_topo.get("nodes", {})),
+            "topology_changed": topology_changed,
+        },
+        trigger=trigger,
+    )
+
 # (periodic_crawler removed — now managed by M16 scheduler)
 
 # ----------------------
@@ -371,6 +394,19 @@ async def lifespan(app: FastAPI):
         _state_embedder = None
 
     agent = NetworkAgent(db, retriever=retriever)
+    refresh_state = get_refresh_state_manager()
+    refresh_state.register_handler(
+        "live_topology",
+        lambda: run_crawl_and_broadcast(trigger="tool_manual"),
+    )
+    refresh_state.register_handler(
+        "inventory",
+        lambda: DeviceSyncer(db).sync_all_devices(),
+    )
+    refresh_state.register_handler(
+        "planned_topology",
+        lambda: TopologySyncer(db).sync_connections(),
+    )
 
     # 3. Initialize Credential Vault (M15)
     from auth.credentials import CredentialVault

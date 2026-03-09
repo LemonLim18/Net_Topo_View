@@ -1,6 +1,7 @@
 import logging
 from typing import Any, Dict, List
 from db.manager import DatabaseManager
+from llm.refresh_state import get_refresh_state_manager
 from netbox.client import NetBoxClient
 
 logger = logging.getLogger("netbox.sync_topology")
@@ -19,8 +20,13 @@ class TopologySyncer:
         every termination to (device_hostname, interface_name), look up
         their local IDs, and upsert a link record.
         """
+        refresh_state = get_refresh_state_manager()
+        refresh_state.record_start("planned_topology", trigger="netbox_topology_sync")
+
         if not self.nb_client.api:
-            return {"status": "skipped", "reason": "no_connection"}
+            result = {"status": "skipped", "reason": "no_connection"}
+            refresh_state.record_skipped("planned_topology", result=result, trigger="netbox_topology_sync")
+            return result
 
         cables = self.nb_client.get_cables()
         synced = 0
@@ -85,7 +91,9 @@ class TopologySyncer:
                 logger.error("Failed to sync cable %s: %s", cable_id, e)
 
         logger.info("NetBox Topology Sync: synced %d cables, %d errors", synced, len(errors))
-        return {"status": "success", "cables_synced": synced, "errors": errors}
+        result = {"status": "success", "cables_synced": synced, "errors": errors}
+        refresh_state.record_success("planned_topology", result=result, trigger="netbox_topology_sync")
+        return result
 
     def get_planned_topology(self) -> Dict[str, Any]:
         """
