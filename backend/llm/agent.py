@@ -21,6 +21,7 @@ import re
 from typing import Any, Dict, List, Optional
 
 from llm.context_contract import classify_query
+from llm.context_state import get_context_state_manager
 from llm.provider import LLMProvider, LLMMessage, LLMResponse, ToolCall
 from llm.tools import ToolRegistry
 from llm.context import ContextBuilder
@@ -165,7 +166,7 @@ class NetworkAgent:
         # Conversation history (persists across chat() calls)
         self._history: List[LLMMessage] = []
 
-        self._system_prompt = self._render_system_prompt()
+        self._network_context_cache: Dict[str, str] = {}
 
         logger.info(
             "NetworkAgent initialized (model=%s, tools=%d)",
@@ -202,9 +203,18 @@ class NetworkAgent:
             routing_decision.reasoning,
         )
 
-        route_plan = self._build_route_plan(user_message, routing_decision.query_class)
+        candidate_hostnames = self._extract_candidate_hostnames(user_message)
+        route_plan = self._build_route_plan(
+            user_message,
+            routing_decision.query_class,
+            candidate_hostnames,
+        )
 
-        per_turn_system = self._render_system_prompt(user_message)
+        per_turn_system = self._render_system_prompt(
+            user_message=user_message,
+            routing_decision=routing_decision,
+            device_hostnames=candidate_hostnames,
+        )
         if route_plan["instruction"]:
             per_turn_system = per_turn_system + "\n\n" + route_plan["instruction"]
         if routing_decision.use_knowledge and self._retriever is not None:
@@ -666,8 +676,13 @@ class NetworkAgent:
         heuristic_matches = re.findall(r"\b[A-Za-z][A-Za-z0-9_-]*\d+[A-Za-z0-9_-]*\b", user_message)
         return heuristic_matches[:3]
 
-    def _build_route_plan(self, user_message: str, query_class: str) -> Dict[str, Any]:
-        hostnames = self._extract_candidate_hostnames(user_message)
+    def _build_route_plan(
+        self,
+        user_message: str,
+        query_class: str,
+        hostnames: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        hostnames = hostnames or self._extract_candidate_hostnames(user_message)
         generic_read_tools = [
             "get_context_health",
             "get_audit_log",
@@ -867,18 +882,71 @@ class NetworkAgent:
                 )
             )
 
-    def _render_system_prompt(self, user_message: Optional[str] = None) -> str:
+    def _network_context_cache_key(
+        self,
+        routing_decision=None,
+        device_hostnames: Optional[List[str]] = None,
+    ) -> str:
+        snapshot = get_context_state_manager().snapshot()
+        decision = routing_decision
+        return json.dumps(
+            {
+                "versions": snapshot.get("versions", {}),
+                "query_class": getattr(decision, "query_class", None),
+                "use_live_context": getattr(decision, "use_live_context", None),
+                "include_inventory": getattr(decision, "include_inventory", None),
+                "include_telemetry": getattr(decision, "include_telemetry", None),
+                "include_sdn": getattr(decision, "include_sdn", None),
+                "device_hostnames": sorted(device_hostnames or []),
+            },
+            sort_keys=True,
+        )
+
+    def _build_network_context(
+        self,
+        user_message: Optional[str] = None,
+        routing_decision=None,
+        device_hostnames: Optional[List[str]] = None,
+    ) -> str:
+        cache_key = self._network_context_cache_key(
+            routing_decision=routing_decision,
+            device_hostnames=device_hostnames,
+        )
+        cached = self._network_context_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        network_context = self._context.build_full_context(
+            device_hostnames=device_hostnames,
+            query=user_message,
+            routing_decision=routing_decision,
+        )
+        self._network_context_cache = {cache_key: network_context}
+        return network_context
+
+    def _render_system_prompt(
+        self,
+        user_message: Optional[str] = None,
+        routing_decision=None,
+        device_hostnames: Optional[List[str]] = None,
+    ) -> str:
         return SYSTEM_PROMPT.format(
-            network_context=self._context.build_full_context(query=user_message)
+            network_context=self._build_network_context(
+                user_message=user_message,
+                routing_decision=routing_decision,
+                device_hostnames=device_hostnames,
+            )
         )
 
     def refresh_context(self) -> None:
         """
-        Refresh the network context in the system prompt.
-        Call this after a topology crawl completes.
+        Invalidate cached environment context so the next turn rebuilds it.
+
+        This preserves compatibility with existing refresh hooks while
+        keeping per-turn prompt assembly authoritative.
         """
-        self._system_prompt = self._render_system_prompt()
-        logger.info("System prompt refreshed with latest topology")
+        self._network_context_cache.clear()
+        logger.info("Cached network context invalidated")
 
     def get_history(self) -> List[Dict[str, str]]:
         """Return the conversation history as a list of dicts."""

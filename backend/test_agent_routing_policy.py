@@ -43,6 +43,15 @@ class _FakeSnapshot:
 
 
 class _AgentFakeDb:
+    def __init__(self):
+        self._topology = {
+            "timestamp": "2026-03-09T10:15:00+00:00",
+            "nodes": {
+                "R1": {"mgmt_ip": "10.0.0.1", "down": False, "connectedNode": ["SW1"], "interfaceList": [{}], "edgeLink": {}},
+                "SW1": {"mgmt_ip": "10.0.0.2", "down": False, "connectedNode": ["R1"], "interfaceList": [{}], "edgeLink": {}},
+            },
+        }
+
     def get_all_devices(self):
         return [
             Device(hostname="SW1", management_ip="10.0.0.2", vendor="cisco_ios", status="active", role="access", source="manual", updated_at="2026-03-09T10:00:00+00:00", id=1),
@@ -56,13 +65,10 @@ class _AgentFakeDb:
         return None
 
     def get_topology(self):
-        return {
-            "timestamp": "2026-03-09T10:15:00+00:00",
-            "nodes": {
-                "R1": {"mgmt_ip": "10.0.0.1", "down": False, "connectedNode": ["SW1"], "interfaceList": [{}], "edgeLink": {}},
-                "SW1": {"mgmt_ip": "10.0.0.2", "down": False, "connectedNode": ["R1"], "interfaceList": [{}], "edgeLink": {}},
-            },
-        }
+        return self._topology
+
+    def set_topology(self, topology):
+        self._topology = topology
 
     def get_config_history(self, device_id, limit=1):
         return [_FakeSnapshot()]
@@ -79,6 +85,10 @@ async def _run_chat(message: str):
     agent = NetworkAgent(db_manager=_AgentFakeDb(), provider=provider, retriever=None)
     response = await agent.chat(message)
     return provider, response
+
+
+async def _run_chat_with_agent(agent: NetworkAgent, message: str):
+    return await agent.chat(message)
 
 
 def test_inventory_query_prefetches_inventory_tool():
@@ -117,3 +127,31 @@ def test_troubleshooting_query_prefetches_multi_source_evidence():
     assert "get_device_details" in tool_names
     assert "get_device_running_config" in tool_names
     assert "get_recent_incidents" in tool_names
+
+
+def test_agent_rebuilds_context_on_next_turn_without_manual_prompt_refresh():
+    import asyncio
+
+    db = _AgentFakeDb()
+    provider = _FakeProvider()
+    agent = NetworkAgent(db_manager=db, provider=provider, retriever=None)
+
+    asyncio.run(_run_chat_with_agent(agent, "Show me the live topology"))
+    first_system_prompt = provider.calls[0]["messages"][0].content
+    assert "Management IP: 10.0.0.2" in first_system_prompt
+
+    db.set_topology(
+        {
+            "timestamp": "2026-03-09T10:20:00+00:00",
+            "nodes": {
+                "R1": {"mgmt_ip": "10.0.0.1", "down": False, "connectedNode": ["SW1"], "interfaceList": [{}], "edgeLink": {}},
+                "SW1": {"mgmt_ip": "10.0.0.22", "down": False, "connectedNode": ["R1"], "interfaceList": [{}], "edgeLink": {}},
+            },
+        }
+    )
+    agent.refresh_context()
+
+    asyncio.run(_run_chat_with_agent(agent, "Show me the live topology again"))
+    second_system_prompt = provider.calls[1]["messages"][0].content
+    assert "Management IP: 10.0.0.22" in second_system_prompt
+    assert "Management IP: 10.0.0.2\n" not in second_system_prompt
