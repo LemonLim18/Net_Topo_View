@@ -19,7 +19,9 @@ Responsibilities:
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 import logging
+import threading
 from typing import TYPE_CHECKING, Optional
 
 from llm.context_contract import (
@@ -46,6 +48,10 @@ if TYPE_CHECKING:
     from llm.embedder import GeminiEmbedder
 
 logger = logging.getLogger("llm.retriever")
+
+
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 _FEATURE_HINTS = (
     "ospf",
@@ -90,6 +96,58 @@ class RetrievalPlan:
     min_preferred_results: int
     suppress_fallback_when_fresh: tuple[str, ...] = ()
     reasoning: str = ""
+
+
+class RetrievalTelemetry:
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self.reset()
+
+    def reset(self) -> None:
+        with self._lock:
+            self._total_queries = 0
+            self._last_retrieved_at: Optional[str] = None
+            self._query_class_counts: dict[str, int] = {}
+            self._partition_counts: dict[str, int] = {}
+            self._source_type_counts: dict[str, int] = {}
+
+    def record(self, query_class: str, results: list[dict]) -> None:
+        with self._lock:
+            self._total_queries += 1
+            self._last_retrieved_at = _utc_now()
+            self._query_class_counts[query_class] = self._query_class_counts.get(query_class, 0) + 1
+            for result in results:
+                partition = str(result.get("partition") or "unknown")
+                self._partition_counts[partition] = self._partition_counts.get(partition, 0) + 1
+                source_type = str(result.get("source_type") or "unknown")
+                self._source_type_counts[source_type] = self._source_type_counts.get(source_type, 0) + 1
+
+    def snapshot(self) -> dict[str, object]:
+        with self._lock:
+            total_results = sum(self._partition_counts.values())
+            partition_percentages = {
+                partition: round((count / total_results) * 100, 1)
+                for partition, count in self._partition_counts.items()
+            } if total_results else {}
+            return {
+                "total_queries": self._total_queries,
+                "last_retrieved_at": self._last_retrieved_at,
+                "query_class_counts": dict(sorted(self._query_class_counts.items())),
+                "partition_counts": dict(sorted(self._partition_counts.items())),
+                "partition_percentages": dict(sorted(partition_percentages.items())),
+                "source_type_counts": dict(sorted(self._source_type_counts.items())),
+            }
+
+
+_RETRIEVAL_TELEMETRY = RetrievalTelemetry()
+
+
+def get_retrieval_telemetry_snapshot() -> dict[str, object]:
+    return _RETRIEVAL_TELEMETRY.snapshot()
+
+
+def reset_retrieval_telemetry() -> None:
+    _RETRIEVAL_TELEMETRY.reset()
 
 
 _PARTITION_FRESHNESS = {
@@ -529,11 +587,13 @@ class KnowledgeRetriever:
 
             deduped = self._dedupe_results(enriched)
             filtered = self._suppress_fallback_results(deduped, plan)
-            return sorted(
+            selected_results = sorted(
                 filtered,
                 key=lambda item: (item.get("planner_score", item["score"]), item["score"]),
                 reverse=True,
             )[:k]
+            _RETRIEVAL_TELEMETRY.record(plan.query_class, selected_results)
+            return selected_results
 
         except Exception as exc:
             logger.warning("Knowledge retrieval failed: %s", exc)

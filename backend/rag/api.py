@@ -522,15 +522,19 @@ def setup_state_embedder(embedder_instance) -> None:
     _state_embedder = embedder_instance
 
 
-@router.get("/state-embedding/status")
-async def state_embedding_status():
-    """Return status of the network state auto-embedder."""
+def get_state_embedding_status_snapshot() -> dict:
     if _state_embedder is None:
         return {"available": False, "last_embedded_at": None}
     return {
         "available": True,
         "last_embedded_at": _state_embedder.last_embedded_at,
     }
+
+
+@router.get("/state-embedding/status")
+async def state_embedding_status():
+    """Return status of the network state auto-embedder."""
+    return get_state_embedding_status_snapshot()
 
 
 @router.post("/state-embedding/trigger")
