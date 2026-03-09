@@ -51,6 +51,76 @@ _DEFAULT_DB_PATH = _HERE / "netauto.db"
 TZ_UTC8 = timezone(timedelta(hours=8))
 
 
+def _node_oper_state(node_data: Dict[str, Any]) -> str:
+    if not isinstance(node_data, dict):
+        return "missing"
+    return "down" if node_data.get("down") else "up"
+
+
+def _summarize_topology_changes(previous: Optional[Dict[str, Any]], current: Dict[str, Any]) -> Dict[str, Any]:
+    previous_nodes = previous.get("nodes", {}) if isinstance(previous, dict) else {}
+    current_nodes = current.get("nodes", {}) if isinstance(current, dict) else {}
+
+    added_devices: List[str] = []
+    removed_devices: List[str] = []
+    device_state_changes: List[Dict[str, Any]] = []
+
+    for hostname in sorted(set(previous_nodes) | set(current_nodes)):
+        previous_node = previous_nodes.get(hostname)
+        current_node = current_nodes.get(hostname)
+
+        if previous_node is None and current_node is not None:
+            added_devices.append(hostname)
+            device_state_changes.append(
+                {
+                    "hostname": hostname,
+                    "change": "added",
+                    "previous_state": "missing",
+                    "current_state": _node_oper_state(current_node),
+                    "management_ip": current_node.get("mgmt_ip"),
+                }
+            )
+            continue
+
+        if current_node is None and previous_node is not None:
+            removed_devices.append(hostname)
+            device_state_changes.append(
+                {
+                    "hostname": hostname,
+                    "change": "removed",
+                    "previous_state": _node_oper_state(previous_node),
+                    "current_state": "missing",
+                    "management_ip": previous_node.get("mgmt_ip"),
+                }
+            )
+            continue
+
+        previous_state = _node_oper_state(previous_node)
+        current_state = _node_oper_state(current_node)
+        if previous_state != current_state:
+            device_state_changes.append(
+                {
+                    "hostname": hostname,
+                    "change": "state_changed",
+                    "previous_state": previous_state,
+                    "current_state": current_state,
+                    "management_ip": current_node.get("mgmt_ip") or previous_node.get("mgmt_ip"),
+                }
+            )
+
+    return {
+        "added_devices": added_devices,
+        "removed_devices": removed_devices,
+        "state_changed_devices": [
+            change["hostname"]
+            for change in device_state_changes
+            if change.get("change") == "state_changed"
+        ],
+        "device_state_changes": device_state_changes[:50],
+        "device_change_count": len(device_state_changes),
+    }
+
+
 class DatabaseManager:
     """
     Unified access point for persistent storage and the real-time
@@ -168,17 +238,29 @@ class DatabaseManager:
             }
         """
         with self._topo_lock:
+            previous_topology = json.loads(json.dumps(self._topo_cache))
             self._topo_cache = topo_dict
+        topology_change = _summarize_topology_changes(previous_topology, topo_dict)
         publish_context_refresh_event(
             source="crawler_cache",
             action="topology_cache_replaced",
-            summary=f"topology cache replaced with {len(topo_dict.get('nodes', {}))} nodes",
+            summary=(
+                f"topology cache replaced with {len(topo_dict.get('nodes', {}))} nodes; "
+                f"device_changes={topology_change['device_change_count']}"
+            ),
             domains=(CONTEXT_DOMAIN_LIVE_TOPOLOGY,),
             event_type="refresh",
             refresh_mode="none",
             metadata={
                 "timestamp": topo_dict.get("timestamp"),
                 "node_count": len(topo_dict.get("nodes", {})),
+                "topology_change": {
+                    "added_devices": topology_change["added_devices"],
+                    "removed_devices": topology_change["removed_devices"],
+                    "state_changed_devices": topology_change["state_changed_devices"],
+                    "device_change_count": topology_change["device_change_count"],
+                },
+                "device_state_changes": topology_change["device_state_changes"],
             },
         )
         logger.debug("Topology cache updated (%d nodes)",

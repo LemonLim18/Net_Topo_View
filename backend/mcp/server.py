@@ -23,6 +23,32 @@ except ImportError:  # pragma: no cover - package import path
 # Initialize FastMCP Server
 mcp = FastMCP("NetAutoController")
 
+
+def _enable_resource_subscription_capability() -> None:
+    lowlevel_server = getattr(mcp, "_mcp_server", None)
+    if lowlevel_server is None or getattr(lowlevel_server, "_resource_subscription_capability_patched", False):
+        return
+
+    original_create_initialization_options = lowlevel_server.create_initialization_options
+
+    def _create_initialization_options(*args, **kwargs):
+        options = original_create_initialization_options(*args, **kwargs)
+        resources_capability = getattr(options.capabilities, "resources", None)
+        if resources_capability is not None:
+            has_subscription_handler = any(
+                getattr(request_type, "__name__", "") == "SubscribeRequest"
+                for request_type in lowlevel_server.request_handlers
+            )
+            if has_subscription_handler:
+                resources_capability.subscribe = True
+        return options
+
+    lowlevel_server.create_initialization_options = _create_initialization_options
+    lowlevel_server._resource_subscription_capability_patched = True
+
+
+_enable_resource_subscription_capability()
+
 _DB_PATH = Path(__file__).resolve().parent.parent / "db" / "netauto.db"
 
 # Global instances (initialized on startup if needed, or lazily)

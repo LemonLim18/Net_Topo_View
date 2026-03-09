@@ -190,6 +190,44 @@ def test_db_manager_context_event_log_roundtrip(tmp_path):
     assert entries[0]["downstream_targets"][0]["name"] == "network_context_cache"
 
 
+def test_update_topology_publication_includes_device_state_changes(tmp_path, monkeypatch):
+    db_path = tmp_path / "topology.db"
+    db = DatabaseManager(str(db_path))
+    db.initialize()
+    calls = []
+
+    monkeypatch.setattr(
+        "db.manager.publish_context_refresh_event",
+        lambda **kwargs: calls.append(kwargs) or {"event_id": "evt-topology"},
+    )
+
+    db.update_topology(
+        {
+            "timestamp": "2026-03-09T10:00:00+00:00",
+            "nodes": {
+                "R1": {"mgmt_ip": "10.0.0.1", "down": False},
+                "R2": {"mgmt_ip": "10.0.0.2", "down": False},
+            },
+        }
+    )
+    db.update_topology(
+        {
+            "timestamp": "2026-03-09T10:05:00+00:00",
+            "nodes": {
+                "R1": {"mgmt_ip": "10.0.0.1", "down": True},
+                "R3": {"mgmt_ip": "10.0.0.3", "down": False},
+            },
+        }
+    )
+
+    metadata = calls[-1]["metadata"]
+
+    assert metadata["topology_change"]["added_devices"] == ["R3"]
+    assert metadata["topology_change"]["removed_devices"] == ["R2"]
+    assert metadata["topology_change"]["state_changed_devices"] == ["R1"]
+    assert metadata["device_state_changes"][0]["hostname"] == "R1"
+
+
 def test_get_context_health_includes_durable_event_log(tmp_path):
     db_path = tmp_path / "eventhealth.db"
     db = DatabaseManager(str(db_path))

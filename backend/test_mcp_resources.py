@@ -15,6 +15,8 @@ class _FakeMCP:
 
         return decorator
 
+    _mcp_server = None
+
 
 def _load_resources_module():
     fake_server = ModuleType("mcp.server")
@@ -51,10 +53,11 @@ resources = _load_resources_module()
 
 
 class _FakeFreshness:
-    def __init__(self, source: str, scope: str, captured_at: str | None = None):
+    def __init__(self, source: str, scope: str, captured_at: str | None = None, freshness_class: str = "live"):
         self.source = source
         self.scope = scope
         self.captured_at = captured_at
+        self.freshness_class = freshness_class
 
     def to_dict(self):
         return {
@@ -63,7 +66,7 @@ class _FakeFreshness:
             "source": self.source,
             "scope": self.scope,
             "confidence": 0.9,
-            "freshness_class": "live" if self.captured_at else "missing",
+            "freshness_class": self.freshness_class,
             "age_seconds": 0 if self.captured_at else None,
         }
 
@@ -192,3 +195,155 @@ def test_context_health_resource_combines_health_and_sync(monkeypatch):
 
     assert payload["context_health"]["versions"]["live_topology"] == 4
     assert payload["last_sync_status"]["operations"]["inventory"]["status"] == "idle"
+
+
+def test_topology_event_resource_filters_durable_context_events(monkeypatch):
+    monkeypatch.setattr(resources.network_tools, "set_db_manager", lambda db_manager: None)
+    monkeypatch.setattr(
+        resources,
+        "db",
+        SimpleNamespace(
+            get_context_event_log=lambda limit=100: [
+                {
+                    "event_id": "evt-topo-1",
+                    "source": "crawler_cache",
+                    "action": "topology_cache_replaced",
+                    "summary": "topology changed",
+                    "event_type": "refresh",
+                    "domains": ["live_topology"],
+                    "versions": {"live_topology": 3},
+                    "metadata": {"topology_change": {"device_change_count": 2}},
+                    "created_at": "2026-03-09T10:05:00+00:00",
+                },
+                {
+                    "event_id": "evt-inc-1",
+                    "source": "incident_store",
+                    "action": "incident_state_changed",
+                    "summary": "incident changed",
+                    "event_type": "refresh",
+                    "domains": ["incidents"],
+                    "versions": {"incidents": 1},
+                    "metadata": {"severity": "high"},
+                    "created_at": "2026-03-09T10:04:00+00:00",
+                },
+            ]
+        ),
+    )
+
+    payload = json.loads(resources.get_topology_change_events())
+
+    assert payload["stream"] == "topology-change"
+    assert payload["returned"] == 1
+    assert payload["events"][0]["event_id"] == "evt-topo-1"
+    assert payload["events"][0]["topology_change"]["device_change_count"] == 2
+
+
+def test_device_state_event_resource_expands_per_device_changes(monkeypatch):
+    monkeypatch.setattr(resources.network_tools, "set_db_manager", lambda db_manager: None)
+    monkeypatch.setattr(
+        resources,
+        "db",
+        SimpleNamespace(
+            get_context_event_log=lambda limit=100: [
+                {
+                    "event_id": "evt-live-1",
+                    "source": "crawler_cache",
+                    "action": "topology_cache_replaced",
+                    "summary": "device states changed",
+                    "event_type": "refresh",
+                    "domains": ["live_topology"],
+                    "versions": {"live_topology": 8},
+                    "metadata": {
+                        "device_state_changes": [
+                            {
+                                "hostname": "R1",
+                                "change": "state_changed",
+                                "previous_state": "up",
+                                "current_state": "down",
+                                "management_ip": "10.0.0.1",
+                            },
+                            {
+                                "hostname": "R3",
+                                "change": "added",
+                                "previous_state": "missing",
+                                "current_state": "up",
+                                "management_ip": "10.0.0.3",
+                            },
+                        ]
+                    },
+                    "created_at": "2026-03-09T10:06:00+00:00",
+                }
+            ]
+        ),
+    )
+
+    payload = json.loads(resources.get_device_state_events())
+
+    assert payload["returned"] == 2
+    assert payload["events"][0]["hostname"] == "R3"
+    assert payload["events"][1]["hostname"] == "R1"
+    assert payload["events"][1]["current_state"] == "down"
+
+
+def test_telemetry_freshness_resource_emits_current_warning_when_stale(monkeypatch):
+    monkeypatch.setattr(resources.network_tools, "set_db_manager", lambda db_manager: None)
+    monkeypatch.setattr(resources, "db", SimpleNamespace(get_context_event_log=lambda limit=100: []))
+    monkeypatch.setattr(
+        resources,
+        "_build_telemetry_payload",
+        lambda: {
+            "metrics": [],
+            "total": 0,
+            "source_metadata": _FakeFreshness(
+                "influxdb",
+                "device_metrics",
+                "2026-03-09T09:30:00+00:00",
+                freshness_class="stale",
+            ).to_dict(),
+        },
+    )
+
+    payload = json.loads(resources.get_telemetry_freshness_events())
+
+    assert payload["stream"] == "telemetry-freshness"
+    assert payload["current_warnings"][0]["severity"] == "warning"
+    assert payload["events"][0]["action"] == "telemetry_freshness_warning"
+
+
+def test_event_cursor_resource_returns_only_newer_events(monkeypatch):
+    monkeypatch.setattr(resources.network_tools, "set_db_manager", lambda db_manager: None)
+    monkeypatch.setattr(
+        resources,
+        "db",
+        SimpleNamespace(
+            get_context_event_log=lambda limit=100: [
+                {
+                    "event_id": "evt-topo-new",
+                    "source": "crawler_cache",
+                    "action": "topology_cache_replaced",
+                    "summary": "new topology",
+                    "event_type": "refresh",
+                    "domains": ["live_topology"],
+                    "versions": {"live_topology": 4},
+                    "metadata": {},
+                    "created_at": "2026-03-09T10:07:00+00:00",
+                },
+                {
+                    "event_id": "evt-topo-old",
+                    "source": "crawler_cache",
+                    "action": "topology_cache_replaced",
+                    "summary": "old topology",
+                    "event_type": "refresh",
+                    "domains": ["live_topology"],
+                    "versions": {"live_topology": 3},
+                    "metadata": {},
+                    "created_at": "2026-03-09T10:06:00+00:00",
+                },
+            ]
+        ),
+    )
+
+    payload = json.loads(resources.get_event_stream_from_cursor("topology-change", "evt-topo-old"))
+
+    assert payload["returned"] == 1
+    assert payload["events"][0]["event_id"] == "evt-topo-new"
