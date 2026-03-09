@@ -63,3 +63,38 @@ def test_chat_endpoint_returns_grounding_meta(monkeypatch):
 
     assert payload.grounding_meta["answer_scope"] == "planned"
     assert payload.grounding_meta["source_used"] == ["local_db"]
+
+
+def test_benchmark_cases_endpoint_returns_step26_categories(monkeypatch):
+    monkeypatch.setattr(llm_api, "_get_agent", lambda: _FakeAgent())
+
+    payload = asyncio.run(llm_api.get_benchmark_cases())
+
+    assert "inventory_only" in payload["categories"]
+    assert "stale_data" in payload["categories"]
+    assert any(case["id"] == "incident_troubleshooting" for case in payload["cases"])
+
+
+def test_run_chat_benchmark_endpoint_returns_structured_report(monkeypatch):
+    monkeypatch.setattr(llm_api, "_get_agent", lambda: _FakeAgent())
+    monkeypatch.setattr(
+        llm_api,
+        "run_benchmark_suite",
+        lambda agent, selected_categories=None: asyncio.sleep(0, result={
+            "suite_version": "phase8_step26_v1",
+            "total_cases": 1,
+            "passed_cases": 1,
+            "failed_cases": 0,
+            "overall_score": 1.0,
+            "regression_guard": {"passed": True, "failed_case_ids": []},
+            "cases": [{"id": "inventory_management_ip", "passed": True}],
+        }),
+    )
+
+    payload = asyncio.run(
+        llm_api.run_chat_benchmark(llm_api.BenchmarkRunRequest(categories=["inventory_only"]))
+    )
+
+    assert payload["suite_version"] == "phase8_step26_v1"
+    assert payload["regression_guard"]["passed"] is True
+    assert payload["cases"][0]["id"] == "inventory_management_ip"

@@ -28,6 +28,7 @@ from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
 from auth.rbac import require_role
+from llm.benchmark_suite import benchmark_categories, list_benchmark_cases, run_benchmark_suite
 from llm import network_tools
 from llm.refresh_fabric import register_refresh_listener
 
@@ -70,6 +71,15 @@ class ProposalReviewRequest(BaseModel):
     merged_config: str = Field(..., description="Reviewed merged config", min_length=1)
     accepted_line_indices: List[int] = Field(default_factory=list)
     rejected_line_indices: List[int] = Field(default_factory=list)
+
+
+class BenchmarkRunRequest(BaseModel):
+    """Optional benchmark filters for the LLM regression suite."""
+
+    categories: Optional[List[str]] = Field(
+        default=None,
+        description="Optional subset of benchmark categories to execute.",
+    )
 
 
 # -----------------------------------------------------------------------
@@ -236,6 +246,25 @@ async def get_canonical_device_state(hostname: Optional[str] = None):
             if str(name).lower() == lowered
         ]
     return payload
+
+
+@router.get("/benchmark/cases")
+async def get_benchmark_cases():
+    """Return the benchmark categories and canonical case definitions used for regression scoring."""
+    return {
+        "categories": benchmark_categories(),
+        "cases": list_benchmark_cases(),
+    }
+
+
+@router.post("/benchmark")
+async def run_chat_benchmark(request: Optional[BenchmarkRunRequest] = None):
+    """Execute the deterministic chat benchmark suite and return a structured scoring report."""
+    agent = _get_agent()
+    try:
+        return await run_benchmark_suite(agent, selected_categories=(request.categories if request else None))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 # -----------------------------------------------------------------------
