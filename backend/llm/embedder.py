@@ -1,8 +1,9 @@
 """
 Embedding wrapper for the Vector-Embedded RAG layer (M21).
 
-Uses Google Gemini ``text-embedding-004`` (768-dim) exclusively — the
-same API key already used by GeminiProvider, no new credentials required.
+Uses Google Gemini ``text-embedding-004`` (768-dim) when available.
+If Gemini is unavailable or misconfigured, falls back to a deterministic local
+embedding so retrieval remains functional.
 
 Task types follow the Gemini embedding best practice:
     - RETRIEVAL_DOCUMENT during ingestion (document-side)
@@ -13,8 +14,10 @@ Batching:
     stay well within the free-tier rate limit of 1 500 RPM.
 """
 
+import hashlib
 import logging
 import os
+import re
 import time
 from typing import Optional
 
@@ -23,6 +26,7 @@ logger = logging.getLogger("llm.embedder")
 _EMBED_MODEL = "text-embedding-004"
 _BATCH_SIZE = 100
 _EMBED_DIM = 768
+_TOKEN_RE = re.compile(r"[a-z0-9_./-]+")
 
 
 class GeminiEmbedder:
@@ -76,10 +80,10 @@ class GeminiEmbedder:
         Processes in batches of BATCH_SIZE to respect API rate limits.
         Returns a list of 768-dim float vectors in the same order as input.
         """
-        if not self._available:
-            return [self._zero_vector() for _ in texts]
         if not texts:
             return []
+        if not self._available:
+            return [self._fallback_embedding(text) for text in texts]
 
         all_embeddings: list[list[float]] = []
         for batch_start in range(0, len(texts), _BATCH_SIZE):
@@ -96,12 +100,14 @@ class GeminiEmbedder:
         """
         Embed a single query string (RETRIEVAL_QUERY task).
 
-        Returns a 768-dim float vector, or a zero vector if unavailable.
+        Returns a 768-dim float vector.
         """
-        if not self._available or not text.strip():
+        if not text.strip():
             return self._zero_vector()
+        if not self._available:
+            return self._fallback_embedding(text)
         results = self._embed_batch([text], task_type="RETRIEVAL_QUERY")
-        return results[0] if results else self._zero_vector()
+        return results[0] if results else self._fallback_embedding(text)
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -121,7 +127,28 @@ class GeminiEmbedder:
             return [list(e.values) for e in response.embeddings]
         except Exception as exc:
             logger.error("Embedding batch failed (task=%s, n=%d): %s", task_type, len(texts), exc)
-            return [self._zero_vector() for _ in texts]
+            return [self._fallback_embedding(text) for text in texts]
+
+    def _fallback_embedding(self, text: str) -> list[float]:
+        vector = [0.0] * _EMBED_DIM
+        tokens = _TOKEN_RE.findall(text.lower())
+        if not tokens:
+            return self._zero_vector()
+
+        for position, token in enumerate(tokens, start=1):
+            digest = hashlib.sha256(token.encode("utf-8", errors="ignore")).digest()
+            weight = 1.0 / (position ** 0.5)
+            primary_index = int.from_bytes(digest[:2], "big") % _EMBED_DIM
+            secondary_index = int.from_bytes(digest[2:4], "big") % _EMBED_DIM
+            primary_sign = 1.0 if digest[4] % 2 == 0 else -1.0
+            secondary_sign = 1.0 if digest[5] % 2 == 0 else -1.0
+            vector[primary_index] += primary_sign * weight
+            vector[secondary_index] += secondary_sign * (weight * 0.5)
+
+        magnitude = sum(component * component for component in vector) ** 0.5
+        if magnitude == 0.0:
+            return self._zero_vector()
+        return [component / magnitude for component in vector]
 
     @staticmethod
     def _zero_vector() -> list[float]:

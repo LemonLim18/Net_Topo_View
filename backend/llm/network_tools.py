@@ -661,6 +661,7 @@ def get_knowledge_base_status(limit: int = 10) -> str:
     """
     try:
         from llm.vector_store import KnowledgeVectorStore
+        from rag.knowledge_curation import build_curation_audit
 
         store = KnowledgeVectorStore(embedder=None)
         if not store.available:
@@ -669,19 +670,22 @@ def get_knowledge_base_status(limit: int = 10) -> str:
                     "documents": [],
                     "total_documents": 0,
                     "total_chunks": 0,
+                    "curation_audit": build_curation_audit([]),
                     "source_metadata": _knowledge_source_metadata("vector_store", None, confidence=0.0),
                 },
                 ensure_ascii=False,
             )
 
-        documents = store.list_documents()[: max(limit, 1)]
-        latest_ingested = max((doc.get("ingested_at") for doc in documents if doc.get("ingested_at")), default=None)
+        all_documents = store.list_documents()
+        documents = all_documents[: max(limit, 1)]
+        latest_ingested = max((doc.get("ingested_at") for doc in all_documents if doc.get("ingested_at")), default=None)
         return json.dumps(
             {
                 "documents": documents,
-                "total_documents": len(documents),
+                "total_documents": len(all_documents),
                 "total_chunks": store.count(),
                 "partition_counts": store.count_by_partition() if hasattr(store, "count_by_partition") else {},
+                "curation_audit": build_curation_audit(all_documents),
                 "source_metadata": _knowledge_source_metadata("vector_store", latest_ingested, confidence=0.95 if documents else 0.0),
             },
             ensure_ascii=False,

@@ -29,7 +29,7 @@ import os
 import re
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 if TYPE_CHECKING:
@@ -93,6 +93,7 @@ class DocumentIngester:
         doc_type: str,
         vendor: str,
         doc_name: str | None = None,
+        metadata_overrides: dict[str, Any] | None = None,
     ) -> dict:
         """
         Ingest a single file into the knowledge vector store.
@@ -138,6 +139,13 @@ class DocumentIngester:
         applicable_model = self._infer_applicable_model(name)
         source_type = self._source_type_for_doc(doc_type)
         freshness_weight = self._freshness_weight_for_doc(doc_type)
+        overrides = metadata_overrides or {}
+        platform_family = str(overrides.get("platform_family") or vendor or "general")
+        applicable_model = str(overrides.get("applicable_model") or applicable_model)
+        applicable_features = str(overrides.get("applicable_feature") or applicable_features)
+        source_type = str(overrides.get("source_type") or source_type)
+        trust_level = str(overrides.get("trust_level") or "curated")
+        captured_at = str(overrides.get("captured_at") or ingested_at)
 
         texts = [c["text"] for c in raw_chunks]
         metadatas = [
@@ -146,14 +154,16 @@ class DocumentIngester:
                 "doc_name":    name,
                 "doc_type":    doc_type,
                 "vendor":      vendor,
+                "platform_family": platform_family,
                 "chunk_index": i,
                 "page_number": c.get("page", 0),
-                "captured_at": ingested_at,
+                "captured_at": captured_at,
                 "ingested_at": ingested_at,
                 "applicable_vendor": vendor,
                 "applicable_model": applicable_model,
                 "applicable_feature": applicable_features,
                 "source_type": source_type,
+                "trust_level": trust_level,
                 "severity": "info",
                 "freshness_weight": freshness_weight,
                 "token_count": len(c["text"].split()),

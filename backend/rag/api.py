@@ -23,6 +23,7 @@ import os
 import shutil
 import tempfile
 import uuid
+from dataclasses import asdict
 from pathlib import Path
 from typing import Optional
 
@@ -30,6 +31,14 @@ from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPExcepti
 from fastapi.responses import JSONResponse
 from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel
+
+from rag.knowledge_curation import (
+    KnowledgeDocumentMetadata,
+    build_curation_audit,
+    load_document_metadata,
+    register_manifest_entry,
+    save_document_metadata,
+)
 
 logger = logging.getLogger("rag.api")
 
@@ -91,7 +100,13 @@ class DocumentInfo(BaseModel):
     doc_name: str
     doc_type: str
     vendor: str
+    platform_family: str = ""
+    applicable_model: str = ""
+    applicable_feature: str = ""
+    trust_level: str = ""
+    source_type: str = ""
     ingested_at: str
+    captured_at: str = ""
     chunk_count: int
     partition: Optional[str] = None
     collection_name: Optional[str] = None
@@ -116,6 +131,7 @@ class StatusResponse(BaseModel):
     total_documents: int
     chroma_path: str
     partition_counts: dict[str, int] = {}
+    curation_audit: dict[str, object] = {}
 
 
 # DI global for context bundle builder
@@ -144,9 +160,11 @@ _ALLOWED_DOC_TYPES = {
     "sop",
     "troubleshooting",
     "best_practice",
+    "advisory",
 }
 
 _ALLOWED_VENDORS = {"cisco", "huawei", "juniper", "aruba", "general"}
+_ALLOWED_TRUST_LEVELS = {"authoritative", "curated", "reference", "advisory", "supplemental"}
 
 
 @router.post(
@@ -160,6 +178,12 @@ async def upload_document(
     doc_type: str = Form(..., description="One of: vendor_doc, cli_reference, sop, troubleshooting, best_practice"),
     vendor: str = Form(..., description="One of: cisco, huawei, juniper, aruba, general"),
     doc_name: Optional[str] = Form(None, description="Human-readable name override"),
+    platform_family: str = Form("multi-vendor", description="Platform family such as ios-xe, junos, vrp, or multi-vendor"),
+    applicable_model: str = Form("", description="Optional platform or model specificity"),
+    applicable_feature: str = Form("", description="Comma-separated feature tags"),
+    trust_level: str = Form("curated", description="One of: authoritative, curated, reference, advisory, supplemental"),
+    source_type: str = Form("static_document", description="Static knowledge source type label"),
+    captured_at: Optional[str] = Form(None, description="Optional original source capture timestamp"),
     current_user: dict = Depends(_auth_dep),
 ):
     """
@@ -190,6 +214,11 @@ async def upload_document(
             status_code=400,
             detail=f"Invalid vendor '{vendor}'. Allowed: {sorted(_ALLOWED_VENDORS)}",
         )
+    if trust_level not in _ALLOWED_TRUST_LEVELS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid trust_level '{trust_level}'. Allowed: {sorted(_ALLOWED_TRUST_LEVELS)}",
+        )
 
     # Save to a temp file first, then move to knowledge_base/
     with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
@@ -204,6 +233,20 @@ async def upload_document(
     safe_name = _safe_filename(display_name, suffix)
     dest_path = kb_dir / safe_name
     shutil.move(tmp_path, str(dest_path))
+    metadata = KnowledgeDocumentMetadata(
+        doc_type=doc_type,
+        vendor=vendor,
+        platform_family=platform_family,
+        applicable_model=applicable_model,
+        applicable_feature=applicable_feature,
+        trust_level=trust_level,
+        source_type=source_type,
+        captured_at=captured_at or "",
+        title=display_name,
+        author=current_user.get("username", ""),
+    )
+    save_document_metadata(dest_path, metadata)
+    register_manifest_entry(kb_dir, dest_path.name, metadata)
 
     try:
         result = await run_in_threadpool(
@@ -212,6 +255,7 @@ async def upload_document(
             doc_type=doc_type,
             vendor=vendor,
             doc_name=display_name,
+            metadata_overrides=asdict(metadata),
         )
     except Exception as exc:
         logger.error("Ingestion failed for %s: %s", original_name, exc)
@@ -332,19 +376,17 @@ async def rebuild_knowledge_base(
         total_chunks = 0
         errors = []
         for f in files:
-            meta_file = f.with_suffix(f.suffix + ".meta.json")
-            doc_type = "best_practice"
-            vendor = "general"
-            if meta_file.exists():
-                import json as _json
-                try:
-                    meta = _json.loads(meta_file.read_text())
-                    doc_type = meta.get("doc_type", doc_type)
-                    vendor = meta.get("vendor", vendor)
-                except Exception:
-                    pass
+            metadata = load_document_metadata(f, kb_dir)
+            doc_type = metadata.doc_type
+            vendor = metadata.vendor
             try:
-                r = _ingester.ingest_file(file_path=str(f), doc_type=doc_type, vendor=vendor, doc_name=f.name)
+                r = _ingester.ingest_file(
+                    file_path=str(f),
+                    doc_type=doc_type,
+                    vendor=vendor,
+                    doc_name=f.name,
+                    metadata_overrides=asdict(metadata),
+                )
                 total_chunks += r.get("chunks_stored", 0)
             except Exception as exc:
                 errors.append(f"{f.name}: {exc}")
@@ -386,6 +428,7 @@ async def get_rag_status(
             total_documents=len(docs),
             chroma_path=str(Path(_KNOWLEDGE_BASE_DIR).resolve()),
             partition_counts=_vector_store.count_by_partition() if hasattr(_vector_store, "count_by_partition") else {},
+            curation_audit=build_curation_audit(docs),
         )
     except Exception as exc:
         return StatusResponse(
@@ -394,6 +437,7 @@ async def get_rag_status(
             total_documents=0,
             chroma_path=_KNOWLEDGE_BASE_DIR,
             partition_counts={},
+            curation_audit=build_curation_audit([]),
         )
 
 
