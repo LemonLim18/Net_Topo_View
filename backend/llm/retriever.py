@@ -21,7 +21,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from llm.context_contract import classify_query
+from llm.context_contract import CONTEXT_DOMAIN_KNOWLEDGE, classify_query, compute_freshness
 
 if TYPE_CHECKING:
     from llm.vector_store import KnowledgeVectorStore
@@ -200,6 +200,14 @@ class KnowledgeRetriever:
                         "page_number":  meta.get("page_number", 0),
                         "chunk_index":  meta.get("chunk_index", 0),
                         "ingested_at":  meta.get("ingested_at", ""),
+                        "source_metadata": compute_freshness(
+                            domain=CONTEXT_DOMAIN_KNOWLEDGE,
+                            captured_at=meta.get("ingested_at", ""),
+                            ingested_at=meta.get("ingested_at", ""),
+                            source="vector_store",
+                            scope="knowledge_documents",
+                            confidence=float(r["score"]),
+                        ).to_dict(),
                     }
                 )
             return enriched
@@ -236,6 +244,7 @@ class KnowledgeRetriever:
                 f"[{r['doc_type']} / {r['vendor']}]  "
                 f"relevance: {r['score']:.2f}"
             )
+            lines.append(f"Freshness: {r['source_metadata']['freshness_class']} @ {r['source_metadata']['captured_at'] or 'unknown'}")
             lines.append(r["text"])
             lines.append("")
 

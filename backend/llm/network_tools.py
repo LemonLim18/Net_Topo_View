@@ -10,7 +10,11 @@ import logging
 from typing import Any, Dict, List, Optional
 
 from llm.context_contract import (
+    CONTEXT_DOMAIN_CONFIG,
+    CONTEXT_DOMAIN_DRIFT,
     CONTEXT_DOMAIN_INVENTORY,
+    CONTEXT_DOMAIN_INCIDENTS,
+    CONTEXT_DOMAIN_KNOWLEDGE,
     CONTEXT_DOMAIN_LIVE_TOPOLOGY,
     CONTEXT_DOMAIN_PLANNED_TOPOLOGY,
     compute_freshness,
@@ -65,6 +69,54 @@ def _planned_topology_source_metadata(source: str, captured_at: Optional[str], c
         ingested_at=captured_at,
         source=source,
         scope="planned_topology",
+        confidence=confidence,
+    )
+    return metadata.to_dict()
+
+
+def _config_source_metadata(source: str, captured_at: Optional[str], confidence: float = 0.9) -> Dict[str, Any]:
+    metadata = compute_freshness(
+        domain=CONTEXT_DOMAIN_CONFIG,
+        captured_at=captured_at,
+        ingested_at=captured_at,
+        source=source,
+        scope="device_configs",
+        confidence=confidence,
+    )
+    return metadata.to_dict()
+
+
+def _incident_source_metadata(source: str, captured_at: Optional[str], confidence: float = 0.9, scope: str = "incident_state") -> Dict[str, Any]:
+    metadata = compute_freshness(
+        domain=CONTEXT_DOMAIN_INCIDENTS,
+        captured_at=captured_at,
+        ingested_at=captured_at,
+        source=source,
+        scope=scope,
+        confidence=confidence,
+    )
+    return metadata.to_dict()
+
+
+def _drift_source_metadata(source: str, captured_at: Optional[str], confidence: float = 0.9) -> Dict[str, Any]:
+    metadata = compute_freshness(
+        domain=CONTEXT_DOMAIN_DRIFT,
+        captured_at=captured_at,
+        ingested_at=captured_at,
+        source=source,
+        scope="drift_state",
+        confidence=confidence,
+    )
+    return metadata.to_dict()
+
+
+def _knowledge_source_metadata(source: str, captured_at: Optional[str], confidence: float = 0.95) -> Dict[str, Any]:
+    metadata = compute_freshness(
+        domain=CONTEXT_DOMAIN_KNOWLEDGE,
+        captured_at=captured_at,
+        ingested_at=captured_at,
+        source=source,
+        scope="knowledge_documents",
         confidence=confidence,
     )
     return metadata.to_dict()
@@ -263,6 +315,100 @@ def get_context_health() -> str:
     Get current context versions and the latest invalidation/refresh events.
     """
     return json.dumps(get_context_state_manager().snapshot(), ensure_ascii=False)
+
+
+def get_recent_incidents(limit: int = 10, status: str = "") -> str:
+    """
+    Get recent incidents and alerts with freshness metadata from the incident store.
+    """
+    try:
+        from incidents.store import IncidentStore
+
+        rows = IncidentStore().list_all(status=status or None, limit=limit)
+        latest_updated = max(
+            ((row.get("updated_at") or row.get("created_at")) for row in rows if row.get("updated_at") or row.get("created_at")),
+            default=None,
+        )
+        return json.dumps(
+            {
+                "incidents": rows,
+                "total": len(rows),
+                "source_metadata": _incident_source_metadata("incident_store", latest_updated),
+            },
+            ensure_ascii=False,
+        )
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+def get_recent_drift_events(limit: int = 10, hostname: str = "") -> str:
+    """
+    Get recent drift events with freshness metadata.
+    """
+    if not _db_manager:
+        return json.dumps({"error": "Database not available"})
+
+    try:
+        rows = _db_manager.get_drift_events(limit=limit)
+        events = []
+        for row in rows:
+            if hostname and str(getattr(row, "hostname", "")).lower() != hostname.lower():
+                continue
+            events.append(
+                {
+                    "device_id": row.device_id,
+                    "hostname": row.hostname,
+                    "has_drift": row.has_drift,
+                    "severity": row.severity,
+                    "timestamp": row.timestamp,
+                }
+            )
+
+        latest_timestamp = max((event.get("timestamp") for event in events if event.get("timestamp")), default=None)
+        return json.dumps(
+            {
+                "events": events,
+                "total": len(events),
+                "source_metadata": _drift_source_metadata("drift_store", latest_timestamp, confidence=0.9 if events else 0.0),
+            },
+            ensure_ascii=False,
+        )
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+def get_knowledge_base_status(limit: int = 10) -> str:
+    """
+    Get knowledge base document summaries and freshness metadata.
+    """
+    try:
+        from llm.vector_store import KnowledgeVectorStore
+
+        store = KnowledgeVectorStore(embedder=None)
+        if not store.available:
+            return json.dumps(
+                {
+                    "documents": [],
+                    "total_documents": 0,
+                    "total_chunks": 0,
+                    "source_metadata": _knowledge_source_metadata("vector_store", None, confidence=0.0),
+                },
+                ensure_ascii=False,
+            )
+
+        documents = store.list_documents()[: max(limit, 1)]
+        latest_ingested = max((doc.get("ingested_at") for doc in documents if doc.get("ingested_at")), default=None)
+        return json.dumps(
+            {
+                "documents": documents,
+                "total_documents": len(documents),
+                "total_chunks": store.count(),
+                "source_metadata": _knowledge_source_metadata("vector_store", latest_ingested, confidence=0.95 if documents else 0.0),
+            },
+            ensure_ascii=False,
+        )
+    except Exception as e:
+        return json.dumps({"error": str(e)})
 
 
 def list_inventory_devices(vendor: str = "", status: str = "", limit: int = 50) -> str:
@@ -725,7 +871,12 @@ def get_security_events(limit: int = 10) -> str:
                 "time": r["created_at"],
             })
 
-        return json.dumps({"events": events, "total": len(events)})
+        latest_created = max((event.get("time") for event in events if event.get("time")), default=None)
+        return json.dumps({
+            "events": events,
+            "total": len(events),
+            "source_metadata": _incident_source_metadata("security_events", latest_created, confidence=0.85 if events else 0.0, scope="security_alerts"),
+        })
     except Exception as e:
         return json.dumps({"error": str(e)})
 
@@ -1183,15 +1334,18 @@ def get_device_running_config(hostname: str) -> str:
                 "hostname": hostname,
                 "config": "(no config snapshot available — device has not been polled yet)",
                 "note": "Run a discovery crawl to capture the running configuration.",
+                "source_metadata": _config_source_metadata("config_snapshots", None, confidence=0.0),
             })
 
         config_text = history[0].config_text or ""
+        captured_at = str(history[0].captured_at) if hasattr(history[0], 'captured_at') else None
         return json.dumps({
             "hostname": hostname,
             "config_length": len(config_text),
             "config": config_text[:8000],  # cap at 8k chars to avoid token overflow
-            "snapshot_time": str(history[0].captured_at) if hasattr(history[0], 'captured_at') else "unknown",
+            "snapshot_time": captured_at or "unknown",
             "truncated": len(config_text) > 8000,
+            "source_metadata": _config_source_metadata("config_snapshots", captured_at, confidence=0.9),
         })
     except Exception as e:
         return json.dumps({"error": str(e)})
@@ -1264,6 +1418,27 @@ def register_all_tools(registry) -> None:
     registry.register(
         get_context_health,
         description="Get context versions, last-updated timestamps, and recent invalidation events across live and planned network state.",
+    )
+    registry.register(
+        get_recent_incidents,
+        description="Get recent incidents and alerts with freshness metadata from the incident store.",
+        param_descriptions={
+            "limit": "Maximum number of incidents to return",
+            "status": "Optional lifecycle status filter",
+        },
+    )
+    registry.register(
+        get_recent_drift_events,
+        description="Get recent drift events with freshness metadata.",
+        param_descriptions={
+            "limit": "Maximum number of drift events to return",
+            "hostname": "Optional hostname filter",
+        },
+    )
+    registry.register(
+        get_knowledge_base_status,
+        description="Get knowledge base document summaries and freshness metadata.",
+        param_descriptions={"limit": "Maximum number of documents to return"},
     )
     registry.register(
         find_path,
