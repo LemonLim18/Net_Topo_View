@@ -1,5 +1,12 @@
-from mcp.server import mcp, db, agent, pipeline
-from deploy.models import ChangeRequest
+try:
+    from .server import mcp, db, agent, pipeline
+except ImportError:  # pragma: no cover - direct script/test fallback
+    from mcp.server import mcp, db, agent, pipeline
+
+try:
+    from deploy.models import ChangeRequest
+except ImportError:  # pragma: no cover - package import path
+    from ..deploy.models import ChangeRequest
 import json
 
 @mcp.tool()
