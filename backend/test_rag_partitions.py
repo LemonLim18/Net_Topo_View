@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 
 from llm.ingestion import DocumentIngester
 from llm.retriever import KnowledgeRetriever, build_retrieval_plan, select_retrieval_partitions
@@ -24,8 +25,13 @@ class _CaptureStore:
         self.deletes = []
         self.clears = []
         self.queries = []
+        self.documents = {}
 
     def upsert_chunks(self, doc_id, chunks, metadatas, partition=None):
+        self.documents[(partition, doc_id)] = {
+            "chunks": list(chunks),
+            "metadatas": list(metadatas),
+        }
         self.upserts.append(
             {
                 "doc_id": doc_id,
@@ -36,12 +42,33 @@ class _CaptureStore:
         )
 
     def delete_document(self, doc_id, partition=None):
+        self.documents.pop((partition, doc_id), None)
         self.deletes.append({"doc_id": doc_id, "partition": partition})
         return 0
 
     def clear_partition(self, partition=None):
         self.clears.append(partition)
         return 0
+
+    def list_documents(self, partition=None):
+        rows = []
+        for (doc_partition, doc_id), payload in self.documents.items():
+            if partition and doc_partition != partition:
+                continue
+            metadata = payload["metadatas"][0] if payload["metadatas"] else {}
+            rows.append(
+                {
+                    "doc_id": doc_id,
+                    "doc_name": metadata.get("doc_name", doc_id),
+                    "doc_type": metadata.get("doc_type", ""),
+                    "vendor": metadata.get("vendor", ""),
+                    "ingested_at": metadata.get("ingested_at", ""),
+                    "chunk_count": len(payload["chunks"]),
+                    "partition": doc_partition,
+                    "collection_name": metadata.get("collection_name", ""),
+                }
+            )
+        return rows
 
     def query(self, query_embedding, k=5, where=None, min_score=0.35, partitions=None):
         self.queries.append({"partitions": partitions, "where": where, "k": k})
@@ -84,6 +111,47 @@ class _FakeDb:
                 return _Row()
 
         return _Conn()
+
+    def get_all_devices(self):
+        return [
+            SimpleNamespace(
+                id=1,
+                hostname="R1",
+                management_ip="10.0.0.1",
+                vendor="cisco_ios",
+                model="ISR",
+                os_version="17.9",
+                serial_number="ABC123",
+                status="active",
+                role="core",
+                source="netbox",
+            )
+        ]
+
+    def get_interfaces_for_device(self, device_id):
+        return [
+            SimpleNamespace(id=11, name="Gi0/0", ip_address="10.0.0.1", subnet_mask="255.255.255.0", status="up"),
+            SimpleNamespace(id=12, name="Gi0/1", ip_address=None, subnet_mask=None, status="down"),
+        ]
+
+    def get_all_links(self):
+        return [SimpleNamespace(src_device_id=1, src_interface_id=11, dst_device_id=1, dst_interface_id=12, discovery_protocol="manual")]
+
+    def get_device_by_id(self, device_id):
+        if device_id == 1:
+            return SimpleNamespace(id=1, hostname="R1")
+        return None
+
+    def get_device_by_hostname(self, hostname):
+        if hostname == "R1":
+            return SimpleNamespace(id=1, hostname="R1")
+        return None
+
+    def get_config_history(self, device_id, limit=1):
+        return [SimpleNamespace(config_text="hostname R1\ninterface Gi0/0\n ip address 10.0.0.1 255.255.255.0")]
+
+    def get_drift_events(self, device_id=None, limit=1):
+        return [SimpleNamespace(device_id=device_id or 1, hostname="R1", has_drift=True, severity="high", diff_text="- old\n+ new")]
 
 
 class _PlannerStore:
@@ -258,10 +326,11 @@ def test_auto_embedder_splits_live_and_config_partitions():
     result = embedder.embed_crawl_result(topology)
 
     assert result["status"] == "embedded"
-    assert PARTITION_LIVE_STATE in store.clears
-    assert PARTITION_CONFIG_HISTORY in store.clears
-    assert store.upserts[0]["partition"] == PARTITION_LIVE_STATE
-    assert store.upserts[1]["partition"] == PARTITION_CONFIG_HISTORY
+    assert store.clears == []
+    assert {item["partition"] for item in store.upserts} == {PARTITION_LIVE_STATE, PARTITION_CONFIG_HISTORY}
+    assert any(item["doc_id"] == "live_device_R1" for item in store.upserts)
+    assert any(item["doc_id"] == "live_interfaces_R1" for item in store.upserts)
+    assert any(item["doc_id"] == "config_R1" for item in store.upserts)
 
 
 def test_retriever_queries_store_with_selected_partitions():
@@ -304,3 +373,98 @@ def test_retriever_prefers_fresh_live_state_over_stale_live_state():
 
     assert results[0]["doc_name"] == "fresh-live-state"
     assert results[0]["source_metadata"]["freshness_class"] == "live"
+
+
+def test_auto_embedder_only_updates_changed_live_documents():
+    store = _CaptureStore()
+    embedder = NetworkStateEmbedder(store, embedder=None, db=_FakeDb())
+    first_topology = {
+        "nodes": {
+            "R1": {
+                "mgmt_ip": "10.0.0.1",
+                "connectedNode": ["SW1"],
+                "edgeLink": {},
+                "interfaceList": [{"name": "Gi0/0", "ip": "10.0.0.1", "status": "up"}],
+            }
+        }
+    }
+    second_topology = {
+        "nodes": {
+            "R1": {
+                "mgmt_ip": "10.0.0.1",
+                "connectedNode": ["SW1"],
+                "edgeLink": {},
+                "interfaceList": [{"name": "Gi0/0", "ip": "10.0.0.1", "status": "down"}],
+            }
+        }
+    }
+
+    embedder.embed_crawl_result(first_topology)
+    store.upserts.clear()
+    store.deletes.clear()
+
+    result = embedder.embed_crawl_result(second_topology)
+
+    assert result["documents_updated"] == 1
+    assert store.upserts[0]["doc_id"] == "live_interfaces_R1"
+    assert store.upserts[0]["partition"] == PARTITION_LIVE_STATE
+
+
+def test_auto_embedder_handles_refresh_events_for_config_incident_drift_and_inventory(monkeypatch):
+    class _FakeIncidentStore:
+        def get(self, incident_id):
+            return {
+                "id": incident_id,
+                "anomaly_type": "cpu_spike",
+                "severity": "critical",
+                "status": "open",
+                "affected_devices": json.dumps(["R1"]),
+                "root_cause_summary": "CPU saturation",
+            }
+
+    monkeypatch.setattr("incidents.store.IncidentStore", _FakeIncidentStore)
+
+    store = _CaptureStore()
+    embedder = NetworkStateEmbedder(store, embedder=None, db=_FakeDb())
+
+    config_targets = embedder.handle_refresh_event(
+        {
+            "source": "config_snapshot_writer",
+            "action": "config_snapshot_saved",
+            "domains": ["config_history"],
+            "metadata": {"device_id": 1},
+        }
+    )
+    incident_targets = embedder.handle_refresh_event(
+        {
+            "source": "incident_store",
+            "action": "incident_state_changed",
+            "domains": ["incidents"],
+            "metadata": {"incident_id": "INC-1"},
+        }
+    )
+    drift_targets = embedder.handle_refresh_event(
+        {
+            "source": "drift_detector",
+            "action": "drift_event_saved",
+            "domains": ["drift"],
+            "metadata": {"device_id": 1, "hostname": "R1"},
+        }
+    )
+    inventory_targets = embedder.handle_refresh_event(
+        {
+            "source": "netbox_api",
+            "action": "inventory_mutation",
+            "domains": ["planned_inventory", "planned_topology"],
+            "metadata": {"hostname": "R1"},
+        }
+    )
+
+    assert any(item["doc_id"] == "config_R1" and item["partition"] == PARTITION_CONFIG_HISTORY for item in store.upserts)
+    assert any(item["doc_id"] == "incident_INC-1" and item["partition"] == PARTITION_INCIDENTS for item in store.upserts)
+    assert any(item["doc_id"] == "drift_R1" and item["partition"] == PARTITION_CHANGE_OUTCOMES for item in store.upserts)
+    assert any(item["doc_id"] == "planned_device_R1" and item["partition"] == PARTITION_PLANNED_STATE for item in store.upserts)
+    assert config_targets[0]["kind"] == "embedding"
+    assert incident_targets[0]["name"] == "incidents"
+    assert drift_targets[0]["name"] == "change_outcomes"
+    assert {item["name"] for item in inventory_targets} == {"planned_inventory", "planned_topology"}

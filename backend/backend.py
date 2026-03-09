@@ -21,7 +21,7 @@ load_dotenv()
 from db.manager import DatabaseManager
 from deploy.pipeline import DeploymentPipeline
 from llm.agent import NetworkAgent
-from llm.refresh_fabric import register_refresh_sink
+from llm.refresh_fabric import register_refresh_listener, register_refresh_sink
 from llm.refresh_state import get_refresh_state_manager
 
 # --- API Routers ---
@@ -317,7 +317,7 @@ async def run_crawl_and_broadcast(trigger: str = "periodic"):
         if _state_embedder is not None:
             try:
                 embed_result = await loop.run_in_executor(
-                    None, _state_embedder.embed_crawl_result, new_topo
+                    None, _state_embedder.embed_crawl_result, new_topo, _previous_topology_dict
                 )
                 logger.info("Auto-embedded network state: %s", embed_result.get("status"))
             except Exception as e:
@@ -389,6 +389,7 @@ async def lifespan(app: FastAPI):
         from rag.api import setup_state_embedder
         _state_embedder = NetworkStateEmbedder(vector_store, embedder, db)
         setup_state_embedder(_state_embedder)
+        register_refresh_listener("rag_state_embedder", _state_embedder.handle_refresh_event)
         logger.info("Network state auto-embedder initialized (Phase 9)")
     except Exception as exc:
         logger.warning("Network state auto-embedder init failed: %s", exc)
