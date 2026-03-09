@@ -98,3 +98,35 @@ def test_run_chat_benchmark_endpoint_returns_structured_report(monkeypatch):
     assert payload["suite_version"] == "phase8_step26_v1"
     assert payload["regression_guard"]["passed"] is True
     assert payload["cases"][0]["id"] == "inventory_management_ip"
+
+
+def test_resilience_cases_endpoint_returns_step28_scenarios():
+    payload = asyncio.run(llm_api.get_resilience_cases())
+
+    assert "partial_outage" in payload["categories"]
+    assert "event_storm" in payload["categories"]
+    assert any(scenario["id"] == "crawl_failed_incidents_continue" for scenario in payload["scenarios"])
+
+
+def test_run_chat_resilience_endpoint_returns_structured_report(monkeypatch):
+    monkeypatch.setattr(
+        llm_api,
+        "run_resilience_suite",
+        lambda selected_categories=None: {
+            "suite_version": "phase8_step28_v1",
+            "total_scenarios": 1,
+            "passed_scenarios": 1,
+            "failed_scenarios": 0,
+            "overall_score": 1.0,
+            "regression_guard": {"passed": True, "failed_scenario_ids": []},
+            "scenarios": [{"id": "netbox_ok_telemetry_stale", "passed": True}],
+        },
+    )
+
+    payload = asyncio.run(
+        llm_api.run_chat_resilience(llm_api.ResilienceRunRequest(categories=["partial_outage"]))
+    )
+
+    assert payload["suite_version"] == "phase8_step28_v1"
+    assert payload["regression_guard"]["passed"] is True
+    assert payload["scenarios"][0]["id"] == "netbox_ok_telemetry_stale"

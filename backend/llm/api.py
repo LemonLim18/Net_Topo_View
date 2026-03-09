@@ -29,6 +29,7 @@ from starlette.concurrency import run_in_threadpool
 
 from auth.rbac import require_role
 from llm.benchmark_suite import benchmark_categories, list_benchmark_cases, run_benchmark_suite
+from llm.resilience_suite import list_resilience_scenarios, resilience_categories, run_resilience_suite
 from llm import network_tools
 from llm.refresh_fabric import register_refresh_listener
 
@@ -79,6 +80,15 @@ class BenchmarkRunRequest(BaseModel):
     categories: Optional[List[str]] = Field(
         default=None,
         description="Optional subset of benchmark categories to execute.",
+    )
+
+
+class ResilienceRunRequest(BaseModel):
+    """Optional synthetic resilience-scenario filters."""
+
+    categories: Optional[List[str]] = Field(
+        default=None,
+        description="Optional subset of resilience categories to execute.",
     )
 
 
@@ -263,6 +273,24 @@ async def run_chat_benchmark(request: Optional[BenchmarkRunRequest] = None):
     agent = _get_agent()
     try:
         return await run_benchmark_suite(agent, selected_categories=(request.categories if request else None))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.get("/resilience/cases")
+async def get_resilience_cases():
+    """Return the synthetic and replay-based resilience scenarios used for Step 28 regression coverage."""
+    return {
+        "categories": resilience_categories(),
+        "scenarios": list_resilience_scenarios(),
+    }
+
+
+@router.post("/resilience")
+async def run_chat_resilience(request: Optional[ResilienceRunRequest] = None):
+    """Execute the deterministic synthetic/replay resilience suite for outage and event-storm regression protection."""
+    try:
+        return run_resilience_suite(selected_categories=(request.categories if request else None))
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
