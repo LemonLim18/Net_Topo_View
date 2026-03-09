@@ -130,3 +130,32 @@ def test_run_chat_resilience_endpoint_returns_structured_report(monkeypatch):
     assert payload["suite_version"] == "phase8_step28_v1"
     assert payload["regression_guard"]["passed"] is True
     assert payload["scenarios"][0]["id"] == "netbox_ok_telemetry_stale"
+
+
+def test_change_intelligence_info_endpoint_returns_step29_version():
+    payload = asyncio.run(llm_api.get_change_intelligence_info())
+
+    assert payload["analysis_version"] == "phase9_step29_v1"
+
+
+def test_run_change_intelligence_endpoint_returns_structured_report(monkeypatch):
+    monkeypatch.setattr(llm_api, "_get_agent", lambda: _FakeAgent())
+    monkeypatch.setattr(
+        llm_api.network_tools,
+        "analyze_change_intelligence",
+        lambda intent_json, user_role="operator": (
+            '{"analysis_version":"phase9_step29_v1","approval_recommendation":"manual_review",'
+            '"cross_domain_risk":{"level":"high","score":68},'
+            '"what_if_simulation":{"decision":"manual_review"}}'
+        ),
+    )
+
+    payload = asyncio.run(
+        llm_api.run_change_intelligence(
+            llm_api.ChangeIntelligenceRequest(intent_json='{"id":"intent-1"}', user_role="operator")
+        )
+    )
+
+    assert payload["analysis_version"] == "phase9_step29_v1"
+    assert payload["approval_recommendation"] == "manual_review"
+    assert payload["cross_domain_risk"]["level"] == "high"

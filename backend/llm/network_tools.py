@@ -1823,6 +1823,29 @@ def plan_change(intent_json: str) -> str:
         return json.dumps({"error": str(e)})
 
 
+def analyze_change_intelligence(intent_json: str, user_role: str = "operator") -> str:
+    """
+    Build a deterministic Step 29 change-intelligence report for a proposed change.
+
+    The report combines intent memory, change outcome learning, cross-domain
+    risk scoring, root-cause graph evidence, and a policy-aware what-if
+    simulation before approval.
+    """
+    if not _db_manager:
+        return json.dumps({"error": "Database not available"})
+
+    try:
+        from llm.change_intelligence import analyze_change_intelligence as _analyze_change_intelligence
+
+        return json.dumps(
+            _analyze_change_intelligence(_db_manager, intent_json, user_role=user_role),
+            ensure_ascii=False,
+        )
+    except Exception as e:
+        logger.error("analyze_change_intelligence failed: %s", e)
+        return json.dumps({"error": str(e)})
+
+
 def get_device_running_config(hostname: str) -> str:
     """
     Retrieve the last known running configuration snapshot for a device.
@@ -2128,6 +2151,19 @@ def register_all_tools(registry) -> None:
         ),
         param_descriptions={
             "intent_json": "JSON string of the ParsedIntent (must have resolved_devices)",
+        },
+    )
+    registry.register(
+        analyze_change_intelligence,
+        description=(
+            "Build a deterministic pre-approval change-intelligence report for a validated intent. "
+            "This is the Step 29 strategic layer: it combines intent memory, recent change outcomes, "
+            "root-cause graph evidence across planned/live/drift/incident/security state, cross-domain risk scoring, "
+            "and a policy-aware what-if simulation before approval."
+        ),
+        param_descriptions={
+            "intent_json": "JSON string of the ParsedIntent to analyze before approval",
+            "user_role": "The user's role: admin, operator, or auditor (default: operator)",
         },
     )
     registry.register(

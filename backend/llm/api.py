@@ -30,6 +30,7 @@ from starlette.concurrency import run_in_threadpool
 from auth.rbac import require_role
 from llm.benchmark_suite import benchmark_categories, list_benchmark_cases, run_benchmark_suite
 from llm.resilience_suite import list_resilience_scenarios, resilience_categories, run_resilience_suite
+from llm.change_intelligence import CHANGE_INTELLIGENCE_VERSION
 from llm import network_tools
 from llm.refresh_fabric import register_refresh_listener
 
@@ -90,6 +91,13 @@ class ResilienceRunRequest(BaseModel):
         default=None,
         description="Optional subset of resilience categories to execute.",
     )
+
+
+class ChangeIntelligenceRequest(BaseModel):
+    """Request body for deterministic Step 29 change-intelligence analysis."""
+
+    intent_json: str = Field(..., description="JSON string of a ParsedIntent to analyze", min_length=2)
+    user_role: str = Field(default="operator", description="Role used for policy-aware simulation")
 
 
 # -----------------------------------------------------------------------
@@ -293,6 +301,25 @@ async def run_chat_resilience(request: Optional[ResilienceRunRequest] = None):
         return run_resilience_suite(selected_categories=(request.categories if request else None))
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.get("/change-intelligence/info")
+async def get_change_intelligence_info():
+    """Return the active Step 29 change-intelligence analysis version."""
+    return {"analysis_version": CHANGE_INTELLIGENCE_VERSION}
+
+
+@router.post("/change-intelligence")
+async def run_change_intelligence(request: ChangeIntelligenceRequest):
+    """Run the deterministic Step 29 change-intelligence analysis for a proposed change."""
+    payload = await _run_tool_json(
+        network_tools.analyze_change_intelligence,
+        request.intent_json,
+        request.user_role,
+    )
+    if payload.get("error"):
+        raise HTTPException(status_code=500, detail=str(payload["error"]))
+    return payload
 
 
 # -----------------------------------------------------------------------

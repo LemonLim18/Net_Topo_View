@@ -175,6 +175,16 @@ def test_troubleshooting_query_prefetches_multi_source_evidence():
     assert "get_recent_incidents" in tool_names
 
 
+def test_change_planning_route_exposes_change_intelligence_tool():
+    import asyncio
+
+    provider, _ = asyncio.run(_run_chat("Plan change for VLAN 20 on SW1"))
+
+    first_call = provider.calls[0]
+    tool_names = {tool["name"] for tool in first_call["tools"]}
+    assert "analyze_change_intelligence" in tool_names
+
+
 def test_planned_vs_live_answer_surfaces_management_ip_conflict():
     import asyncio
 

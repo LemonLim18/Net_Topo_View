@@ -837,6 +837,7 @@ class NetworkAgent:
             allowed_tools = [
                 "parse_intent",
                 "validate_intent",
+                "analyze_change_intelligence",
                 "plan_change",
                 "list_templates",
                 "get_template_schema",
@@ -846,7 +847,7 @@ class NetworkAgent:
                 "get_context_health",
             ]
             instruction = (
-                "For this change-planning query, use intent parsing and policy validation, and ground target devices in inventory/config state before planning."
+                "For this change-planning query, use intent parsing and policy validation first, then run change intelligence before planning so you surface intent memory, outcome risk, and what-if blockers instead of guessing."
             )
             prefetch_tools.append(ToolCall(name="get_context_health", arguments={}))
             if hostnames:
