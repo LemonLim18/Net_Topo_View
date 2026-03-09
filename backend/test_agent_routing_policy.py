@@ -42,6 +42,15 @@ class _FakeSnapshot:
         self.captured_at = "2026-03-09T10:10:00+00:00"
 
 
+class _FakeDriftEvent:
+    def __init__(self, hostname: str = "SW1", severity: str = "high"):
+        self.device_id = 1
+        self.hostname = hostname
+        self.has_drift = True
+        self.severity = severity
+        self.timestamp = "2026-03-09T10:12:00+00:00"
+
+
 class _AgentFakeDb:
     def __init__(self):
         self._topology = {
@@ -83,6 +92,13 @@ class _AgentFakeDb:
 async def _run_chat(message: str):
     provider = _FakeProvider()
     agent = NetworkAgent(db_manager=_AgentFakeDb(), provider=provider, retriever=None)
+    response = await agent.chat(message)
+    return provider, response
+
+
+async def _run_chat_for_db(message: str, db):
+    provider = _FakeProvider()
+    agent = NetworkAgent(db_manager=db, provider=provider, retriever=None)
     response = await agent.chat(message)
     return provider, response
 
@@ -151,8 +167,57 @@ def test_troubleshooting_query_prefetches_multi_source_evidence():
     tool_messages = [message for message in first_call["messages"] if message.role == "tool"]
     tool_names = {message.name for message in tool_messages}
     assert "get_device_details" in tool_names
+    assert "get_device_telemetry_snapshot" in tool_names
     assert "get_device_running_config" in tool_names
     assert "get_recent_incidents" in tool_names
+
+
+def test_planned_vs_live_answer_surfaces_management_ip_conflict():
+    import asyncio
+
+    class _MismatchDb(_AgentFakeDb):
+        def get_topology(self):
+            topo = super().get_topology()
+            topo["nodes"]["SW1"]["mgmt_ip"] = "10.0.0.22"
+            return topo
+
+    _, response = asyncio.run(_run_chat_for_db("Compare planned vs live state for SW1", _MismatchDb()))
+
+    conflicts = response["grounding_meta"]["conflicts"]
+    assert any(conflict["code"] == "management_ip_mismatch" for conflict in conflicts)
+    assert "Conflicts:" in response["content"]
+
+
+def test_troubleshooting_answer_surfaces_drift_and_missing_config_conflicts(monkeypatch):
+    import asyncio
+
+    class _ConflictDb(_AgentFakeDb):
+        def get_config_history(self, device_id, limit=1):
+            return []
+
+        def get_drift_events(self, limit=10):
+            return [_FakeDriftEvent()]
+
+    class _FakeIncidentStore:
+        def list_all(self, status=None, limit=10):
+            return [
+                {
+                    "id": "INC-1",
+                    "severity": "high",
+                    "status": "open",
+                    "affected_devices": '["SW1"]',
+                    "updated_at": "2026-03-09T10:13:00+00:00",
+                }
+            ]
+
+    monkeypatch.setattr("incidents.store.IncidentStore", _FakeIncidentStore)
+
+    _, response = asyncio.run(_run_chat_for_db("Troubleshoot why SW1 is down", _ConflictDb()))
+
+    codes = {conflict["code"] for conflict in response["grounding_meta"]["conflicts"]}
+    assert "config_snapshot_missing" in codes
+    assert "config_drift_detected" in codes
+    assert "active_incident" in codes
 
 
 def test_agent_rebuilds_context_on_next_turn_without_manual_prompt_refresh():

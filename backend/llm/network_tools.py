@@ -17,8 +17,10 @@ from llm.context_contract import (
     CONTEXT_DOMAIN_KNOWLEDGE,
     CONTEXT_DOMAIN_LIVE_TOPOLOGY,
     CONTEXT_DOMAIN_PLANNED_TOPOLOGY,
+    CONTEXT_DOMAIN_TELEMETRY,
     build_source_matrix,
     compute_freshness,
+    missing_freshness,
 )
 from llm.context_state import get_context_state_manager
 from llm.refresh_state import get_refresh_state_manager
@@ -127,6 +129,18 @@ def _knowledge_source_metadata(source: str, captured_at: Optional[str], confiden
         ingested_at=captured_at,
         source=source,
         scope="knowledge_documents",
+        confidence=confidence,
+    )
+    return metadata.to_dict()
+
+
+def _telemetry_source_metadata(source: str, captured_at: Optional[str], confidence: float = 0.9) -> Dict[str, Any]:
+    metadata = compute_freshness(
+        domain=CONTEXT_DOMAIN_TELEMETRY,
+        captured_at=captured_at,
+        ingested_at=captured_at,
+        source=source,
+        scope="device_metrics",
         confidence=confidence,
     )
     return metadata.to_dict()
@@ -753,6 +767,88 @@ def get_recent_drift_events(limit: int = 10, hostname: str = "") -> str:
         )
     except Exception as e:
         return json.dumps({"error": str(e)})
+
+
+def get_device_telemetry_snapshot(hostname: str, limit: int = 20) -> str:
+    """
+    Retrieve recent telemetry samples and anomaly baselines for a device.
+    """
+    if not _db_manager:
+        return json.dumps({"error": "Database not available"})
+
+    try:
+        from rag.context_bundle import ContextBundleBuilder
+
+        inventory_records, _inventory_source = _get_inventory_records()
+        inventory_record = _find_inventory_record(inventory_records, hostname)
+        topo = _db_manager.get_topology() if _db_manager else {}
+        live_nodes = topo.get("nodes", {}) if isinstance(topo, dict) else {}
+
+        live_record = None
+        for node_name, node_data in live_nodes.items():
+            if str(node_name).lower() == hostname.lower() and isinstance(node_data, dict):
+                hostname = str(node_name)
+                live_record = node_data
+                break
+
+        management_ip = None
+        if isinstance(inventory_record, dict):
+            management_ip = inventory_record.get("management_ip")
+        if not management_ip and isinstance(live_record, dict):
+            management_ip = live_record.get("mgmt_ip")
+
+        if not management_ip:
+            return json.dumps(
+                {
+                    "hostname": hostname,
+                    "metrics": [],
+                    "total": 0,
+                    "anomaly_baselines": [],
+                    "change_markers": [],
+                    "source_metadata": missing_freshness(
+                        CONTEXT_DOMAIN_TELEMETRY,
+                        "influxdb",
+                        "device_metrics",
+                    ).to_dict(),
+                    "error": f"No management IP available for telemetry lookup on '{hostname}'",
+                },
+                ensure_ascii=False,
+            )
+
+        builder = ContextBundleBuilder(db_manager=_db_manager)
+        telemetry = builder._fetch_telemetry([management_ip], hostnames=[hostname])
+        freshness = telemetry.freshness.to_dict() if telemetry.freshness else _telemetry_source_metadata("influxdb", None, confidence=0.0)
+        return json.dumps(
+            {
+                "hostname": hostname,
+                "management_ip": management_ip,
+                "metrics": telemetry.metrics[: max(limit, 1)],
+                "total": len(telemetry.metrics),
+                "policy_name": telemetry.policy_name,
+                "query_range": telemetry.query_range,
+                "anomaly_baselines": telemetry.anomaly_baselines,
+                "change_markers": telemetry.change_markers,
+                "source_metadata": freshness,
+            },
+            ensure_ascii=False,
+        )
+    except Exception as e:
+        return json.dumps(
+            {
+                "hostname": hostname,
+                "metrics": [],
+                "total": 0,
+                "anomaly_baselines": [],
+                "change_markers": [],
+                "source_metadata": missing_freshness(
+                    CONTEXT_DOMAIN_TELEMETRY,
+                    "influxdb",
+                    "device_metrics",
+                ).to_dict(),
+                "error": str(e),
+            },
+            ensure_ascii=False,
+        )
 
 
 def get_knowledge_base_status(limit: int = 10) -> str:
@@ -1885,6 +1981,14 @@ def register_all_tools(registry) -> None:
         param_descriptions={
             "limit": "Maximum number of drift events to return",
             "hostname": "Optional hostname filter",
+        },
+    )
+    registry.register(
+        get_device_telemetry_snapshot,
+        description="Get recent telemetry samples, anomaly baselines, and telemetry freshness for a specific device.",
+        param_descriptions={
+            "hostname": "Device hostname to inspect",
+            "limit": "Maximum number of telemetry samples to return",
         },
     )
     registry.register(

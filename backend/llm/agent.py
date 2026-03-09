@@ -20,7 +20,7 @@ import logging
 import re
 from typing import Any, Dict, List, Optional
 
-from llm.answer_grounding import build_answer_grounding, format_grounding_summary
+from llm.answer_grounding import build_answer_grounding, format_conflict_summary, format_grounding_summary
 from llm.context_contract import classify_query
 from llm.context_state import get_context_state_manager
 from llm.provider import LLMProvider, LLMMessage, LLMResponse, ToolCall
@@ -256,6 +256,7 @@ class NetworkAgent:
                 grounding_meta = self._build_grounding_meta(
                     routing_decision.query_class,
                     tool_results,
+                    tool_args,
                     knowledge_used=bool(knowledge_ctx),
                 )
                 final_content = self._render_grounded_content(response.content, grounding_meta)
@@ -335,6 +336,7 @@ class NetworkAgent:
                     self._build_grounding_meta(
                         routing_decision.query_class,
                         tool_results,
+                        tool_args,
                         knowledge_used=bool(knowledge_ctx),
                     ),
                 ),
@@ -344,6 +346,7 @@ class NetworkAgent:
         grounding_meta = self._build_grounding_meta(
             routing_decision.query_class,
             tool_results,
+            tool_args,
             knowledge_used=bool(knowledge_ctx),
         )
         final_content = self._render_grounded_content(final_response.content, grounding_meta)
@@ -769,6 +772,7 @@ class NetworkAgent:
             allowed_tools = generic_read_tools + [
                 "get_topology_summary",
                 "get_device_details",
+                "get_device_telemetry_snapshot",
                 "list_all_devices",
                 "find_path",
                 "get_recent_incidents",
@@ -780,7 +784,12 @@ class NetworkAgent:
             )
             prefetch_tools.append(ToolCall(name="get_context_health", arguments={}))
             if hostnames:
-                prefetch_tools.append(ToolCall(name="get_device_details", arguments={"hostname": hostnames[0]}))
+                prefetch_tools.extend(
+                    [
+                        ToolCall(name="get_device_details", arguments={"hostname": hostnames[0]}),
+                        ToolCall(name="get_device_telemetry_snapshot", arguments={"hostname": hostnames[0], "limit": 10}),
+                    ]
+                )
             else:
                 prefetch_tools.append(ToolCall(name="get_topology_summary", arguments={}))
 
@@ -788,6 +797,7 @@ class NetworkAgent:
             allowed_tools = generic_read_tools + [
                 "get_inventory_device",
                 "get_device_details",
+                "get_device_telemetry_snapshot",
                 "get_device_running_config",
                 "get_recent_incidents",
                 "get_recent_drift_events",
@@ -809,6 +819,7 @@ class NetworkAgent:
                     [
                         ToolCall(name="get_inventory_device", arguments={"hostname": hostnames[0]}),
                         ToolCall(name="get_device_details", arguments={"hostname": hostnames[0]}),
+                        ToolCall(name="get_device_telemetry_snapshot", arguments={"hostname": hostnames[0], "limit": 10}),
                         ToolCall(name="get_device_running_config", arguments={"hostname": hostnames[0]}),
                         ToolCall(name="get_recent_drift_events", arguments={"hostname": hostnames[0], "limit": 5}),
                     ]
@@ -999,21 +1010,25 @@ class NetworkAgent:
         self,
         query_class: str,
         tool_results: Dict[str, Any],
+        tool_args: Optional[Dict[str, Dict[str, Any]]] = None,
         knowledge_used: bool = False,
     ) -> Dict[str, Any]:
         return build_answer_grounding(
             query_class=query_class,
             tool_results=tool_results,
+            tool_args=tool_args,
             knowledge_used=knowledge_used,
         )
 
     def _render_grounded_content(self, content: str, grounding_meta: Dict[str, Any]) -> str:
         summary = format_grounding_summary(grounding_meta)
+        conflict_summary = format_conflict_summary(grounding_meta)
+        suffix = summary if not conflict_summary else f"{summary}\n{conflict_summary}"
         if not content:
-            return summary
+            return suffix
         if summary in content:
             return content
-        return f"{content}\n\n{summary}"
+        return f"{content}\n\n{suffix}"
 
     def refresh_context(self) -> None:
         """

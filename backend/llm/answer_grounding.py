@@ -18,6 +18,7 @@ _LIVE_SCOPES = {
     "change_management",
     "deployment_status",
     "sdn_state",
+    "device_metrics",
 }
 _INFERRED_SCOPES = {"knowledge_documents"}
 
@@ -97,11 +98,330 @@ def _answer_scope_from_sources(query_class: str, source_age: List[Dict[str, Any]
     return "inferred"
 
 
+def _candidate_hostnames_from_args(tool_args: Dict[str, Dict[str, Any]]) -> List[str]:
+    hostnames: List[str] = []
+    seen = set()
+    for arguments in tool_args.values():
+        if not isinstance(arguments, dict):
+            continue
+        hostname = arguments.get("hostname")
+        if not isinstance(hostname, str) or not hostname.strip():
+            continue
+        key = hostname.strip().lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        hostnames.append(hostname.strip())
+    return hostnames
+
+
+def _conflict(
+    code: str,
+    summary: str,
+    severity: str = "medium",
+    hostname: Optional[str] = None,
+    details: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    item = {"code": code, "summary": summary, "severity": severity}
+    if hostname:
+        item["hostname"] = hostname
+    if details:
+        item["details"] = details
+    return item
+
+
+def _detect_compare_conflicts(payload: Dict[str, Any], requested_hostnames: List[str]) -> List[Dict[str, Any]]:
+    conflicts: List[Dict[str, Any]] = []
+    requested = {hostname.lower() for hostname in requested_hostnames}
+    for device in payload.get("devices", []):
+        if not isinstance(device, dict):
+            continue
+        hostname = str(device.get("hostname") or "")
+        if requested and hostname.lower() not in requested:
+            continue
+        presence_state = str(device.get("presence_state") or "unknown")
+        if presence_state == "planned_only":
+            conflicts.append(
+                _conflict(
+                    "device_presence_mismatch",
+                    f"{hostname} exists in planned inventory but is absent from live topology.",
+                    severity="high",
+                    hostname=hostname,
+                    details={"presence_state": presence_state},
+                )
+            )
+        elif presence_state == "live_only":
+            conflicts.append(
+                _conflict(
+                    "device_presence_mismatch",
+                    f"{hostname} is visible in live topology but absent from planned inventory.",
+                    severity="high",
+                    hostname=hostname,
+                    details={"presence_state": presence_state},
+                )
+            )
+
+        if device.get("management_ip_alignment") == "mismatch":
+            conflicts.append(
+                _conflict(
+                    "management_ip_mismatch",
+                    f"{hostname} has different management IP values in planned and live state.",
+                    severity="high",
+                    hostname=hostname,
+                    details={
+                        "planned_management_ip": device.get("planned_management_ip"),
+                        "live_management_ip": device.get("live_management_ip"),
+                    },
+                )
+            )
+    return conflicts
+
+
+def _detect_inventory_live_conflicts(
+    inventory_payload: Optional[Dict[str, Any]],
+    live_payload: Optional[Dict[str, Any]],
+    requested_hostnames: List[str],
+) -> List[Dict[str, Any]]:
+    conflicts: List[Dict[str, Any]] = []
+    inventory_device = inventory_payload.get("device") if isinstance(inventory_payload, dict) else None
+    if requested_hostnames:
+        requested = requested_hostnames[0]
+    else:
+        requested = str((inventory_device or {}).get("hostname") or (live_payload or {}).get("hostname") or "")
+
+    if inventory_payload and inventory_payload.get("error") and isinstance(live_payload, dict) and live_payload.get("hostname"):
+        conflicts.append(
+            _conflict(
+                "inventory_missing_live_present",
+                f"{requested or live_payload.get('hostname')} is present in live topology but missing from planned inventory lookup.",
+                severity="high",
+                hostname=requested or str(live_payload.get("hostname")),
+            )
+        )
+    if live_payload and live_payload.get("error") and isinstance(inventory_device, dict):
+        hostname = str(inventory_device.get("hostname") or requested)
+        conflicts.append(
+            _conflict(
+                "live_missing_inventory_present",
+                f"{hostname} is present in planned inventory but missing from live topology lookup.",
+                severity="high",
+                hostname=hostname,
+            )
+        )
+
+    if isinstance(inventory_device, dict) and isinstance(live_payload, dict) and not live_payload.get("error"):
+        hostname = str(inventory_device.get("hostname") or live_payload.get("hostname") or requested)
+        inventory_ip = inventory_device.get("management_ip")
+        live_ip = live_payload.get("mgmt_ip")
+        if inventory_ip and live_ip and str(inventory_ip) != str(live_ip):
+            conflicts.append(
+                _conflict(
+                    "management_ip_mismatch",
+                    f"{hostname} has different management IP values in planned inventory and live topology.",
+                    severity="high",
+                    hostname=hostname,
+                    details={"planned_management_ip": inventory_ip, "live_management_ip": live_ip},
+                )
+            )
+        inventory_status = str(inventory_device.get("status") or "")
+        live_status = str(live_payload.get("status") or "")
+        if inventory_status.lower() == "active" and live_status.lower() == "down":
+            conflicts.append(
+                _conflict(
+                    "operational_state_conflict",
+                    f"{hostname} is active in planned inventory but currently down in live topology.",
+                    severity="high",
+                    hostname=hostname,
+                    details={"inventory_status": inventory_status, "live_status": live_status},
+                )
+            )
+    return conflicts
+
+
+def _detect_config_conflicts(config_payload: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    if not isinstance(config_payload, dict):
+        return []
+    hostname = str(config_payload.get("hostname") or "")
+    if config_payload.get("note"):
+        return [
+            _conflict(
+                "config_snapshot_missing",
+                f"{hostname or 'Device'} has no recent running-config snapshot.",
+                severity="medium",
+                hostname=hostname or None,
+                details={"note": config_payload.get("note")},
+            )
+        ]
+    metadata = config_payload.get("source_metadata") or {}
+    if isinstance(metadata, dict) and metadata.get("freshness_class") in {"missing", "stale"}:
+        return [
+            _conflict(
+                "config_snapshot_stale",
+                f"{hostname or 'Device'} configuration evidence is {metadata.get('freshness_class')}.",
+                severity="medium",
+                hostname=hostname or None,
+                details={"freshness_class": metadata.get("freshness_class")},
+            )
+        ]
+    return []
+
+
+def _detect_incident_conflicts(incidents_payload: Optional[Dict[str, Any]], requested_hostnames: List[str]) -> List[Dict[str, Any]]:
+    if not isinstance(incidents_payload, dict):
+        return []
+    requested = {hostname.lower() for hostname in requested_hostnames}
+    conflicts: List[Dict[str, Any]] = []
+    for incident in incidents_payload.get("incidents", []):
+        if not isinstance(incident, dict):
+            continue
+        affected = incident.get("affected_devices") or []
+        if isinstance(affected, str):
+            try:
+                affected = json.loads(affected)
+            except json.JSONDecodeError:
+                affected = [affected]
+        affected = [str(item) for item in affected]
+        if requested and not {item.lower() for item in affected}.intersection(requested):
+            continue
+        status = str(incident.get("status") or "open").lower()
+        if status not in {"open", "active", "new", "investigating"}:
+            continue
+        conflicts.append(
+            _conflict(
+                "active_incident",
+                f"Active incident {incident.get('id', '?')} affects {', '.join(affected) or 'the queried device'}.",
+                severity="high" if str(incident.get("severity") or "").lower() in {"critical", "high"} else "medium",
+                hostname=affected[0] if len(affected) == 1 else None,
+                details={
+                    "incident_id": incident.get("id"),
+                    "severity": incident.get("severity"),
+                    "status": incident.get("status"),
+                },
+            )
+        )
+    return conflicts
+
+
+def _detect_drift_conflicts(drift_payload: Optional[Dict[str, Any]], requested_hostnames: List[str]) -> List[Dict[str, Any]]:
+    if not isinstance(drift_payload, dict):
+        return []
+    requested = {hostname.lower() for hostname in requested_hostnames}
+    conflicts: List[Dict[str, Any]] = []
+    for event in drift_payload.get("events", []):
+        if not isinstance(event, dict) or not event.get("has_drift"):
+            continue
+        hostname = str(event.get("hostname") or "")
+        if requested and hostname.lower() not in requested:
+            continue
+        conflicts.append(
+            _conflict(
+                "config_drift_detected",
+                f"{hostname} has detected configuration drift.",
+                severity="high" if str(event.get("severity") or "").lower() == "high" else "medium",
+                hostname=hostname or None,
+                details={"severity": event.get("severity"), "timestamp": event.get("timestamp")},
+            )
+        )
+    return conflicts
+
+
+def _detect_telemetry_conflicts(telemetry_payload: Optional[Dict[str, Any]], requested_hostnames: List[str]) -> List[Dict[str, Any]]:
+    if not isinstance(telemetry_payload, dict):
+        return []
+    conflicts: List[Dict[str, Any]] = []
+    hostname = str(telemetry_payload.get("hostname") or (requested_hostnames[0] if requested_hostnames else ""))
+    metadata = telemetry_payload.get("source_metadata") or {}
+    if isinstance(metadata, dict) and metadata.get("freshness_class") in {"missing", "stale"}:
+        conflicts.append(
+            _conflict(
+                "telemetry_unavailable",
+                f"Telemetry evidence for {hostname or 'the queried device'} is {metadata.get('freshness_class')}.",
+                severity="medium",
+                hostname=hostname or None,
+                details={"freshness_class": metadata.get("freshness_class")},
+            )
+        )
+    for baseline in telemetry_payload.get("anomaly_baselines", []):
+        if not isinstance(baseline, dict):
+            continue
+        current = baseline.get("current")
+        threshold = baseline.get("threshold")
+        if current is None or threshold is None:
+            continue
+        try:
+            current_value = float(current)
+            threshold_value = float(threshold)
+        except (TypeError, ValueError):
+            continue
+        if current_value > threshold_value:
+            conflicts.append(
+                _conflict(
+                    "telemetry_threshold_breach",
+                    f"Telemetry anomaly for {hostname or 'the queried device'} exceeds threshold ({current_value} > {threshold_value}).",
+                    severity="high",
+                    hostname=hostname or None,
+                    details={
+                        "incident_id": baseline.get("incident_id"),
+                        "current": current_value,
+                        "baseline": baseline.get("baseline"),
+                        "threshold": threshold_value,
+                    },
+                )
+            )
+    return conflicts
+
+
+def detect_answer_conflicts(
+    query_class: str,
+    payloads_by_tool: Dict[str, Dict[str, Any]],
+    tool_args: Dict[str, Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    requested_hostnames = _candidate_hostnames_from_args(tool_args)
+    conflicts: List[Dict[str, Any]] = []
+    compare_payload = payloads_by_tool.get("compare_planned_vs_live")
+
+    if isinstance(compare_payload, dict):
+        conflicts.extend(_detect_compare_conflicts(compare_payload, requested_hostnames))
+
+    conflicts.extend(
+        _detect_inventory_live_conflicts(
+            payloads_by_tool.get("get_inventory_device"),
+            payloads_by_tool.get("get_device_details"),
+            requested_hostnames,
+        )
+    )
+    conflicts.extend(_detect_config_conflicts(payloads_by_tool.get("get_device_running_config")))
+    conflicts.extend(_detect_incident_conflicts(payloads_by_tool.get("get_recent_incidents"), requested_hostnames))
+    conflicts.extend(_detect_drift_conflicts(payloads_by_tool.get("get_recent_drift_events"), requested_hostnames))
+    conflicts.extend(_detect_telemetry_conflicts(payloads_by_tool.get("get_device_telemetry_snapshot"), requested_hostnames))
+
+    if query_class == "planned_vs_live" and not conflicts and isinstance(compare_payload, dict):
+        if compare_payload.get("planned_only") or compare_payload.get("live_only"):
+            conflicts.append(
+                _conflict(
+                    "state_divergence_detected",
+                    "Planned and live state differ for at least one queried device.",
+                    severity="high",
+                )
+            )
+
+    deduped: List[Dict[str, Any]] = []
+    seen = set()
+    for conflict in conflicts:
+        key = (conflict.get("code"), conflict.get("hostname"), conflict.get("summary"))
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(conflict)
+    return deduped
+
+
 def _confidence_score(
     source_age: List[Dict[str, Any]],
     answer_scope: str,
     tool_names: List[str],
     errors: List[str],
+    conflicts: List[Dict[str, Any]],
 ) -> float:
     if not source_age:
         base = 0.32
@@ -129,6 +449,17 @@ def _confidence_score(
         base -= 0.12
     if errors:
         base -= min(0.25, 0.08 * len(errors))
+    if conflicts:
+        penalty = 0.0
+        for conflict in conflicts:
+            severity = str(conflict.get("severity") or "medium").lower()
+            if severity == "high":
+                penalty += 0.08
+            elif severity == "medium":
+                penalty += 0.04
+            else:
+                penalty += 0.02
+        base -= min(0.24, penalty)
 
     return max(0.05, min(0.99, round(base, 2)))
 
@@ -144,10 +475,12 @@ def _confidence_level(score: float) -> str:
 def build_answer_grounding(
     query_class: str,
     tool_results: Dict[str, Any],
+    tool_args: Optional[Dict[str, Dict[str, Any]]] = None,
     knowledge_used: bool = False,
 ) -> Dict[str, Any]:
     tool_names = list(tool_results.keys())
-    payloads = [_decode_tool_payload(raw) for raw in tool_results.values()]
+    payloads_by_tool = {name: _decode_tool_payload(raw) for name, raw in tool_results.items()}
+    payloads = list(payloads_by_tool.values())
     errors = [payload.get("error") for payload in payloads if payload.get("error")]
 
     source_entries: List[Dict[str, Any]] = []
@@ -187,7 +520,8 @@ def build_answer_grounding(
         deduped_sources.append(source)
 
     answer_scope = _answer_scope_from_sources(query_class, source_age)
-    confidence_score = _confidence_score(source_age, answer_scope, tool_names, errors)
+    conflicts = detect_answer_conflicts(query_class, payloads_by_tool, tool_args or {})
+    confidence_score = _confidence_score(source_age, answer_scope, tool_names, errors, conflicts)
     confidence_level = _confidence_level(confidence_score)
 
     if source_age:
@@ -197,6 +531,8 @@ def build_answer_grounding(
 
     if errors:
         reason = f"{reason}; degraded by tool errors"
+    if conflicts:
+        reason = f"{reason}; {len(conflicts)} discrepancy signal(s) detected across sources"
 
     return {
         "query_class": query_class,
@@ -204,6 +540,7 @@ def build_answer_grounding(
         "source_used": deduped_sources,
         "source_age": source_age,
         "tool_evidence": tool_names,
+        "conflicts": conflicts,
         "confidence": {
             "level": confidence_level,
             "score": confidence_score,
@@ -235,3 +572,14 @@ def format_grounding_summary(grounding: Dict[str, Any]) -> str:
         f"Grounding: {answer_scope}; sources={source_text}; "
         f"source_age={age_text}; confidence={level} ({score})."
     )
+
+
+def format_conflict_summary(grounding: Dict[str, Any]) -> str:
+    conflicts = grounding.get("conflicts") or []
+    if not conflicts:
+        return ""
+    snippets = []
+    for conflict in conflicts[:4]:
+        severity = str(conflict.get("severity") or "medium").upper()
+        snippets.append(f"[{severity}] {conflict.get('summary', 'discrepancy detected')}")
+    return "Conflicts: " + " | ".join(snippets)
