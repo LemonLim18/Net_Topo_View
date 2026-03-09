@@ -106,10 +106,15 @@ class TopologySyncer:
             logger.error("Failed to fetch NetBox devices: %s", e)
             return {"nodes": {}, "source": "netbox", "error": str(e)}
 
+        observed_timestamps: List[str] = []
+
         # Build node map
         for dev in devices:
             hostname = str(dev.name)
             primary_ip = str(dev.primary_ip).split("/")[0] if dev.primary_ip else None
+            last_updated = str(getattr(dev, "last_updated", "") or "") or None
+            if last_updated:
+                observed_timestamps.append(last_updated)
 
             # Fetch interfaces for this device
             iface_dict: Dict[str, str] = {}
@@ -144,6 +149,9 @@ class TopologySyncer:
 
         for cable in cables:
             try:
+                cable_updated = str(getattr(cable, "last_updated", "") or "") or None
+                if cable_updated:
+                    observed_timestamps.append(cable_updated)
                 a_terms = getattr(cable, "a_terminations", None) or []
                 b_terms = getattr(cable, "b_terminations", None) or []
                 if not a_terms or not b_terms:
@@ -182,7 +190,7 @@ class TopologySyncer:
             "nodes": nodes,
             "source": "netbox",
             "device_count": len(nodes),
-            "timestamp": None,  # Design-of-record — no crawl timestamp
+            "timestamp": max(observed_timestamps) if observed_timestamps else None,
         }
 
     @staticmethod

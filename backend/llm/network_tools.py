@@ -191,11 +191,110 @@ def _inventory_records_from_local_db() -> List[Dict[str, Any]]:
     return devices
 
 
+def _find_inventory_record(records: List[Dict[str, Any]], hostname: str) -> Optional[Dict[str, Any]]:
+    for record in records:
+        if str(record.get("hostname", "")).lower() == hostname.lower():
+            return record
+    return None
+
+
+def _search_inventory_records(records: List[Dict[str, Any]], query: str, limit: int) -> List[Dict[str, Any]]:
+    query_lower = query.lower().strip()
+    matches = []
+    for record in records:
+        haystack = " ".join(
+            str(record.get(field) or "")
+            for field in ("hostname", "management_ip", "vendor", "model", "role")
+        ).lower()
+        if query_lower in haystack:
+            matches.append(record)
+
+    return sorted(matches, key=lambda item: str(item.get("hostname") or ""))[: max(limit, 1)]
+
+
 def _get_inventory_records() -> tuple[List[Dict[str, Any]], str]:
     netbox_records = _inventory_records_from_netbox()
     if netbox_records:
         return netbox_records, "netbox"
     return _inventory_records_from_local_db(), "local_db"
+
+
+def _planned_topology_links_from_nodes(nodes: Dict[str, Any]) -> List[Dict[str, Any]]:
+    links: List[Dict[str, Any]] = []
+    seen = set()
+    for src_hostname, node in nodes.items():
+        if not isinstance(node, dict):
+            continue
+        for src_interface, edge in (node.get("edgeLink") or {}).items():
+            if not isinstance(edge, dict):
+                continue
+            dst_hostname = edge.get("remote_node")
+            dst_interface = edge.get("remote_interface")
+            if not dst_hostname:
+                continue
+            key = tuple(sorted((str(src_hostname), str(dst_hostname)))) + tuple(sorted((str(src_interface), str(dst_interface or "?"))))
+            if key in seen:
+                continue
+            seen.add(key)
+            links.append(
+                {
+                    "src_hostname": src_hostname,
+                    "src_interface": src_interface,
+                    "dst_hostname": dst_hostname,
+                    "dst_interface": dst_interface,
+                    "discovery_protocol": "netbox",
+                    "updated_at": None,
+                }
+            )
+    return sorted(links, key=lambda link: (str(link.get("src_hostname") or ""), str(link.get("dst_hostname") or ""), str(link.get("src_interface") or "")))
+
+
+def _get_planned_topology_data() -> Dict[str, Any]:
+    netbox_timestamp = None
+    if _db_manager:
+        try:
+            from netbox.sync_topology import TopologySyncer
+
+            planned = TopologySyncer(_db_manager).get_planned_topology()
+            nodes = planned.get("nodes", {}) if isinstance(planned, dict) else {}
+            if nodes and not planned.get("error") and planned.get("status") != "no_connection":
+                netbox_timestamp = planned.get("timestamp")
+                return {
+                    "topology": planned,
+                    "links": _planned_topology_links_from_nodes(nodes),
+                    "source": "netbox",
+                    "captured_at": netbox_timestamp,
+                }
+        except Exception:
+            pass
+
+    if not _db_manager:
+        return {
+            "topology": {"nodes": {}},
+            "links": [],
+            "source": "local_db",
+            "captured_at": None,
+        }
+
+    with _db_manager._connect() as conn:
+        links = conn.execute(
+            "SELECT sd.hostname AS src_hostname, si.name AS src_interface, dd.hostname AS dst_hostname, di.name AS dst_interface, l.discovery_protocol, l.updated_at "
+            "FROM links l "
+            "LEFT JOIN devices sd ON sd.id = l.src_device_id "
+            "LEFT JOIN devices dd ON dd.id = l.dst_device_id "
+            "LEFT JOIN interfaces si ON si.id = l.src_interface_id "
+            "LEFT JOIN interfaces di ON di.id = l.dst_interface_id "
+            "ORDER BY sd.hostname, dd.hostname"
+        ).fetchall()
+
+    planned_links = [dict(link) for link in links]
+    captured_at = max((link.get("updated_at") for link in planned_links if link.get("updated_at")), default=None)
+    return {
+        "topology": {"nodes": {}},
+        "links": planned_links,
+        "source": "local_db",
+        "captured_at": captured_at,
+    }
 
 
 # -----------------------------------------------------------------------
@@ -435,6 +534,8 @@ def list_inventory_devices(vendor: str = "", status: str = "", limit: int = 50) 
         {
             "devices": filtered,
             "total": len(filtered),
+            "source_used": source,
+            "captured_at": captured_at,
             "source_metadata": _inventory_source_metadata(source, captured_at),
         },
         ensure_ascii=False,
@@ -445,21 +546,38 @@ def get_inventory_device(hostname: str) -> str:
     """
     Retrieve a specific device from source-of-truth inventory.
     """
-    records, source = _get_inventory_records()
-    for record in records:
-        if str(record.get("hostname", "")).lower() == hostname.lower():
-            return json.dumps(
-                {
-                    "device": record,
-                    "source_metadata": _inventory_source_metadata(source, record.get("updated_at")),
-                },
-                ensure_ascii=False,
-            )
+    netbox_records = _inventory_records_from_netbox()
+    record = _find_inventory_record(netbox_records, hostname)
+    if record is not None:
+        return json.dumps(
+            {
+                "device": record,
+                "source_used": "netbox",
+                "captured_at": record.get("updated_at"),
+                "source_metadata": _inventory_source_metadata("netbox", record.get("updated_at")),
+            },
+            ensure_ascii=False,
+        )
+
+    local_records = _inventory_records_from_local_db()
+    record = _find_inventory_record(local_records, hostname)
+    if record is not None:
+        return json.dumps(
+            {
+                "device": record,
+                "source_used": "local_db",
+                "captured_at": record.get("updated_at"),
+                "source_metadata": _inventory_source_metadata("local_db", record.get("updated_at")),
+            },
+            ensure_ascii=False,
+        )
 
     return json.dumps(
         {
             "error": f"Inventory device '{hostname}' not found",
-            "source_metadata": _inventory_source_metadata(source, None, confidence=0.0),
+            "source_used": "local_db" if local_records else "netbox",
+            "captured_at": None,
+            "source_metadata": _inventory_source_metadata("netbox" if netbox_records else "local_db", None, confidence=0.0),
         },
         ensure_ascii=False,
     )
@@ -469,23 +587,21 @@ def search_inventory_devices(query: str, limit: int = 20) -> str:
     """
     Search source-of-truth inventory by hostname, management IP, vendor, model, or role.
     """
-    records, source = _get_inventory_records()
-    query_lower = query.lower().strip()
-    matches = []
-    for record in records:
-        haystack = " ".join(
-            str(record.get(field) or "")
-            for field in ("hostname", "management_ip", "vendor", "model", "role")
-        ).lower()
-        if query_lower in haystack:
-            matches.append(record)
+    netbox_matches = _search_inventory_records(_inventory_records_from_netbox(), query, limit)
+    if netbox_matches:
+        source = "netbox"
+        matches = netbox_matches
+    else:
+        source = "local_db"
+        matches = _search_inventory_records(_inventory_records_from_local_db(), query, limit)
 
-    matches = sorted(matches, key=lambda item: str(item.get("hostname") or ""))[: max(limit, 1)]
     captured_at = max((record.get("updated_at") for record in matches if record.get("updated_at")), default=None)
     return json.dumps(
         {
             "matches": matches,
             "total": len(matches),
+            "source_used": source,
+            "captured_at": captured_at,
             "source_metadata": _inventory_source_metadata(source, captured_at),
         },
         ensure_ascii=False,
@@ -494,29 +610,23 @@ def search_inventory_devices(query: str, limit: int = 20) -> str:
 
 def get_planned_topology() -> str:
     """
-    Get planned topology edges from the persistent inventory/link database.
+    Get planned topology from NetBox when available, with local DB fallback.
     """
     if not _db_manager:
         return json.dumps({"error": "Database not available"})
 
-    with _db_manager._connect() as conn:
-        links = conn.execute(
-            "SELECT sd.hostname AS src_hostname, si.name AS src_interface, dd.hostname AS dst_hostname, di.name AS dst_interface, l.discovery_protocol, l.updated_at "
-            "FROM links l "
-            "LEFT JOIN devices sd ON sd.id = l.src_device_id "
-            "LEFT JOIN devices dd ON dd.id = l.dst_device_id "
-            "LEFT JOIN interfaces si ON si.id = l.src_interface_id "
-            "LEFT JOIN interfaces di ON di.id = l.dst_interface_id "
-            "ORDER BY sd.hostname, dd.hostname"
-        ).fetchall()
-
-    planned_links = [dict(link) for link in links]
-    captured_at = max((link.get("updated_at") for link in planned_links if link.get("updated_at")), default=None)
+    planned = _get_planned_topology_data()
+    planned_links = planned["links"]
+    source = planned["source"]
+    captured_at = planned["captured_at"]
     return json.dumps(
         {
+            "topology": planned["topology"],
             "links": planned_links,
             "total": len(planned_links),
-            "source_metadata": _planned_topology_source_metadata("local_db", captured_at),
+            "source_used": source,
+            "captured_at": captured_at,
+            "source_metadata": _planned_topology_source_metadata(source, captured_at, confidence=0.85 if source == "netbox" else 0.75),
         },
         ensure_ascii=False,
     )
@@ -558,6 +668,8 @@ def compare_planned_vs_live(hostname: str = "") -> str:
             "matching_devices": matching,
             "planned_only": planned_not_live,
             "live_only": live_not_planned,
+            "source_used": inventory_source,
+            "captured_at": inventory_captured_at,
             "inventory_source_metadata": _inventory_source_metadata(inventory_source, inventory_captured_at),
             "live_source_metadata": _topology_source_metadata(topo),
         },
