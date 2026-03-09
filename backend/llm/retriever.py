@@ -47,6 +47,40 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("llm.retriever")
 
+_FEATURE_HINTS = (
+    "ospf",
+    "bgp",
+    "vlan",
+    "spanning tree",
+    "stp",
+    "mpls",
+    "vrf",
+    "acl",
+    "qos",
+    "nat",
+    "ipsec",
+    "gre",
+    "lldp",
+    "cdp",
+    "lacp",
+    "snmp",
+    "syslog",
+    "netflow",
+    "topology",
+    "inventory",
+    "interfaces",
+    "configuration",
+    "drift",
+)
+_VENDOR_ALIASES = {
+    "cisco": ("cisco", "ios", "ios xe", "cisco_ios"),
+    "juniper": ("juniper", "junos", "juniper_junos"),
+    "huawei": ("huawei", "vrp", "huawei_vrp"),
+    "aruba": ("aruba",),
+    "netbox": ("netbox",),
+}
+_SEVERITY_BONUS = {"critical": 0.12, "high": 0.08, "medium": 0.03, "warning": 0.02, "low": 0.0, "info": 0.0}
+
 
 @dataclass(frozen=True)
 class RetrievalPlan:
@@ -176,6 +210,16 @@ class KnowledgeRetriever:
 
     _RELEVANCE_THRESHOLD = 0.35  # same default as KnowledgeVectorStore
     _FRESHNESS_BONUS = {"live": 0.12, "warm": 0.05, "stale": -0.05, "missing": -0.1}
+    _SOURCE_TYPE_WEIGHTS = {
+        "live_only": {"live_state": 0.16, "incident_report": 0.08, "config_snapshot": 0.06, "static_document": -0.08},
+        "inventory_only": {"planned_inventory": 0.14, "planned_topology": 0.12, "live_state": 0.03, "static_document": -0.06},
+        "planned_vs_live": {"planned_inventory": 0.12, "planned_topology": 0.12, "live_state": 0.1, "config_snapshot": 0.04},
+        "troubleshooting": {"live_state": 0.12, "incident_report": 0.12, "config_snapshot": 0.08, "troubleshooting_playbook": 0.05, "static_document": -0.04},
+        "change_planning": {"config_snapshot": 0.11, "change_outcome": 0.12, "planned_inventory": 0.08, "planned_topology": 0.08},
+        "compliance": {"config_snapshot": 0.1, "best_practice": 0.06, "standard_operating_procedure": 0.06, "static_document": 0.04},
+        "knowledge_heavy": {"static_document": 0.12, "cli_reference": 0.1, "best_practice": 0.08, "troubleshooting_playbook": 0.06},
+        "general": {"planned_inventory": 0.05, "planned_topology": 0.05, "live_state": 0.05, "config_snapshot": 0.02},
+    }
 
     def __init__(
         self,
@@ -236,14 +280,22 @@ class KnowledgeRetriever:
         )
         return compute_freshness(
             domain=domain,
-            captured_at=metadata.get("ingested_at", ""),
+            captured_at=metadata.get("captured_at") or metadata.get("ingested_at", ""),
             ingested_at=metadata.get("ingested_at", ""),
             source=source,
             scope=scope,
             confidence=float(score),
         ).to_dict()
 
-    def _planner_score(self, raw_score: float, partition: str, freshness_class: str, plan: RetrievalPlan) -> float:
+    def _planner_score(
+        self,
+        raw_score: float,
+        partition: str,
+        freshness_class: str,
+        plan: RetrievalPlan,
+        query: str,
+        metadata: dict,
+    ) -> float:
         score = float(raw_score)
         if partition in plan.preferred_partitions:
             score += 0.28 - (0.04 * plan.preferred_partitions.index(partition))
@@ -253,12 +305,89 @@ class KnowledgeRetriever:
             score -= 0.12
 
         score += self._FRESHNESS_BONUS.get(freshness_class, 0.0)
+        score += self._temporal_bonus(metadata)
+        score += self._source_type_bonus(plan.query_class, str(metadata.get("source_type") or "static_document"))
+        score += self._applicability_bonus(query, metadata)
+        score += self._severity_bonus(plan.query_class, str(metadata.get("severity") or "info"))
 
         if plan.query_class in {"live_only", "inventory_only", "planned_vs_live", "troubleshooting", "general"} and partition == PARTITION_STATIC_KNOWLEDGE:
             score -= 0.38
         if plan.query_class == "knowledge_heavy" and partition == PARTITION_STATIC_KNOWLEDGE:
             score += 0.12
         return round(score, 4)
+
+    def _temporal_bonus(self, metadata: dict) -> float:
+        try:
+            freshness_weight = float(metadata.get("freshness_weight", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            freshness_weight = 0.0
+        freshness_weight = max(0.0, min(freshness_weight, 1.0))
+        return round((freshness_weight - 0.4) * 0.18, 4)
+
+    def _source_type_bonus(self, query_class: str, source_type: str) -> float:
+        weights = self._SOURCE_TYPE_WEIGHTS.get(query_class, {})
+        normalized = (source_type or "static_document").strip().lower()
+        return weights.get(normalized, 0.0)
+
+    def _severity_bonus(self, query_class: str, severity: str) -> float:
+        if query_class not in {"troubleshooting", "change_planning", "live_only"}:
+            return 0.0
+        return _SEVERITY_BONUS.get((severity or "info").strip().lower(), 0.0)
+
+    def _applicability_bonus(self, query: str, metadata: dict) -> float:
+        query_lower = query.lower()
+        bonus = 0.0
+
+        vendor_values = self._metadata_values(metadata.get("applicable_vendor") or metadata.get("vendor"))
+        if vendor_values:
+            query_vendor_hints = self._query_vendor_hints(query_lower)
+            if query_vendor_hints:
+                if any(vendor in query_vendor_hints for vendor in vendor_values):
+                    bonus += 0.12
+                else:
+                    bonus -= 0.05
+
+        model_values = self._metadata_values(metadata.get("applicable_model"))
+        if model_values and any(model in query_lower for model in model_values):
+            bonus += 0.08
+
+        feature_values = self._metadata_values(metadata.get("applicable_feature"))
+        query_features = self._query_feature_hints(query_lower)
+        if query_features and feature_values:
+            overlap = query_features.intersection(feature_values)
+            if overlap:
+                bonus += min(0.14, 0.06 + (0.03 * len(overlap)))
+
+        return round(bonus, 4)
+
+    @staticmethod
+    def _metadata_values(value: object) -> set[str]:
+        if value is None:
+            return set()
+        if isinstance(value, (list, tuple, set)):
+            items = value
+        else:
+            items = str(value).split(",")
+        normalized = set()
+        for item in items:
+            text = str(item).strip().lower()
+            if not text:
+                continue
+            normalized.add(text)
+            normalized.add(text.replace("_", " "))
+        return normalized
+
+    def _query_vendor_hints(self, query_lower: str) -> set[str]:
+        matches = set()
+        for canonical, aliases in _VENDOR_ALIASES.items():
+            if any(alias in query_lower for alias in aliases):
+                matches.add(canonical)
+                matches.update(alias.replace("_", " ") for alias in aliases)
+        return matches
+
+    @staticmethod
+    def _query_feature_hints(query_lower: str) -> set[str]:
+        return {feature for feature in _FEATURE_HINTS if feature in query_lower}
 
     @staticmethod
     def _dedupe_results(results: list[dict]) -> list[dict]:
@@ -376,15 +505,24 @@ class KnowledgeRetriever:
                         "vendor":       meta.get("vendor", "general"),
                         "page_number":  meta.get("page_number", 0),
                         "chunk_index":  meta.get("chunk_index", 0),
+                        "captured_at":  meta.get("captured_at", ""),
                         "ingested_at":  meta.get("ingested_at", ""),
                         "partition":    partition,
                         "collection_name": meta.get("collection_name", ""),
+                        "applicable_vendor": meta.get("applicable_vendor", ""),
+                        "applicable_model": meta.get("applicable_model", ""),
+                        "applicable_feature": meta.get("applicable_feature", ""),
+                        "source_type": meta.get("source_type", ""),
+                        "severity": meta.get("severity", "info"),
+                        "freshness_weight": meta.get("freshness_weight", 0.0),
                         "source_metadata": source_metadata,
                         "planner_score": self._planner_score(
                             float(r["score"]),
                             partition,
                             source_metadata.get("freshness_class", "missing"),
                             plan,
+                            query,
+                            meta,
                         ),
                     }
                 )

@@ -106,7 +106,10 @@ class _FakeDb:
             def execute(self_inner, query, params):
                 class _Row:
                     def fetchone(self_row):
-                        return {"config_text": "hostname R1\ninterface Gi0/0\n ip address 10.0.0.1 255.255.255.0"}
+                        return {
+                            "config_text": "hostname R1\ninterface Gi0/0\n ip address 10.0.0.1 255.255.255.0",
+                            "captured_at": "2026-03-09T10:10:00+00:00",
+                        }
 
                 return _Row()
 
@@ -257,8 +260,11 @@ class _FreshnessStore:
                     "doc_type": "topology_snapshot",
                     "vendor": "crawler",
                     "chunk_index": 0,
+                    "captured_at": self.stale,
                     "ingested_at": self.stale,
                     "partition": PARTITION_LIVE_STATE,
+                    "source_type": "live_state",
+                    "freshness_weight": 0.3,
                 },
             },
             {
@@ -269,8 +275,102 @@ class _FreshnessStore:
                     "doc_type": "topology_snapshot",
                     "vendor": "crawler",
                     "chunk_index": 1,
+                    "captured_at": self.recent,
                     "ingested_at": self.recent,
                     "partition": PARTITION_LIVE_STATE,
+                    "source_type": "live_state",
+                    "freshness_weight": 0.95,
+                },
+            },
+        ]
+
+
+class _ApplicabilityStore:
+    def __init__(self):
+        self.available = True
+        self._available = True
+
+    def query(self, query_embedding, k=5, where=None, min_score=0.35, partitions=None):
+        now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        return [
+            {
+                "text": "OSPF adjacency on Cisco IOS uses the EXSTART and FULL states.",
+                "score": 0.74,
+                "metadata": {
+                    "doc_name": "cisco-ospf-guide.pdf",
+                    "doc_type": "vendor_doc",
+                    "vendor": "cisco",
+                    "chunk_index": 0,
+                    "captured_at": now,
+                    "ingested_at": now,
+                    "partition": PARTITION_STATIC_KNOWLEDGE,
+                    "applicable_vendor": "cisco",
+                    "applicable_model": "ISR",
+                    "applicable_feature": "ospf,routing",
+                    "source_type": "static_document",
+                    "freshness_weight": 0.46,
+                    "severity": "info",
+                },
+            },
+            {
+                "text": "BGP on Junos requires matching peer AS values.",
+                "score": 0.83,
+                "metadata": {
+                    "doc_name": "junos-bgp-guide.pdf",
+                    "doc_type": "vendor_doc",
+                    "vendor": "juniper",
+                    "chunk_index": 0,
+                    "captured_at": now,
+                    "ingested_at": now,
+                    "partition": PARTITION_STATIC_KNOWLEDGE,
+                    "applicable_vendor": "juniper",
+                    "applicable_model": "MX480",
+                    "applicable_feature": "bgp,routing",
+                    "source_type": "static_document",
+                    "freshness_weight": 0.46,
+                    "severity": "info",
+                },
+            },
+        ]
+
+
+class _CapturedAtStore:
+    def __init__(self):
+        self.available = True
+        self._available = True
+        self.recent = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        self.stale = (datetime.now(timezone.utc) - timedelta(hours=3)).isoformat(timespec="seconds")
+
+    def query(self, query_embedding, k=5, where=None, min_score=0.35, partitions=None):
+        return [
+            {
+                "text": "Core link was up during the prior crawl.",
+                "score": 0.78,
+                "metadata": {
+                    "doc_name": "older-live-topology",
+                    "doc_type": "topology_snapshot",
+                    "vendor": "crawler",
+                    "chunk_index": 0,
+                    "captured_at": self.stale,
+                    "ingested_at": self.recent,
+                    "partition": PARTITION_LIVE_STATE,
+                    "source_type": "live_state",
+                    "freshness_weight": 0.25,
+                },
+            },
+            {
+                "text": "Core link is up now.",
+                "score": 0.73,
+                "metadata": {
+                    "doc_name": "current-live-topology",
+                    "doc_type": "topology_snapshot",
+                    "vendor": "crawler",
+                    "chunk_index": 1,
+                    "captured_at": self.recent,
+                    "ingested_at": self.recent,
+                    "partition": PARTITION_LIVE_STATE,
+                    "source_type": "live_state",
+                    "freshness_weight": 0.98,
                 },
             },
         ]
@@ -307,6 +407,12 @@ def test_document_ingester_writes_static_docs_to_static_partition(tmp_path):
 
     assert result["chunks_stored"] >= 1
     assert store.upserts[0]["partition"] == PARTITION_STATIC_KNOWLEDGE
+    metadata = store.upserts[0]["metadatas"][0]
+    assert metadata["captured_at"] == metadata["ingested_at"]
+    assert metadata["source_type"] == "static_document"
+    assert metadata["applicable_vendor"] == "cisco"
+    assert "ospf" in metadata["applicable_feature"]
+    assert metadata["freshness_weight"] > 0
 
 
 def test_auto_embedder_splits_live_and_config_partitions():
@@ -331,6 +437,10 @@ def test_auto_embedder_splits_live_and_config_partitions():
     assert any(item["doc_id"] == "live_device_R1" for item in store.upserts)
     assert any(item["doc_id"] == "live_interfaces_R1" for item in store.upserts)
     assert any(item["doc_id"] == "config_R1" for item in store.upserts)
+    live_meta = next(item for item in store.upserts if item["doc_id"] == "live_device_R1")["metadatas"][0]
+    assert live_meta["source_type"] == "live_state"
+    assert live_meta["applicable_feature"] == "topology"
+    assert live_meta["freshness_weight"] > 0.9
 
 
 def test_retriever_queries_store_with_selected_partitions():
@@ -373,6 +483,26 @@ def test_retriever_prefers_fresh_live_state_over_stale_live_state():
 
     assert results[0]["doc_name"] == "fresh-live-state"
     assert results[0]["source_metadata"]["freshness_class"] == "live"
+    assert results[0]["source_metadata"]["captured_at"] == store.recent
+
+
+def test_retriever_prefers_vendor_and_feature_applicability_over_higher_raw_score():
+    retriever = KnowledgeRetriever(_ApplicabilityStore(), _FakeEmbedder())
+
+    results = retriever.retrieve("Explain Cisco OSPF adjacency states on ISR routers")
+
+    assert results[0]["doc_name"] == "cisco-ospf-guide.pdf"
+    assert results[0]["applicable_vendor"] == "cisco"
+    assert "ospf" in results[0]["applicable_feature"]
+
+
+def test_retriever_uses_captured_at_and_freshness_weight_for_temporal_reranking():
+    retriever = KnowledgeRetriever(_CapturedAtStore(), _FakeEmbedder())
+
+    results = retriever.retrieve("Which core links are up right now?")
+
+    assert results[0]["doc_name"] == "current-live-topology"
+    assert results[0]["source_metadata"]["captured_at"] == retriever._store.recent
 
 
 def test_auto_embedder_only_updates_changed_live_documents():

@@ -159,7 +159,7 @@ class NetworkStateEmbedder:
         )
         return summary
 
-    def embed_single_config(self, hostname: str, config_text: str) -> Dict[str, Any]:
+    def embed_single_config(self, hostname: str, config_text: str, captured_at: Optional[str] = None) -> Dict[str, Any]:
         """
         Embed or re-embed a single device's config snapshot.
 
@@ -171,7 +171,7 @@ class NetworkStateEmbedder:
 
         now = datetime.now(timezone.utc).isoformat()
         doc_id = f"config_{hostname}"
-        chunks, metas = self._chunk_config(hostname, config_text, now)
+        chunks, metas = self._chunk_config(hostname, config_text, now, captured_at=captured_at)
 
         if not chunks:
             return {"status": "skipped", "reason": "empty_config"}
@@ -406,7 +406,7 @@ class NetworkStateEmbedder:
             doc_id = self._live_device_doc_id(hostname)
             documents[doc_id] = {
                 "chunks": [text],
-                "metas": [self._base_meta(doc_id, "topology", hostname, timestamp, 0)],
+                "metas": [self._base_meta(doc_id, "topology", hostname, timestamp, 0, node_data=data)],
             }
 
         return documents
@@ -447,7 +447,7 @@ class NetworkStateEmbedder:
                 doc_id = self._live_link_doc_id(hostname, local_intf, remote, remote_intf)
                 documents[doc_id] = {
                     "chunks": [text],
-                    "metas": [self._base_meta(doc_id, "links", hostname, timestamp, 0)],
+                    "metas": [self._base_meta(doc_id, "links", hostname, timestamp, 0, node_data=data)],
                 }
 
         return documents
@@ -462,7 +462,7 @@ class NetworkStateEmbedder:
             with self._db._connect() as conn:
                 for hostname in nodes:
                     row = conn.execute(
-                        """SELECT cs.config_text FROM config_snapshots cs
+                        """SELECT cs.config_text, cs.captured_at FROM config_snapshots cs
                            JOIN devices d ON d.id = cs.device_id
                            WHERE d.hostname = ?
                            ORDER BY cs.created_at DESC LIMIT 1""",
@@ -470,7 +470,12 @@ class NetworkStateEmbedder:
                     ).fetchone()
                     if row and row["config_text"]:
                         doc_id = f"config_{hostname}"
-                        c, m = self._chunk_config(hostname, row["config_text"], timestamp)
+                        c, m = self._chunk_config(
+                            hostname,
+                            row["config_text"],
+                            timestamp,
+                            captured_at=row["captured_at"],
+                        )
                         documents[doc_id] = {"chunks": c, "metas": m}
         except Exception as exc:
             logger.debug("Config snapshot embedding failed: %s", exc)
@@ -497,9 +502,9 @@ class NetworkStateEmbedder:
                     status = intf.get("status", "")
                     line = f"  {name}"
                     if ip:
-                        line += f" — IP: {ip}"
+                        line += f" - IP: {ip}"
                     if status:
-                        line += f" — Status: {status}"
+                        line += f" - Status: {status}"
                     lines.append(line)
                 elif isinstance(intf, str) and intf:
                     lines.append(f"  {intf}")
@@ -513,10 +518,10 @@ class NetworkStateEmbedder:
                 for i in range(0, len(text), _MAX_CHUNK_CHARS):
                     chunk = text[i:i + _MAX_CHUNK_CHARS]
                     doc_chunks.append(chunk)
-                    doc_metas.append(self._base_meta(doc_id, "interfaces", hostname, timestamp, len(doc_chunks) - 1))
+                    doc_metas.append(self._base_meta(doc_id, "interfaces", hostname, timestamp, len(doc_chunks) - 1, node_data=data))
             else:
                 doc_chunks = [text]
-                doc_metas = [self._base_meta(doc_id, "interfaces", hostname, timestamp, 0)]
+                doc_metas = [self._base_meta(doc_id, "interfaces", hostname, timestamp, 0, node_data=data)]
 
             documents[doc_id] = {"chunks": doc_chunks, "metas": doc_metas}
 
@@ -543,7 +548,19 @@ class NetworkStateEmbedder:
             device_doc_id = self._planned_device_doc_id(device.hostname)
             documents[device_doc_id] = {
                 "chunks": ["\n".join(lines)],
-                "metas": [self._planned_meta(device_doc_id, "planned_inventory", device.hostname, timestamp, 0)],
+                "metas": [
+                    self._planned_meta(
+                        device_doc_id,
+                        "planned_inventory",
+                        device.hostname,
+                        timestamp,
+                        0,
+                        applicable_vendor=device.vendor,
+                        applicable_model=device.model,
+                        applicable_feature="inventory",
+                        freshness_weight=0.84,
+                    )
+                ],
             }
 
             interfaces = self._db.get_interfaces_for_device(device.id)
@@ -563,7 +580,17 @@ class NetworkStateEmbedder:
                 text = "\n".join(interface_lines)
                 chunks = [text[i:i + _MAX_CHUNK_CHARS] for i in range(0, len(text), _MAX_CHUNK_CHARS)] or [text]
                 metas = [
-                    self._planned_meta(interface_doc_id, "planned_topology", device.hostname, timestamp, index)
+                    self._planned_meta(
+                        interface_doc_id,
+                        "planned_topology",
+                        device.hostname,
+                        timestamp,
+                        index,
+                        applicable_vendor=device.vendor,
+                        applicable_model=device.model,
+                        applicable_feature="interfaces",
+                        freshness_weight=0.8,
+                    )
                     for index, _chunk in enumerate(chunks)
                 ]
                 documents[interface_doc_id] = {"chunks": chunks, "metas": metas}
@@ -605,13 +632,29 @@ class NetworkStateEmbedder:
             )
             documents[doc_id] = {
                 "chunks": [text],
-                "metas": [self._planned_meta(doc_id, "planned_topology", src_device.hostname, timestamp, 0)],
+                "metas": [
+                    self._planned_meta(
+                        doc_id,
+                        "planned_topology",
+                        src_device.hostname,
+                        timestamp,
+                        0,
+                        applicable_vendor=getattr(src_device, "vendor", ""),
+                        applicable_model=getattr(src_device, "model", ""),
+                        applicable_feature="topology,links",
+                        freshness_weight=0.82,
+                    )
+                ],
             }
 
         return documents
 
     def _chunk_config(
-        self, hostname: str, config_text: str, timestamp: str
+        self,
+        hostname: str,
+        config_text: str,
+        timestamp: str,
+        captured_at: Optional[str] = None,
     ) -> tuple[List[str], List[dict]]:
         """Split a config into chunks with metadata."""
         chunks, metas = [], []
@@ -620,6 +663,9 @@ class NetworkStateEmbedder:
 
         # Prefix each chunk with the device name for context
         prefix = f"Configuration for {hostname}:\n"
+        device = self._db.get_device_by_hostname(hostname) if self._db is not None else None
+        vendor = getattr(device, "vendor", "") or _STATE_VENDOR
+        model = getattr(device, "model", "") or ""
 
         # Split on section boundaries (lines starting with !)
         sections = config_text.split("\n!")
@@ -634,7 +680,17 @@ class NetworkStateEmbedder:
                 # Flush current chunk
                 chunks.append(current_chunk)
                 metas.append(self._base_meta(
-                    f"config_{hostname}", "config", hostname, timestamp, len(chunks) - 1
+                    f"config_{hostname}",
+                    "config",
+                    hostname,
+                    timestamp,
+                    len(chunks) - 1,
+                    captured_at=captured_at,
+                    applicable_vendor=vendor,
+                    applicable_model=model,
+                    applicable_feature=self._infer_config_feature(config_text),
+                    source_type="config_snapshot",
+                    freshness_weight=0.88,
                 ))
                 current_chunk = prefix + "!" + section + "\n"
             else:
@@ -644,7 +700,17 @@ class NetworkStateEmbedder:
         if current_chunk.strip() != prefix.strip():
             chunks.append(current_chunk)
             metas.append(self._base_meta(
-                f"config_{hostname}", "config", hostname, timestamp, len(chunks) - 1
+                f"config_{hostname}",
+                "config",
+                hostname,
+                timestamp,
+                len(chunks) - 1,
+                captured_at=captured_at,
+                applicable_vendor=vendor,
+                applicable_model=model,
+                applicable_feature=self._infer_config_feature(config_text),
+                source_type="config_snapshot",
+                freshness_weight=0.88,
             ))
 
         return chunks, metas
@@ -678,8 +744,14 @@ class NetworkStateEmbedder:
             "doc_type": _INCIDENT_DOC_TYPE,
             "vendor": _STATE_VENDOR,
             "incident_id": incident_id,
+            "captured_at": incident.get("updated_at") or incident.get("detected_at") or incident.get("created_at") or timestamp,
             "severity": incident.get("severity", "unknown"),
             "status": incident.get("status", "open"),
+            "applicable_vendor": _STATE_VENDOR,
+            "applicable_model": "",
+            "applicable_feature": incident.get("anomaly_type", "incident"),
+            "source_type": "incident_report",
+            "freshness_weight": 0.9,
             "chunk_index": 0,
             "ingested_at": timestamp,
             "token_count": 0,
@@ -703,7 +775,13 @@ class NetworkStateEmbedder:
             "doc_type": _DRIFT_DOC_TYPE,
             "vendor": _STATE_VENDOR,
             "hostname": hostname,
+            "captured_at": getattr(event, "timestamp", None) or timestamp,
             "severity": getattr(event, "severity", "unknown") or "unknown",
+            "applicable_vendor": _STATE_VENDOR,
+            "applicable_model": "",
+            "applicable_feature": "configuration_drift",
+            "source_type": "drift_result",
+            "freshness_weight": 0.78,
             "chunk_index": 0,
             "ingested_at": timestamp,
             "token_count": 0,
@@ -715,16 +793,41 @@ class NetworkStateEmbedder:
     # ------------------------------------------------------------------
 
     def _base_meta(
-        self, doc_id: str, sub_type: str, hostname: str,
-        timestamp: str, chunk_index: int,
+        self,
+        doc_id: str,
+        sub_type: str,
+        hostname: str,
+        timestamp: str,
+        chunk_index: int,
+        node_data: Optional[dict] = None,
+        captured_at: Optional[str] = None,
+        applicable_vendor: str = "",
+        applicable_model: str = "",
+        applicable_feature: str = "",
+        source_type: str = "",
+        freshness_weight: float = 0.0,
+        severity: str = "info",
     ) -> dict:
+        node = node_data or {}
+        resolved_vendor = applicable_vendor or str(node.get("vendor") or _STATE_VENDOR)
+        resolved_model = applicable_model or str(node.get("model") or "")
+        resolved_feature = applicable_feature or self._feature_for_sub_type(sub_type)
+        resolved_source_type = source_type or self._source_type_for_sub_type(sub_type)
+        resolved_freshness = freshness_weight or self._freshness_weight_for_sub_type(sub_type)
         return {
             "doc_id": doc_id,
             "doc_name": f"network_state_{sub_type}_{hostname}",
             "doc_type": _STATE_DOC_TYPE,
             "sub_type": sub_type,
-            "vendor": _STATE_VENDOR,
+            "vendor": resolved_vendor,
             "hostname": hostname,
+            "captured_at": captured_at or node.get("last_seen") or timestamp,
+            "applicable_vendor": resolved_vendor,
+            "applicable_model": resolved_model,
+            "applicable_feature": resolved_feature,
+            "source_type": resolved_source_type,
+            "severity": severity,
+            "freshness_weight": resolved_freshness,
             "chunk_index": chunk_index,
             "ingested_at": timestamp,
             "token_count": 0,  # approximate — not critical for state data
@@ -737,13 +840,24 @@ class NetworkStateEmbedder:
         hostname: str,
         timestamp: str,
         chunk_index: int,
+        applicable_vendor: str = "",
+        applicable_model: str = "",
+        applicable_feature: str = "",
+        freshness_weight: float = 0.72,
     ) -> dict:
         return {
             "doc_id": doc_id,
             "doc_name": doc_id,
             "doc_type": doc_type,
-            "vendor": _PLANNED_DOC_VENDOR,
+            "vendor": applicable_vendor or _PLANNED_DOC_VENDOR,
             "hostname": hostname,
+            "captured_at": timestamp,
+            "applicable_vendor": applicable_vendor or _PLANNED_DOC_VENDOR,
+            "applicable_model": applicable_model,
+            "applicable_feature": applicable_feature or doc_type,
+            "source_type": doc_type,
+            "severity": "info",
+            "freshness_weight": freshness_weight,
             "chunk_index": chunk_index,
             "ingested_at": timestamp,
             "token_count": 0,
@@ -809,7 +923,11 @@ class NetworkStateEmbedder:
         history = self._db.get_config_history(device.id, limit=1)
         if not history:
             return {"status": "skipped", "reason": "config_not_found", "hostname": hostname}
-        return self.embed_single_config(hostname, history[0].config_text)
+        return self.embed_single_config(
+            hostname,
+            history[0].config_text,
+            captured_at=getattr(history[0], "captured_at", None),
+        )
 
     def _resolve_hostname(self, metadata: dict) -> str:
         hostname = str(metadata.get("hostname") or "").strip()
@@ -880,3 +998,44 @@ class NetworkStateEmbedder:
             for document in self._store.list_documents(partition=PARTITION_PLANNED_STATE)
             if str(document.get("doc_id", "")).startswith("planned_link_")
         }
+
+    @staticmethod
+    def _source_type_for_sub_type(sub_type: str) -> str:
+        mapping = {
+            "topology": "live_state",
+            "links": "live_state",
+            "interfaces": "live_state",
+            "config": "config_snapshot",
+        }
+        return mapping.get(sub_type, "live_state")
+
+    @staticmethod
+    def _freshness_weight_for_sub_type(sub_type: str) -> float:
+        mapping = {
+            "topology": 0.95,
+            "links": 0.93,
+            "interfaces": 0.91,
+            "config": 0.88,
+        }
+        return mapping.get(sub_type, 0.8)
+
+    @staticmethod
+    def _feature_for_sub_type(sub_type: str) -> str:
+        mapping = {
+            "topology": "topology",
+            "links": "links,adjacency",
+            "interfaces": "interfaces",
+            "config": "configuration",
+        }
+        return mapping.get(sub_type, sub_type)
+
+    @staticmethod
+    def _infer_config_feature(config_text: str) -> str:
+        normalized = (config_text or "").lower()
+        features = []
+        for feature in ("ospf", "bgp", "vlan", "mpls", "vrf", "acl", "qos", "nat"):
+            if feature in normalized and feature not in features:
+                features.append(feature)
+        if not features:
+            features.append("configuration")
+        return ",".join(features)

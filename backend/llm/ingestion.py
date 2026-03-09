@@ -43,6 +43,26 @@ _CHUNK_TOKENS = 512
 _OVERLAP_TOKENS = 64
 _CLI_CHUNK_TOKENS = 256         # smaller chunks for CLI reference docs
 _CLI_DENSITY_THRESHOLD = 0.15   # fraction of lines starting with # or !
+_FEATURE_KEYWORDS = (
+    "ospf",
+    "bgp",
+    "vlan",
+    "spanning tree",
+    "stp",
+    "mpls",
+    "vrf",
+    "acl",
+    "qos",
+    "nat",
+    "ipsec",
+    "gre",
+    "lldp",
+    "cdp",
+    "lacp",
+    "snmp",
+    "syslog",
+    "netflow",
+)
 
 
 class DocumentIngester:
@@ -114,6 +134,10 @@ class DocumentIngester:
         # 4. Build metadata per chunk
         doc_id = str(uuid4())
         ingested_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        applicable_features = self._infer_applicable_features(f"{name}\n{full_text}")
+        applicable_model = self._infer_applicable_model(name)
+        source_type = self._source_type_for_doc(doc_type)
+        freshness_weight = self._freshness_weight_for_doc(doc_type)
 
         texts = [c["text"] for c in raw_chunks]
         metadatas = [
@@ -124,7 +148,14 @@ class DocumentIngester:
                 "vendor":      vendor,
                 "chunk_index": i,
                 "page_number": c.get("page", 0),
+                "captured_at": ingested_at,
                 "ingested_at": ingested_at,
+                "applicable_vendor": vendor,
+                "applicable_model": applicable_model,
+                "applicable_feature": applicable_features,
+                "source_type": source_type,
+                "severity": "info",
+                "freshness_weight": freshness_weight,
                 "token_count": len(c["text"].split()),
             }
             for i, c in enumerate(raw_chunks)
@@ -311,3 +342,36 @@ class DocumentIngester:
             return False
         cli_lines = sum(1 for l in lines if l.lstrip().startswith(("#", "!")))
         return (cli_lines / len(lines)) > _CLI_DENSITY_THRESHOLD
+
+    @staticmethod
+    def _source_type_for_doc(doc_type: str) -> str:
+        mapping = {
+            "vendor_doc": "static_document",
+            "cli_reference": "cli_reference",
+            "troubleshooting": "troubleshooting_playbook",
+            "best_practice": "best_practice",
+            "sop": "standard_operating_procedure",
+        }
+        return mapping.get((doc_type or "").strip().lower(), "static_document")
+
+    @staticmethod
+    def _freshness_weight_for_doc(doc_type: str) -> float:
+        mapping = {
+            "troubleshooting": 0.58,
+            "cli_reference": 0.52,
+            "vendor_doc": 0.46,
+            "best_practice": 0.4,
+            "sop": 0.42,
+        }
+        return mapping.get((doc_type or "").strip().lower(), 0.4)
+
+    @staticmethod
+    def _infer_applicable_model(name: str) -> str:
+        model_tokens = re.findall(r"\b[A-Z]{2,}[0-9][A-Z0-9-]*\b", name or "")
+        return ",".join(model_tokens[:3])
+
+    @staticmethod
+    def _infer_applicable_features(text: str) -> str:
+        normalized = (text or "").lower()
+        matches = [feature for feature in _FEATURE_KEYWORDS if feature in normalized]
+        return ",".join(matches[:5])
