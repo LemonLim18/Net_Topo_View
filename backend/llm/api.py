@@ -27,6 +27,7 @@ from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
 from auth.rbac import require_role
+from llm.refresh_fabric import register_refresh_listener
 
 logger = logging.getLogger("llm.api")
 
@@ -74,6 +75,7 @@ class ProposalReviewRequest(BaseModel):
 _agent = None
 _pipeline = None  # DeploymentPipeline (M4)
 _vault = None     # CredentialVault (M15)
+_AGENT_REFRESH_LISTENER = "llm_api_agent_cache"
 
 
 def setup_agent(agent, pipeline=None, vault=None) -> None:
@@ -89,6 +91,10 @@ def setup_agent(agent, pipeline=None, vault=None) -> None:
     _agent = agent
     _pipeline = pipeline
     _vault = vault
+    register_refresh_listener(
+        _AGENT_REFRESH_LISTENER,
+        lambda _publication: agent.refresh_context(),
+    )
     logger.info("Chat API initialized with agent (model=%s)", agent.model_name)
     if pipeline:
         logger.info("Deployment pipeline linked to Chat API")

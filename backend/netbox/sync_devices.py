@@ -3,7 +3,7 @@ import logging
 from db.manager import DatabaseManager
 from db.models import Device, Interface
 from llm.context_contract import CONTEXT_DOMAIN_INVENTORY, CONTEXT_DOMAIN_PLANNED_TOPOLOGY
-from llm.context_state import get_context_state_manager
+from llm.refresh_fabric import publish_context_refresh_event
 from llm.refresh_state import get_refresh_state_manager
 from netbox.client import NetBoxClient
 
@@ -126,20 +126,14 @@ class DeviceSyncer:
                 logger.error(f"Failed to sync device {nb_dev.name}: {e}")
 
         logger.info(f"NetBox Sync Complete. Synced {synced_count} devices, {iface_count} interfaces.")
-        state = get_context_state_manager()
-        state.invalidate(
-            domain=CONTEXT_DOMAIN_INVENTORY,
+        publish_context_refresh_event(
             source="netbox_sync",
+            action="inventory_sync_completed",
             summary=f"synced {synced_count} devices from NetBox",
+            domains=(CONTEXT_DOMAIN_INVENTORY, CONTEXT_DOMAIN_PLANNED_TOPOLOGY),
             event_type="refresh",
+            refresh_mode="none",
             metadata={"synced_count": synced_count, "interface_count": iface_count},
-        )
-        state.invalidate(
-            domain=CONTEXT_DOMAIN_PLANNED_TOPOLOGY,
-            source="netbox_sync",
-            summary="inventory sync may have changed planned topology context",
-            event_type="refresh",
-            metadata={"synced_count": synced_count},
         )
         result = {"status": "success", "synced_count": synced_count, "interface_count": iface_count}
         refresh_state.record_success("inventory", result=result, trigger="netbox_sync")

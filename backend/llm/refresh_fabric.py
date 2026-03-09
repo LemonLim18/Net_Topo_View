@@ -5,7 +5,7 @@ import uuid
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Deque, Dict, Iterable, Optional, Sequence
+from typing import Callable, Deque, Dict, Iterable, Optional, Sequence
 
 from llm.context_state import ContextStateManager, get_context_state_manager
 from llm.refresh_state import RefreshStateManager, get_refresh_state_manager
@@ -49,6 +49,15 @@ class RefreshFabric:
         self._refresh_state = refresh_state or get_refresh_state_manager()
         self._lock = threading.Lock()
         self._recent_publications: Deque[Dict[str, object]] = deque(maxlen=200)
+        self._listeners: Dict[str, Callable[[Dict[str, object]], None]] = {}
+
+    def register_listener(self, name: str, callback: Callable[[Dict[str, object]], None]) -> None:
+        with self._lock:
+            self._listeners[name] = callback
+
+    def unregister_listener(self, name: str) -> None:
+        with self._lock:
+            self._listeners.pop(name, None)
 
     def publish(self, event: RefreshFabricEvent) -> Dict[str, object]:
         event_id = f"evt-{uuid.uuid4().hex[:10]}"
@@ -97,6 +106,13 @@ class RefreshFabric:
         }
         with self._lock:
             self._recent_publications.appendleft(publication)
+            listeners = list(self._listeners.values())
+
+        for listener in listeners:
+            try:
+                listener(publication)
+            except Exception:
+                continue
         return publication
 
     def snapshot(self) -> Dict[str, object]:
@@ -110,6 +126,14 @@ _REFRESH_FABRIC = RefreshFabric()
 
 def get_refresh_fabric() -> RefreshFabric:
     return _REFRESH_FABRIC
+
+
+def register_refresh_listener(name: str, callback: Callable[[Dict[str, object]], None]) -> None:
+    get_refresh_fabric().register_listener(name, callback)
+
+
+def unregister_refresh_listener(name: str) -> None:
+    get_refresh_fabric().unregister_listener(name)
 
 
 def publish_context_refresh_event(

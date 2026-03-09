@@ -1,6 +1,8 @@
 import logging
 from typing import Any, Dict, List
 from db.manager import DatabaseManager
+from llm.context_contract import CONTEXT_DOMAIN_PLANNED_TOPOLOGY
+from llm.refresh_fabric import publish_context_refresh_event
 from llm.refresh_state import get_refresh_state_manager
 from netbox.client import NetBoxClient
 
@@ -91,6 +93,15 @@ class TopologySyncer:
                 logger.error("Failed to sync cable %s: %s", cable_id, e)
 
         logger.info("NetBox Topology Sync: synced %d cables, %d errors", synced, len(errors))
+        publish_context_refresh_event(
+            source="netbox_topology_sync",
+            action="planned_topology_sync_completed",
+            summary=f"synced {synced} planned topology cables from NetBox",
+            domains=(CONTEXT_DOMAIN_PLANNED_TOPOLOGY,),
+            event_type="refresh",
+            refresh_mode="none",
+            metadata={"cables_synced": synced, "error_count": len(errors)},
+        )
         result = {"status": "success", "cables_synced": synced, "errors": errors}
         refresh_state.record_success("planned_topology", result=result, trigger="netbox_topology_sync")
         return result
