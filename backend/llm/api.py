@@ -53,6 +53,7 @@ class ChatResponse(BaseModel):
     type: str = "text"                     # "text" | "proposal" | "intent_plan"
     proposal: Optional[Dict[str, Any]] = None  # ConfigProposal dict
     intent_meta: Optional[Dict[str, Any]] = None  # Intent pipeline metadata
+    grounding_meta: Optional[Dict[str, Any]] = None
 
 
 class InfoResponse(BaseModel):
@@ -154,6 +155,7 @@ async def chat(request: ChatRequest):
             type=result.get("type", "text"),
             proposal=result.get("proposal"),
             intent_meta=result.get("intent_meta"),
+            grounding_meta=result.get("grounding_meta"),
         )
     except Exception as e:
         logger.error("Chat error: %s", e)

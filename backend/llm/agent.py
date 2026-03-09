@@ -20,6 +20,7 @@ import logging
 import re
 from typing import Any, Dict, List, Optional
 
+from llm.answer_grounding import build_answer_grounding, format_grounding_summary
 from llm.context_contract import classify_query
 from llm.context_state import get_context_state_manager
 from llm.provider import LLMProvider, LLMMessage, LLMResponse, ToolCall
@@ -96,6 +97,7 @@ No intent pipeline is needed for read-only operations.
 - Always query real data.  Never invent device names, IPs, or topology.
 - Be concise but thorough.  Use bullet points and tables.
 - If you don't know something, say so.  Never hallucinate network state.
+- Treat the agent-supplied grounding metadata as authoritative. Do not contradict whether evidence is planned, live, mixed, or inferred.
 - After generating a change plan, summarize: what changes, which devices, risk level, blast radius.
 
 ## Current Network State
@@ -223,6 +225,8 @@ class NetworkAgent:
             )
             if knowledge_ctx:
                 per_turn_system = per_turn_system + "\n\n" + knowledge_ctx
+        else:
+            knowledge_ctx = ""
 
         # Build full message list (system + history)
         messages = [
@@ -249,8 +253,14 @@ class NetworkAgent:
 
             # If no tool calls, we have a final answer
             if not response.tool_calls:
+                grounding_meta = self._build_grounding_meta(
+                    routing_decision.query_class,
+                    tool_results,
+                    knowledge_used=bool(knowledge_ctx),
+                )
+                final_content = self._render_grounded_content(response.content, grounding_meta)
                 self._history.append(
-                    LLMMessage(role="assistant", content=response.content)
+                    LLMMessage(role="assistant", content=final_content)
                 )
 
                 # --- M19: Proposal Detection ---
@@ -260,9 +270,10 @@ class NetworkAgent:
                 if proposal:
                     resp = {
                         "role": "assistant",
-                        "content": response.content,
+                        "content": final_content,
                         "type": "proposal",
                         "proposal": proposal.model_dump(),
+                        "grounding_meta": grounding_meta,
                     }
                     if hasattr(proposal, "_intent_meta"):
                         resp["type"] = "intent_plan"
@@ -271,8 +282,9 @@ class NetworkAgent:
 
                 return {
                     "role": "assistant",
-                    "content": response.content,
+                    "content": final_content,
                     "type": "text",
+                    "grounding_meta": grounding_meta,
                 }
 
             # Execute tool calls
@@ -316,8 +328,25 @@ class NetworkAgent:
         )
 
         self._history.append(
-            LLMMessage(role="assistant", content=final_response.content)
+            LLMMessage(
+                role="assistant",
+                content=self._render_grounded_content(
+                    final_response.content,
+                    self._build_grounding_meta(
+                        routing_decision.query_class,
+                        tool_results,
+                        knowledge_used=bool(knowledge_ctx),
+                    ),
+                ),
+            )
         )
+
+        grounding_meta = self._build_grounding_meta(
+            routing_decision.query_class,
+            tool_results,
+            knowledge_used=bool(knowledge_ctx),
+        )
+        final_content = self._render_grounded_content(final_response.content, grounding_meta)
 
         # Check for proposal even after exhausting rounds
         proposal = self._maybe_create_proposal(
@@ -326,9 +355,10 @@ class NetworkAgent:
         if proposal:
             resp = {
                 "role": "assistant",
-                "content": final_response.content,
+                "content": final_content,
                 "type": "proposal",
                 "proposal": proposal.model_dump(),
+                "grounding_meta": grounding_meta,
             }
             if hasattr(proposal, "_intent_meta"):
                 resp["type"] = "intent_plan"
@@ -337,8 +367,9 @@ class NetworkAgent:
 
         return {
             "role": "assistant",
-            "content": final_response.content,
+            "content": final_content,
             "type": "text",
+            "grounding_meta": grounding_meta,
         }
 
     # ------------------------------------------------------------------
@@ -841,6 +872,29 @@ class NetworkAgent:
             )
             prefetch_tools.append(ToolCall(name="get_knowledge_base_status", arguments={"limit": 5}))
 
+        else:
+            allowed_tools = generic_read_tools + [
+                "get_inventory_device",
+                "search_inventory_devices",
+                "compare_planned_vs_live",
+                "get_topology_summary",
+                "get_device_details",
+                "list_all_devices",
+                "get_recent_incidents",
+                "get_recent_drift_events",
+            ]
+            instruction = (
+                "For this general network query, ground the answer with authoritative device or topology evidence before answering. "
+                "If you rely only on prompt context, say so explicitly."
+            )
+            prefetch_tools.append(ToolCall(name="get_context_health", arguments={}))
+            if hostnames:
+                prefetch_tools.append(
+                    ToolCall(name="compare_planned_vs_live", arguments={"hostname": hostnames[0]})
+                )
+            else:
+                prefetch_tools.append(ToolCall(name="get_topology_summary", arguments={}))
+
         return {
             "prefetch_tools": prefetch_tools,
             "allowed_tools": allowed_tools,
@@ -940,6 +994,26 @@ class NetworkAgent:
                 device_hostnames=device_hostnames,
             )
         )
+
+    def _build_grounding_meta(
+        self,
+        query_class: str,
+        tool_results: Dict[str, Any],
+        knowledge_used: bool = False,
+    ) -> Dict[str, Any]:
+        return build_answer_grounding(
+            query_class=query_class,
+            tool_results=tool_results,
+            knowledge_used=knowledge_used,
+        )
+
+    def _render_grounded_content(self, content: str, grounding_meta: Dict[str, Any]) -> str:
+        summary = format_grounding_summary(grounding_meta)
+        if not content:
+            return summary
+        if summary in content:
+            return content
+        return f"{content}\n\n{summary}"
 
     def refresh_context(self) -> None:
         """

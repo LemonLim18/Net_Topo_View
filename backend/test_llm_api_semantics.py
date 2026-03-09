@@ -38,3 +38,28 @@ def test_get_canonical_device_state_endpoint_filters_hostname(monkeypatch):
     assert len(payload["devices"]) == 1
     assert payload["devices"][0]["hostname"] == "SW1"
     assert payload["planned_only"] == ["SW1"]
+
+
+def test_chat_endpoint_returns_grounding_meta(monkeypatch):
+    class _FakeAgent:
+        model_name = "test-model"
+
+        async def chat(self, message):
+            return {
+                "role": "assistant",
+                "content": "answer\n\nGrounding: planned; sources=local_db; source_age=local_db:0s/live; confidence=high (0.9).",
+                "type": "text",
+                "grounding_meta": {
+                    "answer_scope": "planned",
+                    "source_used": ["local_db"],
+                    "source_age": [{"source": "local_db", "scope": "planned_inventory", "age_seconds": 0, "freshness_class": "live", "confidence": 0.9}],
+                    "confidence": {"level": "high", "score": 0.9, "reason": "test"},
+                },
+            }
+
+    monkeypatch.setattr(llm_api, "_get_agent", lambda: _FakeAgent())
+
+    payload = asyncio.run(llm_api.chat(llm_api.ChatRequest(message="What is SW1?")))
+
+    assert payload.grounding_meta["answer_scope"] == "planned"
+    assert payload.grounding_meta["source_used"] == ["local_db"]

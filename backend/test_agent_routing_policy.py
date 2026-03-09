@@ -103,6 +103,10 @@ def test_inventory_query_prefetches_inventory_tool():
     tool_names = {tool["name"] for tool in first_call["tools"]}
     assert "get_inventory_device" in tool_names
     assert "list_all_devices" not in tool_names
+    assert response["grounding_meta"]["answer_scope"] == "planned"
+    assert "local_db" in response["grounding_meta"]["source_used"]
+    assert response["grounding_meta"]["source_age"][0]["scope"] == "planned_inventory"
+    assert "Grounding: planned;" in response["content"]
 
 
 def test_planned_vs_live_query_prefetches_comparison_tool():
@@ -110,10 +114,32 @@ def test_planned_vs_live_query_prefetches_comparison_tool():
 
     provider, response = asyncio.run(_run_chat("Compare planned vs live state for SW1"))
 
-    assert response["content"] == "authoritative answer"
+    assert response["content"].startswith("authoritative answer")
     first_call = provider.calls[0]
     tool_messages = [message for message in first_call["messages"] if message.role == "tool"]
     assert any(message.name == "compare_planned_vs_live" for message in tool_messages)
+
+
+def test_planned_vs_live_query_returns_mixed_grounding():
+    import asyncio
+
+    _, response = asyncio.run(_run_chat("Compare planned vs live state for SW1"))
+
+    assert response["grounding_meta"]["answer_scope"] == "mixed"
+    assert "crawler_cache" in response["grounding_meta"]["source_used"]
+    assert "local_db" in response["grounding_meta"]["source_used"]
+    assert "Grounding: mixed;" in response["content"]
+
+
+def test_live_query_returns_live_grounding_and_confidence():
+    import asyncio
+
+    _, response = asyncio.run(_run_chat("Show me the live topology"))
+
+    assert response["grounding_meta"]["answer_scope"] == "live"
+    assert "crawler_cache" in response["grounding_meta"]["source_used"]
+    assert response["grounding_meta"]["confidence"]["level"] in {"medium", "high"}
+    assert "source_age=" in response["content"]
 
 
 def test_troubleshooting_query_prefetches_multi_source_evidence():
