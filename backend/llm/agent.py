@@ -19,6 +19,7 @@ import json
 import logging
 from typing import Any, Dict, List, Optional
 
+from llm.context_contract import classify_query
 from llm.provider import LLMProvider, LLMMessage, LLMResponse, ToolCall
 from llm.tools import ToolRegistry
 from llm.context import ContextBuilder
@@ -163,10 +164,7 @@ class NetworkAgent:
         # Conversation history (persists across chat() calls)
         self._history: List[LLMMessage] = []
 
-        # Build system prompt with current network context
-        self._system_prompt = SYSTEM_PROMPT.format(
-            network_context=self._context.build_full_context()
-        )
+        self._system_prompt = self._render_system_prompt()
 
         logger.info(
             "NetworkAgent initialized (model=%s, tools=%d)",
@@ -196,15 +194,15 @@ class NetworkAgent:
         # Add user message to history
         self._history.append(LLMMessage(role="user", content=user_message))
 
-        # --- M21: Hybrid RAG routing ---
-        try:
-            from llm.retriever import route
-            use_live, use_knowledge = route(user_message)
-        except Exception:
-            use_live, use_knowledge = True, False
+        routing_decision = classify_query(user_message)
+        logger.info(
+            "Query classified as %s (%s)",
+            routing_decision.query_class,
+            routing_decision.reasoning,
+        )
 
-        per_turn_system = self._system_prompt  # always includes baked live topology
-        if use_knowledge and self._retriever is not None:
+        per_turn_system = self._render_system_prompt(user_message)
+        if routing_decision.use_knowledge and self._retriever is not None:
             knowledge_ctx = self._context.build_knowledge_context(
                 user_message, self._retriever
             )
@@ -623,14 +621,17 @@ class NetworkAgent:
         self._history.clear()
         logger.info("Conversation history cleared")
 
+    def _render_system_prompt(self, user_message: Optional[str] = None) -> str:
+        return SYSTEM_PROMPT.format(
+            network_context=self._context.build_full_context(query=user_message)
+        )
+
     def refresh_context(self) -> None:
         """
         Refresh the network context in the system prompt.
         Call this after a topology crawl completes.
         """
-        self._system_prompt = SYSTEM_PROMPT.format(
-            network_context=self._context.build_full_context()
-        )
+        self._system_prompt = self._render_system_prompt()
         logger.info("System prompt refreshed with latest topology")
 
     def get_history(self) -> List[Dict[str, str]]:

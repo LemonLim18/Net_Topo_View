@@ -10,6 +10,16 @@ import json
 import logging
 from typing import Any, Dict, List, Optional
 
+from llm.context_contract import (
+    CONTEXT_DOMAIN_LIVE_TOPOLOGY,
+    QueryRoutingDecision,
+    build_authoritative_context_contract,
+    build_source_matrix,
+    classify_query,
+    compute_freshness,
+)
+from llm.context_state import get_context_state_manager
+
 logger = logging.getLogger("llm.context")
 
 
@@ -46,9 +56,18 @@ class ContextBuilder:
         nodes = topo.get("nodes", {})
         timestamp = topo.get("timestamp", "unknown")
         seeds = topo.get("seeds", [])
+        freshness = compute_freshness(
+            domain=CONTEXT_DOMAIN_LIVE_TOPOLOGY,
+            captured_at=timestamp if timestamp != "unknown" else None,
+            ingested_at=timestamp if timestamp != "unknown" else None,
+            source="crawler_cache",
+            scope="live_topology",
+            confidence=0.9 if nodes else 0.0,
+        )
 
         lines = [
             f"## Current Network Topology",
+            f"Freshness: {freshness.to_prompt_text()}",
             f"Last crawled: {timestamp}",
             f"Seed devices: {', '.join(seeds)}",
             f"Total devices: {len(nodes)}",
@@ -162,6 +181,9 @@ class ContextBuilder:
     def build_full_context(
         self,
         device_hostnames: Optional[List[str]] = None,
+        query: Optional[str] = None,
+        routing_decision: Optional[QueryRoutingDecision] = None,
+        include_contract: bool = True,
         include_bundle: bool = True,
     ) -> str:
         """
@@ -172,13 +194,25 @@ class ContextBuilder:
         controller state into the context, giving the LLM much richer
         grounding than topology alone (SRD UC06-UC09).
         """
-        parts = [
-            self.build_topology_context(),
-            self.build_available_templates_context(),
-        ]
+        decision = routing_decision or (classify_query(query) if query else None)
+
+        parts = []
+
+        if include_contract:
+            parts.append(build_authoritative_context_contract())
+            parts.append(self.build_source_matrix_context())
+            parts.append(get_context_state_manager().to_prompt_text())
+
+        if decision is None or decision.use_live_context:
+            parts.append(self.build_topology_context())
+
+        parts.append(self.build_available_templates_context())
 
         if include_bundle:
-            bundle_text = self.build_network_bundle_context(device_hostnames)
+            bundle_text = self.build_network_bundle_context(
+                device_hostnames,
+                routing_decision=decision,
+            )
             if bundle_text:
                 parts.append(bundle_text)
 
@@ -187,6 +221,7 @@ class ContextBuilder:
     def build_network_bundle_context(
         self,
         device_hostnames: Optional[List[str]] = None,
+        routing_decision: Optional[QueryRoutingDecision] = None,
     ) -> str:
         """
         Build the fused network-context bundle (inventory + telemetry + SDN).
@@ -195,14 +230,47 @@ class ContextBuilder:
             A markdown-formatted block ready for LLM injection, or empty
             string if the bundle builder is unavailable.
         """
+        if routing_decision is not None and not any(
+            (
+                routing_decision.include_inventory,
+                routing_decision.include_telemetry,
+                routing_decision.include_sdn,
+            )
+        ):
+            return ""
+
         try:
             from rag.context_bundle import ContextBundleBuilder
             builder = ContextBundleBuilder(db_manager=self._db)
-            bundle = builder.build_bundle(device_hostnames=device_hostnames)
+            bundle = builder.build_bundle(
+                device_hostnames=device_hostnames,
+                include_inventory=(
+                    routing_decision.include_inventory
+                    if routing_decision is not None else True
+                ),
+                include_telemetry=(
+                    routing_decision.include_telemetry
+                    if routing_decision is not None else True
+                ),
+                include_sdn=(
+                    routing_decision.include_sdn
+                    if routing_decision is not None else True
+                ),
+            )
             return bundle.to_prompt_text()
         except Exception as exc:
             logger.debug("Context bundle build skipped: %s", exc)
             return ""
+
+    def build_source_matrix_context(self) -> str:
+        lines = ["## Source Matrix"]
+        for entry in build_source_matrix():
+            primary = ", ".join(entry["primary_domains"])
+            fallback = ", ".join(entry["fallback_domains"])
+            lines.append(
+                f"- {entry['query_class']}: primary={primary}; fallback={fallback}"
+            )
+        return "\n".join(lines)
 
     def build_knowledge_context(self, query: str, retriever, k: int = 5) -> str:
         """

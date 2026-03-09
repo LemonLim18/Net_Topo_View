@@ -9,6 +9,14 @@ import json
 import logging
 from typing import Any, Dict, List, Optional
 
+from llm.context_contract import (
+    CONTEXT_DOMAIN_INVENTORY,
+    CONTEXT_DOMAIN_LIVE_TOPOLOGY,
+    CONTEXT_DOMAIN_PLANNED_TOPOLOGY,
+    compute_freshness,
+)
+from llm.context_state import get_context_state_manager
+
 
 logger = logging.getLogger("llm.network_tools")
 
@@ -23,6 +31,119 @@ def set_db_manager(db) -> None:
     """Called once at startup to inject the DatabaseManager."""
     global _db_manager
     _db_manager = db
+
+
+def _topology_source_metadata(topo: Dict[str, Any]) -> Dict[str, Any]:
+    timestamp = topo.get("timestamp") if isinstance(topo, dict) else None
+    metadata = compute_freshness(
+        domain=CONTEXT_DOMAIN_LIVE_TOPOLOGY,
+        captured_at=timestamp,
+        ingested_at=timestamp,
+        source="crawler_cache",
+        scope="live_topology",
+        confidence=0.9 if topo.get("nodes") else 0.0,
+    )
+    return metadata.to_dict()
+
+
+def _inventory_source_metadata(source: str, captured_at: Optional[str], confidence: float = 0.85) -> Dict[str, Any]:
+    metadata = compute_freshness(
+        domain=CONTEXT_DOMAIN_INVENTORY,
+        captured_at=captured_at,
+        ingested_at=captured_at,
+        source=source,
+        scope="planned_inventory",
+        confidence=confidence,
+    )
+    return metadata.to_dict()
+
+
+def _planned_topology_source_metadata(source: str, captured_at: Optional[str], confidence: float = 0.75) -> Dict[str, Any]:
+    metadata = compute_freshness(
+        domain=CONTEXT_DOMAIN_PLANNED_TOPOLOGY,
+        captured_at=captured_at,
+        ingested_at=captured_at,
+        source=source,
+        scope="planned_topology",
+        confidence=confidence,
+    )
+    return metadata.to_dict()
+
+
+def _normalize_inventory_device(record: Any, source: str) -> Dict[str, Any]:
+    if isinstance(record, dict):
+        hostname = record.get("hostname") or record.get("name") or "unknown"
+        management_ip = record.get("management_ip") or record.get("mgmt_ip")
+        vendor = record.get("vendor") or record.get("platform") or "unknown"
+        model = record.get("model")
+        status = record.get("status") or "unknown"
+        role = record.get("role")
+        updated_at = record.get("updated_at") or record.get("last_updated")
+    else:
+        hostname = str(getattr(record, "name", "unknown"))
+        primary_ip = getattr(record, "primary_ip4", None) or getattr(record, "primary_ip", None)
+        management_ip = str(primary_ip).split("/")[0] if primary_ip else None
+        platform = getattr(record, "platform", None)
+        vendor = str(getattr(platform, "slug", platform or "unknown"))
+        device_type = getattr(record, "device_type", None)
+        model = str(getattr(device_type, "model", device_type or "")) or None
+        raw_status = getattr(record, "status", None)
+        status = str(getattr(raw_status, "value", raw_status or "unknown"))
+        raw_role = getattr(record, "role", None)
+        role = str(getattr(raw_role, "slug", raw_role or "")) or None
+        updated_at = str(getattr(record, "last_updated", "") or "") or None
+
+    return {
+        "hostname": hostname,
+        "management_ip": management_ip,
+        "vendor": vendor,
+        "model": model,
+        "status": status,
+        "role": role,
+        "source": source,
+        "updated_at": updated_at,
+    }
+
+
+def _inventory_records_from_netbox() -> List[Dict[str, Any]]:
+    try:
+        from netbox.client import NetBoxClient
+
+        client = NetBoxClient.get_client()
+        if not client or not getattr(client, "api", None):
+            return []
+
+        return [_normalize_inventory_device(device, "netbox") for device in client.get_devices()]
+    except Exception:
+        return []
+
+
+def _inventory_records_from_local_db() -> List[Dict[str, Any]]:
+    if not _db_manager:
+        return []
+
+    devices = []
+    for device in _db_manager.get_all_devices():
+        devices.append(
+            {
+                "hostname": device.hostname,
+                "management_ip": device.management_ip,
+                "vendor": device.vendor,
+                "model": device.model,
+                "status": device.status,
+                "role": device.role,
+                "source": device.source or "local_db",
+                "updated_at": device.updated_at or device.created_at or device.last_polled,
+            }
+        )
+    return devices
+
+
+def _get_inventory_records() -> tuple[List[Dict[str, Any]], str]:
+    netbox_records = _inventory_records_from_netbox()
+    if netbox_records:
+        return netbox_records, "netbox"
+    return _inventory_records_from_local_db(), "local_db"
 
 
 # -----------------------------------------------------------------------
@@ -44,6 +165,7 @@ def get_topology_summary() -> str:
     nodes = topo.get("nodes", {})
     summary = {
         "timestamp": topo.get("timestamp", "unknown"),
+        "source_metadata": _topology_source_metadata(topo),
         "total_devices": len(nodes),
         "devices": [],
     }
@@ -96,6 +218,7 @@ def get_device_details(hostname: str) -> str:
 
     details = {
         "hostname": hostname,
+        "source_metadata": _topology_source_metadata(topo),
         "status": "down" if node.get("down") else "up",
         "mgmt_ip": node.get("mgmt_ip", "N/A"),
         "interfaces": iface_dict if isinstance(iface_dict, dict) else {},
@@ -128,7 +251,172 @@ def list_all_devices() -> str:
             "mgmt_ip": data.get("mgmt_ip", "N/A"),
         })
 
-    return json.dumps({"devices": devices, "total": len(devices)})
+    return json.dumps({
+        "devices": devices,
+        "total": len(devices),
+        "source_metadata": _topology_source_metadata(topo),
+    })
+
+
+def get_context_health() -> str:
+    """
+    Get current context versions and the latest invalidation/refresh events.
+    """
+    return json.dumps(get_context_state_manager().snapshot(), ensure_ascii=False)
+
+
+def list_inventory_devices(vendor: str = "", status: str = "", limit: int = 50) -> str:
+    """
+    List devices from source-of-truth inventory with NetBox preferred and local DB fallback.
+    """
+    records, source = _get_inventory_records()
+    filtered = []
+    vendor_filter = vendor.lower().strip()
+    status_filter = status.lower().strip()
+
+    for record in records:
+        record_vendor = str(record.get("vendor") or "").lower()
+        record_status = str(record.get("status") or "").lower()
+        if vendor_filter and vendor_filter not in record_vendor:
+            continue
+        if status_filter and status_filter != record_status:
+            continue
+        filtered.append(record)
+
+    filtered = sorted(filtered, key=lambda item: str(item.get("hostname") or ""))[: max(limit, 1)]
+    captured_at = max((record.get("updated_at") for record in filtered if record.get("updated_at")), default=None)
+    return json.dumps(
+        {
+            "devices": filtered,
+            "total": len(filtered),
+            "source_metadata": _inventory_source_metadata(source, captured_at),
+        },
+        ensure_ascii=False,
+    )
+
+
+def get_inventory_device(hostname: str) -> str:
+    """
+    Retrieve a specific device from source-of-truth inventory.
+    """
+    records, source = _get_inventory_records()
+    for record in records:
+        if str(record.get("hostname", "")).lower() == hostname.lower():
+            return json.dumps(
+                {
+                    "device": record,
+                    "source_metadata": _inventory_source_metadata(source, record.get("updated_at")),
+                },
+                ensure_ascii=False,
+            )
+
+    return json.dumps(
+        {
+            "error": f"Inventory device '{hostname}' not found",
+            "source_metadata": _inventory_source_metadata(source, None, confidence=0.0),
+        },
+        ensure_ascii=False,
+    )
+
+
+def search_inventory_devices(query: str, limit: int = 20) -> str:
+    """
+    Search source-of-truth inventory by hostname, management IP, vendor, model, or role.
+    """
+    records, source = _get_inventory_records()
+    query_lower = query.lower().strip()
+    matches = []
+    for record in records:
+        haystack = " ".join(
+            str(record.get(field) or "")
+            for field in ("hostname", "management_ip", "vendor", "model", "role")
+        ).lower()
+        if query_lower in haystack:
+            matches.append(record)
+
+    matches = sorted(matches, key=lambda item: str(item.get("hostname") or ""))[: max(limit, 1)]
+    captured_at = max((record.get("updated_at") for record in matches if record.get("updated_at")), default=None)
+    return json.dumps(
+        {
+            "matches": matches,
+            "total": len(matches),
+            "source_metadata": _inventory_source_metadata(source, captured_at),
+        },
+        ensure_ascii=False,
+    )
+
+
+def get_planned_topology() -> str:
+    """
+    Get planned topology edges from the persistent inventory/link database.
+    """
+    if not _db_manager:
+        return json.dumps({"error": "Database not available"})
+
+    with _db_manager._connect() as conn:
+        links = conn.execute(
+            "SELECT sd.hostname AS src_hostname, si.name AS src_interface, dd.hostname AS dst_hostname, di.name AS dst_interface, l.discovery_protocol, l.updated_at "
+            "FROM links l "
+            "LEFT JOIN devices sd ON sd.id = l.src_device_id "
+            "LEFT JOIN devices dd ON dd.id = l.dst_device_id "
+            "LEFT JOIN interfaces si ON si.id = l.src_interface_id "
+            "LEFT JOIN interfaces di ON di.id = l.dst_interface_id "
+            "ORDER BY sd.hostname, dd.hostname"
+        ).fetchall()
+
+    planned_links = [dict(link) for link in links]
+    captured_at = max((link.get("updated_at") for link in planned_links if link.get("updated_at")), default=None)
+    return json.dumps(
+        {
+            "links": planned_links,
+            "total": len(planned_links),
+            "source_metadata": _planned_topology_source_metadata("local_db", captured_at),
+        },
+        ensure_ascii=False,
+    )
+
+
+def compare_planned_vs_live(hostname: str = "") -> str:
+    """
+    Compare planned inventory devices with live discovered topology, optionally scoped to a hostname.
+    """
+    inventory_records, inventory_source = _get_inventory_records()
+    topo = _db_manager.get_topology() if _db_manager else {}
+    live_nodes = topo.get("nodes", {}) if isinstance(topo, dict) else {}
+
+    inventory_names = {str(record.get("hostname")): record for record in inventory_records}
+    live_names = {str(name): data for name, data in live_nodes.items() if isinstance(data, dict)}
+
+    if hostname:
+        inventory_names = {name: record for name, record in inventory_names.items() if name.lower() == hostname.lower()}
+        live_names = {name: record for name, record in live_names.items() if name.lower() == hostname.lower()}
+
+    planned_not_live = sorted(name for name in inventory_names if name not in live_names)
+    live_not_planned = sorted(name for name in live_names if name not in inventory_names)
+    matching = []
+    for name in sorted(set(inventory_names) & set(live_names)):
+        planned = inventory_names[name]
+        live = live_names[name]
+        matching.append(
+            {
+                "hostname": name,
+                "planned_management_ip": planned.get("management_ip"),
+                "live_management_ip": live.get("mgmt_ip"),
+                "status_match": str(planned.get("status") or "").lower() == ("down" if live.get("down") else "active"),
+            }
+        )
+
+    inventory_captured_at = max((record.get("updated_at") for record in inventory_records if record.get("updated_at")), default=None)
+    return json.dumps(
+        {
+            "matching_devices": matching,
+            "planned_only": planned_not_live,
+            "live_only": live_not_planned,
+            "inventory_source_metadata": _inventory_source_metadata(inventory_source, inventory_captured_at),
+            "live_source_metadata": _topology_source_metadata(topo),
+        },
+        ensure_ascii=False,
+    )
 
 
 def find_path(source: str, destination: str) -> str:
@@ -941,6 +1229,41 @@ def register_all_tools(registry) -> None:
     registry.register(
         list_all_devices,
         description="List all discovered network devices with status and management IPs.",
+    )
+    registry.register(
+        list_inventory_devices,
+        description="List devices from source-of-truth inventory with NetBox preferred and local DB fallback.",
+        param_descriptions={
+            "vendor": "Optional vendor filter",
+            "status": "Optional status filter",
+            "limit": "Maximum number of devices to return",
+        },
+    )
+    registry.register(
+        get_inventory_device,
+        description="Get a specific source-of-truth inventory device by hostname.",
+        param_descriptions={"hostname": "The inventory hostname to look up"},
+    )
+    registry.register(
+        search_inventory_devices,
+        description="Search source-of-truth inventory by hostname, management IP, vendor, model, or role.",
+        param_descriptions={
+            "query": "Search text",
+            "limit": "Maximum number of matches to return",
+        },
+    )
+    registry.register(
+        get_planned_topology,
+        description="Get planned topology links from the persistent inventory/link database.",
+    )
+    registry.register(
+        compare_planned_vs_live,
+        description="Compare source-of-truth inventory against live topology, optionally scoped to one hostname.",
+        param_descriptions={"hostname": "Optional device hostname to scope the comparison"},
+    )
+    registry.register(
+        get_context_health,
+        description="Get context versions, last-updated timestamps, and recent invalidation events across live and planned network state.",
     )
     registry.register(
         find_path,

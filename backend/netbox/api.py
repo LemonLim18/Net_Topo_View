@@ -4,6 +4,8 @@ from typing import Optional, List
 from starlette.concurrency import run_in_threadpool
 from db.manager import DatabaseManager
 from db.models import Device
+from llm.context_contract import CONTEXT_DOMAIN_INVENTORY, CONTEXT_DOMAIN_PLANNED_TOPOLOGY
+from llm.context_state import get_context_state_manager
 from netbox.sync_devices import DeviceSyncer
 from netbox.sync_topology import TopologySyncer
 from netbox.client import NetBoxClient
@@ -18,6 +20,22 @@ DB_PATH = "db/netauto.db"
 
 def _db() -> DatabaseManager:
     return DatabaseManager(DB_PATH)
+
+
+def _invalidate_inventory_context(source: str, summary: str, metadata: Optional[dict] = None) -> None:
+    state = get_context_state_manager()
+    state.invalidate(
+        domain=CONTEXT_DOMAIN_INVENTORY,
+        source=source,
+        summary=summary,
+        metadata=metadata,
+    )
+    state.invalidate(
+        domain=CONTEXT_DOMAIN_PLANNED_TOPOLOGY,
+        source=source,
+        summary=summary,
+        metadata=metadata,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -181,6 +199,11 @@ async def create_device(body: DeviceCreate):
     )
     device_id = db.upsert_device(device)
     created = db.get_device_by_id(device_id)
+    _invalidate_inventory_context(
+        source="netbox_api",
+        summary=f"device created: {body.hostname}",
+        metadata={"hostname": body.hostname, "operation": "create"},
+    )
     return _device_dict(created)
 
 
@@ -237,6 +260,11 @@ async def update_device(device_id: int, body: DeviceUpdate):
     )
     db.upsert_device(device)
     updated = db.get_device_by_id(device_id)
+    _invalidate_inventory_context(
+        source="netbox_api",
+        summary=f"device updated: {hostname}",
+        metadata={"hostname": hostname, "operation": "update"},
+    )
     return _device_dict(updated)
 
 
@@ -258,6 +286,11 @@ async def delete_device(device_id: int):
         logger.warning("NetBox delete for '%s' failed: %s — still deleting locally", existing.hostname, e)
 
     db.delete_device(device_id)
+    _invalidate_inventory_context(
+        source="netbox_api",
+        summary=f"device deleted: {existing.hostname}",
+        metadata={"hostname": existing.hostname, "operation": "delete"},
+    )
     return {"deleted": True, "id": device_id, "hostname": existing.hostname}
 
 

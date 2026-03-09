@@ -1,0 +1,499 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from enum import Enum
+from typing import Dict, Optional, Sequence
+
+
+CONTEXT_DOMAIN_INVENTORY = "planned_inventory"
+CONTEXT_DOMAIN_PLANNED_TOPOLOGY = "planned_topology"
+CONTEXT_DOMAIN_LIVE_TOPOLOGY = "live_topology"
+CONTEXT_DOMAIN_TELEMETRY = "telemetry"
+CONTEXT_DOMAIN_CONFIG = "config_history"
+CONTEXT_DOMAIN_INCIDENTS = "incidents"
+CONTEXT_DOMAIN_DRIFT = "drift"
+CONTEXT_DOMAIN_KNOWLEDGE = "knowledge_base"
+CONTEXT_DOMAIN_SDN = "sdn_state"
+
+
+class FreshnessClass(str, Enum):
+    LIVE = "live"
+    WARM = "warm"
+    STALE = "stale"
+    MISSING = "missing"
+
+
+class QueryClass(str, Enum):
+    LIVE_ONLY = "live_only"
+    INVENTORY_ONLY = "inventory_only"
+    PLANNED_VS_LIVE = "planned_vs_live"
+    TROUBLESHOOTING = "troubleshooting"
+    CHANGE_PLANNING = "change_planning"
+    COMPLIANCE = "compliance"
+    KNOWLEDGE_HEAVY = "knowledge_heavy"
+    GENERAL = "general"
+
+
+@dataclass(frozen=True)
+class ContextDomainContract:
+    domain: str
+    canonical_sources: tuple[str, ...]
+    fallback_sources: tuple[str, ...]
+    description: str
+    live_max_age_minutes: Optional[int] = None
+    warm_max_age_minutes: Optional[int] = None
+
+
+@dataclass(frozen=True)
+class FreshnessMetadata:
+    captured_at: Optional[str]
+    ingested_at: Optional[str]
+    source: str
+    scope: str
+    confidence: float
+    freshness_class: str
+    age_seconds: Optional[int] = None
+
+    def to_dict(self) -> Dict[str, object]:
+        return {
+            "captured_at": self.captured_at,
+            "ingested_at": self.ingested_at,
+            "source": self.source,
+            "scope": self.scope,
+            "confidence": round(self.confidence, 2),
+            "freshness_class": self.freshness_class,
+            "age_seconds": self.age_seconds,
+        }
+
+    def to_prompt_text(self) -> str:
+        captured_at = self.captured_at or "unknown"
+        ingested_at = self.ingested_at or "unknown"
+        age = f", age_seconds={self.age_seconds}" if self.age_seconds is not None else ""
+        return (
+            f"source={self.source}; scope={self.scope}; freshness={self.freshness_class}; "
+            f"captured_at={captured_at}; ingested_at={ingested_at}; confidence={self.confidence:.2f}{age}"
+        )
+
+
+@dataclass(frozen=True)
+class QueryRoutingDecision:
+    query_class: str
+    use_live_context: bool
+    use_knowledge: bool
+    include_inventory: bool
+    include_telemetry: bool
+    include_sdn: bool
+    required_domains: tuple[str, ...]
+    reasoning: str
+
+
+AUTHORITY_MATRIX: Dict[str, ContextDomainContract] = {
+    CONTEXT_DOMAIN_INVENTORY: ContextDomainContract(
+        domain=CONTEXT_DOMAIN_INVENTORY,
+        canonical_sources=("netbox",),
+        fallback_sources=("local_db",),
+        description="Planned inventory, management IPs, roles, sites, and source-of-truth attributes.",
+        live_max_age_minutes=60,
+        warm_max_age_minutes=1440,
+    ),
+    CONTEXT_DOMAIN_PLANNED_TOPOLOGY: ContextDomainContract(
+        domain=CONTEXT_DOMAIN_PLANNED_TOPOLOGY,
+        canonical_sources=("netbox_topology_sync",),
+        fallback_sources=("local_db_links",),
+        description="Planned links and intended topology relationships.",
+        live_max_age_minutes=60,
+        warm_max_age_minutes=1440,
+    ),
+    CONTEXT_DOMAIN_LIVE_TOPOLOGY: ContextDomainContract(
+        domain=CONTEXT_DOMAIN_LIVE_TOPOLOGY,
+        canonical_sources=("crawler_cache",),
+        fallback_sources=("sdn_controller",),
+        description="Discovered live topology, device status, neighbors, and current graph state.",
+        live_max_age_minutes=10,
+        warm_max_age_minutes=60,
+    ),
+    CONTEXT_DOMAIN_TELEMETRY: ContextDomainContract(
+        domain=CONTEXT_DOMAIN_TELEMETRY,
+        canonical_sources=("influxdb", "prometheus"),
+        fallback_sources=(),
+        description="Time-series operational metrics such as CPU, memory, and interface counters.",
+        live_max_age_minutes=5,
+        warm_max_age_minutes=15,
+    ),
+    CONTEXT_DOMAIN_CONFIG: ContextDomainContract(
+        domain=CONTEXT_DOMAIN_CONFIG,
+        canonical_sources=("config_snapshots",),
+        fallback_sources=("running_config_cache",),
+        description="Captured configuration history and recent snapshots.",
+        live_max_age_minutes=30,
+        warm_max_age_minutes=240,
+    ),
+    CONTEXT_DOMAIN_INCIDENTS: ContextDomainContract(
+        domain=CONTEXT_DOMAIN_INCIDENTS,
+        canonical_sources=("incident_store",),
+        fallback_sources=("alert_cache",),
+        description="Incidents, alerts, and active investigation state.",
+        live_max_age_minutes=5,
+        warm_max_age_minutes=30,
+    ),
+    CONTEXT_DOMAIN_DRIFT: ContextDomainContract(
+        domain=CONTEXT_DOMAIN_DRIFT,
+        canonical_sources=("drift_store",),
+        fallback_sources=("config_compare_cache",),
+        description="Detected divergence between intended and actual configuration state.",
+        live_max_age_minutes=30,
+        warm_max_age_minutes=240,
+    ),
+    CONTEXT_DOMAIN_KNOWLEDGE: ContextDomainContract(
+        domain=CONTEXT_DOMAIN_KNOWLEDGE,
+        canonical_sources=("vector_store",),
+        fallback_sources=("knowledge_base_files",),
+        description="Static documentation, SOPs, and vendor guidance.",
+        live_max_age_minutes=1440,
+        warm_max_age_minutes=10080,
+    ),
+    CONTEXT_DOMAIN_SDN: ContextDomainContract(
+        domain=CONTEXT_DOMAIN_SDN,
+        canonical_sources=("sdn_controller",),
+        fallback_sources=(),
+        description="Controller-managed topology and device state overlays.",
+        live_max_age_minutes=5,
+        warm_max_age_minutes=30,
+    ),
+}
+
+
+LIVE_ONLY_TRIGGERS = (
+    "right now",
+    "currently",
+    "at the moment",
+    "online",
+    "offline",
+    "current topology",
+    "latest crawl",
+    "last crawl",
+    "neighbors",
+    "find path",
+    "path between",
+    "is it up",
+    "is it down",
+)
+
+INVENTORY_ONLY_TRIGGERS = (
+    "inventory",
+    "netbox",
+    "source of truth",
+    "management ip",
+    "planned device",
+    "serial number",
+    "device role",
+    "site",
+    "rack",
+)
+
+PLANNED_VS_LIVE_TRIGGERS = (
+    "planned vs live",
+    "planned versus live",
+    "compare planned",
+    "compare inventory",
+    "inventory mismatch",
+    "missing from topology",
+    "not in inventory",
+    "planned state",
+    "actual state",
+    "source of truth vs live",
+)
+
+TROUBLESHOOTING_TRIGGERS = (
+    "troubleshoot",
+    "diagnose",
+    "debug",
+    "why is",
+    "why does",
+    "packet loss",
+    "latency",
+    "flap",
+    "errors",
+    "alarm",
+    "incident",
+    "failure",
+    "not working",
+    "down",
+    "unreachable",
+)
+
+CHANGE_PLANNING_TRIGGERS = (
+    "configure",
+    "change plan",
+    "plan change",
+    "deploy",
+    "rollout",
+    "rollback",
+    "provision",
+    "enable",
+    "disable",
+    "apply config",
+)
+
+COMPLIANCE_TRIGGERS = (
+    "compliance",
+    "policy",
+    "cis",
+    "baseline",
+    "audit",
+    "control",
+    "standard",
+)
+
+KNOWLEDGE_HEAVY_TRIGGERS = (
+    "how to",
+    "what is",
+    "what are",
+    "explain",
+    "describe",
+    "best practice",
+    "recommendation",
+    "guideline",
+    "command",
+    "syntax",
+)
+
+
+def _parse_timestamp(value: Optional[str]) -> Optional[datetime]:
+    if not value:
+        return None
+
+    normalized = value.strip()
+    if not normalized:
+        return None
+
+    if normalized.endswith("Z"):
+        normalized = normalized[:-1] + "+00:00"
+
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError:
+        return None
+
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def compute_freshness(
+    domain: str,
+    captured_at: Optional[str],
+    ingested_at: Optional[str],
+    source: str,
+    scope: str,
+    confidence: float,
+    now: Optional[datetime] = None,
+) -> FreshnessMetadata:
+    contract = AUTHORITY_MATRIX.get(domain)
+    current_time = now.astimezone(timezone.utc) if now else datetime.now(timezone.utc)
+    captured_dt = _parse_timestamp(captured_at)
+    ingested_dt = _parse_timestamp(ingested_at)
+    reference = captured_dt or ingested_dt
+
+    if reference is None:
+        freshness_class = FreshnessClass.MISSING.value
+        age_seconds = None
+    else:
+        age_seconds = max(0, int((current_time - reference).total_seconds()))
+        live_limit = (contract.live_max_age_minutes * 60) if contract and contract.live_max_age_minutes is not None else None
+        warm_limit = (contract.warm_max_age_minutes * 60) if contract and contract.warm_max_age_minutes is not None else None
+
+        if live_limit is not None and age_seconds <= live_limit:
+            freshness_class = FreshnessClass.LIVE.value
+        elif warm_limit is not None and age_seconds <= warm_limit:
+            freshness_class = FreshnessClass.WARM.value
+        else:
+            freshness_class = FreshnessClass.STALE.value
+
+    return FreshnessMetadata(
+        captured_at=captured_at,
+        ingested_at=ingested_at,
+        source=source,
+        scope=scope,
+        confidence=confidence,
+        freshness_class=freshness_class,
+        age_seconds=age_seconds,
+    )
+
+
+def missing_freshness(domain: str, source: str, scope: str, confidence: float = 0.0) -> FreshnessMetadata:
+    return compute_freshness(
+        domain=domain,
+        captured_at=None,
+        ingested_at=None,
+        source=source,
+        scope=scope,
+        confidence=confidence,
+    )
+
+
+def build_authoritative_context_contract() -> str:
+    lines = ["## Context Authority Contract"]
+    for domain in (
+        CONTEXT_DOMAIN_INVENTORY,
+        CONTEXT_DOMAIN_PLANNED_TOPOLOGY,
+        CONTEXT_DOMAIN_LIVE_TOPOLOGY,
+        CONTEXT_DOMAIN_TELEMETRY,
+        CONTEXT_DOMAIN_CONFIG,
+        CONTEXT_DOMAIN_INCIDENTS,
+        CONTEXT_DOMAIN_DRIFT,
+        CONTEXT_DOMAIN_KNOWLEDGE,
+    ):
+        contract = AUTHORITY_MATRIX[domain]
+        canonical = ", ".join(contract.canonical_sources)
+        fallback = ", ".join(contract.fallback_sources) if contract.fallback_sources else "none"
+        lines.append(f"- {domain}: primary={canonical}; fallback={fallback}")
+
+    lines.append("")
+    lines.append("## Query Taxonomy")
+    lines.append("- live_only, inventory_only, planned_vs_live, troubleshooting, change_planning, compliance, knowledge_heavy")
+    return "\n".join(lines)
+
+
+def build_source_matrix() -> list[dict[str, object]]:
+    return [
+        {
+            "query_class": QueryClass.LIVE_ONLY.value,
+            "primary_domains": [CONTEXT_DOMAIN_LIVE_TOPOLOGY, CONTEXT_DOMAIN_TELEMETRY],
+            "fallback_domains": [CONTEXT_DOMAIN_SDN],
+        },
+        {
+            "query_class": QueryClass.INVENTORY_ONLY.value,
+            "primary_domains": [CONTEXT_DOMAIN_INVENTORY, CONTEXT_DOMAIN_PLANNED_TOPOLOGY],
+            "fallback_domains": [CONTEXT_DOMAIN_LIVE_TOPOLOGY],
+        },
+        {
+            "query_class": QueryClass.PLANNED_VS_LIVE.value,
+            "primary_domains": [CONTEXT_DOMAIN_INVENTORY, CONTEXT_DOMAIN_PLANNED_TOPOLOGY, CONTEXT_DOMAIN_LIVE_TOPOLOGY],
+            "fallback_domains": [CONTEXT_DOMAIN_SDN],
+        },
+        {
+            "query_class": QueryClass.TROUBLESHOOTING.value,
+            "primary_domains": [CONTEXT_DOMAIN_LIVE_TOPOLOGY, CONTEXT_DOMAIN_TELEMETRY, CONTEXT_DOMAIN_INCIDENTS],
+            "fallback_domains": [CONTEXT_DOMAIN_KNOWLEDGE, CONTEXT_DOMAIN_DRIFT],
+        },
+        {
+            "query_class": QueryClass.CHANGE_PLANNING.value,
+            "primary_domains": [CONTEXT_DOMAIN_INVENTORY, CONTEXT_DOMAIN_CONFIG, CONTEXT_DOMAIN_KNOWLEDGE],
+            "fallback_domains": [CONTEXT_DOMAIN_LIVE_TOPOLOGY, CONTEXT_DOMAIN_DRIFT],
+        },
+        {
+            "query_class": QueryClass.COMPLIANCE.value,
+            "primary_domains": [CONTEXT_DOMAIN_CONFIG, CONTEXT_DOMAIN_DRIFT, CONTEXT_DOMAIN_KNOWLEDGE],
+            "fallback_domains": [CONTEXT_DOMAIN_INVENTORY],
+        },
+        {
+            "query_class": QueryClass.KNOWLEDGE_HEAVY.value,
+            "primary_domains": [CONTEXT_DOMAIN_KNOWLEDGE],
+            "fallback_domains": [CONTEXT_DOMAIN_INVENTORY],
+        },
+    ]
+
+
+def _contains_any(query: str, triggers: Sequence[str]) -> bool:
+    return any(trigger in query for trigger in triggers)
+
+
+def classify_query(query: str) -> QueryRoutingDecision:
+    q_lower = query.lower()
+
+    if _contains_any(q_lower, PLANNED_VS_LIVE_TRIGGERS):
+        return QueryRoutingDecision(
+            query_class=QueryClass.PLANNED_VS_LIVE.value,
+            use_live_context=True,
+            use_knowledge=False,
+            include_inventory=True,
+            include_telemetry=True,
+            include_sdn=True,
+            required_domains=(CONTEXT_DOMAIN_INVENTORY, CONTEXT_DOMAIN_PLANNED_TOPOLOGY, CONTEXT_DOMAIN_LIVE_TOPOLOGY),
+            reasoning="planned-versus-live comparison requires both source-of-truth and live-state domains",
+        )
+
+    if _contains_any(q_lower, INVENTORY_ONLY_TRIGGERS):
+        return QueryRoutingDecision(
+            query_class=QueryClass.INVENTORY_ONLY.value,
+            use_live_context=False,
+            use_knowledge=False,
+            include_inventory=True,
+            include_telemetry=False,
+            include_sdn=False,
+            required_domains=(CONTEXT_DOMAIN_INVENTORY, CONTEXT_DOMAIN_PLANNED_TOPOLOGY),
+            reasoning="inventory query should prefer planned-state sources before live discovery",
+        )
+
+    if _contains_any(q_lower, COMPLIANCE_TRIGGERS):
+        return QueryRoutingDecision(
+            query_class=QueryClass.COMPLIANCE.value,
+            use_live_context=True,
+            use_knowledge=True,
+            include_inventory=True,
+            include_telemetry=False,
+            include_sdn=False,
+            required_domains=(CONTEXT_DOMAIN_INVENTORY, CONTEXT_DOMAIN_CONFIG, CONTEXT_DOMAIN_KNOWLEDGE),
+            reasoning="compliance questions need policy knowledge plus planned and captured config state",
+        )
+
+    if _contains_any(q_lower, CHANGE_PLANNING_TRIGGERS):
+        return QueryRoutingDecision(
+            query_class=QueryClass.CHANGE_PLANNING.value,
+            use_live_context=True,
+            use_knowledge=True,
+            include_inventory=True,
+            include_telemetry=True,
+            include_sdn=False,
+            required_domains=(CONTEXT_DOMAIN_INVENTORY, CONTEXT_DOMAIN_LIVE_TOPOLOGY, CONTEXT_DOMAIN_KNOWLEDGE),
+            reasoning="change-planning requires target inventory plus current state and configuration guidance",
+        )
+
+    if _contains_any(q_lower, TROUBLESHOOTING_TRIGGERS):
+        return QueryRoutingDecision(
+            query_class=QueryClass.TROUBLESHOOTING.value,
+            use_live_context=True,
+            use_knowledge=True,
+            include_inventory=True,
+            include_telemetry=True,
+            include_sdn=True,
+            required_domains=(CONTEXT_DOMAIN_LIVE_TOPOLOGY, CONTEXT_DOMAIN_TELEMETRY, CONTEXT_DOMAIN_INCIDENTS),
+            reasoning="troubleshooting should combine live state, telemetry, and relevant operational knowledge",
+        )
+
+    if _contains_any(q_lower, LIVE_ONLY_TRIGGERS):
+        return QueryRoutingDecision(
+            query_class=QueryClass.LIVE_ONLY.value,
+            use_live_context=True,
+            use_knowledge=False,
+            include_inventory=True,
+            include_telemetry=True,
+            include_sdn=True,
+            required_domains=(CONTEXT_DOMAIN_LIVE_TOPOLOGY, CONTEXT_DOMAIN_TELEMETRY),
+            reasoning="live-state question should prioritize topology and telemetry without static docs",
+        )
+
+    if _contains_any(q_lower, KNOWLEDGE_HEAVY_TRIGGERS):
+        return QueryRoutingDecision(
+            query_class=QueryClass.KNOWLEDGE_HEAVY.value,
+            use_live_context=False,
+            use_knowledge=True,
+            include_inventory=False,
+            include_telemetry=False,
+            include_sdn=False,
+            required_domains=(CONTEXT_DOMAIN_KNOWLEDGE,),
+            reasoning="knowledge-heavy question needs documentation before operational state",
+        )
+
+    return QueryRoutingDecision(
+        query_class=QueryClass.GENERAL.value,
+        use_live_context=True,
+        use_knowledge=False,
+        include_inventory=True,
+        include_telemetry=True,
+        include_sdn=False,
+        required_domains=(CONTEXT_DOMAIN_INVENTORY, CONTEXT_DOMAIN_LIVE_TOPOLOGY),
+        reasoning="default to combined planned inventory and current live state",
+    )

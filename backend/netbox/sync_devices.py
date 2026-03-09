@@ -2,6 +2,8 @@ from datetime import datetime
 import logging
 from db.manager import DatabaseManager
 from db.models import Device, Interface
+from llm.context_contract import CONTEXT_DOMAIN_INVENTORY, CONTEXT_DOMAIN_PLANNED_TOPOLOGY
+from llm.context_state import get_context_state_manager
 from netbox.client import NetBoxClient
 
 logger = logging.getLogger("netbox.sync_devices")
@@ -118,6 +120,21 @@ class DeviceSyncer:
                 logger.error(f"Failed to sync device {nb_dev.name}: {e}")
 
         logger.info(f"NetBox Sync Complete. Synced {synced_count} devices, {iface_count} interfaces.")
+        state = get_context_state_manager()
+        state.invalidate(
+            domain=CONTEXT_DOMAIN_INVENTORY,
+            source="netbox_sync",
+            summary=f"synced {synced_count} devices from NetBox",
+            event_type="refresh",
+            metadata={"synced_count": synced_count, "interface_count": iface_count},
+        )
+        state.invalidate(
+            domain=CONTEXT_DOMAIN_PLANNED_TOPOLOGY,
+            source="netbox_sync",
+            summary="inventory sync may have changed planned topology context",
+            event_type="refresh",
+            metadata={"synced_count": synced_count},
+        )
         return {"status": "success", "synced_count": synced_count, "interface_count": iface_count}
 
     def _map_platform_to_vendor(self, platform_slug: str) -> str:

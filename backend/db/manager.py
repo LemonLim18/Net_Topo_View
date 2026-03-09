@@ -34,6 +34,8 @@ from .models import (
     Link,
     TopologyNode,
 )
+from llm.context_contract import CONTEXT_DOMAIN_LIVE_TOPOLOGY
+from llm.context_state import get_context_state_manager
 
 logger = logging.getLogger("db.manager")
 
@@ -162,6 +164,16 @@ class DatabaseManager:
         """
         with self._topo_lock:
             self._topo_cache = topo_dict
+        get_context_state_manager().invalidate(
+            domain=CONTEXT_DOMAIN_LIVE_TOPOLOGY,
+            source="crawler_cache",
+            summary=f"topology cache replaced with {len(topo_dict.get('nodes', {}))} nodes",
+            event_type="refresh",
+            metadata={
+                "timestamp": topo_dict.get("timestamp"),
+                "node_count": len(topo_dict.get("nodes", {})),
+            },
+        )
         logger.debug("Topology cache updated (%d nodes)",
                       len(topo_dict.get("nodes", {})))
 

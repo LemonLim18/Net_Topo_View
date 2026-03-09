@@ -21,6 +21,8 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
+from llm.context_contract import classify_query
+
 if TYPE_CHECKING:
     from llm.vector_store import KnowledgeVectorStore
     from llm.embedder import GeminiEmbedder
@@ -90,25 +92,18 @@ def route(query: str) -> tuple[bool, bool]:
         use_knowledge — True when the query matches KNOWLEDGE_TRIGGERS and does
                         NOT exclusively match LIVE_ONLY_TRIGGERS.
     """
-    q_lower = query.lower()
+    decision = classify_query(query)
 
-    # If the query is purely about live state, skip knowledge retrieval
-    for trigger in LIVE_ONLY_TRIGGERS:
-        if trigger in q_lower:
-            return True, False
+    if decision.query_class == "general":
+        q_lower = query.lower()
+        for trigger in KNOWLEDGE_TRIGGERS:
+            if trigger in q_lower:
+                return decision.use_live_context, True
 
-    # Check for knowledge-worthy phrases
-    for trigger in KNOWLEDGE_TRIGGERS:
-        if trigger in q_lower:
-            return True, True
+        if len(q_lower.split()) >= 6:
+            return decision.use_live_context, True
 
-    # Fallback: short queries (< 6 words) that look like commands are kept live-only
-    word_count = len(q_lower.split())
-    if word_count < 6:
-        return True, False
-
-    # Default for longer conversational queries: try knowledge too
-    return True, True
+    return decision.use_live_context, decision.use_knowledge
 
 
 # ---------------------------------------------------------------------------

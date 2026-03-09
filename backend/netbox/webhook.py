@@ -7,6 +7,8 @@ from pydantic import BaseModel
 from typing import Dict, Any, Optional
 
 from db.manager import DatabaseManager
+from llm.context_contract import CONTEXT_DOMAIN_INVENTORY, CONTEXT_DOMAIN_PLANNED_TOPOLOGY
+from llm.context_state import get_context_state_manager
 from netbox.sync_devices import DeviceSyncer
 
 logger = logging.getLogger("netbox.webhook")
@@ -47,6 +49,21 @@ async def netbox_webhook(
         data = payload.get("data")
         
         logger.info(f"Received NetBox Webhook: {event} {model} ({data.get('name')})")
+        state = get_context_state_manager()
+        if model in {"device", "interface", "ipaddress"}:
+            state.invalidate(
+                domain=CONTEXT_DOMAIN_INVENTORY,
+                source="netbox_webhook",
+                summary=f"{event} {model}",
+                metadata={"model": model, "event": event, "name": data.get("name")},
+            )
+        if model in {"device", "cable", "interface"}:
+            state.invalidate(
+                domain=CONTEXT_DOMAIN_PLANNED_TOPOLOGY,
+                source="netbox_webhook",
+                summary=f"{event} {model}",
+                metadata={"model": model, "event": event, "name": data.get("name")},
+            )
 
         # 3. Handle Events
         db = DatabaseManager("db/netauto.db")
