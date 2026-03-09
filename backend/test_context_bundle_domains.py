@@ -12,7 +12,7 @@ class _FakeDevice:
     def __init__(self, device_id: int, hostname: str):
         self.id = device_id
         self.hostname = hostname
-        self.management_ip = "10.0.0.1"
+        self.management_ip = "10.0.0.1" if device_id == 1 else "10.0.0.2"
         self.vendor = "cisco_ios"
         self.model = "CSR"
         self.status = "active"
@@ -84,6 +84,81 @@ class _FakeConn:
                 ]
             )
 
+        if "select id, intent_type, status, resolved_devices, created_at from intents" in query_text:
+            return _Rows(
+                rows=[
+                    {
+                        "id": "intent-1",
+                        "intent_type": "deploy",
+                        "status": "planned",
+                        "resolved_devices": '["R1"]',
+                        "created_at": "2026-03-09T10:11:00+00:00",
+                    }
+                ]
+            )
+
+        if "select id, title, status, requester, created_at, updated_at from change_requests" in query_text:
+            return _Rows(
+                rows=[
+                    {
+                        "id": 14,
+                        "title": "Deploy OSPF baseline",
+                        "status": "running",
+                        "requester": "ai_agent",
+                        "created_at": "2026-03-09T10:12:00+00:00",
+                        "updated_at": "2026-03-09T10:13:00+00:00",
+                    }
+                ]
+            )
+
+        if "from jobs j left join devices d on d.id = j.device_id left join change_requests cr on cr.id = j.request_id" in query_text:
+            return _Rows(
+                rows=[
+                    {
+                        "id": 21,
+                        "status": "running",
+                        "stage": "apply",
+                        "updated_at": "2026-03-09T10:14:00+00:00",
+                        "hostname": "R1",
+                        "request_title": "Deploy OSPF baseline",
+                    }
+                ]
+            )
+
+        if "from security_events se left join devices d on d.id = se.device_id" in query_text:
+            return _Rows(
+                rows=[
+                    {
+                        "id": 301,
+                        "event_type": "rogue_device",
+                        "severity": "high",
+                        "source_ip": "10.9.9.99",
+                        "dest_ip": "10.0.0.1",
+                        "description": "Unexpected device seen on access port",
+                        "status": "new",
+                        "created_at": "2026-03-09T10:16:00+00:00",
+                        "hostname": "R1",
+                    }
+                ]
+            )
+
+        if "from threshold_alerts order by created_at desc limit 10" in query_text:
+            return _Rows(
+                rows=[
+                    {
+                        "id": 41,
+                        "device": "R1",
+                        "metric": "cpu_usage",
+                        "value": 97.2,
+                        "threshold": 90.0,
+                        "severity": "critical",
+                        "status": "active",
+                        "incident_id": "INC-1",
+                        "created_at": "2026-03-09T10:17:00+00:00",
+                    }
+                ]
+            )
+
         return _Rows()
 
 
@@ -92,10 +167,12 @@ class _FakeDb:
         return {"timestamp": "2026-03-09T10:08:00+00:00", "nodes": {"R1": {"mgmt_ip": "10.0.0.1", "down": False}}}
 
     def get_all_devices(self):
-        return [_FakeDevice(1, "R1")]
+        return [_FakeDevice(1, "R1"), _FakeDevice(2, "R2")]
 
     def get_config_history(self, device_id, limit=1):
-        return [_FakeSnapshot("abc123def456", "2026-03-09T10:06:00+00:00")]
+        if device_id == 1:
+            return [_FakeSnapshot("abc123def456", "2026-03-09T10:06:00+00:00")]
+        return []
 
     def get_drift_events(self, limit=20):
         return [_FakeDriftEvent()]
@@ -290,3 +367,32 @@ def test_context_builder_bundle_context_uses_netbox_first(monkeypatch):
     assert "NB1" in text
     assert "source: netbox" in text
     assert "Planned Topology" in text
+
+
+def test_context_bundle_includes_step10_operational_domains(monkeypatch):
+    monkeypatch.setattr("incidents.store.IncidentStore", _FakeIncidentStore)
+    monkeypatch.setattr("llm.vector_store.KnowledgeVectorStore", _FakeKnowledgeStore)
+
+    builder = ContextBundleBuilder(db_manager=_FakeDb())
+    bundle = builder.build_bundle(device_hostnames=["R1"], include_telemetry=False, include_sdn=False)
+    text = bundle.to_prompt_text()
+
+    assert "Deployment And Intent Status" in text
+    assert "Threat Detections" in text
+    assert "Snapshot coverage" in text
+    assert bundle.deployment_status.jobs[0]["stage"] == "apply"
+    assert bundle.threat_detections.security_events[0]["event_type"] == "rogue_device"
+
+
+def test_context_bundle_emits_freshness_warnings_for_missing_or_partial_context(monkeypatch):
+    monkeypatch.setattr("incidents.store.IncidentStore", _FakeIncidentStore)
+    monkeypatch.setattr("llm.vector_store.KnowledgeVectorStore", _FakeKnowledgeStore)
+    monkeypatch.setattr("rag.context_bundle.INFLUXDB_TOKEN", "")
+
+    builder = ContextBundleBuilder(db_manager=_FakeDb())
+    bundle = builder.build_bundle(device_hostnames=["R1", "R2"], include_telemetry=True, include_sdn=False)
+    text = bundle.to_prompt_text()
+
+    assert "Freshness Warnings" in text
+    assert "Telemetry" in text
+    assert "Missing recent config snapshots for: R2" in text

@@ -122,6 +122,9 @@ class SDNContext:
 @dataclass
 class ConfigHistoryContext:
     snapshots: List[Dict[str, Any]] = field(default_factory=list)
+    latest_snapshot_at: Optional[str] = None
+    devices_with_snapshots: int = 0
+    devices_missing_snapshots: List[str] = field(default_factory=list)
     source: str = "config_snapshots"
     freshness: FreshnessMetadata = field(
         default_factory=lambda: missing_freshness(
@@ -130,6 +133,40 @@ class ConfigHistoryContext:
             "device_configs",
         )
     )
+
+
+@dataclass
+class DeploymentContext:
+    intents: List[Dict[str, Any]] = field(default_factory=list)
+    change_requests: List[Dict[str, Any]] = field(default_factory=list)
+    jobs: List[Dict[str, Any]] = field(default_factory=list)
+    source: str = "intent_store+deployment_pipeline"
+    freshness: FreshnessMetadata = field(
+        default_factory=lambda: missing_freshness(
+            CONTEXT_DOMAIN_CONFIG,
+            "intent_store+deployment_pipeline",
+            "change_management",
+        )
+    )
+
+
+@dataclass
+class ThreatContext:
+    security_events: List[Dict[str, Any]] = field(default_factory=list)
+    threshold_alerts: List[Dict[str, Any]] = field(default_factory=list)
+    source: str = "security_events"
+    freshness: FreshnessMetadata = field(
+        default_factory=lambda: missing_freshness(
+            CONTEXT_DOMAIN_INCIDENTS,
+            "security_events",
+            "security_alerts",
+        )
+    )
+
+
+@dataclass
+class FreshnessWarningsContext:
+    warnings: List[Dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass
@@ -180,9 +217,12 @@ class ContextBundle:
     telemetry: TelemetryContext = field(default_factory=TelemetryContext)
     sdn_state: SDNContext = field(default_factory=SDNContext)
     config_history: ConfigHistoryContext = field(default_factory=ConfigHistoryContext)
+    deployment_status: DeploymentContext = field(default_factory=DeploymentContext)
     incidents: IncidentContext = field(default_factory=IncidentContext)
+    threat_detections: ThreatContext = field(default_factory=ThreatContext)
     drift: DriftContext = field(default_factory=DriftContext)
     knowledge: KnowledgeContext = field(default_factory=KnowledgeContext)
+    freshness_warnings: FreshnessWarningsContext = field(default_factory=FreshnessWarningsContext)
     timestamp: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     scope_filter: Optional[Dict[str, Any]] = None
 
@@ -192,6 +232,15 @@ class ContextBundle:
     def to_prompt_text(self) -> str:
         """Render the bundle as a human-readable markdown block for the LLM."""
         lines: List[str] = ["## Network Context Bundle", f"*Generated: {self.timestamp}*", ""]
+
+        warnings = self.freshness_warnings
+        if warnings.warnings:
+            lines.append("### Freshness Warnings")
+            for warning in warnings.warnings[:12]:
+                lines.append(
+                    f"- [{warning.get('severity', 'warning')}] {warning.get('section', 'unknown')}: {warning.get('message', '')}"
+                )
+            lines.append("")
 
         # Inventory
         inv = self.inventory
@@ -260,9 +309,34 @@ class ContextBundle:
         if cfg.snapshots:
             lines.append(f"### Config History (source: {cfg.source})")
             lines.append(f"Freshness: {cfg.freshness.to_prompt_text()}")
+            if cfg.latest_snapshot_at:
+                lines.append(f"Latest snapshot: {cfg.latest_snapshot_at}")
+            lines.append(
+                f"Snapshot coverage: {cfg.devices_with_snapshots} devices with snapshots; missing={len(cfg.devices_missing_snapshots)}"
+            )
+            if cfg.devices_missing_snapshots:
+                lines.append(f"Missing snapshots: {', '.join(cfg.devices_missing_snapshots[:10])}")
             for snapshot in cfg.snapshots[:10]:
                 lines.append(
                     f"- {snapshot.get('hostname', '?')}: captured_at={snapshot.get('captured_at', 'unknown')} hash={snapshot.get('config_hash', '')[:12]}"
+                )
+            lines.append("")
+
+        deployment = self.deployment_status
+        if deployment.intents or deployment.change_requests or deployment.jobs:
+            lines.append(f"### Deployment And Intent Status (source: {deployment.source})")
+            lines.append(f"Freshness: {deployment.freshness.to_prompt_text()}")
+            for intent in deployment.intents[:5]:
+                lines.append(
+                    f"- Intent {intent.get('id', '?')}: {intent.get('intent_type', 'unknown')} status={intent.get('status', 'unknown')} devices={', '.join(intent.get('resolved_devices', [])) or 'none'}"
+                )
+            for request in deployment.change_requests[:5]:
+                lines.append(
+                    f"- Change request {request.get('id', '?')}: {request.get('title', 'untitled')} status={request.get('status', 'unknown')}"
+                )
+            for job in deployment.jobs[:5]:
+                lines.append(
+                    f"- Job {job.get('id', '?')}: {job.get('hostname', 'unknown')} stage={job.get('stage', 'unknown')} status={job.get('status', 'unknown')}"
                 )
             lines.append("")
 
@@ -273,6 +347,20 @@ class ContextBundle:
             for incident in incidents.incidents[:10]:
                 lines.append(
                     f"- {incident.get('id', '?')}: {incident.get('anomaly_type', 'unknown')} [{incident.get('severity', 'unknown')}] status={incident.get('status', 'unknown')}"
+                )
+            lines.append("")
+
+        threats = self.threat_detections
+        if threats.security_events or threats.threshold_alerts:
+            lines.append(f"### Threat Detections (source: {threats.source})")
+            lines.append(f"Freshness: {threats.freshness.to_prompt_text()}")
+            for event in threats.security_events[:10]:
+                lines.append(
+                    f"- Threat {event.get('id', '?')}: {event.get('event_type', 'unknown')} [{event.get('severity', 'unknown')}] status={event.get('status', 'unknown')}"
+                )
+            for alert in threats.threshold_alerts[:10]:
+                lines.append(
+                    f"- Threshold alert {alert.get('id', '?')}: {alert.get('device', 'unknown')} {alert.get('metric', 'metric')}={alert.get('value', '?')} status={alert.get('status', 'unknown')}"
                 )
             lines.append("")
 
@@ -336,9 +424,12 @@ class ContextBundleBuilder:
         include_telemetry: bool = True,
         include_sdn: bool = True,
         include_config: bool = True,
+        include_deployment: bool = True,
         include_incidents: bool = True,
+        include_threats: bool = True,
         include_drift: bool = True,
         include_knowledge: bool = True,
+        include_freshness_warnings: bool = True,
     ) -> ContextBundle:
         """
         Build a complete context bundle, optionally scoped to specific devices.
@@ -378,14 +469,35 @@ class ContextBundleBuilder:
         if include_config:
             bundle.config_history = self._fetch_config_history(device_hostnames)
 
+        if include_deployment:
+            bundle.deployment_status = self._fetch_deployment_status(device_hostnames)
+
         if include_incidents:
             bundle.incidents = self._fetch_incidents(device_hostnames)
+
+        if include_threats:
+            bundle.threat_detections = self._fetch_threat_detections(device_hostnames)
 
         if include_drift:
             bundle.drift = self._fetch_drift(device_hostnames)
 
         if include_knowledge:
             bundle.knowledge = self._fetch_knowledge_summary()
+
+        if include_freshness_warnings:
+            bundle.freshness_warnings = self._build_freshness_warnings(
+                bundle,
+                include_inventory=include_inventory,
+                include_planned_topology=include_planned_topology,
+                include_telemetry=include_telemetry,
+                include_sdn=include_sdn,
+                include_config=include_config,
+                include_deployment=include_deployment,
+                include_incidents=include_incidents,
+                include_threats=include_threats,
+                include_drift=include_drift,
+                include_knowledge=include_knowledge,
+            )
 
         return bundle
 
@@ -889,6 +1001,7 @@ from(bucket: "{INFLUXDB_BUCKET}")
                 continue
             history = self._db.get_config_history(device.id, limit=1) if device.id else []
             if not history:
+                ctx.devices_missing_snapshots.append(device.hostname)
                 continue
             snapshot = history[0]
             captured_at = snapshot.captured_at
@@ -903,6 +1016,9 @@ from(bucket: "{INFLUXDB_BUCKET}")
                 }
             )
 
+        ctx.latest_snapshot_at = latest_captured
+        ctx.devices_with_snapshots = len(ctx.snapshots)
+
         ctx.freshness = compute_freshness(
             domain=CONTEXT_DOMAIN_CONFIG,
             captured_at=latest_captured,
@@ -911,6 +1027,124 @@ from(bucket: "{INFLUXDB_BUCKET}")
             scope="device_configs",
             confidence=0.9 if ctx.snapshots else 0.0,
         )
+        return ctx
+
+    def _fetch_deployment_status(
+        self,
+        hostnames: Optional[List[str]] = None,
+    ) -> DeploymentContext:
+        ctx = DeploymentContext()
+        if self._db is None:
+            return ctx
+
+        latest_timestamp: Optional[str] = None
+        try:
+            with self._db._connect() as conn:
+                intent_rows = conn.execute(
+                    "SELECT id, intent_type, status, resolved_devices, created_at FROM intents ORDER BY created_at DESC LIMIT 10"
+                ).fetchall()
+                request_rows = conn.execute(
+                    "SELECT id, title, status, requester, created_at, updated_at FROM change_requests ORDER BY updated_at DESC LIMIT 10"
+                ).fetchall()
+                job_rows = conn.execute(
+                    "SELECT j.id, j.status, j.stage, j.updated_at, d.hostname, cr.title AS request_title "
+                    "FROM jobs j "
+                    "LEFT JOIN devices d ON d.id = j.device_id "
+                    "LEFT JOIN change_requests cr ON cr.id = j.request_id "
+                    "ORDER BY j.updated_at DESC LIMIT 10"
+                ).fetchall()
+
+            for row in intent_rows:
+                record = dict(row)
+                resolved_devices = json.loads(record.get("resolved_devices") or "[]")
+                if hostnames and not set(resolved_devices).intersection(hostnames):
+                    continue
+                record["resolved_devices"] = resolved_devices
+                ctx.intents.append(record)
+                created_at = record.get("created_at")
+                if created_at and (latest_timestamp is None or created_at > latest_timestamp):
+                    latest_timestamp = created_at
+
+            for row in request_rows:
+                record = dict(row)
+                ctx.change_requests.append(record)
+                updated_at = record.get("updated_at") or record.get("created_at")
+                if updated_at and (latest_timestamp is None or updated_at > latest_timestamp):
+                    latest_timestamp = updated_at
+
+            for row in job_rows:
+                record = dict(row)
+                if hostnames and record.get("hostname") not in hostnames:
+                    continue
+                ctx.jobs.append(record)
+                updated_at = record.get("updated_at")
+                if updated_at and (latest_timestamp is None or updated_at > latest_timestamp):
+                    latest_timestamp = updated_at
+
+            ctx.freshness = compute_freshness(
+                domain=CONTEXT_DOMAIN_CONFIG,
+                captured_at=latest_timestamp,
+                ingested_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                source=ctx.source,
+                scope="change_management",
+                confidence=0.85 if (ctx.intents or ctx.change_requests or ctx.jobs) else 0.0,
+            )
+        except Exception as exc:
+            logger.debug("Deployment status fetch failed (non-critical): %s", exc)
+
+        return ctx
+
+    def _fetch_threat_detections(
+        self,
+        hostnames: Optional[List[str]] = None,
+    ) -> ThreatContext:
+        ctx = ThreatContext()
+        if self._db is None:
+            return ctx
+
+        latest_timestamp: Optional[str] = None
+        try:
+            with self._db._connect() as conn:
+                event_rows = conn.execute(
+                    "SELECT se.id, se.event_type, se.severity, se.source_ip, se.dest_ip, se.description, se.status, se.created_at, d.hostname "
+                    "FROM security_events se "
+                    "LEFT JOIN devices d ON d.id = se.device_id "
+                    "ORDER BY se.created_at DESC LIMIT 10"
+                ).fetchall()
+                alert_rows = conn.execute(
+                    "SELECT id, device, metric, value, threshold, severity, status, incident_id, created_at "
+                    "FROM threshold_alerts ORDER BY created_at DESC LIMIT 10"
+                ).fetchall()
+
+            for row in event_rows:
+                record = dict(row)
+                if hostnames and record.get("hostname") and record.get("hostname") not in hostnames:
+                    continue
+                ctx.security_events.append(record)
+                created_at = record.get("created_at")
+                if created_at and (latest_timestamp is None or created_at > latest_timestamp):
+                    latest_timestamp = created_at
+
+            for row in alert_rows:
+                record = dict(row)
+                if hostnames and record.get("device") and record.get("device") not in hostnames:
+                    continue
+                ctx.threshold_alerts.append(record)
+                created_at = record.get("created_at")
+                if created_at and (latest_timestamp is None or created_at > latest_timestamp):
+                    latest_timestamp = created_at
+
+            ctx.freshness = compute_freshness(
+                domain=CONTEXT_DOMAIN_INCIDENTS,
+                captured_at=latest_timestamp,
+                ingested_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                source=ctx.source,
+                scope="security_alerts",
+                confidence=0.85 if (ctx.security_events or ctx.threshold_alerts) else 0.0,
+            )
+        except Exception as exc:
+            logger.debug("Threat detection fetch failed (non-critical): %s", exc)
+
         return ctx
 
     def _fetch_incidents(
@@ -1014,4 +1248,55 @@ from(bucket: "{INFLUXDB_BUCKET}")
             )
         except Exception as exc:
             logger.debug("Knowledge summary fetch failed (non-critical): %s", exc)
+        return ctx
+
+    def _build_freshness_warnings(
+        self,
+        bundle: ContextBundle,
+        **include_flags: bool,
+    ) -> FreshnessWarningsContext:
+        ctx = FreshnessWarningsContext()
+
+        sections = [
+            ("Inventory", bundle.inventory.freshness, include_flags.get("include_inventory", False)),
+            ("Planned Topology", bundle.planned_topology.freshness, include_flags.get("include_planned_topology", False)),
+            ("Telemetry", bundle.telemetry.freshness, include_flags.get("include_telemetry", False)),
+            ("SDN State", bundle.sdn_state.freshness, include_flags.get("include_sdn", False)),
+            ("Config History", bundle.config_history.freshness, include_flags.get("include_config", False)),
+            ("Deployment And Intent Status", bundle.deployment_status.freshness, include_flags.get("include_deployment", False)),
+            ("Incidents", bundle.incidents.freshness, include_flags.get("include_incidents", False)),
+            ("Threat Detections", bundle.threat_detections.freshness, include_flags.get("include_threats", False)),
+            ("Drift Findings", bundle.drift.freshness, include_flags.get("include_drift", False)),
+            ("Knowledge Base", bundle.knowledge.freshness, include_flags.get("include_knowledge", False)),
+        ]
+
+        for section_name, freshness, include_section in sections:
+            if not include_section:
+                continue
+            if freshness.freshness_class not in {"stale", "missing"}:
+                continue
+            ctx.warnings.append(
+                {
+                    "section": section_name,
+                    "severity": "warning" if freshness.freshness_class == "stale" else "critical",
+                    "message": (
+                        f"{section_name} is {freshness.freshness_class}; source={freshness.source}; "
+                        f"captured_at={freshness.captured_at or 'unknown'}"
+                    ),
+                    "freshness_class": freshness.freshness_class,
+                    "age_seconds": freshness.age_seconds,
+                }
+            )
+
+        if bundle.config_history.devices_missing_snapshots:
+            ctx.warnings.append(
+                {
+                    "section": "Config History",
+                    "severity": "warning",
+                    "message": "Missing recent config snapshots for: " + ", ".join(bundle.config_history.devices_missing_snapshots[:10]),
+                    "freshness_class": bundle.config_history.freshness.freshness_class,
+                    "age_seconds": bundle.config_history.freshness.age_seconds,
+                }
+            )
+
         return ctx
