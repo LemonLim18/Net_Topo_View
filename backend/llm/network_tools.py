@@ -681,6 +681,7 @@ def get_knowledge_base_status(limit: int = 10) -> str:
                 "documents": documents,
                 "total_documents": len(documents),
                 "total_chunks": store.count(),
+                "partition_counts": store.count_by_partition() if hasattr(store, "count_by_partition") else {},
                 "source_metadata": _knowledge_source_metadata("vector_store", latest_ingested, confidence=0.95 if documents else 0.0),
             },
             ensure_ascii=False,

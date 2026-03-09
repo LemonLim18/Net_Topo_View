@@ -24,6 +24,8 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
+from llm.vector_store import PARTITION_CONFIG_HISTORY, PARTITION_LIVE_STATE
+
 logger = logging.getLogger("rag.auto_embedder")
 
 # Chunk size limits
@@ -85,59 +87,50 @@ class NetworkStateEmbedder:
         if not nodes:
             return {"status": "skipped", "reason": "no_nodes"}
 
-        all_chunks: List[str] = []
-        all_metas: List[dict] = []
-
         # 1. Per-device topology summaries
         device_chunks, device_metas = self._build_device_chunks(nodes, now)
-        all_chunks.extend(device_chunks)
-        all_metas.extend(device_metas)
-
         # 2. Link/adjacency descriptions
         link_chunks, link_metas = self._build_link_chunks(nodes, now)
-        all_chunks.extend(link_chunks)
-        all_metas.extend(link_metas)
-
         # 3. Config snapshots from DB (if available)
         config_chunks, config_metas = self._build_config_chunks(nodes, now)
-        all_chunks.extend(config_chunks)
-        all_metas.extend(config_metas)
-
         # 4. Interface inventory
         intf_chunks, intf_metas = self._build_interface_chunks(nodes, now)
-        all_chunks.extend(intf_chunks)
-        all_metas.extend(intf_metas)
 
-        if not all_chunks:
+        live_chunks = [*device_chunks, *link_chunks, *intf_chunks]
+        live_metas = [*device_metas, *link_metas, *intf_metas]
+
+        if not live_chunks and not config_chunks:
             return {"status": "skipped", "reason": "no_chunks_generated"}
 
-        # Use a stable doc_id so re-embedding overwrites previous state
-        doc_id = "network_state_latest"
+        if live_chunks:
+            try:
+                self._store.clear_partition(PARTITION_LIVE_STATE)
+            except Exception:
+                pass
+            self._store.upsert_chunks("network_state_latest", live_chunks, live_metas, partition=PARTITION_LIVE_STATE)
 
-        # Delete previous state chunks before upserting new ones
-        try:
-            self._store.delete_document(doc_id)
-        except Exception:
-            pass
-
-        # Upsert all chunks
-        self._store.upsert_chunks(doc_id, all_chunks, all_metas)
+        if config_chunks:
+            try:
+                self._store.clear_partition(PARTITION_CONFIG_HISTORY)
+            except Exception:
+                pass
+            self._store.upsert_chunks("network_config_latest", config_chunks, config_metas, partition=PARTITION_CONFIG_HISTORY)
 
         self._last_embed_ts = now
         summary = {
             "status": "embedded",
-            "doc_id": doc_id,
+            "doc_id": "network_state_latest",
             "devices_embedded": len(device_chunks),
             "link_chunks": len(link_chunks),
             "config_chunks": len(config_chunks),
             "interface_chunks": len(intf_chunks),
-            "total_chunks": len(all_chunks),
+            "total_chunks": len(live_chunks) + len(config_chunks),
             "embedded_at": now,
         }
         logger.info(
             "Auto-embedded network state: %d total chunks "
             "(%d device, %d link, %d config, %d interface)",
-            len(all_chunks), len(device_chunks), len(link_chunks),
+            len(live_chunks) + len(config_chunks), len(device_chunks), len(link_chunks),
             len(config_chunks), len(intf_chunks),
         )
         return summary
@@ -160,11 +153,11 @@ class NetworkStateEmbedder:
             return {"status": "skipped", "reason": "empty_config"}
 
         try:
-            self._store.delete_document(doc_id)
+            self._store.delete_document(doc_id, partition=PARTITION_CONFIG_HISTORY)
         except Exception:
             pass
 
-        self._store.upsert_chunks(doc_id, chunks, metas)
+        self._store.upsert_chunks(doc_id, chunks, metas, partition=PARTITION_CONFIG_HISTORY)
         return {"status": "embedded", "hostname": hostname, "chunks": len(chunks)}
 
     # ------------------------------------------------------------------

@@ -22,12 +22,40 @@ import logging
 from typing import TYPE_CHECKING
 
 from llm.context_contract import CONTEXT_DOMAIN_KNOWLEDGE, classify_query, compute_freshness
+from llm.vector_store import (
+    PARTITION_CHANGE_OUTCOMES,
+    PARTITION_CONFIG_HISTORY,
+    PARTITION_INCIDENTS,
+    PARTITION_LIVE_STATE,
+    PARTITION_PLANNED_STATE,
+    PARTITION_STATIC_KNOWLEDGE,
+)
 
 if TYPE_CHECKING:
     from llm.vector_store import KnowledgeVectorStore
     from llm.embedder import GeminiEmbedder
 
 logger = logging.getLogger("llm.retriever")
+
+
+def select_retrieval_partitions(query: str) -> list[str]:
+    decision = classify_query(query)
+    query_class = decision.query_class
+    if query_class == "live_only":
+        return [PARTITION_LIVE_STATE, PARTITION_INCIDENTS, PARTITION_CONFIG_HISTORY]
+    if query_class == "inventory_only":
+        return [PARTITION_PLANNED_STATE, PARTITION_STATIC_KNOWLEDGE]
+    if query_class == "planned_vs_live":
+        return [PARTITION_PLANNED_STATE, PARTITION_LIVE_STATE, PARTITION_CONFIG_HISTORY]
+    if query_class == "troubleshooting":
+        return [PARTITION_LIVE_STATE, PARTITION_INCIDENTS, PARTITION_CONFIG_HISTORY, PARTITION_STATIC_KNOWLEDGE]
+    if query_class == "change_planning":
+        return [PARTITION_CONFIG_HISTORY, PARTITION_CHANGE_OUTCOMES, PARTITION_STATIC_KNOWLEDGE, PARTITION_PLANNED_STATE]
+    if query_class == "compliance":
+        return [PARTITION_CONFIG_HISTORY, PARTITION_STATIC_KNOWLEDGE, PARTITION_CHANGE_OUTCOMES]
+    if query_class == "knowledge_heavy":
+        return [PARTITION_STATIC_KNOWLEDGE, PARTITION_CHANGE_OUTCOMES]
+    return [PARTITION_STATIC_KNOWLEDGE, PARTITION_LIVE_STATE, PARTITION_CONFIG_HISTORY]
 
 # ---------------------------------------------------------------------------
 # Intent keyword lists
@@ -138,6 +166,7 @@ class KnowledgeRetriever:
         vendor_filter: str | None = None,
         doc_type_filter: str | None = None,
         min_score: float = _RELEVANCE_THRESHOLD,
+        partitions: list[str] | None = None,
     ) -> list[dict]:
         """
         Embed *query* and return the top-k most relevant chunks.
@@ -180,12 +209,22 @@ class KnowledgeRetriever:
             elif len(conditions) > 1:
                 where = {"$and": conditions}
 
-            raw_results = self._store.query(
-                query_embedding,
-                k=k,
-                where=where,
-                min_score=min_score,
-            )
+            selected_partitions = partitions or select_retrieval_partitions(query)
+            try:
+                raw_results = self._store.query(
+                    query_embedding,
+                    k=k,
+                    where=where,
+                    min_score=min_score,
+                    partitions=selected_partitions,
+                )
+            except TypeError:
+                raw_results = self._store.query(
+                    query_embedding,
+                    k=k,
+                    where=where,
+                    min_score=min_score,
+                )
 
             enriched = []
             for r in raw_results:
@@ -200,6 +239,8 @@ class KnowledgeRetriever:
                         "page_number":  meta.get("page_number", 0),
                         "chunk_index":  meta.get("chunk_index", 0),
                         "ingested_at":  meta.get("ingested_at", ""),
+                        "partition":    meta.get("partition", ""),
+                        "collection_name": meta.get("collection_name", ""),
                         "source_metadata": compute_freshness(
                             domain=CONTEXT_DOMAIN_KNOWLEDGE,
                             captured_at=meta.get("ingested_at", ""),
@@ -239,9 +280,10 @@ class KnowledgeRetriever:
         ]
         for r in results:
             page_info = f" · page {r['page_number']}" if r["page_number"] else ""
+            partition_info = f" / {r['partition']}" if r.get("partition") else ""
             lines.append(
                 f"**Source**: {r['doc_name']}{page_info} "
-                f"[{r['doc_type']} / {r['vendor']}]  "
+                f"[{r['doc_type']} / {r['vendor']}{partition_info}]  "
                 f"relevance: {r['score']:.2f}"
             )
             lines.append(f"Freshness: {r['source_metadata']['freshness_class']} @ {r['source_metadata']['captured_at'] or 'unknown'}")

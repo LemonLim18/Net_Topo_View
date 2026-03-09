@@ -93,6 +93,8 @@ class DocumentInfo(BaseModel):
     vendor: str
     ingested_at: str
     chunk_count: int
+    partition: Optional[str] = None
+    collection_name: Optional[str] = None
 
 
 class UploadResponse(BaseModel):
@@ -113,6 +115,7 @@ class StatusResponse(BaseModel):
     total_chunks: int
     total_documents: int
     chroma_path: str
+    partition_counts: dict[str, int] = {}
 
 
 # DI global for context bundle builder
@@ -323,7 +326,9 @@ async def rebuild_knowledge_base(
         files = [f for f in kb_dir.iterdir() if f.is_file() and f.suffix.lower() in supported]
         if not files:
             return
-        _vector_store.clear_all()
+        from llm.vector_store import PARTITION_STATIC_KNOWLEDGE
+
+        _vector_store.clear_partition(PARTITION_STATIC_KNOWLEDGE)
         total_chunks = 0
         errors = []
         for f in files:
@@ -369,6 +374,7 @@ async def get_rag_status(
             total_chunks=0,
             total_documents=0,
             chroma_path=_KNOWLEDGE_BASE_DIR,
+            partition_counts={},
         )
 
     try:
@@ -379,6 +385,7 @@ async def get_rag_status(
             total_chunks=total_chunks,
             total_documents=len(docs),
             chroma_path=str(Path(_KNOWLEDGE_BASE_DIR).resolve()),
+            partition_counts=_vector_store.count_by_partition() if hasattr(_vector_store, "count_by_partition") else {},
         )
     except Exception as exc:
         return StatusResponse(
@@ -386,6 +393,7 @@ async def get_rag_status(
             total_chunks=0,
             total_documents=0,
             chroma_path=_KNOWLEDGE_BASE_DIR,
+            partition_counts={},
         )
 
 

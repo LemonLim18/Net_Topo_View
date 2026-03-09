@@ -35,6 +35,8 @@ from uuid import uuid4
 if TYPE_CHECKING:
     from llm.vector_store import KnowledgeVectorStore
 
+from llm.vector_store import PARTITION_STATIC_KNOWLEDGE
+
 logger = logging.getLogger("llm.ingestion")
 
 _CHUNK_TOKENS = 512
@@ -129,7 +131,7 @@ class DocumentIngester:
         ]
 
         # 5. Upsert (embed + store)
-        self._store.upsert_chunks(doc_id, texts, metadatas)
+        self._store.upsert_chunks(doc_id, texts, metadatas, partition=PARTITION_STATIC_KNOWLEDGE)
 
         logger.info(
             "Ingested '%s': doc_id=%s, chunks=%d",
