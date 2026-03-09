@@ -174,9 +174,17 @@ class ToolRegistry:
     # Declarations (for LLM)
     # ------------------------------------------------------------------
 
-    def get_declarations(self) -> List[Dict]:
-        """Return all tool schemas for the LLM provider."""
-        return [entry["schema"] for entry in self._tools.values()]
+    def get_declarations(self, allowed_names: Optional[List[str]] = None) -> List[Dict]:
+        """Return tool schemas for the LLM provider, optionally filtered by name."""
+        if allowed_names is None:
+            return [entry["schema"] for entry in self._tools.values()]
+
+        allowed = set(allowed_names)
+        return [
+            entry["schema"]
+            for name, entry in self._tools.items()
+            if name in allowed
+        ]
 
     def list_tools(self) -> List[str]:
         """Return names of all registered tools."""

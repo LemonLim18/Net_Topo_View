@@ -17,6 +17,7 @@ for human-in-the-loop approval before deployment.
 
 import json
 import logging
+import re
 from typing import Any, Dict, List, Optional
 
 from llm.context_contract import classify_query
@@ -201,13 +202,17 @@ class NetworkAgent:
             routing_decision.reasoning,
         )
 
+        route_plan = self._build_route_plan(user_message, routing_decision.query_class)
+
         per_turn_system = self._render_system_prompt(user_message)
+        if route_plan["instruction"]:
+            per_turn_system = per_turn_system + "\n\n" + route_plan["instruction"]
         if routing_decision.use_knowledge and self._retriever is not None:
             knowledge_ctx = self._context.build_knowledge_context(
                 user_message, self._retriever
             )
             if knowledge_ctx:
-                per_turn_system = self._system_prompt + "\n\n" + knowledge_ctx
+                per_turn_system = per_turn_system + "\n\n" + knowledge_ctx
 
         # Build full message list (system + history)
         messages = [
@@ -215,12 +220,14 @@ class NetworkAgent:
             *self._history,
         ]
 
-        # Get tool declarations
-        tool_declarations = self._tools.get_declarations()
-
         # Track tool calls for proposal detection
         tool_results: Dict[str, Any] = {}  # tool_name -> last result
         tool_args: Dict[str, Dict] = {}    # tool_name -> last args
+
+        self._apply_prefetched_route_tools(messages, route_plan, tool_results, tool_args)
+
+        # Get tool declarations
+        tool_declarations = self._tools.get_declarations(route_plan["allowed_tools"])
 
         # Tool-calling loop
         for round_num in range(MAX_TOOL_ROUNDS):
@@ -620,6 +627,245 @@ class NetworkAgent:
         """Clear the conversation history."""
         self._history.clear()
         logger.info("Conversation history cleared")
+
+    def _known_hostnames(self) -> List[str]:
+        hostnames: List[str] = []
+        try:
+            if self._db is not None:
+                for device in self._db.get_all_devices():
+                    if getattr(device, "hostname", None):
+                        hostnames.append(str(device.hostname))
+                topo = self._db.get_topology()
+                if topo and topo.get("nodes"):
+                    for hostname in topo["nodes"].keys():
+                        hostnames.append(str(hostname))
+        except Exception:
+            return []
+
+        deduped: List[str] = []
+        seen = set()
+        for hostname in hostnames:
+            key = hostname.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(hostname)
+        return deduped
+
+    def _extract_candidate_hostnames(self, user_message: str) -> List[str]:
+        query_lower = user_message.lower()
+        matches: List[tuple[int, str]] = []
+        for hostname in self._known_hostnames():
+            start = query_lower.find(hostname.lower())
+            if start >= 0:
+                matches.append((start, hostname))
+
+        if matches:
+            return [hostname for _, hostname in sorted(matches, key=lambda item: item[0])]
+
+        heuristic_matches = re.findall(r"\b[A-Za-z][A-Za-z0-9_-]*\d+[A-Za-z0-9_-]*\b", user_message)
+        return heuristic_matches[:3]
+
+    def _build_route_plan(self, user_message: str, query_class: str) -> Dict[str, Any]:
+        hostnames = self._extract_candidate_hostnames(user_message)
+        generic_read_tools = [
+            "get_context_health",
+            "get_audit_log",
+            "list_templates",
+            "get_template_schema",
+        ]
+
+        instruction = ""
+        prefetch_tools: List[ToolCall] = []
+        allowed_tools: Optional[List[str]] = None
+
+        if query_class == "inventory_only":
+            allowed_tools = generic_read_tools + [
+                "list_inventory_devices",
+                "get_inventory_device",
+                "search_inventory_devices",
+                "get_planned_topology",
+                "compare_planned_vs_live",
+            ]
+            instruction = (
+                "For this inventory-focused query, treat source-of-truth inventory as authoritative. "
+                "Do not answer from live topology unless the prefetched inventory data is missing, and say so explicitly if fallback is needed."
+            )
+            prefetch_tools.append(ToolCall(name="get_context_health", arguments={}))
+            if hostnames:
+                prefetch_tools.append(ToolCall(name="get_inventory_device", arguments={"hostname": hostnames[0]}))
+            else:
+                prefetch_tools.append(ToolCall(name="search_inventory_devices", arguments={"query": user_message, "limit": 5}))
+
+        elif query_class == "planned_vs_live":
+            allowed_tools = generic_read_tools + [
+                "compare_planned_vs_live",
+                "get_inventory_device",
+                "list_inventory_devices",
+                "get_planned_topology",
+                "get_topology_summary",
+                "get_device_details",
+                "list_all_devices",
+            ]
+            instruction = (
+                "For this planned-versus-live query, compare authoritative planned state against live discovery. "
+                "Do not collapse disagreements; surface mismatches explicitly."
+            )
+            prefetch_tools.append(ToolCall(name="get_context_health", arguments={}))
+            prefetch_tools.append(
+                ToolCall(
+                    name="compare_planned_vs_live",
+                    arguments={"hostname": hostnames[0]} if hostnames else {},
+                )
+            )
+
+        elif query_class == "live_only":
+            allowed_tools = generic_read_tools + [
+                "get_topology_summary",
+                "get_device_details",
+                "list_all_devices",
+                "find_path",
+                "get_recent_incidents",
+                "get_recent_drift_events",
+            ]
+            instruction = (
+                "For this live-state query, prioritize current topology and operational state. "
+                "Do not substitute planned inventory for live facts."
+            )
+            prefetch_tools.append(ToolCall(name="get_context_health", arguments={}))
+            if hostnames:
+                prefetch_tools.append(ToolCall(name="get_device_details", arguments={"hostname": hostnames[0]}))
+            else:
+                prefetch_tools.append(ToolCall(name="get_topology_summary", arguments={}))
+
+        elif query_class == "troubleshooting":
+            allowed_tools = generic_read_tools + [
+                "get_inventory_device",
+                "get_device_details",
+                "get_device_running_config",
+                "get_recent_incidents",
+                "get_recent_drift_events",
+                "get_security_events",
+                "run_security_audit",
+                "analyze_security_alert",
+                "find_path",
+                "list_all_devices",
+                "get_topology_summary",
+            ]
+            instruction = (
+                "For this troubleshooting query, combine live topology, recent incidents, drift, and config evidence. "
+                "If the sources disagree, state the conflict instead of guessing."
+            )
+            prefetch_tools.append(ToolCall(name="get_context_health", arguments={}))
+            prefetch_tools.append(ToolCall(name="get_recent_incidents", arguments={"limit": 5}))
+            if hostnames:
+                prefetch_tools.extend(
+                    [
+                        ToolCall(name="get_inventory_device", arguments={"hostname": hostnames[0]}),
+                        ToolCall(name="get_device_details", arguments={"hostname": hostnames[0]}),
+                        ToolCall(name="get_device_running_config", arguments={"hostname": hostnames[0]}),
+                        ToolCall(name="get_recent_drift_events", arguments={"hostname": hostnames[0], "limit": 5}),
+                    ]
+                )
+
+        elif query_class == "change_planning":
+            allowed_tools = [
+                "parse_intent",
+                "validate_intent",
+                "plan_change",
+                "list_templates",
+                "get_template_schema",
+                "get_inventory_device",
+                "get_device_running_config",
+                "get_recent_drift_events",
+                "get_context_health",
+            ]
+            instruction = (
+                "For this change-planning query, use intent parsing and policy validation, and ground target devices in inventory/config state before planning."
+            )
+            prefetch_tools.append(ToolCall(name="get_context_health", arguments={}))
+            if hostnames:
+                prefetch_tools.extend(
+                    [
+                        ToolCall(name="get_inventory_device", arguments={"hostname": hostnames[0]}),
+                        ToolCall(name="get_device_running_config", arguments={"hostname": hostnames[0]}),
+                    ]
+                )
+
+        elif query_class == "compliance":
+            allowed_tools = generic_read_tools + [
+                "get_inventory_device",
+                "get_device_running_config",
+                "get_recent_drift_events",
+                "get_recent_incidents",
+                "run_security_audit",
+                "get_knowledge_base_status",
+            ]
+            instruction = (
+                "For this compliance query, prefer config evidence, drift state, audit findings, and knowledge documents."
+            )
+            prefetch_tools.append(ToolCall(name="get_context_health", arguments={}))
+            prefetch_tools.append(ToolCall(name="get_knowledge_base_status", arguments={"limit": 5}))
+            if hostnames:
+                prefetch_tools.extend(
+                    [
+                        ToolCall(name="get_inventory_device", arguments={"hostname": hostnames[0]}),
+                        ToolCall(name="get_device_running_config", arguments={"hostname": hostnames[0]}),
+                        ToolCall(name="get_recent_drift_events", arguments={"hostname": hostnames[0], "limit": 5}),
+                    ]
+                )
+
+        elif query_class == "knowledge_heavy":
+            allowed_tools = generic_read_tools + [
+                "get_knowledge_base_status",
+                "list_templates",
+                "get_template_schema",
+            ]
+            instruction = (
+                "For this knowledge-heavy query, treat curated knowledge as primary. If live state is needed and missing, say so explicitly."
+            )
+            prefetch_tools.append(ToolCall(name="get_knowledge_base_status", arguments={"limit": 5}))
+
+        return {
+            "prefetch_tools": prefetch_tools,
+            "allowed_tools": allowed_tools,
+            "instruction": instruction,
+        }
+
+    def _apply_prefetched_route_tools(
+        self,
+        messages: List[LLMMessage],
+        route_plan: Dict[str, Any],
+        tool_results: Dict[str, Any],
+        tool_args: Dict[str, Dict[str, Any]],
+    ) -> None:
+        prefetch_tools: List[ToolCall] = route_plan.get("prefetch_tools", [])
+        if not prefetch_tools:
+            return
+
+        tool_call_summary = ", ".join(
+            f"{tc.name}({json.dumps(tc.arguments, ensure_ascii=False)})"
+            for tc in prefetch_tools
+        )
+        messages.append(
+            LLMMessage(
+                role="assistant",
+                content=f"Deterministically prefetched authoritative tools: {tool_call_summary}",
+                tool_calls=prefetch_tools,
+            )
+        )
+
+        for tc in prefetch_tools:
+            result = self._tools.execute(tc.name, tc.arguments)
+            tool_results[tc.name] = result
+            tool_args[tc.name] = tc.arguments
+            messages.append(
+                LLMMessage(
+                    role="tool",
+                    content=result,
+                    name=tc.name,
+                )
+            )
 
     def _render_system_prompt(self, user_message: Optional[str] = None) -> str:
         return SYSTEM_PROMPT.format(
