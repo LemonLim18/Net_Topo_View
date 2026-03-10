@@ -22,6 +22,17 @@ _LIVE_SCOPES = {
 }
 _INFERRED_SCOPES = {"knowledge_documents"}
 
+_TARGET_STATE_BY_QUERY_CLASS = {
+    "inventory_only": "Requested planned or source-of-truth inventory state for the queried device or devices.",
+    "planned_vs_live": "Requested a comparison between planned source-of-truth state and current live network state.",
+    "live_only": "Requested current live operational state from authoritative network evidence.",
+    "troubleshooting": "Requested an operational diagnosis grounded in live state, telemetry, incident, and config evidence.",
+    "change_planning": "Requested a proposed target configuration or change plan that remains subject to approval.",
+    "compliance": "Requested the current compliance state against intended policy or configuration evidence.",
+    "knowledge_heavy": "Requested curated documentation or SOP guidance rather than a direct live-state assertion.",
+    "general": "Requested a grounded network-state answer based on the authoritative evidence gathered for this turn.",
+}
+
 
 def _decode_tool_payload(raw: Any) -> Dict[str, Any]:
     if isinstance(raw, dict):
@@ -472,6 +483,116 @@ def _confidence_level(score: float) -> str:
     return "low"
 
 
+def _overall_freshness_class(source_age: List[Dict[str, Any]]) -> str:
+    freshness_values = [str(entry.get("freshness_class") or "unknown") for entry in source_age]
+    if not freshness_values:
+        return "unknown"
+    if "missing" in freshness_values:
+        return "missing"
+    if "stale" in freshness_values:
+        return "stale"
+    if "unknown" in freshness_values:
+        return "unknown"
+    if "warm" in freshness_values:
+        return "warm"
+    if all(value == "live" for value in freshness_values):
+        return "live"
+    return "unknown"
+
+
+def _derive_assumptions(
+    *,
+    query_class: str,
+    source_age: List[Dict[str, Any]],
+    answer_scope: str,
+    errors: List[str],
+    conflicts: List[Dict[str, Any]],
+    knowledge_used: bool,
+) -> List[str]:
+    assumptions: List[str] = []
+    freshness_class = _overall_freshness_class(source_age)
+
+    if answer_scope == "mixed":
+        assumptions.append("Planned and live evidence were combined for this answer and may not represent the same capture instant.")
+    if knowledge_used:
+        assumptions.append("Curated knowledge context was treated as supporting guidance rather than as a substitute for authoritative live or planned state.")
+    if freshness_class in {"warm", "stale", "missing", "unknown"}:
+        assumptions.append(
+            f"At least one evidence source is {freshness_class}, so the answer may lag behind the current network state."
+        )
+    if errors:
+        assumptions.append("One or more authoritative reads failed, so the answer relies on the successful evidence that remained available.")
+    if not source_age:
+        assumptions.append("No per-tool evidence snapshots were captured for this turn, so the response is limited to prompt-context grounding.")
+    if query_class == "knowledge_heavy":
+        assumptions.append("Documentation guidance still needs confirmation against current inventory or live state before execution.")
+    if conflicts:
+        assumptions.append("Cross-source discrepancies are preserved instead of being flattened into a single certainty claim.")
+
+    deduped: List[str] = []
+    seen = set()
+    for item in assumptions:
+        if item in seen:
+            continue
+        seen.add(item)
+        deduped.append(item)
+    return deduped[:4]
+
+
+def _current_state_summary(grounding: Dict[str, Any]) -> str:
+    answer_scope = grounding.get("answer_scope", "inferred")
+    freshness_class = grounding.get("freshness_class", "unknown")
+    sources = grounding.get("source_used") or []
+    source_text = ", ".join(str(source) for source in sources) if sources else "prompt context only"
+    conflicts = grounding.get("conflicts") or []
+    sentence = f"Grounded in {answer_scope} evidence from {source_text} with overall freshness {freshness_class}."
+    if conflicts:
+        sentence += f" {len(conflicts)} discrepancy signal(s) are currently present across sources."
+    return sentence
+
+
+def _target_state_summary(query_class: str) -> str:
+    return _TARGET_STATE_BY_QUERY_CLASS.get(
+        query_class,
+        _TARGET_STATE_BY_QUERY_CLASS["general"],
+    )
+
+
+def _risk_summary(grounding: Dict[str, Any]) -> str:
+    conflicts = grounding.get("conflicts") or []
+    if conflicts:
+        top_conflict = conflicts[0]
+        return str(top_conflict.get("summary") or "Cross-source discrepancy detected.")
+
+    freshness_class = grounding.get("freshness_class", "unknown")
+    if freshness_class == "stale":
+        return "Some evidence is stale, so very recent network changes may not yet be reflected."
+    if freshness_class == "missing":
+        return "Some required evidence is missing, so the answer should not be treated as fully complete."
+    if freshness_class == "warm":
+        return "Some evidence is warm rather than live, so near-real-time operational changes may require a refresh."
+
+    confidence = grounding.get("confidence") or {}
+    if confidence.get("level") == "low":
+        return "Confidence is low because the evidence set is limited or degraded."
+    return "No material cross-source conflict was detected in the evidence gathered for this turn."
+
+
+def _verification_plan(query_class: str, freshness_class: str) -> str:
+    refresh_prefix = "Refresh the relevant evidence first, then " if freshness_class in {"warm", "stale", "missing", "unknown"} else ""
+    plan_by_query_class = {
+        "inventory_only": "re-run inventory lookup or planned-vs-live comparison before making an operational decision.",
+        "planned_vs_live": "re-run planned-vs-live comparison and confirm the live crawl before acting on any mismatch.",
+        "live_only": "re-check live topology and telemetry before taking action if the operational state could have changed.",
+        "troubleshooting": "re-check live topology, telemetry, incidents, and running-config evidence before remediation.",
+        "change_planning": "review the proposal, validate the target intent, and complete pre-approval validation before execution.",
+        "compliance": "re-check current config and drift evidence before marking the device compliant or non-compliant.",
+        "knowledge_heavy": "confirm the documentation guidance against current inventory or live state before applying it.",
+        "general": "repeat the authoritative reads closest to the operational decision before acting.",
+    }
+    return refresh_prefix + plan_by_query_class.get(query_class, plan_by_query_class["general"])
+
+
 def build_answer_grounding(
     query_class: str,
     tool_results: Dict[str, Any],
@@ -523,6 +644,7 @@ def build_answer_grounding(
     conflicts = detect_answer_conflicts(query_class, payloads_by_tool, tool_args or {})
     confidence_score = _confidence_score(source_age, answer_scope, tool_names, errors, conflicts)
     confidence_level = _confidence_level(confidence_score)
+    freshness_class = _overall_freshness_class(source_age)
 
     if source_age:
         reason = f"Computed from {len(source_age)} authoritative evidence snapshot(s)"
@@ -534,19 +656,87 @@ def build_answer_grounding(
     if conflicts:
         reason = f"{reason}; {len(conflicts)} discrepancy signal(s) detected across sources"
 
+    assumptions = _derive_assumptions(
+        query_class=query_class,
+        source_age=source_age,
+        answer_scope=answer_scope,
+        errors=errors,
+        conflicts=conflicts,
+        knowledge_used=knowledge_used,
+    )
+
+    confidence = {
+        "level": confidence_level,
+        "score": confidence_score,
+        "reason": reason,
+    }
+
+    evidence_record = {
+        "version": "phase2_step6_v1",
+        "source_used": deduped_sources,
+        "source_age": source_age,
+        "freshness_class": freshness_class,
+        "confidence": confidence,
+        "answer_scope": answer_scope,
+        "conflicts": conflicts,
+        "assumptions": assumptions,
+    }
+
+    structured_rationale = {
+        "current_state": _current_state_summary(
+            {
+                "answer_scope": answer_scope,
+                "freshness_class": freshness_class,
+                "source_used": deduped_sources,
+                "conflicts": conflicts,
+            }
+        ),
+        "target_state": _target_state_summary(query_class),
+        "key_risk_or_uncertainty": _risk_summary(
+            {
+                "conflicts": conflicts,
+                "freshness_class": freshness_class,
+                "confidence": confidence,
+            }
+        ),
+        "verification_plan": _verification_plan(query_class, freshness_class),
+    }
+
     return {
         "query_class": query_class,
         "answer_scope": answer_scope,
+        "freshness_class": freshness_class,
         "source_used": deduped_sources,
         "source_age": source_age,
         "tool_evidence": tool_names,
         "conflicts": conflicts,
-        "confidence": {
-            "level": confidence_level,
-            "score": confidence_score,
-            "reason": reason,
-        },
+        "confidence": confidence,
+        "assumptions": assumptions,
+        "evidence_record": evidence_record,
+        "structured_rationale": structured_rationale,
     }
+
+
+def format_operator_rationale(grounding: Dict[str, Any]) -> str:
+    rationale = grounding.get("structured_rationale") or {}
+    current_state = rationale.get("current_state")
+    target_state = rationale.get("target_state")
+    risk = rationale.get("key_risk_or_uncertainty")
+    verification_plan = rationale.get("verification_plan")
+    assumptions = grounding.get("assumptions") or []
+
+    lines = []
+    if current_state:
+        lines.append(f"Current state: {current_state}")
+    if target_state:
+        lines.append(f"Target state: {target_state}")
+    if risk:
+        lines.append(f"Key risk or uncertainty: {risk}")
+    if assumptions:
+        lines.append(f"Assumptions: {' | '.join(str(item) for item in assumptions[:2])}")
+    if verification_plan:
+        lines.append(f"Verification plan: {verification_plan}")
+    return "\n".join(lines)
 
 
 def format_grounding_summary(grounding: Dict[str, Any]) -> str:

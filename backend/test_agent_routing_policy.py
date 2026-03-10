@@ -176,8 +176,13 @@ def test_inventory_query_prefetches_inventory_tool():
     assert response["grounding_meta"]["answer_policy"]["name"] == "management_ip_lookup"
     assert response["grounding_meta"]["answer_policy"]["satisfied"] is True
     assert response["grounding_meta"]["answer_policy"]["required_tools"] == ["get_inventory_device"]
+    assert response["grounding_meta"]["evidence_record"]["version"] == "phase2_step6_v1"
+    assert response["grounding_meta"]["structured_rationale"]["verification_plan"]
     assert response["grounding_meta"]["controller_flow"]["release"]["decision"] == "allow"
     assert response["grounding_meta"]["controller_flow"]["observe"]["satisfied_domains"] == ["planned_inventory"]
+    assert "Current state:" in response["content"]
+    assert "Target state:" in response["content"]
+    assert "Verification plan:" in response["content"]
     assert "Grounding: planned;" in response["content"]
 
 

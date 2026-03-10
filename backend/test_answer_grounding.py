@@ -1,4 +1,4 @@
-from llm.answer_grounding import build_answer_grounding, format_conflict_summary
+from llm.answer_grounding import build_answer_grounding, format_conflict_summary, format_operator_rationale
 
 
 def test_build_answer_grounding_detects_compare_conflicts():
@@ -70,3 +70,70 @@ def test_build_answer_grounding_detects_operational_conflicts_across_sources():
     assert "config_snapshot_missing" in codes
     assert "config_drift_detected" in codes
     assert "active_incident" in codes
+
+
+def test_build_answer_grounding_adds_step6_evidence_record_and_assumptions():
+    grounding = build_answer_grounding(
+        query_class="troubleshooting",
+        tool_results={
+            "get_device_details": {
+                "hostname": "SW1",
+                "status": "down",
+                "source_metadata": {
+                    "source": "crawler_cache",
+                    "scope": "live_topology",
+                    "freshness_class": "live",
+                    "confidence": 0.9,
+                },
+            },
+            "get_device_telemetry_snapshot": {
+                "hostname": "SW1",
+                "metrics": [],
+                "total": 0,
+                "source_metadata": {
+                    "source": "influxdb",
+                    "scope": "telemetry",
+                    "freshness_class": "stale",
+                    "confidence": 0.6,
+                },
+            },
+        },
+        tool_args={
+            "get_device_details": {"hostname": "SW1"},
+            "get_device_telemetry_snapshot": {"hostname": "SW1", "limit": 10},
+        },
+    )
+
+    assert grounding["freshness_class"] == "stale"
+    assert grounding["evidence_record"]["version"] == "phase2_step6_v1"
+    assert grounding["evidence_record"]["answer_scope"] == grounding["answer_scope"]
+    assert grounding["evidence_record"]["freshness_class"] == "stale"
+    assert grounding["assumptions"]
+    assert grounding["structured_rationale"]["current_state"]
+    assert grounding["structured_rationale"]["verification_plan"]
+
+
+def test_format_operator_rationale_includes_step6_sections():
+    grounding = build_answer_grounding(
+        query_class="inventory_only",
+        tool_results={
+            "get_inventory_device": {
+                "device": {"hostname": "SW1", "management_ip": "10.0.0.2"},
+                "source_used": "local_db",
+                "source_metadata": {
+                    "source": "local_db",
+                    "scope": "planned_inventory",
+                    "freshness_class": "live",
+                    "confidence": 0.9,
+                },
+            }
+        },
+        tool_args={"get_inventory_device": {"hostname": "SW1"}},
+    )
+
+    rationale = format_operator_rationale(grounding)
+
+    assert "Current state:" in rationale
+    assert "Target state:" in rationale
+    assert "Key risk or uncertainty:" in rationale
+    assert "Verification plan:" in rationale

@@ -21,7 +21,7 @@ import re
 from typing import Any, Dict, List, Optional
 
 from llm.answer_policy import build_answer_policy, policy_status
-from llm.answer_grounding import build_answer_grounding, format_conflict_summary, format_grounding_summary
+from llm.answer_grounding import build_answer_grounding, format_conflict_summary, format_grounding_summary, format_operator_rationale
 from llm.controller_flow import build_controller_flow_state
 from llm.controller_policy import build_controller_policy, render_controller_policy_prompt
 from llm.controller_self_correction import build_self_correction_state, plan_self_correction
@@ -1565,12 +1565,19 @@ class NetworkAgent:
         return grounding_meta
 
     def _render_grounded_content(self, content: str, grounding_meta: Dict[str, Any]) -> str:
+        rationale = format_operator_rationale(grounding_meta)
         summary = format_grounding_summary(grounding_meta)
         conflict_summary = format_conflict_summary(grounding_meta)
-        suffix = summary if not conflict_summary else f"{summary}\n{conflict_summary}"
+        tail_parts = []
+        if rationale:
+            tail_parts.append(rationale)
+        tail_parts.append(summary)
+        if conflict_summary:
+            tail_parts.append(conflict_summary)
+        suffix = "\n".join(tail_parts)
         if not content:
             return suffix
-        if summary in content:
+        if summary in content and (not rationale or rationale in content):
             return content
         return f"{content}\n\n{suffix}"
 
