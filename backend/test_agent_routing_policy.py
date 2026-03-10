@@ -2,7 +2,7 @@ import json
 
 from db.models import Device
 from llm.agent import NetworkAgent
-from llm.provider import LLMProvider, LLMMessage, LLMResponse
+from llm.provider import LLMProvider, LLMMessage, LLMResponse, ToolCall
 
 
 class _FakeProvider(LLMProvider):
@@ -136,8 +136,64 @@ def test_system_prompt_includes_controller_scope_contract():
     first_system_prompt = provider.calls[0]["messages"][0].content
     assert "## Controller Scope Contract" in first_system_prompt
     assert "## Milestone 2 Foundation Baseline" in first_system_prompt
+    assert "## Instruction Hierarchy" in first_system_prompt
+    assert "## Controller Policy" in first_system_prompt
     assert "Reasoning policy: private_reasoning_structured_rationale_only" in first_system_prompt
     assert "If a requested capability is partial or not_implemented" in first_system_prompt
+
+
+class _BypassPlanProvider(LLMProvider):
+    def __init__(self):
+        self.calls = []
+        self._main_calls = 0
+
+    async def generate(self, messages, tools=None, temperature=0.3):
+        self.calls.append({"messages": messages, "tools": tools, "temperature": temperature})
+        first_system = messages[0].content if messages else ""
+
+        if "You are an **intent parser**" in first_system:
+            payload = {
+                "intent_type": "configure",
+                "action": "create_vlan",
+                "feature": "vlan",
+                "vendor": "cisco_ios",
+                "parameters": {"vlans": [{"id": 20, "name": "Users"}]},
+                "scope": {"device_hostnames": ["SW1"], "all_devices": False},
+                "risk_level": "medium",
+                "justification": "Create VLAN 20 on SW1",
+                "resolved_devices": ["SW1"],
+            }
+            return LLMResponse(content=json.dumps(payload), tool_calls=[])
+
+        self._main_calls += 1
+        if self._main_calls == 1:
+            return LLMResponse(
+                content="",
+                tool_calls=[ToolCall(name="plan_change", arguments={"intent_json": "{\"id\":\"bad\"}"})],
+            )
+        return LLMResponse(content="proposed safely", tool_calls=[])
+
+    def model_name(self) -> str:
+        return "bypass-test"
+
+
+async def _run_chat_with_provider(message: str, provider):
+    agent = NetworkAgent(db_manager=_AgentFakeDb(), provider=provider, retriever=None)
+    response = await agent.chat(message)
+    return provider, response
+
+
+def test_change_request_bypass_is_recovered_by_controller_policy():
+    import asyncio
+
+    provider, response = asyncio.run(_run_chat_with_provider("Configure VLAN 20 on SW1", _BypassPlanProvider()))
+
+    assert response["type"] in {"proposal", "intent_plan"}
+    assert response["proposal"]["feature"] == "vlan"
+    assert "generated_config" in response["proposal"]
+    tool_messages = [message for call in provider.calls for message in call["messages"] if message.role == "tool"]
+    assert any(message.name == "parse_intent" for message in tool_messages)
+    assert any(message.name == "validate_intent" for message in tool_messages)
 
 
 def test_planned_vs_live_query_prefetches_comparison_tool():

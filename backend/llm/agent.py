@@ -22,6 +22,7 @@ from typing import Any, Dict, List, Optional
 
 from llm.answer_policy import build_answer_policy, policy_status
 from llm.answer_grounding import build_answer_grounding, format_conflict_summary, format_grounding_summary
+from llm.controller_policy import build_controller_policy, render_controller_policy_prompt
 from llm.controller_scope import (
     build_controller_implementation_status,
     build_controller_scope_contract,
@@ -31,6 +32,7 @@ from llm.context_contract import classify_query
 from llm.context_state import get_context_state_manager
 from llm.milestone_baseline import build_milestone2_baseline, render_milestone2_baseline_prompt
 from llm.provider import LLMProvider, LLMMessage, LLMResponse, ToolCall
+from llm.system_prompt import build_system_prompt
 from llm.tools import ToolRegistry
 from llm.context import ContextBuilder
 from llm.proposal import ProposalManager, ConfigProposal
@@ -40,81 +42,6 @@ logger = logging.getLogger("llm.agent")
 
 # Maximum tool-calling rounds before forcing a text response
 MAX_TOOL_ROUNDS = 5
-
-SYSTEM_PROMPT = """\
-You are **NetAutoController AI** — an expert network reliability engineer
-embedded inside an enterprise-grade campus network automation controller.
-
-## Architecture — Intent-Based Pipeline
-You operate within a controlled 5-stage translation pipeline:
-
-  Human Language → Structured Intent → Policy Validation → Change Plan → Execution → Verification
-
-**You are responsible for Stages 1–3.  You NEVER execute directly.**
-
-## MANDATORY: Configuration Request Workflow
-For ANY request that involves creating, modifying, or deleting network 
-configuration, you MUST follow this EXACT 3-step sequence:
-
-### Step 1 — Parse Intent
-Call `parse_intent(user_message)` to convert the request into a structured 
-intent object.  This extracts: action, feature, vendor, parameters, target 
-devices, and risk level.  If the intent requires disambiguation (e.g. no 
-target device specified), relay the disambiguation_message to the user.
-
-### Step 2 — Validate Policy
-Call `validate_intent(intent_json, user_role)` with the JSON from Step 1.
-This checks RBAC, change window, naming conventions, blast radius, VLAN/IP 
-conflicts, and device reachability.  If approved=false, explain the 
-violations to the user and do NOT proceed to Step 3.
-
-### Step 3 — Generate Change Plan
-Call `plan_change(intent_json)` with the validated intent.  This generates 
-CLI config, rollback commands, syntax validation, diff preview, execution 
-engine choice, and auto-verification checks for each target device.
-
-**NEVER call `generate_config` directly for user requests.**  It is an 
-internal tool used by the pipeline.  Always go through the 3-step sequence.
-
-## Safety Principle
-- The LLM (you) only outputs structured data and reasoning.
-- The system enforces policy, generates deterministic configs, and executes.
-- You NEVER generate raw CLI for direct execution.
-- You NEVER talk directly to SSH.  All changes go through the approval gate.
-
-{controller_scope}
-
-{milestone2_baseline}
-
-## Read-Only & Diagnostic Tools
-For information requests (show topology, list devices, check status, find path, 
-view audit logs, security scans), use the appropriate query tools directly.
-No intent pipeline is needed for read-only operations.
-
-## Available Query Tools
-- `get_topology_summary` — overview of all devices and links
-- `get_device_details(hostname)` — interfaces, neighbors, edge links
-- `list_all_devices(scope)` — device listing for `live`, `inventory`, or `both` scope with explicit source labeling
-- `find_path(source, destination)` — shortest path between devices
-- `get_device_running_config(hostname)` — last known running-config snapshot
-- `get_audit_log(limit)` — recent configuration change history
-- `run_security_audit(hostname)` — CIS benchmark security scan
-- `get_security_events(limit)` — recent threats and alerts
-- `analyze_security_alert(event_id)` — threat analysis + response plan
-- `get_template_schema(feature)` — see required parameters for a config template
-- `list_templates(vendor)` — available Jinja2 config templates
-
-## Rules
-- Always query real data.  Never invent device names, IPs, or topology.
-- Be concise but thorough.  Use bullet points and tables.
-- If you don't know something, say so.  Never hallucinate network state.
-- Treat the agent-supplied grounding metadata as authoritative. Do not contradict whether evidence is planned, live, mixed, or inferred.
-- After generating a change plan, summarize: what changes, which devices, risk level, blast radius.
-
-## Current Network State
-{network_context}
-"""
-
 
 class NetworkAgent:
     """
@@ -228,9 +155,9 @@ class NetworkAgent:
             user_message=user_message,
             routing_decision=routing_decision,
             device_hostnames=candidate_hostnames,
+            controller_policy=route_plan.get("controller_policy"),
+            route_instruction=route_plan.get("instruction", ""),
         )
-        if route_plan["instruction"]:
-            per_turn_system = per_turn_system + "\n\n" + route_plan["instruction"]
         if routing_decision.use_knowledge and self._retriever is not None:
             knowledge_ctx = self._context.build_knowledge_context(
                 user_message, self._retriever
@@ -265,6 +192,14 @@ class NetworkAgent:
 
             # If no tool calls, we have a final answer
             if not response.tool_calls:
+                if self._enforce_controller_policy(
+                    messages,
+                    route_plan,
+                    user_message,
+                    tool_results,
+                    tool_args,
+                ):
+                    continue
                 if self._enforce_required_tool_policy(messages, route_plan, tool_results, tool_args):
                     continue
                 grounding_meta = self._build_grounding_meta(
@@ -324,7 +259,13 @@ class NetworkAgent:
             # Execute each tool and add results
             for tc in response.tool_calls:
                 logger.info("Executing tool: %s(%s)", tc.name, tc.arguments)
-                result = self._tools.execute(tc.name, tc.arguments)
+                result = self._execute_controlled_tool_call(
+                    tc,
+                    route_plan,
+                    messages,
+                    tool_results,
+                    tool_args,
+                )
 
                 # Track for proposal detection
                 tool_results[tc.name] = result
@@ -336,7 +277,8 @@ class NetworkAgent:
                     name=tc.name,
                 ))
 
-        # If we exhausted all rounds, ensure required policy tools have run, then return whatever we have
+        # If we exhausted all rounds, ensure controller and answer policies have run, then return whatever we have
+        self._enforce_controller_policy(messages, route_plan, user_message, tool_results, tool_args)
         self._enforce_required_tool_policy(messages, route_plan, tool_results, tool_args)
         final_response = await self._provider.generate(
             messages=messages,
@@ -450,8 +392,10 @@ class NetworkAgent:
                 raw_policy = tool_results["validate_intent"]
                 policy_data = json.loads(raw_policy) if isinstance(raw_policy, str) else raw_policy
 
-            # Aggregate configs across all devices in the plan
-            device_plans = plan.get("device_plans", [])
+            # Aggregate configs across all devices in the plan.
+            # Support both the legacy internal shape and the current
+            # network_tools.plan_change payload shape.
+            device_plans = plan.get("device_plans") or plan.get("devices") or []
             if not device_plans:
                 return None
 
@@ -459,7 +403,7 @@ class NetworkAgent:
             first = device_plans[0]
             target_device = first.get("hostname", "unknown")
             vendor = intent_data.get("vendor") or first.get("vendor", "unknown")
-            feature = intent_data.get("feature") or first.get("feature", "unknown")
+            feature = intent_data.get("feature") or plan.get("feature") or first.get("feature", "unknown")
 
             # Merge generated configs / rollbacks / diffs for ALL devices
             config_blocks = []
@@ -467,10 +411,16 @@ class NetworkAgent:
             diff_blocks = []
             for dp in device_plans:
                 hn = dp.get("hostname", "?")
-                config_blocks.append(f"! ----- {hn} -----\n{dp.get('config', '')}")
-                rollback_blocks.append(f"! ----- {hn} -----\n{dp.get('rollback', '')}")
-                if dp.get("diff"):
-                    diff_blocks.append(f"--- {hn} ---\n{dp['diff']}")
+                config_text = dp.get("config") or dp.get("generated_config", "")
+                rollback_text = dp.get("rollback") or dp.get("rollback_config", "")
+                diff_text = dp.get("diff") or dp.get("diff_text", "")
+
+                if config_text:
+                    config_blocks.append(f"! ----- {hn} -----\n{config_text}")
+                if rollback_text:
+                    rollback_blocks.append(f"! ----- {hn} -----\n{rollback_text}")
+                if diff_text:
+                    diff_blocks.append(f"--- {hn} ---\n{diff_text}")
 
             generated_config = "\n\n".join(config_blocks)
             rollback_config = "\n\n".join(rollback_blocks)
@@ -932,12 +882,216 @@ class NetworkAgent:
             else:
                 prefetch_tools.append(ToolCall(name="get_topology_summary", arguments={}))
 
+        controller_policy = build_controller_policy(query_class, allowed_tools)
+
         return {
             "prefetch_tools": prefetch_tools,
             "allowed_tools": allowed_tools,
             "instruction": instruction,
             "answer_policy": answer_policy,
+            "controller_policy": controller_policy,
         }
+
+    def _json_payload(self, raw: Any) -> Dict[str, Any]:
+        if isinstance(raw, dict):
+            return raw
+        if isinstance(raw, str):
+            try:
+                return json.loads(raw)
+            except json.JSONDecodeError:
+                return {"raw": raw}
+        return {}
+
+    def _controller_error_result(self, code: str, message: str, details: Optional[Dict[str, Any]] = None) -> str:
+        payload = {
+            "error": message,
+            "controller_policy_error": code,
+        }
+        if details:
+            payload["details"] = details
+        return json.dumps(payload, ensure_ascii=False)
+
+    def _record_tool_message(
+        self,
+        messages: List[LLMMessage],
+        tool_call: ToolCall,
+        result: str,
+        note: str,
+    ) -> None:
+        messages.append(
+            LLMMessage(
+                role="assistant",
+                content=note,
+                tool_calls=[tool_call],
+            )
+        )
+        messages.append(
+            LLMMessage(
+                role="tool",
+                content=result,
+                name=tool_call.name,
+            )
+        )
+
+    def _validate_tool_call_contract(
+        self,
+        tool_call: ToolCall,
+        route_plan: Dict[str, Any],
+        tool_results: Dict[str, Any],
+    ) -> Optional[str]:
+        allowed_tools = set(route_plan.get("allowed_tools") or [])
+        controller_policy = route_plan.get("controller_policy") or {}
+
+        if allowed_tools and tool_call.name not in allowed_tools:
+            return self._controller_error_result(
+                "tool_not_allowed",
+                f"Tool '{tool_call.name}' is not allowed for this query class.",
+                {"allowed_tools": sorted(allowed_tools)},
+            )
+
+        blocked_direct_tools = set(controller_policy.get("blocked_direct_tools") or [])
+        if tool_call.name in blocked_direct_tools:
+            return self._controller_error_result(
+                "direct_generation_blocked",
+                f"Tool '{tool_call.name}' is blocked. Use parse_intent -> validate_intent -> plan_change instead.",
+            )
+
+        if controller_policy.get("requires_change_workflow"):
+            if tool_call.name == "validate_intent" and "parse_intent" not in tool_results:
+                return self._controller_error_result(
+                    "missing_intent_parse",
+                    "validate_intent cannot run before parse_intent completes.",
+                )
+            if tool_call.name == "plan_change":
+                if "parse_intent" not in tool_results:
+                    return self._controller_error_result(
+                        "missing_intent_parse",
+                        "plan_change cannot run before parse_intent completes.",
+                    )
+                if "validate_intent" not in tool_results:
+                    return self._controller_error_result(
+                        "missing_policy_validation",
+                        "plan_change cannot run before validate_intent approves the request.",
+                    )
+                parse_payload = self._json_payload(tool_results.get("parse_intent"))
+                if parse_payload.get("requires_disambiguation"):
+                    return self._controller_error_result(
+                        "intent_requires_disambiguation",
+                        "plan_change is blocked until the request is disambiguated.",
+                        {"disambiguation_message": parse_payload.get("disambiguation_message", "")},
+                    )
+                validation_payload = self._json_payload(tool_results.get("validate_intent"))
+                if validation_payload.get("approved") is not True:
+                    return self._controller_error_result(
+                        "policy_not_approved",
+                        "plan_change is blocked because validate_intent did not approve the request.",
+                        {"violations": validation_payload.get("violations", [])},
+                    )
+
+        return None
+
+    def _execute_controlled_tool_call(
+        self,
+        tool_call: ToolCall,
+        route_plan: Dict[str, Any],
+        messages: List[LLMMessage],
+        tool_results: Dict[str, Any],
+        tool_args: Dict[str, Dict[str, Any]],
+    ) -> str:
+        violation = self._validate_tool_call_contract(tool_call, route_plan, tool_results)
+        if violation is not None:
+            self._record_tool_message(
+                messages,
+                tool_call,
+                violation,
+                f"Controller policy blocked tool call: {tool_call.name}({json.dumps(tool_call.arguments, ensure_ascii=False)})",
+            )
+            return violation
+        return self._tools.execute(tool_call.name, tool_call.arguments)
+
+    def _execute_controller_tool(
+        self,
+        name: str,
+        arguments: Dict[str, Any],
+        messages: List[LLMMessage],
+        tool_results: Dict[str, Any],
+        tool_args: Dict[str, Dict[str, Any]],
+        note: str,
+    ) -> str:
+        tool_call = ToolCall(name=name, arguments=arguments)
+        result = self._tools.execute(name, arguments)
+        tool_results[name] = result
+        tool_args[name] = arguments
+        self._record_tool_message(messages, tool_call, result, note)
+        return result
+
+    def _enforce_controller_policy(
+        self,
+        messages: List[LLMMessage],
+        route_plan: Dict[str, Any],
+        user_message: str,
+        tool_results: Dict[str, Any],
+        tool_args: Dict[str, Dict[str, Any]],
+    ) -> bool:
+        controller_policy = route_plan.get("controller_policy") or {}
+        if not controller_policy.get("requires_change_workflow"):
+            return False
+
+        executed = False
+
+        if "parse_intent" not in tool_results:
+            self._execute_controller_tool(
+                "parse_intent",
+                {"user_message": user_message},
+                messages,
+                tool_results,
+                tool_args,
+                "Controller policy enforcing change workflow step: parse_intent",
+            )
+            executed = True
+
+        parse_payload = self._json_payload(tool_results.get("parse_intent"))
+        if parse_payload.get("error"):
+            return executed
+        if parse_payload.get("requires_disambiguation"):
+            return executed
+
+        intent_json = tool_results.get("parse_intent")
+        if isinstance(intent_json, dict):
+            intent_json = json.dumps(intent_json, ensure_ascii=False)
+        if not isinstance(intent_json, str):
+            intent_json = json.dumps(parse_payload, ensure_ascii=False)
+
+        if "validate_intent" not in tool_results:
+            self._execute_controller_tool(
+                "validate_intent",
+                {"intent_json": intent_json, "user_role": controller_policy.get("default_user_role", "operator")},
+                messages,
+                tool_results,
+                tool_args,
+                "Controller policy enforcing change workflow step: validate_intent",
+            )
+            executed = True
+
+        validation_payload = self._json_payload(tool_results.get("validate_intent"))
+        if validation_payload.get("error"):
+            return executed
+        if validation_payload.get("approved") is not True:
+            return executed
+
+        plan_payload = self._json_payload(tool_results.get("plan_change")) if "plan_change" in tool_results else {}
+        if "plan_change" not in tool_results or plan_payload.get("error") or plan_payload.get("controller_policy_error"):
+            self._execute_controller_tool(
+                "plan_change",
+                {"intent_json": intent_json},
+                messages,
+                tool_results,
+                tool_args,
+                "Controller policy enforcing change workflow step: plan_change",
+            )
+            executed = True
+
+        return executed
 
     def _apply_prefetched_route_tools(
         self,
@@ -1074,15 +1228,21 @@ class NetworkAgent:
         user_message: Optional[str] = None,
         routing_decision=None,
         device_hostnames: Optional[List[str]] = None,
+        controller_policy: Optional[Dict[str, Any]] = None,
+        route_instruction: str = "",
     ) -> str:
-        return SYSTEM_PROMPT.format(
+        return build_system_prompt(
             controller_scope=render_controller_scope_prompt(self.available_tools),
             milestone2_baseline=render_milestone2_baseline_prompt(self.available_tools),
+            controller_policy=render_controller_policy_prompt(
+                controller_policy or build_controller_policy("general", self.available_tools),
+                route_instruction,
+            ),
             network_context=self._build_network_context(
                 user_message=user_message,
                 routing_decision=routing_decision,
                 device_hostnames=device_hostnames,
-            )
+            ),
         )
 
     def _build_grounding_meta(
