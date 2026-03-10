@@ -316,9 +316,22 @@ def test_live_query_returns_live_grounding_and_confidence():
     _, response = asyncio.run(_run_chat("Show me the live topology"))
 
     assert response["grounding_meta"]["answer_scope"] == "live"
+    assert response["grounding_meta"]["evidence_authority"]["preferred_families"] == ["live"]
+    assert response["grounding_meta"]["evidence_authority"]["preferred_evidence_present"] is True
     assert "crawler_cache" in response["grounding_meta"]["source_used"]
     assert response["grounding_meta"]["confidence"]["level"] in {"medium", "high"}
     assert "source_age=" in response["content"]
+
+
+def test_knowledge_query_returns_documentation_authority_profile():
+    import asyncio
+
+    _, response = asyncio.run(_run_chat("How to configure OSPF on Cisco?"))
+
+    authority = response["grounding_meta"]["evidence_authority"]
+    assert authority["preferred_families"] == ["documentation"]
+    assert authority["preferred_evidence_present"] is True
+    assert "documentation" in authority["observed_families"]
 
 
 def test_live_query_telemetry_failure_self_corrects_with_fallback():

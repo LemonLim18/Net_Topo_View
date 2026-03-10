@@ -68,10 +68,14 @@ def test_query_taxonomy_routes_inventory_and_comparison_queries():
     inventory_query = classify_query("What is the management IP of SW1 in inventory?")
     compare_query = classify_query("Compare planned vs live state for core switches")
     knowledge_query = classify_query("Explain OSPF adjacency states")
+    how_to_query = classify_query("How to configure OSPF on Cisco?")
+    live_query = classify_query("Show me the live topology")
 
     assert inventory_query.query_class == QueryClass.INVENTORY_ONLY.value
     assert compare_query.query_class == QueryClass.PLANNED_VS_LIVE.value
     assert knowledge_query.query_class == QueryClass.KNOWLEDGE_HEAVY.value
+    assert how_to_query.query_class == QueryClass.KNOWLEDGE_HEAVY.value
+    assert live_query.query_class == QueryClass.LIVE_ONLY.value
 
 
 def test_route_uses_phase0_taxonomy():

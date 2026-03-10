@@ -183,6 +183,7 @@ AUTHORITY_MATRIX: Dict[str, ContextDomainContract] = {
 
 
 LIVE_ONLY_TRIGGERS = (
+    "live topology",
     "right now",
     "currently",
     "at the moment",
@@ -418,6 +419,12 @@ def _contains_any(query: str, triggers: Sequence[str]) -> bool:
     return any(trigger in query for trigger in triggers)
 
 
+def _is_instructional_knowledge_query(query: str) -> bool:
+    instructional_prefixes = ("how to", "what is", "what are", "explain", "describe")
+    instructional_hints = ("best practice", "recommendation", "guideline", "syntax", "example")
+    return query.startswith(instructional_prefixes) or _contains_any(query, instructional_hints)
+
+
 def classify_query(query: str) -> QueryRoutingDecision:
     q_lower = query.lower()
 
@@ -443,6 +450,18 @@ def classify_query(query: str) -> QueryRoutingDecision:
             include_sdn=False,
             required_domains=(CONTEXT_DOMAIN_INVENTORY, CONTEXT_DOMAIN_PLANNED_TOPOLOGY),
             reasoning="inventory query should prefer planned-state sources before live discovery",
+        )
+
+    if _is_instructional_knowledge_query(q_lower):
+        return QueryRoutingDecision(
+            query_class=QueryClass.KNOWLEDGE_HEAVY.value,
+            use_live_context=False,
+            use_knowledge=True,
+            include_inventory=False,
+            include_telemetry=False,
+            include_sdn=False,
+            required_domains=(CONTEXT_DOMAIN_KNOWLEDGE,),
+            reasoning="instructional how-to and SOP-style questions should prefer curated knowledge before operational state",
         )
 
     if _contains_any(q_lower, COMPLIANCE_TRIGGERS):

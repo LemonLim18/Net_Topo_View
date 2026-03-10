@@ -137,3 +137,58 @@ def test_format_operator_rationale_includes_step6_sections():
     assert "Target state:" in rationale
     assert "Key risk or uncertainty:" in rationale
     assert "Verification plan:" in rationale
+
+
+def test_build_answer_grounding_tracks_step7_evidence_authority_for_knowledge_queries():
+    grounding = build_answer_grounding(
+        query_class="knowledge_heavy",
+        tool_results={
+            "get_knowledge_base_status": {
+                "documents": [{"id": "doc-1", "title": "OSPF Design"}],
+                "total": 1,
+                "source_used": "vector_store",
+                "source_metadata": {
+                    "source": "vector_store",
+                    "scope": "knowledge_documents",
+                    "freshness_class": "warm",
+                    "confidence": 0.7,
+                },
+            }
+        },
+        tool_args={"get_knowledge_base_status": {"limit": 5}},
+    )
+
+    authority = grounding["evidence_authority"]
+
+    assert authority["preferred_families"] == ["documentation"]
+    assert authority["observed_families"] == ["documentation"]
+    assert authority["preferred_evidence_present"] is True
+    assert authority["substitution_risk"] is False
+
+
+def test_build_answer_grounding_marks_supporting_live_family_for_inventory_query():
+    grounding = build_answer_grounding(
+        query_class="inventory_only",
+        tool_results={
+            "compare_planned_vs_live": {
+                "devices": [
+                    {
+                        "hostname": "SW1",
+                        "presence_state": "planned_and_live",
+                        "management_ip_alignment": "match",
+                    }
+                ],
+                "source_used": ["local_db", "crawler_cache"],
+                "inventory_source_metadata": {"source": "local_db", "scope": "planned_inventory", "freshness_class": "live", "confidence": 0.88},
+                "live_source_metadata": {"source": "crawler_cache", "scope": "live_topology", "freshness_class": "live", "confidence": 0.91},
+            }
+        },
+        tool_args={"compare_planned_vs_live": {"hostname": "SW1"}},
+    )
+
+    authority = grounding["evidence_authority"]
+
+    assert authority["preferred_families"] == ["planned"]
+    assert authority["observed_families"] == ["planned", "live"]
+    assert authority["supporting_families_used"] == ["live"]
+    assert authority["requires_disclosure"] is True

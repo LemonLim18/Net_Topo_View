@@ -91,6 +91,84 @@ def _has_authoritative_evidence(tool_name: str, payload: Dict[str, Any], argumen
     return True
 
 
+def _freshness_available(metadata: Any) -> bool:
+    return isinstance(metadata, dict) and str(metadata.get("freshness_class") or "unknown") not in {"missing", "unknown"}
+
+
+def _domains_satisfied_by_tool(tool_name: str, payload: Dict[str, Any], arguments: Dict[str, Any]) -> List[str]:
+    if tool_name == "compare_planned_vs_live":
+        has_planned = False
+        has_live = False
+        for device in payload.get("devices", []):
+            if not isinstance(device, dict):
+                continue
+            presence_state = str(device.get("presence_state") or "unknown")
+            if presence_state in {"planned_and_live", "planned_only"}:
+                has_planned = True
+            if presence_state in {"planned_and_live", "live_only"}:
+                has_live = True
+        domains: List[str] = []
+        if has_planned or isinstance(payload.get("inventory_source_metadata"), dict):
+            domains.extend([CONTEXT_DOMAIN_INVENTORY, CONTEXT_DOMAIN_PLANNED_TOPOLOGY])
+        if has_live or isinstance(payload.get("live_source_metadata"), dict):
+            domains.append(CONTEXT_DOMAIN_LIVE_TOPOLOGY)
+        return domains
+
+    if tool_name == "get_digital_twin":
+        freshness = payload.get("freshness") or {}
+        domains: List[str] = []
+        if _freshness_available(freshness.get("inventory")):
+            domains.append(CONTEXT_DOMAIN_INVENTORY)
+        if _freshness_available(freshness.get("planned_topology")):
+            domains.append(CONTEXT_DOMAIN_PLANNED_TOPOLOGY)
+        if _freshness_available(freshness.get("telemetry")):
+            domains.append(CONTEXT_DOMAIN_TELEMETRY)
+        if _freshness_available(freshness.get("config_history")):
+            domains.append(CONTEXT_DOMAIN_CONFIG)
+        if _freshness_available(freshness.get("incidents")):
+            domains.append(CONTEXT_DOMAIN_INCIDENTS)
+        if payload.get("summary", {}).get("live_link_count") or any(
+            str(twin.get("presence_state") or "unknown") in {"planned_and_live", "live_only"}
+            for twin in payload.get("twins", [])
+            if isinstance(twin, dict)
+        ):
+            if CONTEXT_DOMAIN_LIVE_TOPOLOGY not in domains:
+                domains.append(CONTEXT_DOMAIN_LIVE_TOPOLOGY)
+        return domains
+
+    return _domains_for_tool(tool_name, arguments)
+
+
+def _telemetry_fallback_domain_satisfied(
+    tool_results: Dict[str, Any],
+    self_correction_state: Optional[Dict[str, Any]],
+) -> bool:
+    if not isinstance(self_correction_state, dict):
+        return False
+
+    attempts = self_correction_state.get("attempts") or []
+    recovered_missing_telemetry = any(
+        isinstance(item, dict)
+        and item.get("failure_kind") == "missing_telemetry"
+        and item.get("outcome") == "retry_succeeded"
+        and any(
+            isinstance(action, dict) and action.get("name") == "get_digital_twin"
+            for action in item.get("revised_actions") or []
+        )
+        for item in attempts
+    )
+    if not recovered_missing_telemetry:
+        return False
+
+    digital_twin_payload = _decode_payload(tool_results.get("get_digital_twin"))
+    if digital_twin_payload.get("error") or digital_twin_payload.get("controller_policy_error"):
+        return False
+
+    freshness = digital_twin_payload.get("freshness") or {}
+    telemetry_metadata = freshness.get("telemetry")
+    return isinstance(telemetry_metadata, dict) and bool(telemetry_metadata.get("scope") or telemetry_metadata.get("source"))
+
+
 def _effective_required_domains(
     query_class: str,
     declared_domains: Sequence[str],
@@ -265,9 +343,16 @@ def build_controller_flow_state(
             continue
         if not _has_authoritative_evidence(tool_name, payload, arguments):
             continue
-        for domain in _domains_for_tool(tool_name, arguments):
+        for domain in _domains_satisfied_by_tool(tool_name, payload, arguments):
             if domain in domain_coverage and tool_name not in domain_coverage[domain]:
                 domain_coverage[domain].append(tool_name)
+
+    if (
+        CONTEXT_DOMAIN_TELEMETRY in domain_coverage
+        and not domain_coverage[CONTEXT_DOMAIN_TELEMETRY]
+        and _telemetry_fallback_domain_satisfied(tool_results, self_correction_state)
+    ):
+        domain_coverage[CONTEXT_DOMAIN_TELEMETRY].append("get_digital_twin")
 
     if knowledge_used and CONTEXT_DOMAIN_KNOWLEDGE in domain_coverage:
         domain_coverage[CONTEXT_DOMAIN_KNOWLEDGE].append("knowledge_context")

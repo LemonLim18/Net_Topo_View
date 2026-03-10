@@ -33,6 +33,30 @@ _TARGET_STATE_BY_QUERY_CLASS = {
     "general": "Requested a grounded network-state answer based on the authoritative evidence gathered for this turn.",
 }
 
+_DOCUMENTATION_SCOPES = {"knowledge_documents"}
+
+_PREFERRED_EVIDENCE_FAMILIES = {
+    "inventory_only": ["planned"],
+    "planned_vs_live": ["planned", "live"],
+    "live_only": ["live"],
+    "troubleshooting": ["live"],
+    "change_planning": ["planned", "documentation"],
+    "compliance": ["live", "documentation"],
+    "knowledge_heavy": ["documentation"],
+    "general": ["planned", "live"],
+}
+
+_SUPPORTING_EVIDENCE_FAMILIES = {
+    "inventory_only": ["live"],
+    "planned_vs_live": [],
+    "live_only": ["planned"],
+    "troubleshooting": ["documentation", "planned"],
+    "change_planning": ["live"],
+    "compliance": ["planned"],
+    "knowledge_heavy": ["planned"],
+    "general": ["documentation"],
+}
+
 
 def _decode_tool_payload(raw: Any) -> Dict[str, Any]:
     if isinstance(raw, dict):
@@ -107,6 +131,74 @@ def _answer_scope_from_sources(query_class: str, source_age: List[Dict[str, Any]
     if query_class == "knowledge_heavy":
         return "inferred"
     return "inferred"
+
+
+def _evidence_family_for_scope(scope: str) -> str:
+    normalized = str(scope or "unknown")
+    if normalized in _PLANNED_SCOPES:
+        return "planned"
+    if normalized in _LIVE_SCOPES:
+        return "live"
+    if normalized in _DOCUMENTATION_SCOPES:
+        return "documentation"
+    return "unknown"
+
+
+def _observed_evidence_families(source_age: List[Dict[str, Any]]) -> List[str]:
+    families: List[str] = []
+    seen = set()
+    for entry in source_age:
+        family = _evidence_family_for_scope(str(entry.get("scope") or "unknown"))
+        if family == "unknown" or family in seen:
+            continue
+        seen.add(family)
+        families.append(family)
+    return families
+
+
+def _build_evidence_authority(query_class: str, source_age: List[Dict[str, Any]], conflicts: List[Dict[str, Any]]) -> Dict[str, Any]:
+    preferred_families = list(_PREFERRED_EVIDENCE_FAMILIES.get(query_class, _PREFERRED_EVIDENCE_FAMILIES["general"]))
+    supporting_families = list(_SUPPORTING_EVIDENCE_FAMILIES.get(query_class, _SUPPORTING_EVIDENCE_FAMILIES["general"]))
+    observed_families = _observed_evidence_families(source_age)
+    preferred_present = any(family in observed_families for family in preferred_families)
+    supporting_used = [family for family in observed_families if family in supporting_families]
+    unexpected_families = [
+        family for family in observed_families
+        if family not in preferred_families and family not in supporting_families
+    ]
+    mixed_authority = len(observed_families) > 1
+    substitution_risk = bool(observed_families) and not preferred_present
+    requires_disclosure = mixed_authority or bool(conflicts) or bool(supporting_used) or bool(unexpected_families)
+
+    if substitution_risk:
+        summary = (
+            f"Observed evidence is {', '.join(observed_families)}, but this query class expects "
+            f"{', '.join(preferred_families)} as primary authority."
+        )
+    elif requires_disclosure:
+        summary = (
+            f"Primary authority families for this query are {', '.join(preferred_families)}; "
+            f"observed families are {', '.join(observed_families)}."
+        )
+    else:
+        summary = (
+            f"Observed evidence matches the primary authority family for this query class: "
+            f"{', '.join(preferred_families)}."
+        )
+
+    return {
+        "query_class": query_class,
+        "preferred_families": preferred_families,
+        "supporting_families": supporting_families,
+        "observed_families": observed_families,
+        "preferred_evidence_present": preferred_present,
+        "supporting_families_used": supporting_used,
+        "unexpected_families": unexpected_families,
+        "mixed_authority": mixed_authority,
+        "substitution_risk": substitution_risk,
+        "requires_disclosure": requires_disclosure,
+        "summary": summary,
+    }
 
 
 def _candidate_hostnames_from_args(tool_args: Dict[str, Dict[str, Any]]) -> List[str]:
@@ -508,6 +600,7 @@ def _derive_assumptions(
     errors: List[str],
     conflicts: List[Dict[str, Any]],
     knowledge_used: bool,
+    evidence_authority: Dict[str, Any],
 ) -> List[str]:
     assumptions: List[str] = []
     freshness_class = _overall_freshness_class(source_age)
@@ -528,6 +621,14 @@ def _derive_assumptions(
         assumptions.append("Documentation guidance still needs confirmation against current inventory or live state before execution.")
     if conflicts:
         assumptions.append("Cross-source discrepancies are preserved instead of being flattened into a single certainty claim.")
+    if evidence_authority.get("supporting_families_used"):
+        assumptions.append(
+            f"Supporting evidence families ({', '.join(evidence_authority['supporting_families_used'])}) supplement the primary authority rather than replace it."
+        )
+    if evidence_authority.get("unexpected_families"):
+        assumptions.append(
+            f"Unexpected evidence families ({', '.join(evidence_authority['unexpected_families'])}) are disclosed explicitly instead of being treated as equivalent authority."
+        )
 
     deduped: List[str] = []
     seen = set()
@@ -546,6 +647,9 @@ def _current_state_summary(grounding: Dict[str, Any]) -> str:
     source_text = ", ".join(str(source) for source in sources) if sources else "prompt context only"
     conflicts = grounding.get("conflicts") or []
     sentence = f"Grounded in {answer_scope} evidence from {source_text} with overall freshness {freshness_class}."
+    evidence_authority = grounding.get("evidence_authority") or {}
+    if evidence_authority.get("observed_families"):
+        sentence += f" Observed evidence families: {', '.join(evidence_authority['observed_families'])}."
     if conflicts:
         sentence += f" {len(conflicts)} discrepancy signal(s) are currently present across sources."
     return sentence
@@ -560,9 +664,14 @@ def _target_state_summary(query_class: str) -> str:
 
 def _risk_summary(grounding: Dict[str, Any]) -> str:
     conflicts = grounding.get("conflicts") or []
+    evidence_authority = grounding.get("evidence_authority") or {}
     if conflicts:
         top_conflict = conflicts[0]
         return str(top_conflict.get("summary") or "Cross-source discrepancy detected.")
+    if evidence_authority.get("substitution_risk"):
+        return str(evidence_authority.get("summary") or "The response is not grounded in the preferred authority family for this query class.")
+    if evidence_authority.get("requires_disclosure"):
+        return str(evidence_authority.get("summary") or "Multiple evidence families were used and must be interpreted explicitly.")
 
     freshness_class = grounding.get("freshness_class", "unknown")
     if freshness_class == "stale":
@@ -642,6 +751,7 @@ def build_answer_grounding(
 
     answer_scope = _answer_scope_from_sources(query_class, source_age)
     conflicts = detect_answer_conflicts(query_class, payloads_by_tool, tool_args or {})
+    evidence_authority = _build_evidence_authority(query_class, source_age, conflicts)
     confidence_score = _confidence_score(source_age, answer_scope, tool_names, errors, conflicts)
     confidence_level = _confidence_level(confidence_score)
     freshness_class = _overall_freshness_class(source_age)
@@ -663,6 +773,7 @@ def build_answer_grounding(
         errors=errors,
         conflicts=conflicts,
         knowledge_used=knowledge_used,
+        evidence_authority=evidence_authority,
     )
 
     confidence = {
@@ -680,6 +791,7 @@ def build_answer_grounding(
         "answer_scope": answer_scope,
         "conflicts": conflicts,
         "assumptions": assumptions,
+        "evidence_authority": evidence_authority,
     }
 
     structured_rationale = {
@@ -689,6 +801,7 @@ def build_answer_grounding(
                 "freshness_class": freshness_class,
                 "source_used": deduped_sources,
                 "conflicts": conflicts,
+                "evidence_authority": evidence_authority,
             }
         ),
         "target_state": _target_state_summary(query_class),
@@ -712,6 +825,7 @@ def build_answer_grounding(
         "conflicts": conflicts,
         "confidence": confidence,
         "assumptions": assumptions,
+        "evidence_authority": evidence_authority,
         "evidence_record": evidence_record,
         "structured_rationale": structured_rationale,
     }
