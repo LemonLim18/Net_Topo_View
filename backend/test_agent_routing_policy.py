@@ -258,6 +258,8 @@ def test_change_request_bypass_is_recovered_by_controller_policy():
     assert "generated_config" in response["proposal"]
     assert response["proposal"]["action_artifact"]["action_type"] == "single_device_proposal"
     assert response["proposal"]["action_artifact"]["approval"]["status"] == "pending"
+    assert response["proposal"]["action_artifact"]["rollback_intent"]["strategy"] == "snapshot_aware_diff_restore"
+    assert response["proposal"]["action_artifact"]["rollback_intent"]["snapshot_backed_device_count"] == 1
     assert response["grounding_meta"]["controller_flow"]["release"]["decision"] == "allow"
     assert response["grounding_meta"]["controller_flow"]["observe"]["change_workflow"]["satisfied"] is True
     assert "knowledge_base" in response["grounding_meta"]["controller_flow"]["observe"]["satisfied_domains"]
@@ -316,6 +318,8 @@ def test_multi_device_change_request_returns_structured_playbook_artifact():
     assert artifact["execution"]["primary_engine"] == "ansible_native"
     assert artifact["approval"]["status"] == "pending"
     assert artifact["playbook_spec"]["device_count"] == 2
+    assert artifact["rollback_intent"]["strategy"] == "snapshot_aware_diff_restore"
+    assert artifact["rollback_intent"]["snapshot_backed_device_count"] == 2
     assert len(artifact["device_artifacts"]) == 2
     assert all(item["verification_criteria"] for item in artifact["device_artifacts"])
 

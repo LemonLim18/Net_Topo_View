@@ -20,6 +20,7 @@ import logging
 import re
 from typing import Any, Dict, List, Optional
 
+from config_engine.rollback_planner import build_rollback_plan
 from config_engine.safety import validate_action_artifact, validate_cli_artifact
 from llm.answer_release import build_answer_release_state
 from llm.answer_policy import build_answer_policy, policy_status
@@ -438,6 +439,7 @@ class NetworkAgent:
             execution_engine = str(device_plan.get("execution_engine") or "ssh_fallback")
             syntax_warnings = list(device_plan.get("syntax_warnings") or [])
             verification_checks = list(device_plan.get("verification_checks") or [])
+            rollback_plan = device_plan.get("rollback_plan") if isinstance(device_plan.get("rollback_plan"), dict) else None
             rollback_config = str(device_plan.get("rollback") or device_plan.get("rollback_config") or "")
             generated_config = str(device_plan.get("config") or device_plan.get("generated_config") or "")
             diff_text = str(device_plan.get("diff") or device_plan.get("diff_text") or "")
@@ -459,6 +461,7 @@ class NetworkAgent:
                     "rollback_config": rollback_config,
                     "diff_text": diff_text,
                     "execution_engine": execution_engine,
+                    "rollback_plan": rollback_plan,
                     "dependencies": dependencies,
                     "syntax_warnings": syntax_warnings,
                     "verification_criteria": verification_checks,
@@ -472,6 +475,7 @@ class NetworkAgent:
                         generated_config=generated_config,
                         rollback_config=rollback_config,
                         execution_engine=execution_engine,
+                        rollback_plan=rollback_plan,
                         require_render_match=True,
                     ),
                 }
@@ -504,6 +508,9 @@ class NetworkAgent:
                     verification_criteria.append(enriched)
 
         rollback_available = sum(1 for item in device_artifacts if item.get("rollback_config"))
+        rollback_plans = [item.get("rollback_plan") for item in device_artifacts if isinstance(item.get("rollback_plan"), dict)]
+        snapshot_backed = sum(1 for item in rollback_plans if item.get("runtime_restore_available"))
+        strategies = sorted({str(item.get("strategy") or "unknown") for item in rollback_plans})
         action_type = "multi_device_playbook" if len(device_artifacts) > 1 else "single_device_proposal"
         dependencies = ["parse_intent", "validate_intent", "plan_change", "human_approval"]
         if len(device_artifacts) > 1:
@@ -536,10 +543,16 @@ class NetworkAgent:
                 "policy_warnings": list(policy_data.get("warnings") or []),
             },
             "rollback_intent": {
-                "strategy": "generated_per_device_rollback" if rollback_available == len(device_artifacts) else "partial_generated_rollback",
+                "strategy": (
+                    "snapshot_aware_diff_restore"
+                    if snapshot_backed == len(device_artifacts) and device_artifacts
+                    else ("mixed_snapshot_and_reverse" if snapshot_backed else ("known_reverse_operations" if rollback_available else "manual_reconstruction_required"))
+                ),
+                "strategy_chain": strategies,
                 "available_device_count": rollback_available,
+                "snapshot_backed_device_count": snapshot_backed,
                 "summary": (
-                    f"Generated rollback artifacts are available for {rollback_available} of {len(device_artifacts)} device(s)."
+                    f"Snapshot-backed rollback is available for {snapshot_backed} of {len(device_artifacts)} device(s); targeted reverse commands are available for {rollback_available} device(s)."
                 ),
             },
             "verification_criteria": verification_criteria,
@@ -759,7 +772,7 @@ class NetworkAgent:
             risk_level = self._assess_risk(feature, vendor)
 
             action_artifact = {
-                "version": "phase3_step9_v1",
+                "version": "phase3_step11_v1",
                 "action_type": "single_device_proposal",
                 "scope": {
                     "device_scope": {"device_hostnames": [target_device], "all_devices": False},
@@ -784,9 +797,9 @@ class NetworkAgent:
                     "policy_warnings": [],
                 },
                 "rollback_intent": {
-                    "strategy": "generated_per_device_rollback" if rollback_config else "rollback_not_generated",
+                    "strategy": "manual_reconstruction_required",
                     "available_device_count": 1 if rollback_config else 0,
-                    "summary": "Generated rollback commands are available for the target device." if rollback_config else "No rollback commands were generated for the target device.",
+                    "summary": "Rollback planning metadata has not been computed yet.",
                 },
                 "verification_criteria": [],
                 "device_artifacts": [
@@ -799,6 +812,15 @@ class NetworkAgent:
                         "rollback_config": rollback_config,
                         "diff_text": diff_text,
                         "execution_engine": "ssh_fallback",
+                        "rollback_plan": build_rollback_plan(
+                            db_manager=self._db,
+                            hostname=target_device,
+                            vendor=vendor,
+                            feature=feature,
+                            params=dict(params),
+                            generated_config=generated_config,
+                            template_rollback_config=rollback_config,
+                        ),
                         "dependencies": ["human_approval", "ssh_credentials_available"],
                         "syntax_warnings": [],
                         "verification_criteria": [],
@@ -811,10 +833,27 @@ class NetworkAgent:
                             generated_config=generated_config,
                             rollback_config=rollback_config,
                             execution_engine="ssh_fallback",
+                            rollback_plan=build_rollback_plan(
+                                db_manager=self._db,
+                                hostname=target_device,
+                                vendor=vendor,
+                                feature=feature,
+                                params=dict(params),
+                                generated_config=generated_config,
+                                template_rollback_config=rollback_config,
+                            ),
                             require_render_match=True,
                         ),
                     }
                 ],
+            }
+            rollback_plan = action_artifact["device_artifacts"][0]["rollback_plan"]
+            action_artifact["rollback_intent"] = {
+                "strategy": rollback_plan.get("strategy"),
+                "strategy_chain": list(rollback_plan.get("strategy_chain") or []),
+                "available_device_count": 1 if rollback_config else 0,
+                "snapshot_backed_device_count": 1 if rollback_plan.get("runtime_restore_available") else 0,
+                "summary": rollback_plan.get("summary", ""),
             }
             action_artifact["validation"] = validate_action_artifact(
                 action_artifact,

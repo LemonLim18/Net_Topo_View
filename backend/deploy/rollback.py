@@ -20,9 +20,9 @@ class RollbackEngine:
     """
     Executes rollback for a failed job.
 
-    Strategy priority:
-      1. Push ``job.rollback_config`` (undo commands from M3).
-      2. Replace running config with ``snapshot_pre`` full config.
+        Strategy priority:
+            1. Restore the captured pre-change snapshot when available.
+            2. Push ``job.rollback_config`` when targeted reverse commands exist.
     """
 
     def __init__(self, db_manager: DatabaseManager):
@@ -54,22 +54,7 @@ class RollbackEngine:
             )
             driver.connect()
 
-            # Strategy 1 — undo commands
-            if job.rollback_config:
-                cmds = [
-                    line for line in job.rollback_config.strip().splitlines()
-                    if line.strip()
-                ]
-                result = driver.push_config(cmds)
-                if result.success:
-                    logger.info("Rollback via undo commands succeeded for Job %s", job.id)
-                    return True
-                logger.warning(
-                    "Undo commands failed for Job %s: %s — trying snapshot restore",
-                    job.id, result.error_message,
-                )
-
-            # Strategy 2 — full snapshot restore
+            # Strategy 1 — full snapshot restore
             pre_config = self._load_pre_snapshot(job)
             if pre_config:
                 cmds = [
@@ -80,8 +65,23 @@ class RollbackEngine:
                 if result.success:
                     logger.info("Rollback via snapshot restore succeeded for Job %s", job.id)
                     return True
+                logger.warning(
+                    "Snapshot restore failed for Job %s: %s — trying targeted reverse commands",
+                    job.id, result.error_message,
+                )
+
+            # Strategy 2 — targeted undo commands
+            if job.rollback_config:
+                cmds = [
+                    line for line in job.rollback_config.strip().splitlines()
+                    if line.strip()
+                ]
+                result = driver.push_config(cmds)
+                if result.success:
+                    logger.info("Rollback via undo commands succeeded for Job %s", job.id)
+                    return True
                 logger.error(
-                    "Snapshot restore also failed for Job %s: %s",
+                    "Undo commands also failed for Job %s: %s",
                     job.id, result.error_message,
                 )
 

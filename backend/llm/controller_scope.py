@@ -131,6 +131,13 @@ def build_controller_implementation_status(tool_names: Sequence[str]) -> Dict[st
             next_gap="Extend the same validation report into bounded playbook refinement and post-change verification loops.",
         ),
         _capability(
+            name="rollback_planning",
+            status="implemented" if _module_exists("config_engine.rollback_planner") and _module_exists("deploy.rollback") else "partial",
+            summary="Rollback planning now reuses latest config snapshots and config diffs during planning, and runtime rollback prefers restoring the captured pre-change snapshot over optimistic undo commands.",
+            evidence=["config_engine.rollback_planner", "llm.network_tools:plan_change", "deploy.rollback", "deploy.pipeline"],
+            next_gap="Expose rollback-planning metadata through more operator-facing API and verification surfaces.",
+        ),
+        _capability(
             name="post_change_verification",
             status="partial" if _module_exists("ansible.verifier") else "not_implemented",
             summary="Verification hooks exist, but they are not yet a universal post-deploy success gate with correction or rollback recommendations.",

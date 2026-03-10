@@ -583,6 +583,9 @@ async def approve_proposal(
             vendor=proposal.vendor,
             feature=proposal.feature,
             params=proposal.params,
+            generated_config=proposal.generated_config,
+            rollback_config=proposal.rollback_config,
+            execution_engine=(action_artifact.get("execution") or {}).get("primary_engine"),
         )
 
         # Build verification checks from intent pipeline if available

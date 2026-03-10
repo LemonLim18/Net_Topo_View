@@ -16,11 +16,13 @@ import traceback
 from datetime import datetime
 from typing import List, Optional, Dict
 
+from config_engine.rollback_planner import build_rollback_plan
 from db.manager import DatabaseManager
 from db.models import ConfigSnapshot
 from drivers.factory import DriverFactory
 from drivers.base import BaseDriver
 from llm.network_tools import generate_config, generate_rollback
+from deploy.rollback import RollbackEngine
 from deploy.models import (
     Job, JobStatus, PipelineStage, ChangeRequest, RequestStatus,
     DeploymentRepository, JobStep, ExecutionEngine
@@ -62,34 +64,67 @@ class DeploymentPipeline:
         job = Job(request_id=request_id, device_id=device_id)
         return self.repo.create_job(job)
 
-    def run_plan_stage(self, job_id: int, vendor: str, feature: str, params: Dict) -> bool:
+    def run_plan_stage(
+        self,
+        job_id: int,
+        vendor: str,
+        feature: str,
+        params: Dict,
+        generated_config: Optional[str] = None,
+        rollback_config: Optional[str] = None,
+        execution_engine: Optional[str] = None,
+    ) -> bool:
         """
         Stage 1: PLAN.
-        Generate config and rollback commands using M3 templates.
+        Generate config and rollback commands using M3 templates, or persist a
+        prevalidated artifact supplied by the proposal approval path.
         """
         self.repo.log_step(job_id, PipelineStage.PLAN, f"Generating config for {feature}")
         try:
-            # Generate Config
-            cfg_res = json.loads(generate_config(vendor, feature, json.dumps(params)))
-            if "error" in cfg_res:
-                raise ValueError(cfg_res["error"])
-            
-            # Generate Rollback
-            rb_res = json.loads(generate_rollback(vendor, feature, json.dumps(params)))
-            if "error" in rb_res:
-                logger.warning(f"Rollback generation failed: {rb_res['error']}")
-                rollback_cmd = None
+            with self.db_manager._connect() as conn:
+                row = conn.execute("SELECT device_id FROM jobs WHERE id = ?", (job_id,)).fetchone()
+            if not row:
+                raise ValueError(f"Job {job_id} not found")
+            device = self.db_manager.get_device_by_id(row["device_id"])
+            hostname = device.hostname if device else ""
+
+            if generated_config is None:
+                cfg_res = json.loads(generate_config(vendor, feature, json.dumps(params)))
+                if "error" in cfg_res:
+                    raise ValueError(cfg_res["error"])
+                planned_config = cfg_res["config"]
             else:
-                rollback_cmd = rb_res.get("rollback_config")
+                planned_config = generated_config
+
+            template_rollback = rollback_config
+            if template_rollback is None:
+                rb_res = json.loads(generate_rollback(vendor, feature, json.dumps(params)))
+                if "error" in rb_res:
+                    logger.warning(f"Rollback generation failed: {rb_res['error']}")
+                    template_rollback = None
+                else:
+                    template_rollback = rb_res.get("rollback_config")
+
+            rollback_plan = build_rollback_plan(
+                db_manager=self.db_manager,
+                hostname=hostname,
+                vendor=vendor,
+                feature=feature,
+                params=params,
+                generated_config=planned_config,
+                template_rollback_config=template_rollback or "",
+            )
+            rollback_cmd = template_rollback or None
+            engine_value = execution_engine or ExecutionEngine.SSH_FALLBACK.value
 
             # Update Job
             with self.db_manager._connect() as conn:
                 conn.execute(
-                    "UPDATE jobs SET generated_config = ?, rollback_config = ?, stage = ?, status = ? WHERE id = ?",
-                    (cfg_res["config"], rollback_cmd, PipelineStage.PLAN.value, JobStatus.PENDING.value, job_id)
+                    "UPDATE jobs SET generated_config = ?, rollback_config = ?, execution_engine = ?, stage = ?, status = ? WHERE id = ?",
+                    (planned_config, rollback_cmd, engine_value, PipelineStage.PLAN.value, JobStatus.PENDING.value, job_id)
                 )
             
-            self.repo.log_step(job_id, PipelineStage.PLAN, "Plan generated successfully")
+            self.repo.log_step(job_id, PipelineStage.PLAN, f"Plan generated successfully. Rollback: {rollback_plan['summary']}")
             return True
 
         except Exception as e:
@@ -126,6 +161,8 @@ class DeploymentPipeline:
                 job = Job(
                     id=row["id"], request_id=row["request_id"], device_id=row["device_id"],
                     status=row["status"], stage=row["stage"],
+                    snapshot_pre_id=row["snapshot_pre_id"],
+                    snapshot_post_id=row["snapshot_post_id"],
                     generated_config=row["generated_config"],
                     rollback_config=row["rollback_config"],
                     # M22 — may be NULL in older rows → default to ssh_fallback
@@ -155,6 +192,7 @@ class DeploymentPipeline:
             
             with self.db_manager._connect() as conn:
                 conn.execute("UPDATE jobs SET snapshot_pre_id = ? WHERE id = ?", (snap_id, job_id))
+            job.snapshot_pre_id = snap_id
 
             # -----------------------------------------------------------
             # Stage 4: APPLY  (M22 — Ansible-first with SSH fallback)
@@ -252,18 +290,25 @@ class DeploymentPipeline:
             self.repo.update_job_status(job_id, JobStatus.RUNNING, PipelineStage.ROLLBACK, err_msg)
             self.repo.log_step(job_id, PipelineStage.ROLLBACK, f"Triggering rollback due to: {err_msg}")
             
-            rollback_success = False
-            if driver and driver.is_alive() and job.rollback_config:
+            if driver:
                 try:
-                    rb_cmds = job.rollback_config.strip().splitlines()
-                    rb_res = driver.push_config(rb_cmds)
-                    self.repo.log_step(job_id, PipelineStage.ROLLBACK, f"Rollback output:\n{rb_res.output}")
-                    if rb_res.success:
-                        rollback_success = True
-                except Exception as rb_err:
-                    self.repo.log_step(job_id, PipelineStage.ROLLBACK, f"Rollback CRITICAL ERROR: {str(rb_err)}")
-            else:
-                self.repo.log_step(job_id, PipelineStage.ROLLBACK, "Skipping rollback: No driver or no rollback config.")
+                    driver.disconnect()
+                except Exception:
+                    pass
+                driver = None
+
+            rollback_success = RollbackEngine(self.db_manager).execute_rollback(
+                job,
+                host=host,
+                username=username,
+                password=password,
+                driver_type=driver_type,
+            )
+            self.repo.log_step(
+                job_id,
+                PipelineStage.ROLLBACK,
+                "Rollback attempted via snapshot-aware rollback engine." if rollback_success else "Rollback engine failed to restore the job.",
+            )
 
             status = JobStatus.ROLLED_BACK if rollback_success else JobStatus.FAILED
             self.repo.update_job_status(job_id, status, PipelineStage.ROLLBACK, err_msg)

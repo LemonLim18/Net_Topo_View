@@ -1723,6 +1723,7 @@ def plan_change(intent_json: str) -> str:
         intent_json: JSON string of the ParsedIntent (must have resolved_devices)
     """
     try:
+        from config_engine.rollback_planner import build_rollback_plan
         from config_engine.renderer import TemplateRenderer
         from config_engine.safety import validate_cli_artifact
         from config_engine.validator import SyntaxValidator
@@ -1746,6 +1747,7 @@ def plan_change(intent_json: str) -> str:
 
         for hostname in intent.resolved_devices:
             dev_vendor = vendor
+            device = None
             if not dev_vendor and _db_manager:
                 device = _db_manager.get_device_by_hostname(hostname)
                 if device and device.vendor:
@@ -1770,11 +1772,26 @@ def plan_change(intent_json: str) -> str:
             except Exception:
                 rollback = ""
 
+            rollback_plan = build_rollback_plan(
+                db_manager=_db_manager,
+                hostname=hostname,
+                vendor=dev_vendor,
+                feature=intent.feature,
+                params=intent.parameters,
+                generated_config=config,
+                template_rollback_config=rollback,
+            )
+
             # --- Syntax validation ---
             syntax_warnings = validator.validate(dev_vendor, config)
 
-            # --- Diff against empty (new config) ---
-            diff_text = differ.unified_diff("", config)
+            # --- Diff against latest known snapshot if available ---
+            snapshot_current = ""
+            if rollback_plan.get("latest_snapshot", {}).get("available") and _db_manager and device:
+                history = _db_manager.get_config_history(device.id, limit=1)
+                if history:
+                    snapshot_current = history[0].config_text or ""
+            diff_text = differ.unified_diff(snapshot_current, config, from_label=f"{hostname} current", to_label=f"{hostname} proposed")
 
             # --- Verification checks ---
             ver_checks = _build_verification_checks(intent.feature, intent.parameters)
@@ -1799,6 +1816,7 @@ def plan_change(intent_json: str) -> str:
                 "generated_config": config,
                 "rollback_config": rollback,
                 "diff_text": diff_text,
+                "rollback_plan": rollback_plan,
                 "syntax_warnings": syntax_warnings,
                 "execution_engine": exec_engine,
                 "verification_checks": ver_checks,
@@ -1809,6 +1827,7 @@ def plan_change(intent_json: str) -> str:
                     generated_config=config,
                     rollback_config=rollback,
                     execution_engine=exec_engine,
+                    rollback_plan=rollback_plan,
                     require_render_match=True,
                 ),
                 "line_count": len(config.strip().splitlines()),

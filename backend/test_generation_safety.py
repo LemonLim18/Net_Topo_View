@@ -133,3 +133,35 @@ def test_approve_proposal_blocks_failed_step10_validation(monkeypatch):
         asyncio.run(approve_proposal("proposal-1", user={"username": "op", "role": "operator"}))
 
     assert getattr(exc.value, "status_code", None) == 422
+
+
+def test_snapshot_backed_rollback_counts_as_viable_for_safety():
+    params = {"policy_name": "EDGE_QOS", "interface": "GigabitEthernet0/1", "direction": "output", "class_maps": [], "policy_classes": []}
+    artifact = {
+        "action_type": "single_device_proposal",
+        "device_artifacts": [
+            {
+                "hostname": "SW1",
+                "vendor": "cisco_ios",
+                "feature": "qos",
+                "generated_config": "interface GigabitEthernet0/1\n service-policy output EDGE_QOS",
+                "rollback_config": "",
+                "execution_engine": "ansible_native",
+                "rollback_plan": {
+                    "runtime_restore_available": True,
+                    "strategy": "snapshot_aware_diff_restore",
+                    "strategy_chain": ["runtime_pre_change_snapshot_restore"],
+                },
+            }
+        ],
+    }
+
+    report = validate_action_artifact(
+        artifact,
+        vendor="cisco_ios",
+        feature="qos",
+        params=params,
+        require_render_match=False,
+    )
+
+    assert report["passed"] is True

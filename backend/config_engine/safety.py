@@ -150,6 +150,7 @@ def validate_cli_artifact(
     generated_config: str,
     rollback_config: str,
     execution_engine: str,
+    rollback_plan: Optional[Dict[str, Any]] = None,
     require_render_match: bool = True,
     require_rollback: bool = True,
 ) -> Dict[str, Any]:
@@ -227,35 +228,43 @@ def validate_cli_artifact(
     for finding in dangerous_config:
         add_error(finding["message"])
 
+    runtime_restore_available = bool((rollback_plan or {}).get("runtime_restore_available"))
+
     if require_rollback:
-        if not (rollback_config or "").strip():
-            add_check("rollback_present", False, "Rollback config is required for approval readiness.")
+        if not (rollback_config or "").strip() and not runtime_restore_available:
+            add_check("rollback_present", False, "Rollback config or runtime snapshot restore is required for approval readiness.")
             add_error("Rollback config is missing; rollback viability is incomplete.")
         else:
-            add_check("rollback_present", True, f"{len(rollback_config.splitlines())} rollback line(s)")
-            try:
-                undo_source = _read_template_source(renderer, vendor, feature, undo=True)
-                undo_findings = _scan_patterns(undo_source, _UNSAFE_TEMPLATE_PATTERNS)
-                add_check("undo_template_source_safe", len(undo_findings) == 0, "; ".join(item["message"] for item in undo_findings))
-                for finding in undo_findings:
-                    add_error(finding["message"])
-            except Exception as exc:
-                add_check("undo_template_source_safe", False, str(exc))
-                add_error(f"Rollback template validation failed: {exc}")
+            details = []
+            if (rollback_config or "").strip():
+                details.append(f"{len(rollback_config.splitlines())} rollback line(s)")
+            if runtime_restore_available:
+                details.append("runtime pre-change snapshot restore available")
+            add_check("rollback_present", True, ", ".join(details))
+            if (rollback_config or "").strip():
+                try:
+                    undo_source = _read_template_source(renderer, vendor, feature, undo=True)
+                    undo_findings = _scan_patterns(undo_source, _UNSAFE_TEMPLATE_PATTERNS)
+                    add_check("undo_template_source_safe", len(undo_findings) == 0, "; ".join(item["message"] for item in undo_findings))
+                    for finding in undo_findings:
+                        add_error(finding["message"])
+                except Exception as exc:
+                    add_check("undo_template_source_safe", False, str(exc))
+                    add_error(f"Rollback template validation failed: {exc}")
 
-            try:
-                expected_rollback = renderer.render_undo(vendor, feature, copy.deepcopy(params))
-                rollback_matches = _normalize_block(expected_rollback) == _normalize_block(rollback_config)
-                add_check(
-                    "rollback_render_match",
-                    rollback_matches or not require_render_match,
-                    "Rollback matches renderer output." if rollback_matches else "Rollback diverges from deterministic undo rendering.",
-                )
-                if require_render_match and not rollback_matches:
-                    add_error("Rollback configuration diverges from the deterministic undo template for the same vendor, feature, and parameters.")
-            except Exception as exc:
-                add_check("rollback_render_match", False, str(exc))
-                add_error(f"Rollback validation failed: {exc}")
+                try:
+                    expected_rollback = renderer.render_undo(vendor, feature, copy.deepcopy(params))
+                    rollback_matches = _normalize_block(expected_rollback) == _normalize_block(rollback_config)
+                    add_check(
+                        "rollback_render_match",
+                        rollback_matches or not require_render_match,
+                        "Rollback matches renderer output." if rollback_matches else "Rollback diverges from deterministic undo rendering.",
+                    )
+                    if require_render_match and not rollback_matches:
+                        add_error("Rollback configuration diverges from the deterministic undo template for the same vendor, feature, and parameters.")
+                except Exception as exc:
+                    add_check("rollback_render_match", False, str(exc))
+                    add_error(f"Rollback validation failed: {exc}")
 
     try:
         compatible_engines = list(_compatible_execution_engines(vendor, feature, generated_config))
@@ -406,6 +415,7 @@ def validate_action_artifact(
             generated_config=str(item.get("generated_config") or ""),
             rollback_config=str(item.get("rollback_config") or ""),
             execution_engine=str(item.get("execution_engine") or ExecutionAction.SSH_FALLBACK.value),
+            rollback_plan=item.get("rollback_plan") if isinstance(item.get("rollback_plan"), dict) else None,
             require_render_match=require_render_match,
         )
         item["safety_validation"] = device_report
