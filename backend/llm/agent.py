@@ -20,6 +20,7 @@ import logging
 import re
 from typing import Any, Dict, List, Optional
 
+from llm.answer_release import build_answer_release_state
 from llm.answer_policy import build_answer_policy, policy_status
 from llm.answer_grounding import build_answer_grounding, format_conflict_summary, format_grounding_summary, format_operator_rationale
 from llm.controller_flow import build_controller_flow_state
@@ -230,9 +231,23 @@ class NetworkAgent:
                     controller_flow=flow_state,
                     self_correction_state=self_correction_state,
                 )
+                answer_release, answer_release_action = self._evaluate_answer_release(
+                    messages,
+                    user_message,
+                    route_plan,
+                    grounding_meta,
+                    tool_results,
+                    tool_args,
+                    self_correction_state,
+                )
+                grounding_meta["answer_release"] = answer_release
+                if answer_release_action == "reroute":
+                    continue
                 response_content = response.content
                 if flow_action == "block":
                     response_content = self._render_controller_flow_block(flow_state)
+                elif answer_release_action == "allow_limited":
+                    response_content = self._render_limited_answer(response_content, answer_release)
                 final_content = self._render_grounded_content(response_content, grounding_meta)
                 self._history.append(
                     LLMMessage(role="assistant", content=final_content)
@@ -332,6 +347,18 @@ class NetworkAgent:
             controller_flow=flow_state,
             self_correction_state=self_correction_state,
         )
+        answer_release, answer_release_action = self._evaluate_answer_release(
+            messages,
+            user_message,
+            route_plan,
+            grounding_meta,
+            tool_results,
+            tool_args,
+            self_correction_state,
+        )
+        grounding_meta["answer_release"] = answer_release
+        if flow_state.get("release", {}).get("decision") != "block" and answer_release_action == "allow_limited":
+            final_response_content = self._render_limited_answer(final_response_content, answer_release)
 
         self._history.append(
             LLMMessage(
@@ -718,6 +745,9 @@ class NetworkAgent:
         hostnames = hostnames or self._extract_candidate_hostnames(user_message)
         generic_read_tools = [
             "get_context_health",
+            "get_last_sync_status",
+            "trigger_context_refresh",
+            "get_refresh_job_status",
             "get_audit_log",
             "list_templates",
             "get_template_schema",
@@ -842,6 +872,9 @@ class NetworkAgent:
                 "get_device_running_config",
                 "get_recent_drift_events",
                 "get_context_health",
+                "get_last_sync_status",
+                "trigger_context_refresh",
+                "get_refresh_job_status",
             ]
             instruction = (
                 "For this change-planning query, use intent parsing and policy validation first, then run change intelligence before planning so you surface intent memory, outcome risk, and what-if blockers instead of guessing."
@@ -1473,6 +1506,55 @@ class NetworkAgent:
             details.append(f"Incomplete change workflow: {missing_steps}.")
         details.append("The controller blocked release rather than guessing from incomplete evidence.")
         return "I can't provide a grounded answer yet. " + " ".join(details)
+
+    def _evaluate_answer_release(
+        self,
+        messages: List[LLMMessage],
+        user_message: str,
+        route_plan: Dict[str, Any],
+        grounding_meta: Dict[str, Any],
+        tool_results: Dict[str, Any],
+        tool_args: Dict[str, Dict[str, Any]],
+        self_correction_state: Dict[str, Any],
+    ) -> tuple[Dict[str, Any], str]:
+        release_state = build_answer_release_state(
+            query_class=route_plan.get("query_class", "general"),
+            grounding=grounding_meta,
+            tool_args=tool_args,
+            allowed_tools=route_plan.get("allowed_tools") or [],
+        )
+        if release_state.get("decision") == "reroute":
+            refresh_tool_calls = [
+                ToolCall(name=item["name"], arguments=item.get("arguments", {}))
+                for item in release_state.get("refresh_tool_calls", [])
+                if item.get("name")
+            ]
+            if refresh_tool_calls:
+                self._execute_recovery_tool_calls(
+                    messages,
+                    refresh_tool_calls,
+                    route_plan,
+                    tool_results,
+                    tool_args,
+                    "Answer release gate requesting fresher authoritative evidence",
+                    self_correction_state,
+                    user_message,
+                )
+                return release_state, "reroute"
+            release_state["decision"] = "allow_limited"
+            release_state["limited"] = True
+        return release_state, str(release_state.get("decision") or "allow")
+
+    def _render_limited_answer(self, content: str, answer_release: Dict[str, Any]) -> str:
+        prefix = (
+            "Limited answer: "
+            + str(answer_release.get("reason") or "Grounded evidence is degraded, so this answer should not be treated as fully current.")
+        )
+        if content.startswith("Limited answer:"):
+            return content
+        if not content:
+            return prefix
+        return f"{prefix}\n\n{content}"
 
     def _network_context_cache_key(
         self,

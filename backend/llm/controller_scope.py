@@ -110,6 +110,13 @@ def build_controller_implementation_status(tool_names: Sequence[str]) -> Dict[st
             next_gap="Broaden repair policies as additional playbook and deployment-validation tools become controller-visible.",
         ),
         _capability(
+            name="answer_release_gate",
+            status="implemented" if _module_exists("llm.answer_release") else "partial",
+            summary="Final answer release now evaluates grounding freshness, authority, and conflicts, then either requests refresh evidence or downgrades to an explicitly limited answer instead of fabricating confidence.",
+            evidence=["llm.agent", "llm.answer_release", "llm.answer_grounding", "tools:get_last_sync_status,trigger_context_refresh"],
+            next_gap="Expand the same release discipline into post-change verification and action-result reporting.",
+        ),
+        _capability(
             name="playbook_refinement",
             status="partial" if _module_exists("ansible.api") else "not_implemented",
             summary="A playbook refinement helper exists, but it is not yet represented as a fully enforced controller capability with bounded retries and release gates.",

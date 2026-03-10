@@ -283,7 +283,7 @@ def test_planned_vs_live_query_prefetches_comparison_tool():
 
     provider, response = asyncio.run(_run_chat("Compare planned vs live state for SW1"))
 
-    assert response["content"].startswith("authoritative answer")
+    assert "authoritative answer" in response["content"]
     first_call = provider.calls[0]
     tool_messages = [message for message in first_call["messages"] if message.role == "tool"]
     assert any(message.name == "compare_planned_vs_live" for message in tool_messages)
@@ -468,7 +468,7 @@ def test_agent_rebuilds_context_on_next_turn_without_manual_prompt_refresh():
     agent.refresh_context()
 
     asyncio.run(_run_chat_with_agent(agent, "Show me the live topology again"))
-    second_system_prompt = provider.calls[1]["messages"][0].content
+    second_system_prompt = provider.calls[-1]["messages"][0].content
     assert "Management IP: 10.0.0.22" in second_system_prompt
     assert "Management IP: 10.0.0.2\n" not in second_system_prompt
 
@@ -495,8 +495,72 @@ def test_required_tool_policy_executes_before_accepting_early_answer():
 
     response = asyncio.run(_run_chat_with_agent(agent, "What is the management IP of SW1 in inventory?"))
 
-    assert len(provider.calls) == 2
-    second_call_tool_messages = [message for message in provider.calls[1]["messages"] if message.role == "tool"]
-    assert any(message.name == "get_inventory_device" for message in second_call_tool_messages)
+    assert len(provider.calls) >= 2
+    later_tool_messages = [
+        message
+        for call in provider.calls[1:]
+        for message in call["messages"]
+        if message.role == "tool"
+    ]
+    assert any(message.name == "get_inventory_device" for message in later_tool_messages)
     assert response["grounding_meta"]["answer_policy"]["satisfied"] is True
     assert response["grounding_meta"]["answer_policy"]["executed_required_tools"] == ["get_inventory_device"]
+
+
+def test_stale_live_evidence_requests_refresh_then_returns_limited_answer():
+    import asyncio
+
+    provider = _FakeProvider()
+    agent = NetworkAgent(
+        db_manager=_AgentFakeDb(),
+        provider=provider,
+        retriever=None,
+        proposal_manager=_MemoryProposalManager(),
+    )
+
+    original_execute = agent._tools.execute
+
+    def _execute_with_stale_live_summary(name, arguments):
+        if name == "get_topology_summary":
+            return json.dumps(
+                {
+                    "device_count": 2,
+                    "source_metadata": {
+                        "source": "crawler_cache",
+                        "scope": "live_topology",
+                        "freshness_class": "stale",
+                        "confidence": 0.55,
+                        "age_seconds": 1900,
+                    },
+                }
+            )
+        if name == "trigger_context_refresh":
+            return json.dumps({"job_id": "refresh-1", "target": arguments.get("target"), "status": "queued"})
+        return original_execute(name, arguments)
+
+    agent._tools.execute = _execute_with_stale_live_summary  # type: ignore[method-assign]
+
+    response = asyncio.run(_run_chat_with_agent(agent, "Show me the live topology"))
+
+    assert len(provider.calls) == 2
+    second_call_tool_messages = [message for message in provider.calls[1]["messages"] if message.role == "tool"]
+    assert any(message.name == "trigger_context_refresh" for message in second_call_tool_messages)
+    assert response["grounding_meta"]["answer_release"]["decision"] == "allow_limited"
+    assert response["grounding_meta"]["answer_release"]["refresh_attempted"] is True
+    assert response["content"].startswith("Limited answer:")
+
+
+def test_conflicting_evidence_is_released_only_as_limited_answer():
+    import asyncio
+
+    class _MismatchDb(_AgentFakeDb):
+        def get_topology(self):
+            topo = super().get_topology()
+            topo["nodes"]["SW1"]["mgmt_ip"] = "10.0.0.22"
+            return topo
+
+    _, response = asyncio.run(_run_chat_for_db("Compare planned vs live state for SW1", _MismatchDb()))
+
+    assert response["grounding_meta"]["answer_release"]["decision"] == "allow_limited"
+    assert "conflicting_evidence" in response["grounding_meta"]["answer_release"]["degraded_signals"]
+    assert response["content"].startswith("Limited answer:")
