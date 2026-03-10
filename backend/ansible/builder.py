@@ -18,7 +18,7 @@ import subprocess
 import tempfile
 import yaml
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from config_engine.safety import validate_playbook_yaml
 
@@ -74,6 +74,33 @@ class PlaybookBuilder:
         Raises:
             PlaybookBuildError on lint failure or missing YAML block.
         """
+        playbook_yaml = await self.build_draft(
+            intent=intent,
+            rag_context=rag_context,
+            kb_snippets=kb_snippets,
+            run_id=run_id,
+        )
+
+        validation_report = self.validate_playbook(intent=intent, playbook_yaml=playbook_yaml)
+        if not validation_report.get("passed", False):
+            raise PlaybookBuildError(
+                "Playbook failed validation: "
+                + "; ".join(validation_report.get("errors") or ["unknown validation error"])
+            )
+
+        logger.info("Playbook built and validated OK")
+        return playbook_yaml
+
+    async def build_draft(
+        self,
+        intent:      dict,
+        rag_context: str,
+        kb_snippets: list[str],
+        run_id:      Optional[str] = None,
+        temperature: float = 0.1,
+        extra_guidance: str = "",
+    ) -> str:
+        """Generate a YAML playbook draft without rejecting it on validation errors."""
         # ── Build prompt ───────────────────────────────────────────────────
         params_yaml = yaml.dump(
             intent.get("params", {}),
@@ -96,6 +123,8 @@ class PlaybookBuilder:
             feature=intent.get("feature", ""),
             params_yaml=params_yaml,
         )
+        if extra_guidance:
+            prompt_text += f"\n\n{extra_guidance.strip()}"
 
         # ── Call LLM ───────────────────────────────────────────────────────
         from llm.provider import LLMMessage
@@ -108,17 +137,28 @@ class PlaybookBuilder:
             intent.get("feature", ""),
         )
 
-        response = await self._provider.generate(messages=messages, temperature=0.1)
+        response = await self._provider.generate(messages=messages, temperature=temperature)
         raw_text = response.content
 
         # ── Extract YAML ────────────────────────────────────────────────────
-        playbook_yaml = self._extract_yaml(raw_text)
+        return self._extract_yaml(raw_text)
 
-        # ── Structural validation (parse as YAML) ───────────────────────────
-        self._validate_yaml_structure(playbook_yaml)
+    def validate_playbook(self, intent: dict, playbook_yaml: str) -> dict[str, Any]:
+        """Return a structured validation report for a playbook draft."""
+        issues: list[dict[str, Any]] = []
 
-        # ── ansible-lint (optional, non-fatal if not installed) ─────────────
-        self._lint(playbook_yaml)
+        try:
+            plays = self._validate_yaml_structure(playbook_yaml)
+        except PlaybookBuildError as exc:
+            issues.append(self._issue("yaml", str(exc), rule="yaml_parse"))
+            return {
+                "passed": False,
+                "issues": issues,
+                "errors": [self._format_issue(issue) for issue in issues],
+            }
+
+        issues.extend(self._lint_issues(playbook_yaml))
+        issues.extend(self._validate_hosts_alignment(plays, intent.get("target_hosts") or []))
 
         playbook_validation = validate_playbook_yaml(
             playbook_yaml=playbook_yaml,
@@ -127,14 +167,14 @@ class PlaybookBuilder:
             target_hosts=list(intent.get("target_hosts", [])),
             execution_engine=self._expected_execution_engine(str(intent.get("vendor", ""))),
         )
-        if not playbook_validation.get("passed", False):
-            raise PlaybookBuildError(
-                "Playbook failed Step 10 safety validation: "
-                + "; ".join(playbook_validation.get("errors") or ["unknown validation error"])
-            )
+        for error in playbook_validation.get("errors") or []:
+            issues.append(self._issue("safety", str(error), rule="step10_safety"))
 
-        logger.info("Playbook built and validated OK")
-        return playbook_yaml
+        return {
+            "passed": len(issues) == 0,
+            "issues": issues,
+            "errors": [self._format_issue(issue) for issue in issues],
+        }
 
     async def build_candidates(
         self,
@@ -196,17 +236,14 @@ class PlaybookBuilder:
                 raw_text = response.content
                 playbook_yaml = self._extract_yaml(raw_text)
 
-                errors = []
-                try:
-                    self._validate_yaml_structure(playbook_yaml)
-                except PlaybookBuildError as e:
-                    errors.append(str(e))
+                validation_report = self.validate_playbook(intent=intent, playbook_yaml=playbook_yaml)
+                errors = list(validation_report.get("errors") or [])
 
                 candidates.append({
                     "index": i,
                     "yaml": playbook_yaml,
                     "approach": approach["label"],
-                    "valid": len(errors) == 0,
+                    "valid": validation_report.get("passed", False),
                     "errors": errors,
                 })
             except Exception as e:
@@ -234,7 +271,7 @@ class PlaybookBuilder:
             raise PlaybookBuildError("LLM returned an empty YAML code block")
         return extracted
 
-    def _validate_yaml_structure(self, yaml_text: str) -> None:
+    def _validate_yaml_structure(self, yaml_text: str):
         """Parse YAML and check it is a non-empty list of plays."""
         try:
             plays = yaml.safe_load(yaml_text)
@@ -262,9 +299,10 @@ class PlaybookBuilder:
                     )
 
         logger.debug("YAML structure validation passed")
+        return plays
 
-    def _lint(self, yaml_text: str) -> None:
-        """Run ansible-lint. Non-fatal if ansible-lint is not installed."""
+    def _lint_issues(self, yaml_text: str) -> list[dict[str, Any]]:
+        """Run ansible-lint and return structured issues."""
         try:
             with tempfile.NamedTemporaryFile(
                 suffix=".yml", mode="w", delete=False
@@ -277,14 +315,74 @@ class PlaybookBuilder:
                 capture_output=True, text=True, timeout=30,
             )
             if result.returncode not in (0, 2):  # 2 = warnings only
-                raise PlaybookBuildError(
-                    f"ansible-lint found errors:\n{result.stdout}\n{result.stderr}"
-                )
+                issues: list[dict[str, Any]] = []
+                combined = "\n".join(part for part in [result.stdout, result.stderr] if part).strip()
+                for line in combined.splitlines():
+                    stripped = line.strip()
+                    if not stripped:
+                        continue
+                    match = re.match(r".*?:(\d+):\d+:\s*([^:]+):\s*(.*)", stripped)
+                    if match:
+                        issues.append(
+                            self._issue(
+                                "lint",
+                                match.group(3).strip(),
+                                rule=match.group(2).strip(),
+                                line=int(match.group(1)),
+                            )
+                        )
+                    else:
+                        issues.append(self._issue("lint", stripped, rule="ansible_lint"))
+                return issues or [self._issue("lint", "ansible-lint found errors", rule="ansible_lint")]
             logger.info("ansible-lint passed (rc=%d)", result.returncode)
+            return []
         except FileNotFoundError:
             logger.warning("ansible-lint not found — skipping lint step")
+            return []
         except subprocess.TimeoutExpired:
             logger.warning("ansible-lint timed out — skipping lint step")
+            return []
+
+    def _validate_hosts_alignment(self, plays, target_hosts: list[str]) -> list[dict[str, Any]]:
+        if not plays or not target_hosts:
+            return []
+        first_play = plays[0] if isinstance(plays[0], dict) else {}
+        hosts_value = first_play.get("hosts")
+        if not isinstance(hosts_value, str) or not hosts_value.strip():
+            return [self._issue("hosts", "First play is missing a concrete hosts field", rule="missing_hosts")]
+
+        declared_hosts = {item.strip() for item in hosts_value.split(",") if item.strip()}
+        expected_hosts = {str(item).strip() for item in target_hosts if str(item).strip()}
+        if hosts_value.strip() == "all" or declared_hosts != expected_hosts:
+            expected_render = ", ".join(sorted(expected_hosts)) or "(none)"
+            actual_render = hosts_value.strip() or "(none)"
+            return [
+                self._issue(
+                    "hosts",
+                    f"Playbook hosts '{actual_render}' do not match requested targets '{expected_render}'",
+                    rule="target_hosts_mismatch",
+                )
+            ]
+        return []
+
+    @staticmethod
+    def _issue(phase: str, message: str, rule: str, line: Optional[int] = None) -> dict[str, Any]:
+        issue: dict[str, Any] = {
+            "phase": phase,
+            "message": message,
+            "rule": rule,
+        }
+        if line is not None:
+            issue["line"] = line
+        return issue
+
+    @staticmethod
+    def _format_issue(issue: dict[str, Any]) -> str:
+        prefix = f"[{issue.get('phase', 'validation')}/{issue.get('rule', 'unknown')}]"
+        line = issue.get("line")
+        if line is not None:
+            prefix += f" line {line}"
+        return f"{prefix} {issue.get('message', '')}".strip()
 
     @staticmethod
     def _expected_execution_engine(vendor: str) -> str:

@@ -118,10 +118,10 @@ def build_controller_implementation_status(tool_names: Sequence[str]) -> Dict[st
         ),
         _capability(
             name="playbook_refinement",
-            status="partial" if _module_exists("ansible.api") else "not_implemented",
-            summary="A playbook refinement helper exists, but it is not yet represented as a fully enforced controller capability with bounded retries and release gates.",
-            evidence=["ansible.api:_ai_refine_playbook"],
-            next_gap="Integrate refinement, linting, dry-run checks, and retry limits into the main controller flow.",
+            status="implemented" if _module_exists("ansible.api") and _module_exists("ansible.builder") else "not_implemented",
+            summary="Playbook generation now runs through a bounded refine-and-verify loop that reuses builder validation, inventory checks, optional dry-run checks, auditable version history, and explicit escalation once the retry cap is reached.",
+            evidence=["ansible.api:_build_playbook_with_refinement", "ansible.api:_ai_refine_playbook", "ansible.builder:validate_playbook"],
+            next_gap="Extend the same bounded remediation pattern into post-change verification and rollback recommendation loops.",
         ),
         _capability(
             name="generation_safety",

@@ -21,7 +21,7 @@ import asyncio
 import os
 import shutil
 import stat
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -85,6 +85,9 @@ class PlanAnsibleRequest(BaseModel):
     feature:            str
     params:             Dict[str, Any] = {}
     max_interfaces:     int = 5
+    auto_refine:        bool = True
+    max_refinement_attempts: int = 3
+    verify_with_dry_run: bool = False
 
 
 class CheckResult(BaseModel):
@@ -111,8 +114,8 @@ async def plan_ansible(
 ):
     """
     Ask the LLM to generate an Ansible playbook for this job and store it.
-    The playbook goes through ansible-lint validation before being stored.
-    No device contact occurs at this stage.
+    The playbook now goes through a bounded refine-and-verify loop before being stored.
+    Device dry-run contact remains optional and disabled unless requested.
     """
     builder = _require_builder()
 
@@ -148,15 +151,36 @@ async def plan_ansible(
     }
 
     try:
-        playbook_yaml = await builder.build(
+        orchestration = await _build_playbook_with_refinement(
+            job_id=job_id,
             intent=intent,
             rag_context=rag_context,
             kb_snippets=kb_snippets,
-            run_id=str(job_id),
+            auto_refine=req.auto_refine,
+            max_attempts=req.max_refinement_attempts,
+            verify_with_dry_run=req.verify_with_dry_run,
         )
+    except HTTPException:
+        raise
     except Exception as exc:
         logger.error("Playbook build failed job=%d: %s", job_id, exc)
         raise HTTPException(422, f"Playbook generation failed: {exc}")
+
+    if not orchestration.get("success", False):
+        raise HTTPException(
+            422,
+            detail={
+                "message": "Playbook generation failed after bounded refinement attempts",
+                "job_id": job_id,
+                "attempts_used": orchestration.get("attempts_used", 0),
+                "max_attempts": orchestration.get("max_attempts", req.max_refinement_attempts),
+                "escalation_reason": orchestration.get("escalation_reason", "validation_failed"),
+                "issues": orchestration.get("final_validation", {}).get("issues", []),
+                "refinement_history": orchestration.get("history", []),
+            },
+        )
+
+    playbook_yaml = str(orchestration.get("playbook") or "")
 
     # Persist the playbook against the job
     if _db is not None:
@@ -175,6 +199,14 @@ async def plan_ansible(
         "job_id":   job_id,
         "status":   "playbook_generated",
         "playbook": playbook_yaml,
+        "refinement": {
+            "auto_refine": req.auto_refine,
+            "verify_with_dry_run": req.verify_with_dry_run,
+            "attempts_used": orchestration.get("attempts_used", 1),
+            "max_attempts": orchestration.get("max_attempts", req.max_refinement_attempts),
+            "history": orchestration.get("history", []),
+            "validation": orchestration.get("final_validation", {}),
+        },
     }
 
 
@@ -491,6 +523,212 @@ def _load_job_playbook(job_id: int) -> tuple[str, list[str]]:
         target_hosts = None
 
     return row["ansible_playbook"], target_hosts
+
+
+def _normalize_refinement_errors(issues: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    normalized: list[dict[str, Any]] = []
+    for issue in issues:
+        normalized.append(
+            {
+                "line": issue.get("line"),
+                "message": issue.get("message", ""),
+                "rule": f"{issue.get('phase', 'validation')}::{issue.get('rule', 'unknown')}",
+            }
+        )
+    return normalized
+
+
+def _format_issue_summary(issue: dict[str, Any]) -> str:
+    prefix = f"[{issue.get('phase', 'validation')}/{issue.get('rule', 'unknown')}]"
+    line = issue.get("line")
+    if line is not None:
+        prefix += f" line {line}"
+    return f"{prefix} {issue.get('message', '')}".strip()
+
+
+def _dry_run_is_refinable(result_text: str) -> bool:
+    normalized = (result_text or "").lower()
+    non_refinable_markers = (
+        "unreachable",
+        "authentication failed",
+        "permission denied",
+        "timed out",
+        "connection refused",
+        "no route to host",
+    )
+    return not any(marker in normalized for marker in non_refinable_markers)
+
+
+async def _validate_playbook_candidate(
+    playbook_yaml: str,
+    intent: dict,
+    job_id: int,
+    verify_with_dry_run: bool,
+) -> dict[str, Any]:
+    builder = _require_builder()
+    validation = builder.validate_playbook(intent=intent, playbook_yaml=playbook_yaml)
+    issues = [dict(issue) for issue in validation.get("issues") or []]
+
+    requested_hosts = [str(host).strip() for host in intent.get("target_hosts") or [] if str(host).strip()]
+    from ansible.inventory import build_inventory
+
+    inventory = build_inventory(target_hosts=requested_hosts)
+    inventory_hosts = ((inventory.get("all") or {}).get("hosts") or {}) if isinstance(inventory, dict) else {}
+    missing_hosts = [host for host in requested_hosts if host not in inventory_hosts]
+    if missing_hosts:
+        issues.append(
+            {
+                "phase": "inventory",
+                "rule": "missing_inventory_hosts",
+                "message": f"Requested targets are not present in inventory/topology: {', '.join(missing_hosts)}",
+                "refinable": False,
+            }
+        )
+
+    if verify_with_dry_run and not missing_hosts:
+        from ansible.runner import run_playbook
+
+        dry_run_result = await run_in_threadpool(
+            run_playbook,
+            playbook_content=playbook_yaml,
+            inventory=inventory,
+            extra_vars={},
+            check_mode=True,
+            job_id=job_id,
+        )
+        if not dry_run_result.success:
+            result_text = "\n".join(part for part in [dry_run_result.stderr, dry_run_result.stdout] if part).strip()
+            issues.append(
+                {
+                    "phase": "dry_run",
+                    "rule": "ansible_check_failed",
+                    "message": result_text or dry_run_result.summary or "Ansible dry-run failed",
+                    "refinable": _dry_run_is_refinable(result_text),
+                }
+            )
+
+    for issue in issues:
+        issue.setdefault("refinable", True)
+
+    return {
+        "passed": len(issues) == 0,
+        "issues": issues,
+        "errors": [_format_issue_summary(issue) for issue in issues],
+    }
+
+
+async def _build_playbook_with_refinement(
+    job_id: int,
+    intent: dict,
+    rag_context: str,
+    kb_snippets: list[str],
+    auto_refine: bool,
+    max_attempts: int,
+    verify_with_dry_run: bool,
+) -> dict[str, Any]:
+    builder = _require_builder()
+    bounded_attempts = max(1, min(int(max_attempts or 1), 5))
+    history: list[dict[str, Any]] = []
+
+    current_playbook = await builder.build_draft(
+        intent=intent,
+        rag_context=rag_context,
+        kb_snippets=kb_snippets,
+        run_id=str(job_id),
+    )
+
+    for attempt in range(1, bounded_attempts + 1):
+        validation = await _validate_playbook_candidate(
+            playbook_yaml=current_playbook,
+            intent=intent,
+            job_id=job_id,
+            verify_with_dry_run=verify_with_dry_run,
+        )
+        entry = {
+            "attempt": attempt,
+            "passed": validation.get("passed", False),
+            "issues": validation.get("issues", []),
+        }
+        history.append(entry)
+
+        note_prefix = "validated" if validation.get("passed", False) else "validation_failed"
+        if _db is not None:
+            _append_playbook_version(
+                _db,
+                job_id,
+                current_playbook,
+                notes=f"{note_prefix} attempt {attempt}: " + "; ".join(validation.get("errors") or [note_prefix]),
+                set_current=bool(validation.get("passed", False)),
+            )
+
+        if validation.get("passed", False):
+            return {
+                "success": True,
+                "playbook": current_playbook,
+                "attempts_used": attempt,
+                "max_attempts": bounded_attempts,
+                "final_validation": validation,
+                "history": history,
+            }
+
+        refinable_issues = [issue for issue in validation.get("issues", []) if issue.get("refinable", True)]
+        if not auto_refine:
+            return {
+                "success": False,
+                "playbook": current_playbook,
+                "attempts_used": attempt,
+                "max_attempts": bounded_attempts,
+                "final_validation": validation,
+                "history": history,
+                "escalation_reason": "auto_refine_disabled",
+            }
+        if not refinable_issues:
+            return {
+                "success": False,
+                "playbook": current_playbook,
+                "attempts_used": attempt,
+                "max_attempts": bounded_attempts,
+                "final_validation": validation,
+                "history": history,
+                "escalation_reason": "non_refinable_validation_failure",
+            }
+        if attempt >= bounded_attempts:
+            break
+
+        refined_playbook, changes = await _ai_refine_playbook(
+            original=current_playbook,
+            errors=_normalize_refinement_errors(refinable_issues),
+            feedback="Preserve working tasks and fix only the reported validation failures.",
+        )
+        if refined_playbook.strip() == current_playbook.strip():
+            return {
+                "success": False,
+                "playbook": current_playbook,
+                "attempts_used": attempt,
+                "max_attempts": bounded_attempts,
+                "final_validation": validation,
+                "history": history,
+                "escalation_reason": "refinement_made_no_material_change",
+            }
+
+        entry["changes"] = changes
+        current_playbook = refined_playbook
+
+    final_validation = await _validate_playbook_candidate(
+        playbook_yaml=current_playbook,
+        intent=intent,
+        job_id=job_id,
+        verify_with_dry_run=verify_with_dry_run,
+    )
+    return {
+        "success": False,
+        "playbook": current_playbook,
+        "attempts_used": bounded_attempts,
+        "max_attempts": bounded_attempts,
+        "final_validation": final_validation,
+        "history": history,
+        "escalation_reason": "max_refinement_attempts_reached",
+    }
 
 
 # =============================================================================
@@ -1064,7 +1302,13 @@ async def _ai_refine_playbook(
     return final_yaml, changes
 
 
-def _append_playbook_version(db, job_id: int, playbook: str, notes: str = "") -> int:
+def _append_playbook_version(
+    db,
+    job_id: int,
+    playbook: str,
+    notes: str = "",
+    set_current: bool = True,
+) -> int:
     """
     Load current playbook_versions for a job, append a new entry, save back.
     Returns new version number.
@@ -1088,16 +1332,22 @@ def _append_playbook_version(db, job_id: int, playbook: str, notes: str = "") ->
     versions.append({
         "version":          new_version,
         "playbook":         playbook,
-        "created_at":       datetime.utcnow().isoformat(),
+        "created_at":       datetime.now(timezone.utc).isoformat(),
         "refinement_notes": notes,
     })
 
     try:
         with db._connect() as conn:
-            conn.execute(
-                "UPDATE jobs SET playbook_versions=?, ansible_playbook=? WHERE id=?",
-                (json.dumps(versions), playbook, job_id),
-            )
+            if set_current:
+                conn.execute(
+                    "UPDATE jobs SET playbook_versions=?, ansible_playbook=? WHERE id=?",
+                    (json.dumps(versions), playbook, job_id),
+                )
+            else:
+                conn.execute(
+                    "UPDATE jobs SET playbook_versions=? WHERE id=?",
+                    (json.dumps(versions), job_id),
+                )
     except Exception as exc:
         logger.warning("Could not save playbook version: %s", exc)
 
@@ -1200,7 +1450,7 @@ async def get_playbook_history(
         return [PlaybookVersion(
             version=1,
             playbook=row["ansible_playbook"],
-            created_at=datetime.utcnow().isoformat(),
+            created_at=datetime.now(timezone.utc).isoformat(),
             refinement_notes="Original generation",
         )]
 
