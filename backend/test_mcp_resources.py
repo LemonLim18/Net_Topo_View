@@ -217,6 +217,29 @@ def test_semantics_resources_return_shared_contract(monkeypatch):
     assert device_state_payload["devices"][0]["presence_state"] == "planned_and_live"
 
 
+def test_digital_twin_resources_return_graph_payload(monkeypatch):
+    monkeypatch.setattr(resources.network_tools, "set_db_manager", lambda db_manager: None)
+    monkeypatch.setattr(
+        resources.network_tools,
+        "get_digital_twin",
+        lambda hostname="", vendor_filter="", include_telemetry=True, include_sdn=True: json.dumps(
+            {
+                "version": "phase9_step30_v1",
+                "summary": {"twin_count": 1},
+                "twins": [{"hostname": hostname or "SW1", "presence_state": "planned_and_live"}],
+                "graph": {"nodes": [], "edges": []},
+            }
+        ),
+    )
+
+    network_payload = json.loads(resources.get_digital_twin_resource())
+    device_payload = json.loads(resources.get_device_digital_twin_resource("SW1"))
+
+    assert network_payload["version"] == "phase9_step30_v1"
+    assert network_payload["summary"]["twin_count"] == 1
+    assert device_payload["twins"][0]["hostname"] == "SW1"
+
+
 def test_topology_event_resource_filters_durable_context_events(monkeypatch):
     monkeypatch.setattr(resources.network_tools, "set_db_manager", lambda db_manager: None)
     monkeypatch.setattr(

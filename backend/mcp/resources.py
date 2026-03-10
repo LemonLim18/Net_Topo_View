@@ -204,6 +204,12 @@ def _build_canonical_device_state_payload() -> Dict[str, Any]:
     return _tool_payload(network_tools.compare_planned_vs_live)
 
 
+def _build_digital_twin_payload(hostname: Optional[str] = None) -> Dict[str, Any]:
+    if hostname:
+        return _tool_payload(network_tools.get_digital_twin, hostname=hostname)
+    return _tool_payload(network_tools.get_digital_twin)
+
+
 def _normalize_event_limit(limit: int) -> int:
     try:
         value = int(limit)
@@ -661,6 +667,18 @@ def get_canonical_semantics_resource() -> str:
 def get_canonical_device_state_resource() -> str:
     """Returns the canonical device-state matrix for planned-vs-live comparisons."""
     return _json_resource(_build_canonical_device_state_payload())
+
+
+@mcp.resource("network://digital-twin")
+def get_digital_twin_resource() -> str:
+    """Returns the formal digital-twin graph snapshot across planned/live/config/telemetry/incident/drift state."""
+    return _json_resource(_build_digital_twin_payload())
+
+
+@mcp.resource("network://digital-twin/device/{hostname}")
+def get_device_digital_twin_resource(hostname: str) -> str:
+    """Returns the formal digital-twin graph snapshot scoped to a single device."""
+    return _json_resource(_build_digital_twin_payload(hostname))
 
 
 @mcp.resource("network://events/topology-change")

@@ -139,6 +139,16 @@ def test_planned_vs_live_query_prefetches_comparison_tool():
     assert any(message.name == "compare_planned_vs_live" for message in tool_messages)
 
 
+def test_planned_vs_live_query_exposes_digital_twin_tool():
+    import asyncio
+
+    provider, _ = asyncio.run(_run_chat("Compare planned vs live state for SW1"))
+
+    first_call = provider.calls[0]
+    tool_names = {tool["name"] for tool in first_call["tools"]}
+    assert "get_digital_twin" in tool_names
+
+
 def test_planned_vs_live_query_returns_mixed_grounding():
     import asyncio
 

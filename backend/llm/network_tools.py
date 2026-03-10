@@ -1887,6 +1887,33 @@ def get_device_running_config(hostname: str) -> str:
         return json.dumps({"error": str(e)})
 
 
+def get_digital_twin(hostname: str = "", vendor_filter: str = "", include_telemetry: bool = True, include_sdn: bool = True) -> str:
+    """
+    Build the formal Step 30 digital-twin graph snapshot for one device or the whole network.
+
+    The twin unifies planned topology, live topology, intended config, actual config,
+    telemetry trends, incidents, and drift into one graph-oriented payload.
+    """
+    if not _db_manager:
+        return json.dumps({"error": "Database not available"})
+
+    try:
+        from rag.digital_twin import DigitalTwinBuilder
+
+        snapshot = DigitalTwinBuilder(db_manager=_db_manager).build_snapshot(
+            device_hostnames=[hostname] if hostname else None,
+            vendor_filter=vendor_filter or None,
+            include_telemetry=include_telemetry,
+            include_sdn=include_sdn,
+        )
+        payload = snapshot.to_dict()
+        payload["prompt_text"] = snapshot.to_prompt_text()
+        return json.dumps(payload, ensure_ascii=False)
+    except Exception as e:
+        logger.error("get_digital_twin failed: %s", e)
+        return json.dumps({"error": str(e)})
+
+
 # -----------------------------------------------------------------------
 # LLM Provider for intent parsing (set at startup)
 # -----------------------------------------------------------------------
@@ -2174,6 +2201,19 @@ def register_all_tools(registry) -> None:
         ),
         param_descriptions={
             "hostname": "Device hostname to look up",
+        },
+    )
+    registry.register(
+        get_digital_twin,
+        description=(
+            "Build the formal digital-twin graph snapshot for a device or the network. "
+            "This Step 30 layer unifies planned topology, live topology, intended config, actual config, telemetry trends, incidents, and drift into one graph-oriented payload."
+        ),
+        param_descriptions={
+            "hostname": "Optional device hostname to scope the digital twin",
+            "vendor_filter": "Optional vendor filter when building a network-wide digital twin",
+            "include_telemetry": "Whether telemetry trends should be included in the twin graph",
+            "include_sdn": "Whether SDN state should be included while building the twin context",
         },
     )
 

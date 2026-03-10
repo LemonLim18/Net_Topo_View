@@ -137,14 +137,17 @@ class StatusResponse(BaseModel):
 # DI global for context bundle builder
 _bundle_builder = None
 _db_manager = None
+_digital_twin_builder = None
 
 
 def setup_context_bundle(db_manager) -> None:
     """Inject db_manager so the context-bundle preview endpoint can work."""
-    global _bundle_builder, _db_manager
+    global _bundle_builder, _db_manager, _digital_twin_builder
     from rag.context_bundle import ContextBundleBuilder
+    from rag.digital_twin import DigitalTwinBuilder
     _db_manager = db_manager
     _bundle_builder = ContextBundleBuilder(db_manager=db_manager)
+    _digital_twin_builder = DigitalTwinBuilder(db_manager=db_manager, context_bundle_builder=_bundle_builder)
     logger.info("RAG context-bundle builder ready")
 
 
@@ -452,6 +455,13 @@ class BundlePreviewRequest(BaseModel):
     include_sdn: bool = True
 
 
+class DigitalTwinPreviewRequest(BaseModel):
+    device_hostnames: Optional[list[str]] = None
+    vendor_filter: Optional[str] = None
+    include_telemetry: bool = True
+    include_sdn: bool = True
+
+
 @router.post(
     "/context-bundle/preview",
     summary="Preview the fused context bundle that would be sent to the LLM",
@@ -481,6 +491,32 @@ async def preview_context_bundle(
     return {
         "prompt_text": bundle.to_prompt_text(),
         "bundle": bundle.to_dict(),
+    }
+
+
+@router.post(
+    "/digital-twin/preview",
+    summary="Preview the formal digital-twin graph snapshot built from the current grounding sources",
+)
+async def preview_digital_twin(
+    body: DigitalTwinPreviewRequest,
+    current_user: dict = Depends(_auth_dep),
+):
+    """Build the formal Step 30 digital-twin snapshot without invoking the chat agent."""
+    if _digital_twin_builder is None:
+        raise HTTPException(status_code=503, detail="Digital twin builder not initialised")
+
+    snapshot = await run_in_threadpool(
+        _digital_twin_builder.build_snapshot,
+        body.device_hostnames,
+        body.vendor_filter,
+        body.include_telemetry,
+        body.include_sdn,
+    )
+
+    return {
+        "prompt_text": snapshot.to_prompt_text(),
+        "digital_twin": snapshot.to_dict(),
     }
 
 

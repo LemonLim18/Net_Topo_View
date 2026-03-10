@@ -627,9 +627,11 @@ class ContextBundleBuilder:
         if netbox_client is not None and getattr(netbox_client, "api", None):
             try:
                 ctx = self._fetch_netbox_inventory(hostnames, vendor_filter)
-                ctx.source = "netbox"
-                ctx.source_detail = "Using NetBox as the source of truth for planned inventory."
-                return ctx
+                if ctx.devices or self._db is None:
+                    ctx.source = "netbox"
+                    ctx.source_detail = "Using NetBox as the source of truth for planned inventory."
+                    return ctx
+                logger.warning("NetBox inventory returned no scoped devices, falling back to local DB planned inventory.")
             except Exception as e:
                 logger.warning("NetBox inventory fetch failed, falling back to local DB: %s", e)
 
@@ -1466,7 +1468,8 @@ from(bucket: "{INFLUXDB_BUCKET}")
         try:
             from incidents.store import IncidentStore
 
-            rows = IncidentStore().list_all(limit=20)
+            incident_db_path = getattr(self._db, "_db_path", None) if self._db is not None else None
+            rows = IncidentStore(db_path=incident_db_path or "db/netauto.db").list_all(limit=20)
             latest_updated: Optional[str] = None
             for row in rows:
                 affected_devices = json.loads(row.get("affected_devices") or "[]")

@@ -159,3 +159,32 @@ def test_run_change_intelligence_endpoint_returns_structured_report(monkeypatch)
     assert payload["analysis_version"] == "phase9_step29_v1"
     assert payload["approval_recommendation"] == "manual_review"
     assert payload["cross_domain_risk"]["level"] == "high"
+
+
+def test_digital_twin_info_endpoint_returns_step30_version():
+    payload = asyncio.run(llm_api.get_digital_twin_info())
+
+    assert payload["version"] == "phase9_step30_v1"
+
+
+def test_run_digital_twin_endpoint_returns_graph_snapshot(monkeypatch):
+    monkeypatch.setattr(llm_api, "_get_agent", lambda: _FakeAgent())
+    monkeypatch.setattr(
+        llm_api.network_tools,
+        "get_digital_twin",
+        lambda hostname="", vendor_filter="", include_telemetry=True, include_sdn=True: (
+            '{"version":"phase9_step30_v1","summary":{"twin_count":1},'
+            '"twins":[{"hostname":"SW1","presence_state":"planned_and_live"}],'
+            '"graph":{"nodes":[],"edges":[]}}'
+        ),
+    )
+
+    payload = asyncio.run(
+        llm_api.run_digital_twin(
+            llm_api.DigitalTwinRequest(hostname="SW1", include_telemetry=True, include_sdn=True)
+        )
+    )
+
+    assert payload["version"] == "phase9_step30_v1"
+    assert payload["summary"]["twin_count"] == 1
+    assert payload["twins"][0]["hostname"] == "SW1"

@@ -31,6 +31,7 @@ from auth.rbac import require_role
 from llm.benchmark_suite import benchmark_categories, list_benchmark_cases, run_benchmark_suite
 from llm.resilience_suite import list_resilience_scenarios, resilience_categories, run_resilience_suite
 from llm.change_intelligence import CHANGE_INTELLIGENCE_VERSION
+from rag.digital_twin import DIGITAL_TWIN_VERSION
 from llm import network_tools
 from llm.refresh_fabric import register_refresh_listener
 
@@ -98,6 +99,15 @@ class ChangeIntelligenceRequest(BaseModel):
 
     intent_json: str = Field(..., description="JSON string of a ParsedIntent to analyze", min_length=2)
     user_role: str = Field(default="operator", description="Role used for policy-aware simulation")
+
+
+class DigitalTwinRequest(BaseModel):
+    """Request body for the formal Step 30 digital-twin graph snapshot."""
+
+    hostname: Optional[str] = Field(default=None, description="Optional device hostname scope")
+    vendor_filter: Optional[str] = Field(default=None, description="Optional vendor filter for network-wide twins")
+    include_telemetry: bool = Field(default=True, description="Include telemetry trends in the digital twin")
+    include_sdn: bool = Field(default=True, description="Include SDN state while building the twin")
 
 
 # -----------------------------------------------------------------------
@@ -316,6 +326,27 @@ async def run_change_intelligence(request: ChangeIntelligenceRequest):
         network_tools.analyze_change_intelligence,
         request.intent_json,
         request.user_role,
+    )
+    if payload.get("error"):
+        raise HTTPException(status_code=500, detail=str(payload["error"]))
+    return payload
+
+
+@router.get("/digital-twin/info")
+async def get_digital_twin_info():
+    """Return the active Step 30 digital-twin schema version."""
+    return {"version": DIGITAL_TWIN_VERSION}
+
+
+@router.post("/digital-twin")
+async def run_digital_twin(request: Optional[DigitalTwinRequest] = None):
+    """Build the formal Step 30 digital-twin graph snapshot for a device or the whole network."""
+    payload = await _run_tool_json(
+        network_tools.get_digital_twin,
+        request.hostname if request else "",
+        request.vendor_filter if request else "",
+        request.include_telemetry if request else True,
+        request.include_sdn if request else True,
     )
     if payload.get("error"):
         raise HTTPException(status_code=500, detail=str(payload["error"]))

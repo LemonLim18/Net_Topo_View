@@ -729,6 +729,7 @@ class NetworkAgent:
             "get_audit_log",
             "list_templates",
             "get_template_schema",
+            "get_digital_twin",
         ]
 
         instruction = ""
@@ -775,6 +776,8 @@ class NetworkAgent:
                     arguments={"hostname": hostnames[0]} if hostnames else {},
                 )
             )
+            if hostnames:
+                prefetch_tools.append(ToolCall(name="get_digital_twin", arguments={"hostname": hostnames[0]}))
 
         elif query_class == "live_only":
             allowed_tools = generic_read_tools + [
@@ -825,6 +828,7 @@ class NetworkAgent:
             if hostnames:
                 prefetch_tools.extend(
                     [
+                        ToolCall(name="get_digital_twin", arguments={"hostname": hostnames[0]}),
                         ToolCall(name="get_inventory_device", arguments={"hostname": hostnames[0]}),
                         ToolCall(name="get_device_details", arguments={"hostname": hostnames[0]}),
                         ToolCall(name="get_device_telemetry_snapshot", arguments={"hostname": hostnames[0], "limit": 10}),
@@ -838,6 +842,7 @@ class NetworkAgent:
                 "parse_intent",
                 "validate_intent",
                 "analyze_change_intelligence",
+                "get_digital_twin",
                 "plan_change",
                 "list_templates",
                 "get_template_schema",
@@ -853,6 +858,7 @@ class NetworkAgent:
             if hostnames:
                 prefetch_tools.extend(
                     [
+                        ToolCall(name="get_digital_twin", arguments={"hostname": hostnames[0]}),
                         ToolCall(name="get_inventory_device", arguments={"hostname": hostnames[0]}),
                         ToolCall(name="get_device_running_config", arguments={"hostname": hostnames[0]}),
                     ]
