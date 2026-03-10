@@ -20,6 +20,8 @@ import yaml
 from pathlib import Path
 from typing import Optional
 
+from config_engine.safety import validate_playbook_yaml
+
 logger = logging.getLogger("ansible.builder")
 
 PROMPT_TEMPLATE = (
@@ -117,6 +119,19 @@ class PlaybookBuilder:
 
         # ── ansible-lint (optional, non-fatal if not installed) ─────────────
         self._lint(playbook_yaml)
+
+        playbook_validation = validate_playbook_yaml(
+            playbook_yaml=playbook_yaml,
+            vendor=str(intent.get("vendor", "")),
+            feature=str(intent.get("feature", "")),
+            target_hosts=list(intent.get("target_hosts", [])),
+            execution_engine=self._expected_execution_engine(str(intent.get("vendor", ""))),
+        )
+        if not playbook_validation.get("passed", False):
+            raise PlaybookBuildError(
+                "Playbook failed Step 10 safety validation: "
+                + "; ".join(playbook_validation.get("errors") or ["unknown validation error"])
+            )
 
         logger.info("Playbook built and validated OK")
         return playbook_yaml
@@ -270,6 +285,15 @@ class PlaybookBuilder:
             logger.warning("ansible-lint not found — skipping lint step")
         except subprocess.TimeoutExpired:
             logger.warning("ansible-lint timed out — skipping lint step")
+
+    @staticmethod
+    def _expected_execution_engine(vendor: str) -> str:
+        vendor_key = (vendor or "").lower()
+        if vendor_key in {"cisco_ios", "cisco_nxos", "cisco_xr", "juniper_junos"}:
+            return "ansible_native"
+        if vendor_key in {"huawei_vrp", "aruba"}:
+            return "ansible_cli"
+        return "ssh_fallback"
 
 
 def build_sync(

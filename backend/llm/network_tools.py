@@ -1724,6 +1724,7 @@ def plan_change(intent_json: str) -> str:
     """
     try:
         from config_engine.renderer import TemplateRenderer
+        from config_engine.safety import validate_cli_artifact
         from config_engine.validator import SyntaxValidator
         from config_engine.differ import ConfigDiffer
         from llm.intent import ParsedIntent
@@ -1801,10 +1802,24 @@ def plan_change(intent_json: str) -> str:
                 "syntax_warnings": syntax_warnings,
                 "execution_engine": exec_engine,
                 "verification_checks": ver_checks,
+                "safety_validation": validate_cli_artifact(
+                    vendor=dev_vendor,
+                    feature=intent.feature,
+                    params=intent.parameters,
+                    generated_config=config,
+                    rollback_config=rollback,
+                    execution_engine=exec_engine,
+                    require_render_match=True,
+                ),
                 "line_count": len(config.strip().splitlines()),
             })
 
         total_blast = len(devices_plan)
+        approval_ready = all(
+            bool((device.get("safety_validation") or {}).get("passed", False))
+            for device in devices_plan
+            if not device.get("error")
+        )
         return json.dumps({
             "intent_id": intent.id,
             "action": intent.action,
@@ -1812,6 +1827,7 @@ def plan_change(intent_json: str) -> str:
             "risk_level": intent.risk_level,
             "total_devices": total_blast,
             "devices": devices_plan,
+            "approval_ready": approval_ready,
             "verification_plan": {
                 "auto_checks": sum(len(d.get("verification_checks", [])) for d in devices_plan),
                 "description": f"Auto-generated {intent.feature} verification for {total_blast} device(s).",

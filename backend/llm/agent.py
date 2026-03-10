@@ -20,6 +20,7 @@ import logging
 import re
 from typing import Any, Dict, List, Optional
 
+from config_engine.safety import validate_action_artifact, validate_cli_artifact
 from llm.answer_release import build_answer_release_state
 from llm.answer_policy import build_answer_policy, policy_status
 from llm.answer_grounding import build_answer_grounding, format_conflict_summary, format_grounding_summary, format_operator_rationale
@@ -428,6 +429,7 @@ class NetworkAgent:
         self,
         device_plans: List[Dict[str, Any]],
         feature: str,
+        params: Optional[Dict[str, Any]] = None,
     ) -> List[Dict[str, Any]]:
         artifacts: List[Dict[str, Any]] = []
         for device_plan in device_plans:
@@ -462,6 +464,16 @@ class NetworkAgent:
                     "verification_criteria": verification_checks,
                     "line_count": int(device_plan.get("line_count") or len([line for line in generated_config.splitlines() if line.strip()])),
                     "error": device_plan.get("error"),
+                    "safety_validation": device_plan.get("safety_validation")
+                    or validate_cli_artifact(
+                        vendor=vendor,
+                        feature=feature,
+                        params=dict(params or {}),
+                        generated_config=generated_config,
+                        rollback_config=rollback_config,
+                        execution_engine=execution_engine,
+                        require_render_match=True,
+                    ),
                 }
             )
         return artifacts
@@ -474,10 +486,12 @@ class NetworkAgent:
         plan: Dict[str, Any],
         device_plans: List[Dict[str, Any]],
         risk_level: str,
+        params: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         feature = str(intent_data.get("feature") or plan.get("feature") or (device_plans[0].get("feature") if device_plans else "unknown") or "unknown")
         vendor = str(intent_data.get("vendor") or (device_plans[0].get("vendor") if device_plans else "unknown") or "unknown")
-        device_artifacts = self._build_device_action_artifacts(device_plans, feature)
+        effective_params = dict(params or intent_data.get("parameters") or {})
+        device_artifacts = self._build_device_action_artifacts(device_plans, feature, effective_params)
         resolved_devices = [item.get("hostname") for item in device_artifacts if item.get("hostname")]
         engines = sorted({str(item.get("execution_engine") or "ssh_fallback") for item in device_artifacts})
         primary_engine = engines[0] if len(engines) == 1 else "mixed"
@@ -541,6 +555,15 @@ class NetworkAgent:
                 "generated_yaml": False,
                 "mode": "planned",
             }
+        artifact["validation"] = validate_action_artifact(
+            artifact,
+            vendor=vendor,
+            feature=feature,
+            params=effective_params,
+            require_render_match=True,
+        )
+        artifact["approval"]["safety_validated"] = bool(artifact["validation"].get("passed"))
+        artifact["approval"]["safety_errors"] = list(artifact["validation"].get("errors") or [])
         return artifact
 
     # ---------- intent-pipeline proposal builder ----------
@@ -616,6 +639,7 @@ class NetworkAgent:
                 plan=plan,
                 device_plans=device_plans,
                 risk_level=risk_level,
+                params=params,
             )
 
             # Build extra metadata to attach to the proposal
@@ -780,9 +804,27 @@ class NetworkAgent:
                         "verification_criteria": [],
                         "line_count": len([line for line in generated_config.splitlines() if line.strip()]),
                         "error": None,
+                        "safety_validation": validate_cli_artifact(
+                            vendor=vendor,
+                            feature=feature,
+                            params=dict(params),
+                            generated_config=generated_config,
+                            rollback_config=rollback_config,
+                            execution_engine="ssh_fallback",
+                            require_render_match=True,
+                        ),
                     }
                 ],
             }
+            action_artifact["validation"] = validate_action_artifact(
+                action_artifact,
+                vendor=vendor,
+                feature=feature,
+                params=dict(params),
+                require_render_match=True,
+            )
+            action_artifact["approval"]["safety_validated"] = bool(action_artifact["validation"].get("passed"))
+            action_artifact["approval"]["safety_errors"] = list(action_artifact["validation"].get("errors") or [])
 
             # Create the proposal
             proposal = self._proposals.create(

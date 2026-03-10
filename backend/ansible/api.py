@@ -30,6 +30,8 @@ from fastapi.responses import StreamingResponse
 from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel
 
+from config_engine.safety import validate_playbook_yaml
+
 logger = logging.getLogger("ansible.api")
 
 router = APIRouter(prefix="/ansible", tags=["Ansible Orchestration (M22)"])
@@ -704,6 +706,23 @@ async def create_from_template(
         default_flow_style=False,
         sort_keys=False,
     )
+
+    execution_engine = "ansible_native" if req.vendor in {"cisco_ios", "juniper_junos"} else "ansible_cli"
+    playbook_validation = validate_playbook_yaml(
+        playbook_yaml=playbook,
+        vendor=req.vendor,
+        feature=req.feature,
+        target_hosts=req.target_hosts,
+        execution_engine=execution_engine,
+    )
+    if not playbook_validation.get("passed", False):
+        raise HTTPException(
+            422,
+            {
+                "message": "Generated playbook failed Step 10 safety validation.",
+                "validation": playbook_validation,
+            },
+        )
 
     # ── 3. Create ChangeRequest + Job ───────────────────────────────────
     device_id = req.device_id

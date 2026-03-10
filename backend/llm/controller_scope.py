@@ -125,10 +125,10 @@ def build_controller_implementation_status(tool_names: Sequence[str]) -> Dict[st
         ),
         _capability(
             name="generation_safety",
-            status="partial" if _module_exists("config_engine.validator") else "not_implemented",
-            summary="Template rendering, syntax validation, and policy validation exist, but dangerous command, unsupported-feature, and unsafe-template enforcement are incomplete.",
-            evidence=["config_engine.renderer", "config_engine.validator", "llm.policy"],
-            next_gap="Add Jinja safety checks, command-risk blocks, and stronger rollback viability checks.",
+            status="implemented" if _module_exists("config_engine.safety") else ("partial" if _module_exists("config_engine.validator") else "not_implemented"),
+            summary="Template rendering, syntax validation, rollback viability, execution-engine compatibility, dangerous-command blocking, and playbook safety are enforced through a shared Step 10 validation layer.",
+            evidence=["config_engine.renderer", "config_engine.validator", "config_engine.safety", "llm.api:/proposals/{id}/approve", "ansible.builder"],
+            next_gap="Extend the same validation report into bounded playbook refinement and post-change verification loops.",
         ),
         _capability(
             name="post_change_verification",

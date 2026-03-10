@@ -28,6 +28,7 @@ from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
 from auth.rbac import require_role
+from config_engine.safety import validate_action_artifact
 from llm.benchmark_suite import benchmark_categories, list_benchmark_cases, run_benchmark_suite
 from llm.resilience_suite import list_resilience_scenarios, resilience_categories, run_resilience_suite
 from llm.change_intelligence import CHANGE_INTELLIGENCE_VERSION
@@ -479,6 +480,24 @@ async def approve_proposal(
     if proposal.status != "pending":
         raise HTTPException(
             409, f"Proposal is '{proposal.status}', expected 'pending'"
+        )
+
+    action_artifact = proposal.action_artifact or {}
+    validation_report = validate_action_artifact(
+        action_artifact,
+        vendor=proposal.vendor,
+        feature=proposal.feature,
+        params=dict(proposal.params or {}),
+        proposal_generated_config=proposal.generated_config,
+        require_render_match=True,
+    )
+    if not validation_report.get("passed", False):
+        raise HTTPException(
+            422,
+            {
+                "message": "Proposal failed Step 10 safety validation and cannot be approved.",
+                "validation": validation_report,
+            },
         )
 
     # 2. Approve in the proposal manager
