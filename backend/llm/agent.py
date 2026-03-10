@@ -22,6 +22,7 @@ from typing import Any, Dict, List, Optional
 
 from llm.answer_policy import build_answer_policy, policy_status
 from llm.answer_grounding import build_answer_grounding, format_conflict_summary, format_grounding_summary
+from llm.controller_flow import build_controller_flow_state
 from llm.controller_policy import build_controller_policy, render_controller_policy_prompt
 from llm.controller_scope import (
     build_controller_implementation_status,
@@ -69,6 +70,7 @@ class NetworkAgent:
         api_key: Optional[str] = None,
         model: Optional[str] = None,
         retriever=None,
+        proposal_manager: Optional[ProposalManager] = None,
     ):
         """
         Args:
@@ -89,7 +91,7 @@ class NetworkAgent:
         self._context = ContextBuilder(db_manager=db_manager)
 
         # Initialize proposal manager (M19)
-        self._proposals = ProposalManager()
+        self._proposals = proposal_manager or ProposalManager()
 
         # Store db_manager for device lookups
         self._db = db_manager
@@ -150,6 +152,9 @@ class NetworkAgent:
             routing_decision.query_class,
             candidate_hostnames,
         )
+        route_plan["query_class"] = routing_decision.query_class
+        route_plan["required_domains"] = list(routing_decision.required_domains)
+        route_plan["hostnames"] = list(candidate_hostnames)
 
         per_turn_system = self._render_system_prompt(
             user_message=user_message,
@@ -202,14 +207,28 @@ class NetworkAgent:
                     continue
                 if self._enforce_required_tool_policy(messages, route_plan, tool_results, tool_args):
                     continue
+                flow_state, flow_action = self._evaluate_controller_flow(
+                    messages,
+                    user_message,
+                    route_plan,
+                    tool_results,
+                    tool_args,
+                    knowledge_used=bool(knowledge_ctx),
+                )
+                if flow_action == "reroute":
+                    continue
                 grounding_meta = self._build_grounding_meta(
                     routing_decision.query_class,
                     tool_results,
                     tool_args,
                     route_plan.get("answer_policy"),
                     knowledge_used=bool(knowledge_ctx),
+                    controller_flow=flow_state,
                 )
-                final_content = self._render_grounded_content(response.content, grounding_meta)
+                response_content = response.content
+                if flow_action == "block":
+                    response_content = self._render_controller_flow_block(flow_state)
+                final_content = self._render_grounded_content(response_content, grounding_meta)
                 self._history.append(
                     LLMMessage(role="assistant", content=final_content)
                 )
@@ -286,30 +305,33 @@ class NetworkAgent:
             temperature=0.3,
         )
 
-        self._history.append(
-            LLMMessage(
-                role="assistant",
-                content=self._render_grounded_content(
-                    final_response.content,
-                    self._build_grounding_meta(
-                        routing_decision.query_class,
-                        tool_results,
-                        tool_args,
-                        route_plan.get("answer_policy"),
-                        knowledge_used=bool(knowledge_ctx),
-                    ),
-                ),
-            )
+        flow_state = self._build_controller_flow_state(
+            user_message,
+            route_plan,
+            tool_results,
+            tool_args,
+            knowledge_used=bool(knowledge_ctx),
         )
-
+        final_response_content = final_response.content
+        if flow_state.get("release", {}).get("decision") == "block":
+            final_response_content = self._render_controller_flow_block(flow_state)
         grounding_meta = self._build_grounding_meta(
             routing_decision.query_class,
             tool_results,
             tool_args,
             route_plan.get("answer_policy"),
             knowledge_used=bool(knowledge_ctx),
+            controller_flow=flow_state,
         )
-        final_content = self._render_grounded_content(final_response.content, grounding_meta)
+
+        self._history.append(
+            LLMMessage(
+                role="assistant",
+                content=self._render_grounded_content(final_response_content, grounding_meta),
+            )
+        )
+
+        final_content = self._render_grounded_content(final_response_content, grounding_meta)
 
         # Check for proposal even after exhausting rounds
         proposal = self._maybe_create_proposal(
@@ -1025,6 +1047,41 @@ class NetworkAgent:
         self._record_tool_message(messages, tool_call, result, note)
         return result
 
+    def _execute_recovery_tool_calls(
+        self,
+        messages: List[LLMMessage],
+        tool_calls: List[ToolCall],
+        route_plan: Dict[str, Any],
+        tool_results: Dict[str, Any],
+        tool_args: Dict[str, Dict[str, Any]],
+        note: str,
+    ) -> None:
+        if not tool_calls:
+            return
+
+        tool_call_summary = ", ".join(
+            f"{tc.name}({json.dumps(tc.arguments, ensure_ascii=False)})"
+            for tc in tool_calls
+        )
+        messages.append(
+            LLMMessage(
+                role="assistant",
+                content=f"{note}: {tool_call_summary}",
+                tool_calls=tool_calls,
+            )
+        )
+        for tc in tool_calls:
+            result = self._execute_controlled_tool_call(tc, route_plan, messages, tool_results, tool_args)
+            tool_results[tc.name] = result
+            tool_args[tc.name] = tc.arguments
+            messages.append(
+                LLMMessage(
+                    role="tool",
+                    content=result,
+                    name=tc.name,
+                )
+            )
+
     def _enforce_controller_policy(
         self,
         messages: List[LLMMessage],
@@ -1178,6 +1235,77 @@ class NetworkAgent:
 
         return True
 
+    def _build_controller_flow_state(
+        self,
+        user_message: str,
+        route_plan: Dict[str, Any],
+        tool_results: Dict[str, Any],
+        tool_args: Dict[str, Dict[str, Any]],
+        knowledge_used: bool = False,
+    ) -> Dict[str, Any]:
+        return build_controller_flow_state(
+            user_message=user_message,
+            query_class=route_plan.get("query_class", "general"),
+            declared_required_domains=route_plan.get("required_domains") or [],
+            hostnames=route_plan.get("hostnames") or [],
+            tool_results=tool_results,
+            tool_args=tool_args,
+            allowed_tools=route_plan.get("allowed_tools") or [],
+            answer_policy=route_plan.get("answer_policy"),
+            controller_policy=route_plan.get("controller_policy"),
+            knowledge_used=knowledge_used,
+        )
+
+    def _evaluate_controller_flow(
+        self,
+        messages: List[LLMMessage],
+        user_message: str,
+        route_plan: Dict[str, Any],
+        tool_results: Dict[str, Any],
+        tool_args: Dict[str, Dict[str, Any]],
+        knowledge_used: bool = False,
+    ) -> tuple[Dict[str, Any], str]:
+        flow_state = self._build_controller_flow_state(
+            user_message,
+            route_plan,
+            tool_results,
+            tool_args,
+            knowledge_used=knowledge_used,
+        )
+        release = flow_state.get("release", {})
+        decision = release.get("decision", "allow")
+        if decision == "reroute":
+            recovery_tool_calls = [
+                ToolCall(name=item["name"], arguments=item.get("arguments", {}))
+                for item in release.get("recovery_tool_calls", [])
+                if item.get("name")
+            ]
+            if recovery_tool_calls:
+                self._execute_recovery_tool_calls(
+                    messages,
+                    recovery_tool_calls,
+                    route_plan,
+                    tool_results,
+                    tool_args,
+                    "Controller flow enforcing missing authoritative evidence",
+                )
+                return flow_state, "reroute"
+            return flow_state, "block"
+        return flow_state, decision
+
+    def _render_controller_flow_block(self, flow_state: Dict[str, Any]) -> str:
+        release = flow_state.get("release", {})
+        missing_domains = ", ".join(release.get("missing_domains") or []) or "authoritative evidence"
+        missing_tools = ", ".join(release.get("missing_required_tools") or [])
+        missing_steps = " -> ".join(release.get("missing_change_steps") or [])
+        details = [f"Missing evidence domains: {missing_domains}."]
+        if missing_tools:
+            details.append(f"Missing required tool reads: {missing_tools}.")
+        if missing_steps:
+            details.append(f"Incomplete change workflow: {missing_steps}.")
+        details.append("The controller blocked release rather than guessing from incomplete evidence.")
+        return "I can't provide a grounded answer yet. " + " ".join(details)
+
     def _network_context_cache_key(
         self,
         user_message: Optional[str] = None,
@@ -1252,6 +1380,7 @@ class NetworkAgent:
         tool_args: Optional[Dict[str, Dict[str, Any]]] = None,
         answer_policy: Optional[Dict[str, Any]] = None,
         knowledge_used: bool = False,
+        controller_flow: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         grounding_meta = build_answer_grounding(
             query_class=query_class,
@@ -1260,6 +1389,8 @@ class NetworkAgent:
             knowledge_used=knowledge_used,
         )
         grounding_meta["answer_policy"] = policy_status(answer_policy or {}, tool_args or {})
+        if controller_flow is not None:
+            grounding_meta["controller_flow"] = controller_flow
         return grounding_meta
 
     def _render_grounded_content(self, content: str, grounding_meta: Dict[str, Any]) -> str:

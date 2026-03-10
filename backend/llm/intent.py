@@ -17,7 +17,7 @@ Key principle: the LLM interprets, the system enforces.
 
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -80,7 +80,7 @@ class ParsedIntent(BaseModel):
     requires_disambiguation: bool = False
     disambiguation_message: str = ""
     resolved_devices: List[str] = Field(default_factory=list)
-    created_at: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
+    created_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
     def is_config_change(self) -> bool:
         return self.intent_type in (IntentType.CONFIGURE, IntentType.DEPLOY)

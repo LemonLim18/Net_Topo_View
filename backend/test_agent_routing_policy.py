@@ -1,7 +1,9 @@
 import json
+from copy import deepcopy
 
 from db.models import Device
 from llm.agent import NetworkAgent
+from llm.proposal import ConfigProposal
 from llm.provider import LLMProvider, LLMMessage, LLMResponse, ToolCall
 
 
@@ -89,16 +91,65 @@ class _AgentFakeDb:
         return _FakeConn()
 
 
+class _MemoryProposalManager:
+    def __init__(self):
+        self._items = {}
+
+    def create(
+        self,
+        user_prompt,
+        target_device,
+        target_device_id,
+        vendor,
+        feature,
+        params,
+        generated_config,
+        rollback_config="",
+        diff_text="",
+        risk_level="medium",
+        ai_explanation="",
+    ):
+        proposal = ConfigProposal(
+            id=f"proposal-{len(self._items) + 1}",
+            status="pending",
+            user_prompt=user_prompt,
+            target_device=target_device,
+            target_device_id=target_device_id,
+            vendor=vendor,
+            feature=feature,
+            params=deepcopy(params),
+            generated_config=generated_config,
+            rollback_config=rollback_config,
+            diff_text=diff_text,
+            risk_level=risk_level,
+            ai_explanation=ai_explanation,
+            created_at="2026-03-10T00:00:00+00:00",
+            updated_at="2026-03-10T00:00:00+00:00",
+        )
+        self._items[proposal.id] = proposal
+        return proposal
+
+
 async def _run_chat(message: str):
     provider = _FakeProvider()
-    agent = NetworkAgent(db_manager=_AgentFakeDb(), provider=provider, retriever=None)
+    agent = NetworkAgent(
+        db_manager=_AgentFakeDb(),
+        provider=provider,
+        retriever=None,
+        proposal_manager=_MemoryProposalManager(),
+    )
     response = await agent.chat(message)
     return provider, response
 
 
 async def _run_chat_for_db(message: str, db):
     provider = _FakeProvider()
-    agent = NetworkAgent(db_manager=db, provider=provider, retriever=None)
+    agent = NetworkAgent(
+        db_manager=db,
+        provider=provider,
+        retriever=None,
+        proposal_manager=_MemoryProposalManager(),
+    )
     response = await agent.chat(message)
     return provider, response
 
@@ -125,6 +176,8 @@ def test_inventory_query_prefetches_inventory_tool():
     assert response["grounding_meta"]["answer_policy"]["name"] == "management_ip_lookup"
     assert response["grounding_meta"]["answer_policy"]["satisfied"] is True
     assert response["grounding_meta"]["answer_policy"]["required_tools"] == ["get_inventory_device"]
+    assert response["grounding_meta"]["controller_flow"]["release"]["decision"] == "allow"
+    assert response["grounding_meta"]["controller_flow"]["observe"]["satisfied_domains"] == ["planned_inventory"]
     assert "Grounding: planned;" in response["content"]
 
 
@@ -178,7 +231,12 @@ class _BypassPlanProvider(LLMProvider):
 
 
 async def _run_chat_with_provider(message: str, provider):
-    agent = NetworkAgent(db_manager=_AgentFakeDb(), provider=provider, retriever=None)
+    agent = NetworkAgent(
+        db_manager=_AgentFakeDb(),
+        provider=provider,
+        retriever=None,
+        proposal_manager=_MemoryProposalManager(),
+    )
     response = await agent.chat(message)
     return provider, response
 
@@ -191,9 +249,28 @@ def test_change_request_bypass_is_recovered_by_controller_policy():
     assert response["type"] in {"proposal", "intent_plan"}
     assert response["proposal"]["feature"] == "vlan"
     assert "generated_config" in response["proposal"]
+    assert response["grounding_meta"]["controller_flow"]["release"]["decision"] == "allow"
+    assert response["grounding_meta"]["controller_flow"]["observe"]["change_workflow"]["satisfied"] is True
+    assert "knowledge_base" in response["grounding_meta"]["controller_flow"]["observe"]["satisfied_domains"]
     tool_messages = [message for call in provider.calls for message in call["messages"] if message.role == "tool"]
     assert any(message.name == "parse_intent" for message in tool_messages)
     assert any(message.name == "validate_intent" for message in tool_messages)
+    assert any(message.name == "get_template_schema" for message in tool_messages)
+
+
+def test_inventory_query_with_missing_authoritative_evidence_is_blocked():
+    import asyncio
+
+    class _MissingInventoryDb(_AgentFakeDb):
+        def get_device_by_hostname(self, hostname):
+            return None
+
+    _, response = asyncio.run(_run_chat_for_db("What is the management IP of SW9 in inventory?", _MissingInventoryDb()))
+
+    assert response["type"] == "text"
+    assert response["grounding_meta"]["controller_flow"]["release"]["decision"] == "block"
+    assert response["grounding_meta"]["controller_flow"]["release"]["missing_domains"] == ["planned_inventory"]
+    assert response["content"].startswith("I can't provide a grounded answer yet.")
 
 
 def test_planned_vs_live_query_prefetches_comparison_tool():
@@ -316,7 +393,12 @@ def test_agent_rebuilds_context_on_next_turn_without_manual_prompt_refresh():
 
     db = _AgentFakeDb()
     provider = _FakeProvider()
-    agent = NetworkAgent(db_manager=db, provider=provider, retriever=None)
+    agent = NetworkAgent(
+        db_manager=db,
+        provider=provider,
+        retriever=None,
+        proposal_manager=_MemoryProposalManager(),
+    )
 
     asyncio.run(_run_chat_with_agent(agent, "Show me the live topology"))
     first_system_prompt = provider.calls[0]["messages"][0].content
