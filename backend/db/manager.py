@@ -183,6 +183,7 @@ class DatabaseManager:
         _m22_columns = [
             ("jobs", "execution_engine", "TEXT DEFAULT 'ssh_fallback'"),
             ("jobs", "ansible_playbook", "TEXT"),
+            ("config_proposals", "action_artifact_json", "TEXT"),
         ]
         with self._connect() as conn:
             for table, col, col_def in _m22_columns:

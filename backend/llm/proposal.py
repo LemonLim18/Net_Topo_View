@@ -44,6 +44,7 @@ class ConfigProposal(BaseModel):
     diff_text: str = ""
     risk_level: str = "medium"
     ai_explanation: str = ""
+    action_artifact: Optional[Dict[str, Any]] = None
     job_id: Optional[int] = None
     request_id: Optional[int] = None
     created_at: Optional[str] = None
@@ -89,6 +90,11 @@ class ProposalManager:
 
     def _row_to_proposal(self, row: sqlite3.Row) -> ConfigProposal:
         """Convert a DB row into a ConfigProposal."""
+        action_artifact = json.loads(row["action_artifact_json"]) if row["action_artifact_json"] else None
+        if isinstance(action_artifact, dict):
+            approval = action_artifact.setdefault("approval", {})
+            if isinstance(approval, dict):
+                approval["status"] = row["status"]
         return ConfigProposal(
             id=row["id"],
             status=row["status"],
@@ -103,6 +109,7 @@ class ProposalManager:
             diff_text=row["diff_text"] or "",
             risk_level=row["risk_level"] or "medium",
             ai_explanation=row["ai_explanation"] or "",
+            action_artifact=action_artifact,
             job_id=row["job_id"],
             request_id=row["request_id"],
             created_at=row["created_at"],
@@ -124,6 +131,7 @@ class ProposalManager:
         diff_text: str = "",
         risk_level: str = "medium",
         ai_explanation: str = "",
+        action_artifact: Optional[Dict[str, Any]] = None,
     ) -> ConfigProposal:
         """Create and persist a new proposal. Returns the created proposal."""
         proposal_id = str(uuid.uuid4())
@@ -134,8 +142,8 @@ class ProposalManager:
                 INSERT INTO config_proposals
                     (id, status, user_prompt, target_device, target_device_id,
                      vendor, feature, params, generated_config, rollback_config,
-                     diff_text, risk_level, ai_explanation)
-                VALUES (?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     diff_text, risk_level, ai_explanation, action_artifact_json)
+                VALUES (?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     proposal_id,
@@ -150,6 +158,7 @@ class ProposalManager:
                     diff_text,
                     risk_level,
                     ai_explanation,
+                    json.dumps(action_artifact) if action_artifact is not None else None,
                 ),
             )
             conn.commit()

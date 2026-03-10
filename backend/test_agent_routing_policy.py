@@ -108,6 +108,7 @@ class _MemoryProposalManager:
         diff_text="",
         risk_level="medium",
         ai_explanation="",
+        action_artifact=None,
     ):
         proposal = ConfigProposal(
             id=f"proposal-{len(self._items) + 1}",
@@ -123,6 +124,7 @@ class _MemoryProposalManager:
             diff_text=diff_text,
             risk_level=risk_level,
             ai_explanation=ai_explanation,
+            action_artifact=deepcopy(action_artifact) if isinstance(action_artifact, dict) else action_artifact,
             created_at="2026-03-10T00:00:00+00:00",
             updated_at="2026-03-10T00:00:00+00:00",
         )
@@ -254,6 +256,8 @@ def test_change_request_bypass_is_recovered_by_controller_policy():
     assert response["type"] in {"proposal", "intent_plan"}
     assert response["proposal"]["feature"] == "vlan"
     assert "generated_config" in response["proposal"]
+    assert response["proposal"]["action_artifact"]["action_type"] == "single_device_proposal"
+    assert response["proposal"]["action_artifact"]["approval"]["status"] == "pending"
     assert response["grounding_meta"]["controller_flow"]["release"]["decision"] == "allow"
     assert response["grounding_meta"]["controller_flow"]["observe"]["change_workflow"]["satisfied"] is True
     assert "knowledge_base" in response["grounding_meta"]["controller_flow"]["observe"]["satisfied_domains"]
@@ -261,6 +265,59 @@ def test_change_request_bypass_is_recovered_by_controller_policy():
     assert any(message.name == "parse_intent" for message in tool_messages)
     assert any(message.name == "validate_intent" for message in tool_messages)
     assert any(message.name == "get_template_schema" for message in tool_messages)
+
+
+class _MultiDevicePlanProvider(LLMProvider):
+    def __init__(self):
+        self.calls = []
+        self._main_calls = 0
+
+    async def generate(self, messages, tools=None, temperature=0.3):
+        self.calls.append({"messages": messages, "tools": tools, "temperature": temperature})
+        first_system = messages[0].content if messages else ""
+
+        if "You are an **intent parser**" in first_system:
+            payload = {
+                "intent_type": "configure",
+                "action": "create_vlan",
+                "feature": "vlan",
+                "vendor": "cisco_ios",
+                "parameters": {"vlans": [{"id": 30, "name": "Voice"}]},
+                "scope": {"device_hostnames": ["SW1", "R1"], "all_devices": False},
+                "risk_level": "medium",
+                "justification": "Create VLAN 30 on two devices",
+                "resolved_devices": ["SW1", "R1"],
+            }
+            return LLMResponse(content=json.dumps(payload), tool_calls=[])
+
+        self._main_calls += 1
+        if self._main_calls == 1:
+            return LLMResponse(
+                content="",
+                tool_calls=[ToolCall(name="plan_change", arguments={"intent_json": json.dumps({"id": "intent-multi"})})],
+            )
+        return LLMResponse(content="proposed safely", tool_calls=[])
+
+    def model_name(self) -> str:
+        return "multi-device-test"
+
+
+def test_multi_device_change_request_returns_structured_playbook_artifact():
+    import asyncio
+
+    provider, response = asyncio.run(_run_chat_with_provider("Configure VLAN 30 on SW1 and R1", _MultiDevicePlanProvider()))
+
+    artifact = response["proposal"]["action_artifact"]
+
+    assert response["type"] == "intent_plan"
+    assert artifact["action_type"] == "multi_device_playbook"
+    assert artifact["scope"]["device_count"] == 2
+    assert artifact["scope"]["resolved_devices"] == ["SW1", "R1"]
+    assert artifact["execution"]["primary_engine"] == "ansible_native"
+    assert artifact["approval"]["status"] == "pending"
+    assert artifact["playbook_spec"]["device_count"] == 2
+    assert len(artifact["device_artifacts"]) == 2
+    assert all(item["verification_criteria"] for item in artifact["device_artifacts"])
 
 
 def test_inventory_query_with_missing_authoritative_evidence_is_blocked():

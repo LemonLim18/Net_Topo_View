@@ -276,6 +276,7 @@ CREATE TABLE IF NOT EXISTS config_proposals (
     diff_text       TEXT,
     risk_level      TEXT DEFAULT 'medium',
     ai_explanation  TEXT,
+    action_artifact_json TEXT,
     job_id          INTEGER REFERENCES jobs(id),
     request_id      INTEGER REFERENCES change_requests(id),
     created_at      TEXT DEFAULT (datetime('now')),

@@ -424,6 +424,125 @@ class NetworkAgent:
 
         return None
 
+    def _build_device_action_artifacts(
+        self,
+        device_plans: List[Dict[str, Any]],
+        feature: str,
+    ) -> List[Dict[str, Any]]:
+        artifacts: List[Dict[str, Any]] = []
+        for device_plan in device_plans:
+            hostname = str(device_plan.get("hostname") or "unknown")
+            vendor = str(device_plan.get("vendor") or "unknown")
+            execution_engine = str(device_plan.get("execution_engine") or "ssh_fallback")
+            syntax_warnings = list(device_plan.get("syntax_warnings") or [])
+            verification_checks = list(device_plan.get("verification_checks") or [])
+            rollback_config = str(device_plan.get("rollback") or device_plan.get("rollback_config") or "")
+            generated_config = str(device_plan.get("config") or device_plan.get("generated_config") or "")
+            diff_text = str(device_plan.get("diff") or device_plan.get("diff_text") or "")
+            dependencies = ["intent_validated", "human_approval"]
+            if syntax_warnings:
+                dependencies.append("syntax_review")
+            if execution_engine in {"ansible_native", "ansible_cli"}:
+                dependencies.append("automation_inventory_ready")
+            else:
+                dependencies.append("ssh_credentials_available")
+
+            artifacts.append(
+                {
+                    "hostname": hostname,
+                    "device_id": self._lookup_device_id(hostname),
+                    "vendor": vendor,
+                    "feature": feature,
+                    "generated_config": generated_config,
+                    "rollback_config": rollback_config,
+                    "diff_text": diff_text,
+                    "execution_engine": execution_engine,
+                    "dependencies": dependencies,
+                    "syntax_warnings": syntax_warnings,
+                    "verification_criteria": verification_checks,
+                    "line_count": int(device_plan.get("line_count") or len([line for line in generated_config.splitlines() if line.strip()])),
+                    "error": device_plan.get("error"),
+                }
+            )
+        return artifacts
+
+    def _build_proposal_action_artifact(
+        self,
+        *,
+        intent_data: Dict[str, Any],
+        policy_data: Dict[str, Any],
+        plan: Dict[str, Any],
+        device_plans: List[Dict[str, Any]],
+        risk_level: str,
+    ) -> Dict[str, Any]:
+        feature = str(intent_data.get("feature") or plan.get("feature") or (device_plans[0].get("feature") if device_plans else "unknown") or "unknown")
+        vendor = str(intent_data.get("vendor") or (device_plans[0].get("vendor") if device_plans else "unknown") or "unknown")
+        device_artifacts = self._build_device_action_artifacts(device_plans, feature)
+        resolved_devices = [item.get("hostname") for item in device_artifacts if item.get("hostname")]
+        engines = sorted({str(item.get("execution_engine") or "ssh_fallback") for item in device_artifacts})
+        primary_engine = engines[0] if len(engines) == 1 else "mixed"
+        verification_criteria: List[Dict[str, Any]] = []
+        for item in device_artifacts:
+            for check in item.get("verification_criteria") or []:
+                if isinstance(check, dict):
+                    enriched = dict(check)
+                    enriched.setdefault("hostname", item.get("hostname"))
+                    verification_criteria.append(enriched)
+
+        rollback_available = sum(1 for item in device_artifacts if item.get("rollback_config"))
+        action_type = "multi_device_playbook" if len(device_artifacts) > 1 else "single_device_proposal"
+        dependencies = ["parse_intent", "validate_intent", "plan_change", "human_approval"]
+        if len(device_artifacts) > 1:
+            dependencies.append("coordinated_execution_review")
+
+        artifact: Dict[str, Any] = {
+            "version": "phase3_step9_v1",
+            "action_type": action_type,
+            "intent_id": intent_data.get("id") or plan.get("intent_id"),
+            "scope": {
+                "device_scope": intent_data.get("scope") or {},
+                "resolved_devices": resolved_devices,
+                "device_count": len(device_artifacts),
+                "all_devices": bool((intent_data.get("scope") or {}).get("all_devices")),
+            },
+            "vendor": vendor,
+            "feature": feature,
+            "risk_level": risk_level,
+            "execution": {
+                "primary_engine": primary_engine,
+                "execution_engines": engines,
+                "requires_coordinated_execution": len(device_artifacts) > 1,
+                "dependencies": dependencies,
+            },
+            "approval": {
+                "status": "pending",
+                "requires_human_approval": True,
+                "policy_approved": bool(policy_data.get("approved", True)),
+                "policy_violations": list(policy_data.get("violations") or []),
+                "policy_warnings": list(policy_data.get("warnings") or []),
+            },
+            "rollback_intent": {
+                "strategy": "generated_per_device_rollback" if rollback_available == len(device_artifacts) else "partial_generated_rollback",
+                "available_device_count": rollback_available,
+                "summary": (
+                    f"Generated rollback artifacts are available for {rollback_available} of {len(device_artifacts)} device(s)."
+                ),
+            },
+            "verification_criteria": verification_criteria,
+            "device_artifacts": device_artifacts,
+        }
+        if action_type == "multi_device_playbook":
+            artifact["playbook_spec"] = {
+                "name": f"{feature}_multi_device_change",
+                "target_hosts": resolved_devices,
+                "device_count": len(device_artifacts),
+                "execution_engines": engines,
+                "serial": 1,
+                "generated_yaml": False,
+                "mode": "planned",
+            }
+        return artifact
+
     # ---------- intent-pipeline proposal builder ----------
 
     def _proposal_from_intent_pipeline(
@@ -491,6 +610,14 @@ class NetworkAgent:
             # Risk from intent, fallback to heuristic
             risk_level = intent_data.get("risk_level") or self._assess_risk(feature, vendor)
 
+            action_artifact = self._build_proposal_action_artifact(
+                intent_data=intent_data,
+                policy_data=policy_data,
+                plan=plan,
+                device_plans=device_plans,
+                risk_level=risk_level,
+            )
+
             # Build extra metadata to attach to the proposal
             intent_meta = {
                 "pipeline": "intent",
@@ -505,6 +632,7 @@ class NetworkAgent:
                 "execution_engine": first.get("execution_engine"),
                 "verification_checks": first.get("verification_checks", []),
                 "device_count": len(device_plans),
+                "action_type": action_artifact.get("action_type"),
             }
 
             proposal = self._proposals.create(
@@ -519,6 +647,7 @@ class NetworkAgent:
                 diff_text=diff_text,
                 risk_level=risk_level,
                 ai_explanation=ai_response,
+                action_artifact=action_artifact,
             )
 
             # Attach intent metadata as extra field (non-Pydantic, OK for dict dump)
@@ -605,6 +734,56 @@ class NetworkAgent:
             # Determine risk level based on feature
             risk_level = self._assess_risk(feature, vendor)
 
+            action_artifact = {
+                "version": "phase3_step9_v1",
+                "action_type": "single_device_proposal",
+                "scope": {
+                    "device_scope": {"device_hostnames": [target_device], "all_devices": False},
+                    "resolved_devices": [target_device],
+                    "device_count": 1,
+                    "all_devices": False,
+                },
+                "vendor": vendor,
+                "feature": feature,
+                "risk_level": risk_level,
+                "execution": {
+                    "primary_engine": "ssh_fallback",
+                    "execution_engines": ["ssh_fallback"],
+                    "requires_coordinated_execution": False,
+                    "dependencies": ["human_approval", "ssh_credentials_available"],
+                },
+                "approval": {
+                    "status": "pending",
+                    "requires_human_approval": True,
+                    "policy_approved": True,
+                    "policy_violations": [],
+                    "policy_warnings": [],
+                },
+                "rollback_intent": {
+                    "strategy": "generated_per_device_rollback" if rollback_config else "rollback_not_generated",
+                    "available_device_count": 1 if rollback_config else 0,
+                    "summary": "Generated rollback commands are available for the target device." if rollback_config else "No rollback commands were generated for the target device.",
+                },
+                "verification_criteria": [],
+                "device_artifacts": [
+                    {
+                        "hostname": target_device,
+                        "device_id": target_device_id,
+                        "vendor": vendor,
+                        "feature": feature,
+                        "generated_config": generated_config,
+                        "rollback_config": rollback_config,
+                        "diff_text": diff_text,
+                        "execution_engine": "ssh_fallback",
+                        "dependencies": ["human_approval", "ssh_credentials_available"],
+                        "syntax_warnings": [],
+                        "verification_criteria": [],
+                        "line_count": len([line for line in generated_config.splitlines() if line.strip()]),
+                        "error": None,
+                    }
+                ],
+            }
+
             # Create the proposal
             proposal = self._proposals.create(
                 user_prompt=user_message,
@@ -618,6 +797,7 @@ class NetworkAgent:
                 diff_text=diff_text,
                 risk_level=risk_level,
                 ai_explanation=ai_response,
+                action_artifact=action_artifact,
             )
 
             logger.info(

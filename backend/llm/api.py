@@ -486,6 +486,14 @@ async def approve_proposal(
     if not proposal:
         raise HTTPException(500, "Failed to approve proposal")
 
+    action_artifact = proposal.action_artifact or {}
+    if action_artifact.get("action_type") == "multi_device_playbook":
+        return {
+            "status": "approved",
+            "message": "Proposal approved. This multi-device playbook artifact requires coordinated execution review and is not auto-deployed through the single-device pipeline.",
+            "proposal": proposal.model_dump(),
+        }
+
     is_admin = user.get("role") == "admin"
 
     # Engineer/operator approval: approve proposal only (no device deployment)
