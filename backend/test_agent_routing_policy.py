@@ -135,6 +135,7 @@ def test_system_prompt_includes_controller_scope_contract():
 
     first_system_prompt = provider.calls[0]["messages"][0].content
     assert "## Controller Scope Contract" in first_system_prompt
+    assert "## Milestone 2 Foundation Baseline" in first_system_prompt
     assert "Reasoning policy: private_reasoning_structured_rationale_only" in first_system_prompt
     assert "If a requested capability is partial or not_implemented" in first_system_prompt
 

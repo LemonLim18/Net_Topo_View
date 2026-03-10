@@ -68,6 +68,7 @@ class InfoResponse(BaseModel):
     status: str = "ready"
     scope_contract: Optional[Dict[str, Any]] = None
     implementation_status: Optional[Dict[str, Any]] = None
+    milestone2_baseline: Optional[Dict[str, Any]] = None
 
 
 class ProposalReviewRequest(BaseModel):
@@ -235,6 +236,7 @@ async def get_info():
         status="ready",
         scope_contract=getattr(agent, "controller_scope_contract", None),
         implementation_status=getattr(agent, "controller_implementation_status", None),
+        milestone2_baseline=getattr(agent, "milestone2_baseline", None),
     )
 
 
@@ -245,7 +247,15 @@ async def get_controller_scope():
     return {
         "scope_contract": getattr(agent, "controller_scope_contract", None),
         "implementation_status": getattr(agent, "controller_implementation_status", None),
+        "milestone2_baseline": getattr(agent, "milestone2_baseline", None),
     }
+
+
+@router.get("/milestone-2-baseline")
+async def get_milestone2_baseline():
+    """Return the current backend baseline against the Milestone 2 grounding foundation."""
+    agent = _get_agent()
+    return getattr(agent, "milestone2_baseline", None)
 
 
 @router.post("/refresh")

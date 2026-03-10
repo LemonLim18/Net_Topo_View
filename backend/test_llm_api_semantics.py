@@ -2,6 +2,7 @@ import asyncio
 
 from llm import api as llm_api
 from llm.controller_scope import build_controller_implementation_status, build_controller_scope_contract
+from llm.milestone_baseline import build_milestone2_baseline
 
 
 class _FakeAgent:
@@ -28,6 +29,10 @@ class _FakeAgent:
     @property
     def controller_implementation_status(self):
         return build_controller_implementation_status(self.available_tools)
+
+    @property
+    def milestone2_baseline(self):
+        return build_milestone2_baseline(self.available_tools)
 
 
 def test_get_canonical_semantics_endpoint(monkeypatch):
@@ -95,6 +100,7 @@ def test_info_endpoint_returns_controller_scope_and_status(monkeypatch):
 
     assert payload.scope_contract["version"] == "phase0_step1_v1"
     assert payload.implementation_status["counts"]["implemented"] >= 1
+    assert payload.milestone2_baseline["version"] == "phase0_step2_v1"
     capability_names = {item["name"] for item in payload.implementation_status["capabilities"]}
     assert "bounded_self_correction" in capability_names
 
@@ -106,6 +112,18 @@ def test_scope_endpoint_returns_contract_and_baseline(monkeypatch):
 
     assert payload["scope_contract"]["mode"] == "human_in_the_loop"
     assert payload["implementation_status"]["readiness"] == "grounding_ready_but_not_action_complete"
+    assert payload["milestone2_baseline"]["counts"]["implemented"] >= 1
+
+
+def test_milestone2_baseline_endpoint_returns_foundation_report(monkeypatch):
+    monkeypatch.setattr(llm_api, "_get_agent", lambda: _FakeAgent())
+
+    payload = asyncio.run(llm_api.get_milestone2_baseline())
+
+    assert payload["version"] == "phase0_step2_v1"
+    reusable = set(payload["reusable_foundations"])
+    assert "authoritative_context_contract" in reusable
+    assert "grounded_answers_conflicts_and_policy_gates" in reusable
 
 
 def test_benchmark_cases_endpoint_returns_step26_categories(monkeypatch):

@@ -29,6 +29,7 @@ from llm.controller_scope import (
 )
 from llm.context_contract import classify_query
 from llm.context_state import get_context_state_manager
+from llm.milestone_baseline import build_milestone2_baseline, render_milestone2_baseline_prompt
 from llm.provider import LLMProvider, LLMMessage, LLMResponse, ToolCall
 from llm.tools import ToolRegistry
 from llm.context import ContextBuilder
@@ -82,6 +83,8 @@ internal tool used by the pipeline.  Always go through the 3-step sequence.
 - You NEVER talk directly to SSH.  All changes go through the approval gate.
 
 {controller_scope}
+
+{milestone2_baseline}
 
 ## Read-Only & Diagnostic Tools
 For information requests (show topology, list devices, check status, find path, 
@@ -1074,6 +1077,7 @@ class NetworkAgent:
     ) -> str:
         return SYSTEM_PROMPT.format(
             controller_scope=render_controller_scope_prompt(self.available_tools),
+            milestone2_baseline=render_milestone2_baseline_prompt(self.available_tools),
             network_context=self._build_network_context(
                 user_message=user_message,
                 routing_decision=routing_decision,
@@ -1139,6 +1143,11 @@ class NetworkAgent:
     def controller_implementation_status(self) -> Dict[str, Any]:
         """Return the current baseline of implemented, partial, and missing controller capabilities."""
         return build_controller_implementation_status(self.available_tools)
+
+    @property
+    def milestone2_baseline(self) -> Dict[str, Any]:
+        """Return the Milestone 2 foundation baseline derived from the current backend surface."""
+        return build_milestone2_baseline(self.available_tools)
 
     @property
     def available_tools(self) -> List[str]:
