@@ -1,0 +1,192 @@
+from __future__ import annotations
+
+import importlib.util
+from typing import Any, Dict, Sequence
+
+
+CONTROLLER_SCOPE_VERSION = "phase0_step1_v1"
+
+
+def build_controller_scope_contract() -> Dict[str, Any]:
+    return {
+        "version": CONTROLLER_SCOPE_VERSION,
+        "objective": (
+            "Operate as a grounded network action engine that answers from verified evidence, "
+            "creates only validated change artifacts, and keeps all network-state mutations behind human approval."
+        ),
+        "mode": "human_in_the_loop",
+        "chain_of_thought_policy": "private_reasoning_structured_rationale_only",
+        "goals": [
+            "Ground network answers in authoritative planned, live, telemetry, and knowledge evidence.",
+            "Prevent speculative CLI, playbook, or deployment output from bypassing validation.",
+            "Expose uncertainty, conflicts, and missing evidence honestly.",
+            "Support user-expected operational workflows for query, planning, approval, deployment, and debugging.",
+        ],
+        "in_scope": [
+            "Grounded network queries and troubleshooting.",
+            "Policy-gated intent parsing and change planning.",
+            "Validated vendor CLI and Ansible playbook generation.",
+            "Human-approved deployment and rollback workflows.",
+            "Grounding metadata, provenance, and controller observability.",
+        ],
+        "out_of_scope": [
+            "Autonomous production changes without explicit approval.",
+            "Raw user-visible chain-of-thought.",
+            "Pretending unsupported or partially implemented features are fully operational.",
+            "Speculative network facts without authoritative evidence.",
+        ],
+        "hard_rules": [
+            "Never claim current network state without evidence from tools, MCP resources, or grounded context.",
+            "Never generate raw CLI for direct execution outside the validated planning path.",
+            "Never execute, approve, or rollback network changes directly from the chat turn.",
+            "When capability status is partial or not_implemented, state the limitation and provide the safest supported path.",
+        ],
+    }
+
+
+def _module_exists(module_name: str) -> bool:
+    return importlib.util.find_spec(module_name) is not None
+
+
+def _capability(
+    name: str,
+    status: str,
+    summary: str,
+    evidence: Sequence[str],
+    next_gap: str = "",
+) -> Dict[str, Any]:
+    return {
+        "name": name,
+        "status": status,
+        "summary": summary,
+        "evidence": list(evidence),
+        "next_gap": next_gap,
+    }
+
+
+def build_controller_implementation_status(tool_names: Sequence[str]) -> Dict[str, Any]:
+    tool_set = {str(name) for name in tool_names or []}
+
+    def has_tools(*required: str) -> bool:
+        return all(tool in tool_set for tool in required)
+
+    capabilities = [
+        _capability(
+            name="grounded_query_routing",
+            status="implemented" if has_tools("get_context_health", "get_inventory_device", "compare_planned_vs_live") else "partial",
+            summary="Authoritative query routing, evidence prefetch, and grounding metadata are available for core query classes.",
+            evidence=[
+                "llm.context_contract",
+                "llm.answer_policy",
+                "llm.answer_grounding",
+                "tools:get_context_health,get_inventory_device,compare_planned_vs_live",
+            ],
+            next_gap="Broaden release gating so every answer class is machine-enforced, not only the current policy set.",
+        ),
+        _capability(
+            name="human_approval_gate",
+            status="implemented" if has_tools("parse_intent", "validate_intent", "plan_change") else "partial",
+            summary="Config changes flow through intent parsing, policy validation, planning, and proposal approval rather than direct execution.",
+            evidence=[
+                "llm.agent",
+                "llm.policy",
+                "llm.proposal",
+                "tools:parse_intent,validate_intent,plan_change",
+            ],
+            next_gap="Move more of the safety contract from prompt wording into explicit controller-state checks.",
+        ),
+        _capability(
+            name="instruction_hierarchy_contract",
+            status="partial",
+            summary="The agent has strong prompt rules, but the controller scope contract is only now being centralized and not all rules are hard-enforced yet.",
+            evidence=["llm.agent:SYSTEM_PROMPT", "llm.controller_scope"],
+            next_gap="Centralize all instruction hierarchy and make violation paths fail closed.",
+        ),
+        _capability(
+            name="bounded_self_correction",
+            status="not_implemented",
+            summary="The controller does not yet have a dedicated retry-and-observe loop for failed reads, malformed arguments, or invalid plans.",
+            evidence=["llm.agent:MAX_TOOL_ROUNDS"],
+            next_gap="Add bounded, evidence-driven retry policies with explicit escalation reasons.",
+        ),
+        _capability(
+            name="playbook_refinement",
+            status="partial" if _module_exists("ansible.api") else "not_implemented",
+            summary="A playbook refinement helper exists, but it is not yet represented as a fully enforced controller capability with bounded retries and release gates.",
+            evidence=["ansible.api:_ai_refine_playbook"],
+            next_gap="Integrate refinement, linting, dry-run checks, and retry limits into the main controller flow.",
+        ),
+        _capability(
+            name="generation_safety",
+            status="partial" if _module_exists("config_engine.validator") else "not_implemented",
+            summary="Template rendering, syntax validation, and policy validation exist, but dangerous command, unsupported-feature, and unsafe-template enforcement are incomplete.",
+            evidence=["config_engine.renderer", "config_engine.validator", "llm.policy"],
+            next_gap="Add Jinja safety checks, command-risk blocks, and stronger rollback viability checks.",
+        ),
+        _capability(
+            name="post_change_verification",
+            status="partial" if _module_exists("ansible.verifier") else "not_implemented",
+            summary="Verification hooks exist, but they are not yet a universal post-deploy success gate with correction or rollback recommendations.",
+            evidence=["ansible.verifier:PostChangeVerifier", "deploy.verifier:Verifier"],
+            next_gap="Enforce config, telemetry, incident, and drift verification before declaring success.",
+        ),
+        _capability(
+            name="mcp_semantic_alignment",
+            status="partial" if has_tools("compare_planned_vs_live") and _module_exists("mcp.resources") else "not_implemented",
+            summary="Canonical semantics mapping and MCP resources exist, but parity between MCP, REST, prompt context, and all controller decisions is not fully proven.",
+            evidence=["tools:get_canonical_semantics_map", "mcp.resources", "llm.api:/semantics"],
+            next_gap="Expand diagnostics and parity tests so every interface expresses the same state model.",
+        ),
+    ]
+
+    counts = {
+        "implemented": sum(1 for item in capabilities if item["status"] == "implemented"),
+        "partial": sum(1 for item in capabilities if item["status"] == "partial"),
+        "not_implemented": sum(1 for item in capabilities if item["status"] == "not_implemented"),
+    }
+
+    readiness = "grounding_ready_but_not_action_complete"
+    if counts["not_implemented"] == 0 and counts["partial"] == 0:
+        readiness = "operationally_complete"
+    elif counts["implemented"] == 0:
+        readiness = "not_ready"
+
+    return {
+        "version": CONTROLLER_SCOPE_VERSION,
+        "readiness": readiness,
+        "summary": (
+            "The backend already supports grounded querying and approval-gated planning, but action safety, bounded self-correction, "
+            "and post-change verification still require Milestone 3 hardening."
+        ),
+        "counts": counts,
+        "capabilities": capabilities,
+    }
+
+
+def render_controller_scope_prompt(tool_names: Sequence[str]) -> str:
+    contract = build_controller_scope_contract()
+    status = build_controller_implementation_status(tool_names)
+    capability_lines = "\n".join(
+        f"- {item['name']}: {item['status']} — {item['summary']}"
+        for item in status["capabilities"]
+    )
+    hard_rules = "\n".join(f"- {rule}" for rule in contract["hard_rules"])
+    in_scope = "\n".join(f"- {item}" for item in contract["in_scope"])
+    out_of_scope = "\n".join(f"- {item}" for item in contract["out_of_scope"])
+
+    return (
+        "## Controller Scope Contract\n"
+        f"Version: {contract['version']}\n"
+        f"Objective: {contract['objective']}\n"
+        f"Operating mode: {contract['mode']}\n"
+        f"Reasoning policy: {contract['chain_of_thought_policy']}\n\n"
+        "In scope:\n"
+        f"{in_scope}\n\n"
+        "Out of scope:\n"
+        f"{out_of_scope}\n\n"
+        "Hard rules:\n"
+        f"{hard_rules}\n\n"
+        "Current implementation baseline:\n"
+        f"{capability_lines}\n\n"
+        "If a requested capability is partial or not_implemented, state the limitation and provide the safest supported next step."
+    )

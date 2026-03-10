@@ -128,6 +128,17 @@ def test_inventory_query_prefetches_inventory_tool():
     assert "Grounding: planned;" in response["content"]
 
 
+def test_system_prompt_includes_controller_scope_contract():
+    import asyncio
+
+    provider, _ = asyncio.run(_run_chat("What is the management IP of SW1 in inventory?"))
+
+    first_system_prompt = provider.calls[0]["messages"][0].content
+    assert "## Controller Scope Contract" in first_system_prompt
+    assert "Reasoning policy: private_reasoning_structured_rationale_only" in first_system_prompt
+    assert "If a requested capability is partial or not_implemented" in first_system_prompt
+
+
 def test_planned_vs_live_query_prefetches_comparison_tool():
     import asyncio
 

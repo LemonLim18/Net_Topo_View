@@ -1,10 +1,33 @@
 import asyncio
 
 from llm import api as llm_api
+from llm.controller_scope import build_controller_implementation_status, build_controller_scope_contract
 
 
 class _FakeAgent:
     model_name = "test-model"
+
+    @property
+    def available_tools(self):
+        return [
+            "get_context_health",
+            "get_inventory_device",
+            "compare_planned_vs_live",
+            "parse_intent",
+            "validate_intent",
+            "plan_change",
+        ]
+
+    def get_history(self):
+        return []
+
+    @property
+    def controller_scope_contract(self):
+        return build_controller_scope_contract()
+
+    @property
+    def controller_implementation_status(self):
+        return build_controller_implementation_status(self.available_tools)
 
 
 def test_get_canonical_semantics_endpoint(monkeypatch):
@@ -63,6 +86,26 @@ def test_chat_endpoint_returns_grounding_meta(monkeypatch):
 
     assert payload.grounding_meta["answer_scope"] == "planned"
     assert payload.grounding_meta["source_used"] == ["local_db"]
+
+
+def test_info_endpoint_returns_controller_scope_and_status(monkeypatch):
+    monkeypatch.setattr(llm_api, "_get_agent", lambda: _FakeAgent())
+
+    payload = asyncio.run(llm_api.get_info())
+
+    assert payload.scope_contract["version"] == "phase0_step1_v1"
+    assert payload.implementation_status["counts"]["implemented"] >= 1
+    capability_names = {item["name"] for item in payload.implementation_status["capabilities"]}
+    assert "bounded_self_correction" in capability_names
+
+
+def test_scope_endpoint_returns_contract_and_baseline(monkeypatch):
+    monkeypatch.setattr(llm_api, "_get_agent", lambda: _FakeAgent())
+
+    payload = asyncio.run(llm_api.get_controller_scope())
+
+    assert payload["scope_contract"]["mode"] == "human_in_the_loop"
+    assert payload["implementation_status"]["readiness"] == "grounding_ready_but_not_action_complete"
 
 
 def test_benchmark_cases_endpoint_returns_step26_categories(monkeypatch):

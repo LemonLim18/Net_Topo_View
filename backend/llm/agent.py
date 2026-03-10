@@ -22,6 +22,11 @@ from typing import Any, Dict, List, Optional
 
 from llm.answer_policy import build_answer_policy, policy_status
 from llm.answer_grounding import build_answer_grounding, format_conflict_summary, format_grounding_summary
+from llm.controller_scope import (
+    build_controller_implementation_status,
+    build_controller_scope_contract,
+    render_controller_scope_prompt,
+)
 from llm.context_contract import classify_query
 from llm.context_state import get_context_state_manager
 from llm.provider import LLMProvider, LLMMessage, LLMResponse, ToolCall
@@ -75,6 +80,8 @@ internal tool used by the pipeline.  Always go through the 3-step sequence.
 - The system enforces policy, generates deterministic configs, and executes.
 - You NEVER generate raw CLI for direct execution.
 - You NEVER talk directly to SSH.  All changes go through the approval gate.
+
+{controller_scope}
 
 ## Read-Only & Diagnostic Tools
 For information requests (show topology, list devices, check status, find path, 
@@ -162,6 +169,7 @@ class NetworkAgent:
         network_tools.set_db_manager(db_manager)
         network_tools.set_intent_provider(self._provider)
         network_tools.register_all_tools(self._tools)
+        self._controller_scope_contract = build_controller_scope_contract()
 
         # M21: optional knowledge retriever for hybrid RAG
         self._retriever = retriever
@@ -1065,6 +1073,7 @@ class NetworkAgent:
         device_hostnames: Optional[List[str]] = None,
     ) -> str:
         return SYSTEM_PROMPT.format(
+            controller_scope=render_controller_scope_prompt(self.available_tools),
             network_context=self._build_network_context(
                 user_message=user_message,
                 routing_decision=routing_decision,
@@ -1120,6 +1129,16 @@ class NetworkAgent:
     def model_name(self) -> str:
         """Return the LLM model name."""
         return self._provider.model_name()
+
+    @property
+    def controller_scope_contract(self) -> Dict[str, Any]:
+        """Return the frozen controller scope contract used by the runtime."""
+        return dict(self._controller_scope_contract)
+
+    @property
+    def controller_implementation_status(self) -> Dict[str, Any]:
+        """Return the current baseline of implemented, partial, and missing controller capabilities."""
+        return build_controller_implementation_status(self.available_tools)
 
     @property
     def available_tools(self) -> List[str]:

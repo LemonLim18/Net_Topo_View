@@ -66,6 +66,8 @@ class InfoResponse(BaseModel):
     tools: list = []
     history_length: int = 0
     status: str = "ready"
+    scope_contract: Optional[Dict[str, Any]] = None
+    implementation_status: Optional[Dict[str, Any]] = None
 
 
 class ProposalReviewRequest(BaseModel):
@@ -231,7 +233,19 @@ async def get_info():
         tools=agent.available_tools,
         history_length=len(agent.get_history()),
         status="ready",
+        scope_contract=getattr(agent, "controller_scope_contract", None),
+        implementation_status=getattr(agent, "controller_implementation_status", None),
     )
+
+
+@router.get("/scope")
+async def get_controller_scope():
+    """Return the frozen controller scope contract and the current implementation baseline."""
+    agent = _get_agent()
+    return {
+        "scope_contract": getattr(agent, "controller_scope_contract", None),
+        "implementation_status": getattr(agent, "controller_implementation_status", None),
+    }
 
 
 @router.post("/refresh")
