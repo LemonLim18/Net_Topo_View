@@ -1,69 +1,120 @@
-try:
-    from .server import mcp, db, agent, pipeline
-except ImportError:  # pragma: no cover - direct script/test fallback
-    from mcp.server import mcp, db, agent, pipeline
+from __future__ import annotations
+
+import json
+from typing import Any, Dict
 
 try:
-    from deploy.models import ChangeRequest
+    from .server import mcp, db
+except ImportError:  # pragma: no cover - direct script/test fallback
+    from mcp.server import mcp, db
+
+try:
+    from llm import network_tools
 except ImportError:  # pragma: no cover - package import path
-    from ..deploy.models import ChangeRequest
-import json
+    from ..llm import network_tools
+
+
+_DEPRECATED_UNSAFE_MESSAGE = (
+    "Direct free-form command execution is not exposed through the MCP tool surface because it "
+    "would bypass the canonical authority and safety contracts. Use the authoritative inventory, "
+    "planned-vs-live comparison, config snapshot, and proposal workflows instead."
+)
+
+
+def _ensure_bindings() -> None:
+    network_tools.set_db_manager(db)
+
+
+def _tool_payload(tool_func, *args, **kwargs) -> Dict[str, Any]:
+    _ensure_bindings()
+    raw = tool_func(*args, **kwargs)
+    if isinstance(raw, str):
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError:
+            return {"message": raw}
+    if isinstance(raw, dict):
+        return raw
+    return {"value": raw}
+
 
 @mcp.tool()
-def list_devices() -> str:
-    """List all devices in the network with their management IP and status."""
-    devices = db.get_all_devices()
-    result = []
-    for d in devices:
-        result.append(f"{d.hostname} ({d.management_ip}) - {d.platform} [{d.status}]")
-    return "\n".join(result)
+def list_devices(scope: str = "both") -> str:
+    """List devices using canonical live, inventory, or merged semantics."""
+    return json.dumps(_tool_payload(network_tools.list_all_devices, scope=scope), ensure_ascii=False)
+
 
 @mcp.tool()
 def get_device_details(hostname: str) -> str:
-    """Get detailed information about a specific device."""
-    device = db.get_device_by_hostname(hostname)
-    if not device:
-        return "Device not found."
-    return json.dumps(device.dict(), indent=2, default=str)
+    """Get authoritative device details with inventory, live, and canonical planned-vs-live semantics."""
+    inventory = _tool_payload(network_tools.get_inventory_device, hostname)
+    live = _tool_payload(network_tools.get_device_details, hostname)
+    canonical = _tool_payload(network_tools.compare_planned_vs_live, hostname=hostname)
+    device_state = None
+    for item in canonical.get("devices") or []:
+        if str(item.get("hostname") or "").lower() == hostname.lower():
+            device_state = item
+            break
+    return json.dumps(
+        {
+            "hostname": hostname,
+            "inventory": inventory,
+            "live": live,
+            "canonical_state": device_state,
+            "authority_map_version": canonical.get("authority_map_version") or inventory.get("authority_map_version"),
+            "semantics_map": canonical.get("semantics_map") or inventory.get("semantics_map"),
+        },
+        ensure_ascii=False,
+    )
+
+
+@mcp.tool()
+def get_canonical_semantics() -> str:
+    """Return the canonical authority map and semantics contract shared across MCP, REST, prompt context, and grounding."""
+    return json.dumps(_tool_payload(network_tools.get_canonical_semantics_map), ensure_ascii=False)
+
+
+@mcp.tool()
+def compare_device_state(hostname: str = "") -> str:
+    """Compare planned/source-of-truth and live device state using the canonical authority map."""
+    return json.dumps(_tool_payload(network_tools.compare_planned_vs_live, hostname=hostname), ensure_ascii=False)
+
 
 @mcp.tool()
 def run_command(hostname: str, command: str) -> str:
-    """Run a show command on a network device. 
-    WARNING: Use only for read-only commands (show, display).
-    """
-    # We can reuse the agent's tool or call driver directly
-    # For consistency, let's use the agent's tool functionality if exposed, 
-    # or direct driver call via a helper.
-    # Since agent has network_tools, let's see if we can use them.
-    # But network_tools might expect an Agent context.
-    # Let's direct call for now using M1 logic via a helper in future, 
-    # but for this MVP, we will simulate or use the generic 'run_show_command' if M1 is ready.
-    # The 'NetworkAgent' has 'tools'. Let's use `agent.tools.run_show_command`.
-    
-    # We need to find the tool instance. 
-    # M5 tools are classes.
-    # Let's instantiate the tool? Or just use a direct driver call for simplicity here.
-    # Actually, `backend.llm.network_tools.RunShowCommand` exists.
-    
-    from drivers.factory import DriverFactory
-    from security.credentials import get_credentials # Mock/Real
-    
-    device = db.get_device_by_hostname(hostname)
-    if not device:
-        return "Device not found."
-        
-    # TODO: Real SSH call implementation
-    # driver = DriverFactory.get_driver(device.platform)
-    # session = driver.connect(device.management_ip, ...)
-    # output = driver.send_command(session, command)
-    return f"Mock Output for '{command}' on {hostname}\nInterface GigabitEthernet1 is UP..."
+    """Fail closed for free-form operational commands to avoid fabricated or unsafe command execution."""
+    return json.dumps(
+        {
+            "error": _DEPRECATED_UNSAFE_MESSAGE,
+            "hostname": hostname,
+            "command": command,
+            "allowed_alternatives": [
+                "get_device_details",
+                "compare_device_state",
+                "get_canonical_semantics",
+            ],
+            "status": "rejected",
+        },
+        ensure_ascii=False,
+    )
+
 
 @mcp.tool()
 def plan_deployment(description: str, devices: list[str]) -> str:
-    """Plan a configuration deployment.
-    Args:
-        description: Natural language description of the change (e.g. 'Configure VLAN 10')
-        devices: List of hostnames to apply the change to
-    """
-    # This would use M5 Agent to generate config and M4 to create a Change Request
-    return f"Deployment plan created for '{description}' on {devices}. Change Request ID: #101 (Pending Approval)"
+    """Fail closed for free-form deployment planning requests that lack a validated structured intent."""
+    return json.dumps(
+        {
+            "error": (
+                "Free-form deployment planning through MCP is disabled until a validated structured intent "
+                "is supplied through the approval-gated change-planning path."
+            ),
+            "description": description,
+            "devices": devices,
+            "status": "rejected",
+            "allowed_alternatives": [
+                "Use the REST or chat proposal workflow backed by parse_intent, validate_intent, and plan_change",
+                "Use get_canonical_semantics to inspect the authority map before planning",
+            ],
+        },
+        ensure_ascii=False,
+    )

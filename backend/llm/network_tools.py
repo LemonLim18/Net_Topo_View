@@ -25,8 +25,10 @@ from llm.context_contract import (
 from llm.context_state import get_context_state_manager
 from llm.refresh_state import get_refresh_state_manager
 from llm.semantics import (
+    AUTHORITY_MAP_VERSION,
     annotate_inventory_records,
     annotate_planned_links,
+    build_canonical_authority_map,
     build_canonical_device_matrix,
     build_canonical_semantics_map,
     canonical_device_record,
@@ -472,6 +474,8 @@ def _build_canonical_state_payload(hostname: str = "") -> Dict[str, Any]:
         "captured_at": inventory_captured_at,
         "inventory_source_metadata": _inventory_source_metadata(inventory_source, inventory_captured_at),
         "live_source_metadata": _topology_source_metadata(topo),
+        "authority_map_version": AUTHORITY_MAP_VERSION,
+        "authority_map": build_canonical_authority_map(),
         "semantics_map": build_canonical_semantics_map(),
         "source_matrix": build_source_matrix(),
     }
@@ -483,6 +487,9 @@ def get_canonical_semantics_map() -> str:
     """
     return json.dumps(
         {
+            "version": AUTHORITY_MAP_VERSION,
+            "authority_map_version": AUTHORITY_MAP_VERSION,
+            "authority_map": build_canonical_authority_map(),
             "semantics_map": build_canonical_semantics_map(),
             "source_matrix": build_source_matrix(),
         },
@@ -547,6 +554,7 @@ def list_all_devices(scope: str = "live") -> str:
                 "scope_requested": "live",
                 "source_used": "crawler_cache",
                 "source_metadata": _topology_source_metadata(topo),
+                "authority_map_version": AUTHORITY_MAP_VERSION,
                 "semantics_map": build_canonical_semantics_map(),
             },
             ensure_ascii=False,
@@ -572,6 +580,7 @@ def list_all_devices(scope: str = "live") -> str:
                 "scope_requested": "inventory",
                 "source_used": inventory_source,
                 "source_metadata": _inventory_source_metadata(inventory_source, inventory_captured_at),
+                "authority_map_version": AUTHORITY_MAP_VERSION,
                 "semantics_map": build_canonical_semantics_map(),
             },
             ensure_ascii=False,
@@ -623,7 +632,8 @@ def list_all_devices(scope: str = "live") -> str:
                 "live": _topology_source_metadata(topo),
                 "inventory": _inventory_source_metadata(inventory_source, inventory_captured_at),
             },
-                "semantics_map": build_canonical_semantics_map(),
+            "authority_map_version": AUTHORITY_MAP_VERSION,
+            "semantics_map": build_canonical_semantics_map(),
         },
         ensure_ascii=False,
     )
@@ -960,6 +970,7 @@ def get_inventory_device(hostname: str) -> str:
                 "source_used": "netbox",
                 "captured_at": record.get("updated_at"),
                 "source_metadata": _inventory_source_metadata("netbox", record.get("updated_at")),
+                "authority_map_version": AUTHORITY_MAP_VERSION,
                 "semantics_map": build_canonical_semantics_map(),
             },
             ensure_ascii=False,
@@ -995,6 +1006,7 @@ def get_inventory_device(hostname: str) -> str:
                 "source_used": "local_db",
                 "captured_at": record.get("updated_at"),
                 "source_metadata": _inventory_source_metadata("local_db", record.get("updated_at")),
+                "authority_map_version": AUTHORITY_MAP_VERSION,
                 "semantics_map": build_canonical_semantics_map(),
             },
             ensure_ascii=False,
@@ -1006,6 +1018,7 @@ def get_inventory_device(hostname: str) -> str:
             "source_used": "local_db" if local_records else "netbox",
             "captured_at": None,
             "source_metadata": _inventory_source_metadata("netbox" if netbox_records else "local_db", None, confidence=0.0),
+            "authority_map_version": AUTHORITY_MAP_VERSION,
             "semantics_map": build_canonical_semantics_map(),
         },
         ensure_ascii=False,
@@ -1034,6 +1047,7 @@ def search_inventory_devices(query: str, limit: int = 20) -> str:
             "source_used": source,
             "captured_at": captured_at,
             "source_metadata": _inventory_source_metadata(source, captured_at),
+            "authority_map_version": AUTHORITY_MAP_VERSION,
             "semantics_map": build_canonical_semantics_map(),
         },
         ensure_ascii=False,
@@ -1065,6 +1079,7 @@ def get_planned_topology() -> str:
             "captured_at": captured_at,
             "source_metadata": _planned_topology_source_metadata(source, captured_at, confidence=0.85 if source == "netbox" else 0.75),
             "canonical_devices": device_matrix,
+            "authority_map_version": AUTHORITY_MAP_VERSION,
             "semantics_map": build_canonical_semantics_map(),
         },
         ensure_ascii=False,

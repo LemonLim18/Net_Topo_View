@@ -38,6 +38,7 @@ from llm.context_state import get_context_state_manager
 from llm.milestone_baseline import build_milestone2_baseline, render_milestone2_baseline_prompt
 from llm.provider import LLMProvider, LLMMessage, LLMResponse, ToolCall
 from llm.system_prompt import build_system_prompt
+from llm.semantics import AUTHORITY_MAP_VERSION, SEMANTICS_VERSION
 from llm.tools import ToolRegistry
 from llm.context import ContextBuilder
 from llm.proposal import ProposalManager, ConfigProposal
@@ -1900,6 +1901,11 @@ class NetworkAgent:
             tool_args=tool_args,
             knowledge_used=knowledge_used,
         )
+        grounding_meta["authority_map"] = {
+            "version": AUTHORITY_MAP_VERSION,
+            "semantics_version": SEMANTICS_VERSION,
+            "query_class": query_class,
+        }
         grounding_meta["answer_policy"] = policy_status(answer_policy or {}, tool_args or {})
         if controller_flow is not None:
             grounding_meta["controller_flow"] = controller_flow

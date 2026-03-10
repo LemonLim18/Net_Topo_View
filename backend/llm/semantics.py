@@ -2,8 +2,21 @@ from __future__ import annotations
 
 from typing import Any, Dict, Iterable, List, Optional
 
+from llm.context_contract import (
+    AUTHORITY_MATRIX,
+    CONTEXT_DOMAIN_CONFIG,
+    CONTEXT_DOMAIN_DEPLOYMENT,
+    CONTEXT_DOMAIN_INCIDENTS,
+    CONTEXT_DOMAIN_INVENTORY,
+    CONTEXT_DOMAIN_LIVE_TOPOLOGY,
+    CONTEXT_DOMAIN_PLANNED_TOPOLOGY,
+    CONTEXT_DOMAIN_TELEMETRY,
+    build_source_matrix,
+)
+
 
 SEMANTICS_VERSION = "phase6_step22_v1"
+AUTHORITY_MAP_VERSION = "phase4_step13_v1"
 
 DEVICE_PRESENCE_STATES = {
     "planned_and_live": "Device exists in source-of-truth inventory/planned topology and is also present in live discovery.",
@@ -52,13 +65,53 @@ def build_canonical_semantics_map() -> Dict[str, Any]:
     }
 
 
+def _serialize_domain_contract(domain: str) -> Dict[str, Any]:
+    contract = AUTHORITY_MATRIX[domain]
+    return {
+        "domain": contract.domain,
+        "canonical_sources": list(contract.canonical_sources),
+        "fallback_sources": list(contract.fallback_sources),
+        "description": contract.description,
+        "live_max_age_minutes": contract.live_max_age_minutes,
+        "warm_max_age_minutes": contract.warm_max_age_minutes,
+    }
+
+
+def build_canonical_authority_map() -> Dict[str, Any]:
+    """Return the single authority map shared by prompt, REST, MCP, and grounding paths."""
+    ordered_domains = (
+        CONTEXT_DOMAIN_INVENTORY,
+        CONTEXT_DOMAIN_PLANNED_TOPOLOGY,
+        CONTEXT_DOMAIN_LIVE_TOPOLOGY,
+        CONTEXT_DOMAIN_TELEMETRY,
+        CONTEXT_DOMAIN_CONFIG,
+        CONTEXT_DOMAIN_INCIDENTS,
+        CONTEXT_DOMAIN_DEPLOYMENT,
+    )
+    return {
+        "version": AUTHORITY_MAP_VERSION,
+        "semantics_version": SEMANTICS_VERSION,
+        "context_domains": {
+            domain: _serialize_domain_contract(domain)
+            for domain in ordered_domains
+        },
+        "query_source_matrix": build_source_matrix(),
+        "canonical_semantics": build_canonical_semantics_map(),
+    }
+
+
 def build_canonical_semantics_prompt_text() -> str:
     semantics = build_canonical_semantics_map()
+    authority_map = build_canonical_authority_map()
     lines = ["## Canonical Semantics"]
+    lines.append(f"Authority map version: {authority_map['version']}")
     lines.append(f"Semantics version: {semantics['version']}")
     lines.append("- presence_state: planned_and_live | planned_only | live_only | unknown")
     lines.append("- interface_presence_state: planned_and_live | planned_only | live_only | unknown")
     lines.append("- management_ip_alignment: match | mismatch | planned_only | live_only | unknown")
+    lines.append("- inventory authority: planned inventory uses NetBox first, then local DB fallback")
+    lines.append("- live authority: live topology uses crawler cache first, with SDN as fallback where defined")
+    lines.append("- operational freshness: telemetry, incidents, and deployment state remain source-native and must not be flattened into planned-state labels")
     lines.append("- Rule: inventory/planned-only objects must be labeled planned_only everywhere until live discovery confirms them.")
     return "\n".join(lines)
 
