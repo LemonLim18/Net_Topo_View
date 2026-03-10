@@ -316,6 +316,40 @@ def test_live_query_returns_live_grounding_and_confidence():
     assert "source_age=" in response["content"]
 
 
+def test_live_query_telemetry_failure_self_corrects_with_fallback():
+    import asyncio
+
+    provider = _FakeProvider()
+    agent = NetworkAgent(
+        db_manager=_AgentFakeDb(),
+        provider=provider,
+        retriever=None,
+        proposal_manager=_MemoryProposalManager(),
+    )
+
+    original_execute = agent._tools.execute
+
+    def _execute_with_telemetry_failure(name, arguments):
+        if name == "get_device_telemetry_snapshot":
+            return json.dumps({"error": "telemetry backend timeout"})
+        return original_execute(name, arguments)
+
+    agent._tools.execute = _execute_with_telemetry_failure  # type: ignore[method-assign]
+
+    response = asyncio.run(_run_chat_with_agent(agent, "Is SW1 down right now?"))
+
+    self_correction = response["grounding_meta"]["self_correction"]
+    assert self_correction["attempts"]
+    assert any(item["failure_kind"] == "missing_telemetry" for item in self_correction["attempts"])
+    assert any(
+        any(action["name"] == "get_digital_twin" for action in item["revised_actions"])
+        for item in self_correction["attempts"]
+    )
+    assert response["grounding_meta"]["controller_flow"]["release"]["decision"] == "allow"
+    assert "telemetry" in response["grounding_meta"]["controller_flow"]["observe"]["satisfied_domains"]
+    assert not self_correction["escalations"]
+
+
 def test_troubleshooting_query_prefetches_multi_source_evidence():
     import asyncio
 
@@ -425,7 +459,12 @@ def test_required_tool_policy_executes_before_accepting_early_answer():
     import asyncio
 
     provider = _FakeProvider()
-    agent = NetworkAgent(db_manager=_AgentFakeDb(), provider=provider, retriever=None)
+    agent = NetworkAgent(
+        db_manager=_AgentFakeDb(),
+        provider=provider,
+        retriever=None,
+        proposal_manager=_MemoryProposalManager(),
+    )
 
     original_build_route_plan = agent._build_route_plan
 

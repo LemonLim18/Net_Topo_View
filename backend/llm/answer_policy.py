@@ -90,6 +90,25 @@ def build_answer_policy(
     return policy
 
 
+def _arguments_satisfy_requirement(tool_name: str, required_args: Dict[str, Any], executed_args: Optional[Dict[str, Any]]) -> bool:
+    if executed_args is None:
+        return False
+    if executed_args == required_args:
+        return True
+    if not required_args:
+        return True
+    if tool_name == "get_device_telemetry_snapshot":
+        required_hostname = str(required_args.get("hostname") or "").lower()
+        executed_hostname = str(executed_args.get("hostname") or "").lower()
+        required_limit = required_args.get("limit")
+        executed_limit = executed_args.get("limit")
+        if required_hostname and required_hostname != executed_hostname:
+            return False
+        if isinstance(required_limit, int) and isinstance(executed_limit, int):
+            return executed_limit > 0 and executed_limit <= required_limit
+    return False
+
+
 def policy_status(policy: Dict[str, Any], tool_args: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
     required_calls: List[ToolCall] = list(policy.get("required_tool_calls") or [])
     executed_required: List[str] = []
@@ -97,9 +116,7 @@ def policy_status(policy: Dict[str, Any], tool_args: Dict[str, Dict[str, Any]]) 
 
     for call in required_calls:
         executed_args = tool_args.get(call.name)
-        if executed_args == call.arguments:
-            executed_required.append(call.name)
-        elif executed_args is not None and not call.arguments:
+        if _arguments_satisfy_requirement(call.name, call.arguments, executed_args):
             executed_required.append(call.name)
         else:
             missing_required.append(call.name)

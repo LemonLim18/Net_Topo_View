@@ -24,6 +24,7 @@ from llm.answer_policy import build_answer_policy, policy_status
 from llm.answer_grounding import build_answer_grounding, format_conflict_summary, format_grounding_summary
 from llm.controller_flow import build_controller_flow_state
 from llm.controller_policy import build_controller_policy, render_controller_policy_prompt
+from llm.controller_self_correction import build_self_correction_state, plan_self_correction
 from llm.controller_scope import (
     build_controller_implementation_status,
     build_controller_scope_contract,
@@ -181,8 +182,9 @@ class NetworkAgent:
         # Track tool calls for proposal detection
         tool_results: Dict[str, Any] = {}  # tool_name -> last result
         tool_args: Dict[str, Dict] = {}    # tool_name -> last args
+        self_correction_state = build_self_correction_state()
 
-        self._apply_prefetched_route_tools(messages, route_plan, tool_results, tool_args)
+        self._apply_prefetched_route_tools(messages, route_plan, tool_results, tool_args, self_correction_state, user_message)
 
         # Get tool declarations
         tool_declarations = self._tools.get_declarations(route_plan["allowed_tools"])
@@ -203,9 +205,10 @@ class NetworkAgent:
                     user_message,
                     tool_results,
                     tool_args,
+                    self_correction_state,
                 ):
                     continue
-                if self._enforce_required_tool_policy(messages, route_plan, tool_results, tool_args):
+                if self._enforce_required_tool_policy(messages, route_plan, tool_results, tool_args, self_correction_state, user_message):
                     continue
                 flow_state, flow_action = self._evaluate_controller_flow(
                     messages,
@@ -213,6 +216,7 @@ class NetworkAgent:
                     route_plan,
                     tool_results,
                     tool_args,
+                    self_correction_state,
                     knowledge_used=bool(knowledge_ctx),
                 )
                 if flow_action == "reroute":
@@ -224,6 +228,7 @@ class NetworkAgent:
                     route_plan.get("answer_policy"),
                     knowledge_used=bool(knowledge_ctx),
                     controller_flow=flow_state,
+                    self_correction_state=self_correction_state,
                 )
                 response_content = response.content
                 if flow_action == "block":
@@ -278,17 +283,19 @@ class NetworkAgent:
             # Execute each tool and add results
             for tc in response.tool_calls:
                 logger.info("Executing tool: %s(%s)", tc.name, tc.arguments)
-                result = self._execute_controlled_tool_call(
+                result, effective_tool_call = self._execute_controlled_tool_call(
                     tc,
                     route_plan,
                     messages,
                     tool_results,
                     tool_args,
+                    user_message,
+                    self_correction_state,
                 )
 
                 # Track for proposal detection
-                tool_results[tc.name] = result
-                tool_args[tc.name] = tc.arguments
+                tool_results[effective_tool_call.name] = result
+                tool_args[effective_tool_call.name] = effective_tool_call.arguments
 
                 messages.append(LLMMessage(
                     role="tool",
@@ -297,8 +304,8 @@ class NetworkAgent:
                 ))
 
         # If we exhausted all rounds, ensure controller and answer policies have run, then return whatever we have
-        self._enforce_controller_policy(messages, route_plan, user_message, tool_results, tool_args)
-        self._enforce_required_tool_policy(messages, route_plan, tool_results, tool_args)
+        self._enforce_controller_policy(messages, route_plan, user_message, tool_results, tool_args, self_correction_state)
+        self._enforce_required_tool_policy(messages, route_plan, tool_results, tool_args, self_correction_state, user_message)
         final_response = await self._provider.generate(
             messages=messages,
             tools=None,  # Force text response
@@ -310,6 +317,7 @@ class NetworkAgent:
             route_plan,
             tool_results,
             tool_args,
+            self_correction_state,
             knowledge_used=bool(knowledge_ctx),
         )
         final_response_content = final_response.content
@@ -322,6 +330,7 @@ class NetworkAgent:
             route_plan.get("answer_policy"),
             knowledge_used=bool(knowledge_ctx),
             controller_flow=flow_state,
+            self_correction_state=self_correction_state,
         )
 
         self._history.append(
@@ -1019,7 +1028,9 @@ class NetworkAgent:
         messages: List[LLMMessage],
         tool_results: Dict[str, Any],
         tool_args: Dict[str, Dict[str, Any]],
-    ) -> str:
+        user_message: str,
+        self_correction_state: Dict[str, Any],
+    ) -> tuple[str, ToolCall]:
         violation = self._validate_tool_call_contract(tool_call, route_plan, tool_results)
         if violation is not None:
             self._record_tool_message(
@@ -1028,24 +1039,140 @@ class NetworkAgent:
                 violation,
                 f"Controller policy blocked tool call: {tool_call.name}({json.dumps(tool_call.arguments, ensure_ascii=False)})",
             )
-            return violation
-        return self._tools.execute(tool_call.name, tool_call.arguments)
+            return violation, tool_call
+        result = self._tools.execute(tool_call.name, tool_call.arguments)
+        tool_results[tool_call.name] = result
+        tool_args[tool_call.name] = tool_call.arguments
+        messages.append(
+            LLMMessage(
+                role="tool",
+                content=result,
+                name=tool_call.name,
+            )
+        )
+        return self._apply_self_correction(
+            tool_call,
+            result,
+            route_plan,
+            messages,
+            tool_results,
+            tool_args,
+            user_message,
+            self_correction_state,
+        )
 
     def _execute_controller_tool(
         self,
         name: str,
         arguments: Dict[str, Any],
+        route_plan: Dict[str, Any],
         messages: List[LLMMessage],
         tool_results: Dict[str, Any],
         tool_args: Dict[str, Dict[str, Any]],
         note: str,
+        self_correction_state: Dict[str, Any],
+        user_message: str,
     ) -> str:
         tool_call = ToolCall(name=name, arguments=arguments)
         result = self._tools.execute(name, arguments)
-        tool_results[name] = result
-        tool_args[name] = arguments
+        tool_results[tool_call.name] = result
+        tool_args[tool_call.name] = tool_call.arguments
         self._record_tool_message(messages, tool_call, result, note)
+        result, _effective_tool_call = self._apply_self_correction(
+            tool_call,
+            result,
+            route_plan=route_plan,
+            messages=messages,
+            tool_results=tool_results,
+            tool_args=tool_args,
+            user_message=user_message,
+            self_correction_state=self_correction_state,
+        )
         return result
+
+    def _apply_self_correction(
+        self,
+        tool_call: ToolCall,
+        result: str,
+        route_plan: Dict[str, Any],
+        messages: List[LLMMessage],
+        tool_results: Dict[str, Any],
+        tool_args: Dict[str, Dict[str, Any]],
+        user_message: str,
+        self_correction_state: Dict[str, Any],
+    ) -> tuple[str, ToolCall]:
+        current_tool = tool_call
+        current_result = result
+
+        while True:
+            plan = plan_self_correction(
+                user_message=user_message,
+                tool_name=current_tool.name,
+                arguments=current_tool.arguments,
+                raw_result=current_result,
+                route_plan=route_plan,
+                tool_results=tool_results,
+                state=self_correction_state,
+            )
+            if plan is None:
+                return current_result, current_tool
+
+            entry = plan["entry"]
+            if plan["decision"] == "escalate":
+                self_correction_state.setdefault("attempts", []).append(entry)
+                self_correction_state.setdefault("escalations", []).append(
+                    {
+                        "tool_name": current_tool.name,
+                        "failure_kind": entry["failure_kind"],
+                        "reason": plan["escalation_reason"],
+                    }
+                )
+                return current_result, current_tool
+
+            revised_tool_calls = plan.get("revised_tool_calls", [])
+            tool_call_summary = ", ".join(
+                f"{tc.name}({json.dumps(tc.arguments, ensure_ascii=False)})"
+                for tc in revised_tool_calls
+            )
+            messages.append(
+                LLMMessage(
+                    role="assistant",
+                    content=(
+                        f"Controller self-correction retry for {current_tool.name}: {tool_call_summary}"
+                    ),
+                    tool_calls=revised_tool_calls,
+                )
+            )
+
+            retry_success = False
+            final_retry_result = current_result
+            final_retry_tool = current_tool
+            for revised_call in revised_tool_calls:
+                retry_result = self._tools.execute(revised_call.name, revised_call.arguments)
+                tool_results[revised_call.name] = retry_result
+                tool_args[revised_call.name] = revised_call.arguments
+                messages.append(
+                    LLMMessage(
+                        role="tool",
+                        content=retry_result,
+                        name=revised_call.name,
+                    )
+                )
+                final_retry_result = retry_result
+                final_retry_tool = revised_call
+                retry_payload = self._json_payload(retry_result)
+                if not retry_payload.get("error") and not retry_payload.get("controller_policy_error"):
+                    retry_success = True
+                    break
+
+            entry["outcome"] = "retry_succeeded" if retry_success else "retry_failed"
+            self_correction_state.setdefault("attempts", []).append(entry)
+
+            if retry_success:
+                return final_retry_result, final_retry_tool
+
+            current_tool = final_retry_tool
+            current_result = final_retry_result
 
     def _execute_recovery_tool_calls(
         self,
@@ -1055,6 +1182,8 @@ class NetworkAgent:
         tool_results: Dict[str, Any],
         tool_args: Dict[str, Dict[str, Any]],
         note: str,
+        self_correction_state: Dict[str, Any],
+        user_message: str,
     ) -> None:
         if not tool_calls:
             return
@@ -1071,15 +1200,14 @@ class NetworkAgent:
             )
         )
         for tc in tool_calls:
-            result = self._execute_controlled_tool_call(tc, route_plan, messages, tool_results, tool_args)
-            tool_results[tc.name] = result
-            tool_args[tc.name] = tc.arguments
-            messages.append(
-                LLMMessage(
-                    role="tool",
-                    content=result,
-                    name=tc.name,
-                )
+            self._execute_controlled_tool_call(
+                tc,
+                route_plan,
+                messages,
+                tool_results,
+                tool_args,
+                user_message,
+                self_correction_state,
             )
 
     def _enforce_controller_policy(
@@ -1089,6 +1217,7 @@ class NetworkAgent:
         user_message: str,
         tool_results: Dict[str, Any],
         tool_args: Dict[str, Dict[str, Any]],
+        self_correction_state: Dict[str, Any],
     ) -> bool:
         controller_policy = route_plan.get("controller_policy") or {}
         if not controller_policy.get("requires_change_workflow"):
@@ -1100,10 +1229,13 @@ class NetworkAgent:
             self._execute_controller_tool(
                 "parse_intent",
                 {"user_message": user_message},
+                route_plan,
                 messages,
                 tool_results,
                 tool_args,
                 "Controller policy enforcing change workflow step: parse_intent",
+                self_correction_state,
+                user_message,
             )
             executed = True
 
@@ -1123,10 +1255,13 @@ class NetworkAgent:
             self._execute_controller_tool(
                 "validate_intent",
                 {"intent_json": intent_json, "user_role": controller_policy.get("default_user_role", "operator")},
+                route_plan,
                 messages,
                 tool_results,
                 tool_args,
                 "Controller policy enforcing change workflow step: validate_intent",
+                self_correction_state,
+                user_message,
             )
             executed = True
 
@@ -1141,10 +1276,13 @@ class NetworkAgent:
             self._execute_controller_tool(
                 "plan_change",
                 {"intent_json": intent_json},
+                route_plan,
                 messages,
                 tool_results,
                 tool_args,
                 "Controller policy enforcing change workflow step: plan_change",
+                self_correction_state,
+                user_message,
             )
             executed = True
 
@@ -1156,6 +1294,8 @@ class NetworkAgent:
         route_plan: Dict[str, Any],
         tool_results: Dict[str, Any],
         tool_args: Dict[str, Dict[str, Any]],
+        self_correction_state: Dict[str, Any],
+        user_message: str,
     ) -> None:
         prefetch_tools: List[ToolCall] = route_plan.get("prefetch_tools", [])
         if not prefetch_tools:
@@ -1184,6 +1324,16 @@ class NetworkAgent:
                     name=tc.name,
                 )
             )
+            self._apply_self_correction(
+                tc,
+                result,
+                route_plan,
+                messages,
+                tool_results,
+                tool_args,
+                user_message,
+                self_correction_state,
+            )
 
     def _enforce_required_tool_policy(
         self,
@@ -1191,6 +1341,8 @@ class NetworkAgent:
         route_plan: Dict[str, Any],
         tool_results: Dict[str, Any],
         tool_args: Dict[str, Dict[str, Any]],
+        self_correction_state: Dict[str, Any],
+        user_message: str,
     ) -> bool:
         policy = route_plan.get("answer_policy") or {}
         status = policy_status(policy, tool_args)
@@ -1232,6 +1384,16 @@ class NetworkAgent:
                     name=tc.name,
                 )
             )
+            self._apply_self_correction(
+                tc,
+                result,
+                route_plan,
+                messages,
+                tool_results,
+                tool_args,
+                user_message,
+                self_correction_state,
+            )
 
         return True
 
@@ -1241,6 +1403,7 @@ class NetworkAgent:
         route_plan: Dict[str, Any],
         tool_results: Dict[str, Any],
         tool_args: Dict[str, Dict[str, Any]],
+        self_correction_state: Dict[str, Any],
         knowledge_used: bool = False,
     ) -> Dict[str, Any]:
         return build_controller_flow_state(
@@ -1253,6 +1416,7 @@ class NetworkAgent:
             allowed_tools=route_plan.get("allowed_tools") or [],
             answer_policy=route_plan.get("answer_policy"),
             controller_policy=route_plan.get("controller_policy"),
+            self_correction_state=self_correction_state,
             knowledge_used=knowledge_used,
         )
 
@@ -1263,6 +1427,7 @@ class NetworkAgent:
         route_plan: Dict[str, Any],
         tool_results: Dict[str, Any],
         tool_args: Dict[str, Dict[str, Any]],
+        self_correction_state: Dict[str, Any],
         knowledge_used: bool = False,
     ) -> tuple[Dict[str, Any], str]:
         flow_state = self._build_controller_flow_state(
@@ -1270,6 +1435,7 @@ class NetworkAgent:
             route_plan,
             tool_results,
             tool_args,
+            self_correction_state,
             knowledge_used=knowledge_used,
         )
         release = flow_state.get("release", {})
@@ -1288,6 +1454,8 @@ class NetworkAgent:
                     tool_results,
                     tool_args,
                     "Controller flow enforcing missing authoritative evidence",
+                    self_correction_state,
+                    user_message,
                 )
                 return flow_state, "reroute"
             return flow_state, "block"
@@ -1381,6 +1549,7 @@ class NetworkAgent:
         answer_policy: Optional[Dict[str, Any]] = None,
         knowledge_used: bool = False,
         controller_flow: Optional[Dict[str, Any]] = None,
+        self_correction_state: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         grounding_meta = build_answer_grounding(
             query_class=query_class,
@@ -1391,6 +1560,8 @@ class NetworkAgent:
         grounding_meta["answer_policy"] = policy_status(answer_policy or {}, tool_args or {})
         if controller_flow is not None:
             grounding_meta["controller_flow"] = controller_flow
+        if self_correction_state is not None:
+            grounding_meta["self_correction"] = self_correction_state
         return grounding_meta
 
     def _render_grounded_content(self, content: str, grounding_meta: Dict[str, Any]) -> str:

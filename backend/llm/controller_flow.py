@@ -36,6 +36,61 @@ def _successful_tool_result(raw: Any) -> bool:
     return not payload.get("error") and not payload.get("controller_policy_error")
 
 
+def _non_empty_sequence(value: Any) -> bool:
+    return isinstance(value, list) and len(value) > 0
+
+
+def _has_authoritative_evidence(tool_name: str, payload: Dict[str, Any], arguments: Dict[str, Any]) -> bool:
+    if payload.get("error") or payload.get("controller_policy_error"):
+        return False
+
+    if tool_name == "get_inventory_device":
+        return isinstance(payload.get("device"), dict) and bool(payload.get("device"))
+    if tool_name == "search_inventory_devices":
+        return bool(payload.get("total")) or _non_empty_sequence(payload.get("matches"))
+    if tool_name == "list_inventory_devices":
+        return bool(payload.get("total")) or _non_empty_sequence(payload.get("devices"))
+    if tool_name == "get_planned_topology":
+        return bool(payload.get("total")) or _non_empty_sequence(payload.get("devices")) or _non_empty_sequence(payload.get("links"))
+    if tool_name == "compare_planned_vs_live":
+        return any(
+            [
+                bool(payload.get("total")),
+                _non_empty_sequence(payload.get("devices")),
+                _non_empty_sequence(payload.get("planned_only")),
+                _non_empty_sequence(payload.get("live_only")),
+                _non_empty_sequence(payload.get("management_ip_mismatches")),
+            ]
+        )
+    if tool_name == "get_digital_twin":
+        return any(
+            [
+                _non_empty_sequence(payload.get("devices")),
+                _non_empty_sequence(payload.get("edges")),
+                isinstance(payload.get("summary"), dict) and bool(payload.get("summary")),
+            ]
+        )
+    if tool_name == "get_topology_summary":
+        return bool(payload.get("device_count") or payload.get("total_devices") or payload.get("node_count"))
+    if tool_name == "get_device_details":
+        return bool(payload.get("hostname") or payload.get("device") or payload.get("mgmt_ip"))
+    if tool_name == "find_path":
+        return _non_empty_sequence(payload.get("path"))
+    if tool_name == "list_all_devices":
+        return bool(payload.get("total")) or _non_empty_sequence(payload.get("devices"))
+    if tool_name == "get_device_telemetry_snapshot":
+        return bool(payload.get("total")) or _non_empty_sequence(payload.get("metrics"))
+    if tool_name == "get_device_running_config":
+        return bool(payload.get("config") or payload.get("running_config") or payload.get("rendered_config"))
+    if tool_name == "get_recent_incidents":
+        return "incidents" in payload and isinstance(payload.get("incidents"), list)
+    if tool_name in {"get_knowledge_base_status", "list_templates"}:
+        return bool(payload.get("total")) or _non_empty_sequence(payload.get("documents")) or _non_empty_sequence(payload.get("templates"))
+    if tool_name == "get_template_schema":
+        return isinstance(payload.get("schema"), dict) and bool(payload.get("schema"))
+    return True
+
+
 def _effective_required_domains(
     query_class: str,
     declared_domains: Sequence[str],
@@ -195,6 +250,7 @@ def build_controller_flow_state(
     allowed_tools: Sequence[str],
     answer_policy: Optional[Dict[str, Any]] = None,
     controller_policy: Optional[Dict[str, Any]] = None,
+    self_correction_state: Optional[Dict[str, Any]] = None,
     knowledge_used: bool = False,
 ) -> Dict[str, Any]:
     required_domains = _effective_required_domains(query_class, declared_required_domains, hostnames)
@@ -206,6 +262,8 @@ def build_controller_flow_state(
         if payload.get("controller_policy_error"):
             blocked_tools.append(tool_name)
         if not _successful_tool_result(tool_results.get(tool_name)):
+            continue
+        if not _has_authoritative_evidence(tool_name, payload, arguments):
             continue
         for domain in _domains_for_tool(tool_name, arguments):
             if domain in domain_coverage and tool_name not in domain_coverage[domain]:
@@ -277,6 +335,7 @@ def build_controller_flow_state(
                 "missing_steps": missing_sequence,
                 "satisfied": not missing_sequence,
             },
+            "self_correction": self_correction_state or {},
         },
         "release": {
             "decision": decision,
