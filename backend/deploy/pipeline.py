@@ -6,7 +6,7 @@ Manages the lifecycle of a configuration change:
 2. APPROVE: (Manual step, handled by API/Status check)
 3. SNAPSHOT_PRE: Backup current config (M1)
 4. APPLY: Push config (M1)
-5. VERIFY: Run checks (verifier.py) -> Rollback on failure
+5. VERIFY: Run checks (verifier.py) -> recommend manual rollback on failure
 6. COMMIT: Mark success + Snapshot Post (M1)
 """
 
@@ -22,7 +22,6 @@ from db.models import ConfigSnapshot
 from drivers.factory import DriverFactory
 from drivers.base import BaseDriver
 from llm.network_tools import generate_config, generate_rollback
-from deploy.rollback import RollbackEngine
 from deploy.models import (
     Job, JobStatus, PipelineStage, ChangeRequest, RequestStatus,
     DeploymentRepository, JobStep, ExecutionEngine
@@ -147,6 +146,7 @@ class DeploymentPipeline:
         Execute Stages 3-6 (Snapshot -> Apply -> Verify -> Commit).
         Assumes Stage 2 (Approval) is already granted.
         """
+        current_stage = PipelineStage.SNAPSHOT_PRE
         
         # 0. Setup Driver
         driver = None
@@ -175,6 +175,7 @@ class DeploymentPipeline:
 
             # Connect
             self.repo.update_job_status(job_id, JobStatus.RUNNING, PipelineStage.SNAPSHOT_PRE)
+            current_stage = PipelineStage.SNAPSHOT_PRE
             driver = DriverFactory.create(
                 driver_type, host=host, username=username, password=password
             )
@@ -198,6 +199,7 @@ class DeploymentPipeline:
             # Stage 4: APPLY  (M22 — Ansible-first with SSH fallback)
             # -----------------------------------------------------------
             self.repo.update_job_status(job_id, JobStatus.RUNNING, PipelineStage.APPLY)
+            current_stage = PipelineStage.APPLY
             self.repo.log_step(job_id, PipelineStage.APPLY, "Pushing configuration")
 
             engine = job.execution_engine or ExecutionEngine.SSH_FALLBACK
@@ -247,10 +249,11 @@ class DeploymentPipeline:
             # Stage 5: VERIFY
             # -----------------------------------------------------------
             self.repo.update_job_status(job_id, JobStatus.RUNNING, PipelineStage.VERIFY)
+            current_stage = PipelineStage.VERIFY
             verifier = Verifier(driver)
             
             # 1. Run checks
-            # 2. If any fail -> Rollback
+            # 2. If any fail -> require explicit human-approved rollback
             
             check_results = verifier.run_checks(checks)
             failed_checks = [r for r in check_results if not r.pass_]
@@ -260,7 +263,7 @@ class DeploymentPipeline:
             self.repo.log_step(job_id, PipelineStage.VERIFY, log_msg)
 
             if failed_checks:
-                logger.warning(f"Verification failed ({len(failed_checks)} checks). Rolling back.")
+                logger.warning(f"Verification failed ({len(failed_checks)} checks). Manual rollback review is required.")
                 raise RuntimeError("Verification failed")
 
             # -----------------------------------------------------------
@@ -281,15 +284,9 @@ class DeploymentPipeline:
             return True
 
         except Exception as e:
-            # -----------------------------------------------------------
-            # ROLLBACK (On Failure)
-            # -----------------------------------------------------------
             err_msg = str(e)
             logger.error(f"Job {job_id} failed: {err_msg}")
-            
-            self.repo.update_job_status(job_id, JobStatus.RUNNING, PipelineStage.ROLLBACK, err_msg)
-            self.repo.log_step(job_id, PipelineStage.ROLLBACK, f"Triggering rollback due to: {err_msg}")
-            
+
             if driver:
                 try:
                     driver.disconnect()
@@ -297,21 +294,12 @@ class DeploymentPipeline:
                     pass
                 driver = None
 
-            rollback_success = RollbackEngine(self.db_manager).execute_rollback(
-                job,
-                host=host,
-                username=username,
-                password=password,
-                driver_type=driver_type,
-            )
+            self.repo.update_job_status(job_id, JobStatus.FAILED, current_stage, err_msg)
             self.repo.log_step(
                 job_id,
                 PipelineStage.ROLLBACK,
-                "Rollback attempted via snapshot-aware rollback engine." if rollback_success else "Rollback engine failed to restore the job.",
+                "Automatic rollback is disabled in Milestone 3. Review the rollback plan, post-change verification report, and approve rollback explicitly if needed.",
             )
-
-            status = JobStatus.ROLLED_BACK if rollback_success else JobStatus.FAILED
-            self.repo.update_job_status(job_id, status, PipelineStage.ROLLBACK, err_msg)
             return False
 
         finally:

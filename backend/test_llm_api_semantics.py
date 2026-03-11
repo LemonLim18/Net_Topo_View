@@ -174,6 +174,8 @@ def test_scope_endpoint_returns_contract_and_baseline(monkeypatch):
     assert payload["scope_contract"]["mode"] == "human_in_the_loop"
     assert payload["implementation_status"]["readiness"] == "grounding_ready_but_not_action_complete"
     assert payload["milestone2_baseline"]["counts"]["implemented"] >= 1
+    capability_names = {item["name"] for item in payload["implementation_status"]["capabilities"]}
+    assert "bounded_action_autonomy" in capability_names
 
 
 def test_milestone2_baseline_endpoint_returns_foundation_report(monkeypatch):

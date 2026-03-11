@@ -4,7 +4,7 @@ import pytest
 
 from config_engine.renderer import TemplateRenderer
 from config_engine.safety import validate_action_artifact, validate_cli_artifact, validate_playbook_yaml
-from llm.api import approve_proposal
+from llm.api import approve_proposal, rollback_proposal
 from llm.proposal import ConfigProposal
 
 
@@ -261,7 +261,7 @@ def test_approve_proposal_returns_post_change_findings_and_persists_artifact(mon
     assert proposal.action_artifact["post_change_verification"]["outcome"] == "needs_review"
 
 
-def test_approve_proposal_marks_rolled_back_when_execution_fails(monkeypatch):
+def test_approve_proposal_marks_failed_when_execution_fails(monkeypatch):
     proposal = ConfigProposal(
         id="proposal-3",
         status="pending",
@@ -285,10 +285,6 @@ def test_approve_proposal_marks_rolled_back_when_execution_fails(monkeypatch):
 
         def approve(self, proposal_id):
             self.proposal.status = "approved"
-            return self.proposal
-
-        def mark_rolled_back(self, proposal_id):
-            self.proposal.status = "rolled_back"
             return self.proposal
 
         def mark_failed(self, proposal_id):
@@ -321,7 +317,7 @@ def test_approve_proposal_marks_rolled_back_when_execution_fails(monkeypatch):
             return False
 
         def get_all_jobs(self):
-            return [{"id": 404, "status": "rolled_back", "stage": "rollback", "error_message": "Verification failed"}]
+            return [{"id": 404, "status": "failed", "stage": "verify", "error_message": "Verification failed"}]
 
         def get_job_logs(self, job_id):
             return [{"stage": "rollback", "details": "rollback attempted"}]
@@ -343,14 +339,49 @@ def test_approve_proposal_marks_rolled_back_when_execution_fails(monkeypatch):
             "version": "phase5_step15_v1",
             "generated_at": "2026-03-11T10:05:00+00:00",
             "outcome": "failed",
-            "recommended_action": {"action": "manual_correction", "reason": "rollback already attempted"},
+            "recommended_action": {"action": "rollback_recommended", "reason": "verification failed and rollback data is available"},
             "checks": {"command_success": {"status": "fail"}},
         },
     )
 
     payload = asyncio.run(approve_proposal("proposal-3", user={"username": "admin", "role": "admin"}))
 
-    assert payload["status"] == "rolled_back"
-    assert payload["recommended_action"]["action"] == "manual_correction"
-    assert proposal.status == "rolled_back"
-    assert proposal.action_artifact["deployment_outcome"]["status"] == "rolled_back"
+    assert payload["status"] == "failed"
+    assert payload["recommended_action"]["action"] == "rollback_recommended"
+    assert proposal.status == "failed"
+    assert proposal.action_artifact["deployment_outcome"]["status"] == "failed"
+
+
+def test_rollback_proposal_prepares_failed_proposal_without_claiming_execution(monkeypatch):
+    proposal = ConfigProposal(
+        id="proposal-4",
+        status="failed",
+        target_device="R1",
+        target_device_id=0,
+        vendor="cisco_ios",
+        rollback_config="no router bgp 65001",
+        action_artifact={"rollback_intent": {"available_device_count": 1, "strategy": "known_reverse_operations"}},
+    )
+
+    class _Mgr:
+        def __init__(self):
+            self.proposal = proposal
+
+        def get(self, proposal_id):
+            return self.proposal if proposal_id == self.proposal.id else None
+
+        def update_action_artifact(self, proposal_id, action_artifact):
+            self.proposal.action_artifact = action_artifact
+            return self.proposal
+
+    class _Agent:
+        proposal_manager = _Mgr()
+
+    monkeypatch.setattr("llm.api._agent", _Agent())
+    monkeypatch.setattr("llm.api._pipeline", None)
+
+    payload = asyncio.run(rollback_proposal("proposal-4", user={"username": "admin", "role": "admin"}))
+
+    assert payload["status"] == "rollback_prepared"
+    assert proposal.status == "failed"
+    assert proposal.action_artifact["rollback_execution"]["status"] == "prepared"

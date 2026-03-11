@@ -1,6 +1,7 @@
 from db.manager import DatabaseManager
 from db.models import ConfigSnapshot, Device
 from config_engine.rollback_planner import build_rollback_plan
+from deploy.verifier import VerificationCheck, VerificationResult
 from deploy.models import Job, JobStatus, PipelineStage
 from deploy.pipeline import DeploymentPipeline
 from deploy.rollback import RollbackEngine
@@ -123,3 +124,69 @@ def test_rollback_engine_prefers_snapshot_restore(tmp_path, monkeypatch):
     assert ok is True
     assert pushed
     assert pushed[0][0] == "hostname SW1"
+
+
+def test_execute_job_failure_requires_manual_rollback(tmp_path, monkeypatch):
+    db = _build_db(tmp_path)
+    device_id = db.upsert_device(
+        Device(hostname="SW1", management_ip="10.0.0.2", vendor="cisco_ios", status="active")
+    )
+    pipeline = DeploymentPipeline(db)
+    request_id = pipeline.create_change_request("test", "tester", "desc")
+    job_id = pipeline.add_job(request_id, device_id)
+
+    with db._connect() as conn:
+        conn.execute(
+            "UPDATE jobs SET generated_config = ?, rollback_config = ?, status = ?, stage = ? WHERE id = ?",
+            ("hostname SW1\ninterface Loopback0", "default interface Loopback0", JobStatus.PENDING.value, PipelineStage.PLAN.value, job_id),
+        )
+
+    class _FakeResult:
+        def __init__(self, success=True, error_message="", output="ok"):
+            self.success = success
+            self.error_message = error_message
+            self.output = output
+
+    class _FakeDriver:
+        def connect(self):
+            return None
+
+        def disconnect(self):
+            return None
+
+        def get_running_config(self):
+            return "hostname SW1\n"
+
+        def push_config(self, commands):
+            return _FakeResult(success=True)
+
+    monkeypatch.setattr("deploy.pipeline.DriverFactory.create", lambda *args, **kwargs: _FakeDriver())
+    monkeypatch.setattr(
+        "deploy.pipeline.Verifier.run_checks",
+        lambda self, checks: [
+            VerificationResult(
+                check=checks[0],
+                pass_=False,
+                details="neighbor not established",
+                raw_output="BGP Idle",
+            )
+        ],
+    )
+
+    ok = pipeline.execute_job(
+        job_id,
+        host="10.0.0.2",
+        username="u",
+        password="p",
+        driver_type="cisco_ios",
+        checks=[VerificationCheck(name="bgp", check_type="command_output", target="show bgp summary", expected="Established")],
+    )
+
+    assert ok is False
+    jobs = pipeline.get_all_jobs()
+    job = next(item for item in jobs if item["id"] == job_id)
+    assert job["status"] == "failed"
+    assert job["stage"] == "verify"
+
+    logs = pipeline.get_job_logs(job_id)
+    assert any("Automatic rollback is disabled" in log["details"] for log in logs)

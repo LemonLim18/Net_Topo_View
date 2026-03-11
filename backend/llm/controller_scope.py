@@ -139,10 +139,17 @@ def build_controller_implementation_status(tool_names: Sequence[str]) -> Dict[st
         ),
         _capability(
             name="post_change_verification",
-            status="partial" if _module_exists("ansible.verifier") else "not_implemented",
-            summary="Verification hooks exist, but they are not yet a universal post-deploy success gate with correction or rollback recommendations.",
-            evidence=["ansible.verifier:PostChangeVerifier", "deploy.verifier:Verifier"],
-            next_gap="Enforce config, telemetry, incident, and drift verification before declaring success.",
+            status="implemented" if _module_exists("llm.post_change_verification") and _module_exists("deploy.verifier") else ("partial" if _module_exists("deploy.verifier") else "not_implemented"),
+            summary="Post-deploy execution now produces a deterministic verification report spanning config presence, deployment outcome, telemetry freshness, incidents, drift, and correction or rollback guidance.",
+            evidence=["llm.post_change_verification", "llm.api:/proposals/{id}/approve", "deploy.verifier:Verifier"],
+            next_gap="Keep rollback execution explicitly human-approved while expanding richer verification evidence and operator tooling.",
+        ),
+        _capability(
+            name="bounded_action_autonomy",
+            status="implemented" if _module_exists("llm.post_change_verification") and _module_exists("deploy.pipeline") else "partial",
+            summary="The controller may auto-retry read, validation, and refinement paths, but deployment and rollback execution remain explicit human-approved actions.",
+            evidence=["llm.controller_scope", "llm.api:/proposals/{id}/approve", "llm.api:/proposals/{id}/rollback", "deploy.pipeline"],
+            next_gap="Extend the same explicit autonomy boundary into every operator-facing deployment surface and audit trail.",
         ),
         _capability(
             name="mcp_semantic_alignment",
@@ -170,7 +177,7 @@ def build_controller_implementation_status(tool_names: Sequence[str]) -> Dict[st
         "readiness": readiness,
         "summary": (
             "The backend already supports grounded querying and approval-gated planning, but action safety, bounded self-correction, "
-            "and post-change verification still require Milestone 3 hardening."
+            "and bounded execution autonomy still require Milestone 3 hardening."
         ),
         "counts": counts,
         "capabilities": capabilities,

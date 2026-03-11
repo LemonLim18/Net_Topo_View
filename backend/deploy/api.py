@@ -136,7 +136,10 @@ async def execute_job(
         driver_type=exec_params.driver_type,
     )
     if not success:
-        return {"status": "failed", "message": "Execution failed (rolled back if possible)"}
+        return {
+            "status": "failed",
+            "message": "Execution failed. Automatic rollback is disabled; review logs and approve rollback explicitly if needed.",
+        }
     return {"status": "success", "message": "Deployment completed successfully"}
 
 @router.get("/jobs/{job_id}/logs")

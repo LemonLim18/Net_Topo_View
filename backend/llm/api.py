@@ -110,6 +110,70 @@ def _persist_post_change_verification(
     return updated or mgr.get(proposal_id)
 
 
+def _persist_rollback_execution(
+    mgr,
+    proposal_id: str,
+    proposal,
+    status: str,
+    details: Dict[str, Any],
+):
+    action_artifact = dict(proposal.action_artifact or {})
+    action_artifact["rollback_execution"] = {
+        "status": status,
+        "updated_at": details.get("updated_at"),
+        "mode": details.get("mode"),
+        "summary": details.get("summary"),
+        "job_id": details.get("job_id"),
+    }
+    updated = mgr.update_action_artifact(proposal_id, action_artifact)
+    return updated or mgr.get(proposal_id)
+
+
+def _load_pipeline_job(job_id: int):
+    if not _pipeline:
+        return None
+    from deploy.models import ExecutionEngine, Job, JobStatus, PipelineStage
+
+    with _pipeline.db_manager._connect() as conn:
+        row = conn.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
+        if not row:
+            return None
+        return Job(
+            id=row["id"],
+            request_id=row["request_id"],
+            device_id=row["device_id"],
+            status=JobStatus(row["status"]),
+            stage=PipelineStage(row["stage"]),
+            snapshot_pre_id=row["snapshot_pre_id"],
+            snapshot_post_id=row["snapshot_post_id"],
+            generated_config=row["generated_config"],
+            rollback_config=row["rollback_config"],
+            error_message=row["error_message"],
+            execution_engine=ExecutionEngine(row["execution_engine"]) if row["execution_engine"] else ExecutionEngine.SSH_FALLBACK,
+            ansible_playbook=row["ansible_playbook"] if row["ansible_playbook"] else None,
+        )
+
+
+def _resolve_device_access(proposal):
+    creds = None
+    if _vault and proposal.target_device_id > 0:
+        try:
+            creds = _vault.get(proposal.target_device_id, "SSH")
+        except Exception as e:
+            logger.warning("Failed to fetch credentials: %s", e)
+
+    ssh_host = proposal.target_device
+    if _pipeline and proposal.target_device_id > 0:
+        try:
+            dev = _pipeline.db_manager.get_device_by_id(proposal.target_device_id)
+            if dev and dev.management_ip:
+                ssh_host = dev.management_ip
+        except Exception as e:
+            logger.warning("Could not resolve management IP: %s", e)
+
+    return ssh_host, creds
+
+
 class BenchmarkRunRequest(BaseModel):
     """Optional benchmark filters for the LLM regression suite."""
 
@@ -747,10 +811,7 @@ async def approve_proposal(
             jobs = _pipeline.get_all_jobs()
             job_state = next((row for row in jobs if row.get("id") == job_id), {})
             job_status = str(job_state.get("status") or "failed").lower()
-            if job_status == "rolled_back":
-                proposal = mgr.mark_rolled_back(proposal_id)
-            else:
-                proposal = mgr.mark_failed(proposal_id)
+            proposal = mgr.mark_failed(proposal_id)
             proposal = _persist_post_change_verification(
                 mgr,
                 proposal_id,
@@ -759,8 +820,8 @@ async def approve_proposal(
                 execution_status=job_status,
             )
             return {
-                "status": job_status,
-                "message": f"Deployment to {proposal.target_device} failed; review the post-change verification report and recommended recovery action.",
+                "status": "failed",
+                "message": f"Deployment to {proposal.target_device} failed; automatic rollback is disabled, so review the post-change verification report and approve rollback explicitly if needed.",
                 "job_id": job_id,
                 "request_id": req_id,
                 "proposal": proposal.model_dump(),
@@ -815,48 +876,96 @@ async def rollback_proposal(
     proposal = mgr.get(proposal_id)
     if not proposal:
         raise HTTPException(404, f"Proposal {proposal_id} not found")
-    if proposal.status != "deployed":
+    if proposal.status not in {"deployed", "failed"}:
         raise HTTPException(
-            409, f"Proposal is '{proposal.status}', expected 'deployed'"
+            409, f"Proposal is '{proposal.status}', expected 'deployed' or 'failed'"
         )
 
-    if not proposal.rollback_config:
-        raise HTTPException(
-            422, "No rollback commands available for this proposal"
-        )
+    action_artifact = proposal.action_artifact or {}
+    rollback_intent = action_artifact.get("rollback_intent") if isinstance(action_artifact, dict) else {}
+    job = _load_pipeline_job(proposal.job_id) if proposal.job_id else None
+    rollback_available = bool(
+        str(proposal.rollback_config or "").strip()
+        or (isinstance(rollback_intent, dict) and int(rollback_intent.get("available_device_count") or 0) > 0)
+        or (job and getattr(job, "snapshot_pre_id", None))
+    )
+    if not rollback_available:
+        raise HTTPException(422, "No rollback data is available for this proposal")
 
     # If pipeline is available, try to execute rollback via the pipeline
-    if _pipeline and proposal.job_id:
+    if _pipeline and proposal.job_id and job:
         try:
             from deploy.rollback import RollbackEngine
-            from deploy.models import Job, JobStatus, PipelineStage
 
-            # Get the job and apply rollback
-            jobs = _pipeline.get_all_jobs()
-            target_job = None
-            for j in jobs:
-                if j.get("id") == proposal.job_id:
-                    target_job = j
-                    break
+            ssh_host, creds = _resolve_device_access(proposal)
+            if creds:
+                rollback_success = await run_in_threadpool(
+                    RollbackEngine(_pipeline.db_manager).execute_rollback,
+                    job,
+                    ssh_host,
+                    creds["username"],
+                    creds["password"],
+                    proposal.vendor,
+                )
+                if rollback_success:
+                    proposal = mgr.mark_rolled_back(proposal_id)
+                    proposal = _persist_rollback_execution(
+                        mgr,
+                        proposal_id,
+                        proposal,
+                        "executed",
+                        {
+                            "updated_at": proposal.updated_at,
+                            "mode": "pipeline_explicit_admin",
+                            "summary": f"Rollback executed on {proposal.target_device} after explicit admin approval.",
+                            "job_id": proposal.job_id,
+                        },
+                    )
+                    return {
+                        "status": "rolled_back",
+                        "message": f"Rollback executed for {proposal.target_device}",
+                        "rollback_config": proposal.rollback_config,
+                        "proposal": proposal.model_dump(),
+                    }
+                proposal = _persist_rollback_execution(
+                    mgr,
+                    proposal_id,
+                    proposal,
+                    "execution_failed",
+                    {
+                        "updated_at": proposal.updated_at,
+                        "mode": "pipeline_explicit_admin",
+                        "summary": f"Rollback execution failed for {proposal.target_device}; review rollback commands and snapshot state manually.",
+                        "job_id": proposal.job_id,
+                    },
+                )
+                return {
+                    "status": "rollback_failed",
+                    "message": f"Rollback execution failed for {proposal.target_device}. Review rollback data manually.",
+                    "rollback_config": proposal.rollback_config,
+                    "proposal": proposal.model_dump(),
+                }
 
-            # Mark as rolled back regardless of pipeline result
-            mgr.mark_rolled_back(proposal_id)
-
-            return {
-                "status": "rolled_back",
-                "message": f"Rollback commands prepared for {proposal.target_device}",
-                "rollback_config": proposal.rollback_config,
-                "proposal": mgr.get(proposal_id).model_dump(),
-            }
         except Exception as e:
             logger.error("Rollback via pipeline failed: %s", e)
             # Fall through to manual rollback
 
-    # Manual rollback (no pipeline)
-    mgr.mark_rolled_back(proposal_id)
+    proposal = _persist_rollback_execution(
+        mgr,
+        proposal_id,
+        proposal,
+        "prepared",
+        {
+            "updated_at": proposal.updated_at,
+            "mode": "manual_preparation",
+            "summary": f"Rollback data prepared for explicit operator execution on {proposal.target_device}.",
+            "job_id": proposal.job_id,
+        },
+    )
     return {
-        "status": "rolled_back",
-        "message": f"Proposal marked as rolled back. Apply these commands to {proposal.target_device}:",
+        "status": "rollback_prepared",
+        "message": f"Rollback approval accepted, but execution remains manual for {proposal.target_device}. Review and apply the rollback data explicitly.",
         "rollback_config": proposal.rollback_config,
-        "proposal": mgr.get(proposal_id).model_dump(),
+        "rollback_intent": rollback_intent,
+        "proposal": proposal.model_dump(),
     }
