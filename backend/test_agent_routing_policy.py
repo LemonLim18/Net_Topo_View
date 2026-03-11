@@ -350,14 +350,14 @@ def test_planned_vs_live_query_prefetches_comparison_tool():
     assert any(message.name == "compare_planned_vs_live" for message in tool_messages)
 
 
-def test_planned_vs_live_query_exposes_digital_twin_tool():
+def test_planned_vs_live_query_reserves_digital_twin_tool_until_step19_unlock():
     import asyncio
 
     provider, _ = asyncio.run(_run_chat("Compare planned vs live state for SW1"))
 
     first_call = provider.calls[0]
     tool_names = {tool["name"] for tool in first_call["tools"]}
-    assert "get_digital_twin" in tool_names
+    assert "get_digital_twin" not in tool_names
 
 
 def test_planned_vs_live_query_returns_mixed_grounding():
@@ -421,11 +421,15 @@ def test_live_query_telemetry_failure_self_corrects_with_fallback():
     assert self_correction["attempts"]
     assert any(item["failure_kind"] == "missing_telemetry" for item in self_correction["attempts"])
     assert any(
+        any(action["name"] == "get_recent_incidents" for action in item["revised_actions"])
+        for item in self_correction["attempts"]
+    )
+    assert not any(
         any(action["name"] == "get_digital_twin" for action in item["revised_actions"])
         for item in self_correction["attempts"]
     )
-    assert response["grounding_meta"]["controller_flow"]["release"]["decision"] == "allow"
-    assert "telemetry" in response["grounding_meta"]["controller_flow"]["observe"]["satisfied_domains"]
+    assert response["grounding_meta"]["controller_flow"]["release"]["decision"] == "reroute"
+    assert "telemetry" in response["grounding_meta"]["controller_flow"]["observe"]["missing_domains"]
     assert not self_correction["escalations"]
 
 
@@ -443,14 +447,15 @@ def test_troubleshooting_query_prefetches_multi_source_evidence():
     assert "get_recent_incidents" in tool_names
 
 
-def test_change_planning_route_exposes_change_intelligence_tool():
+def test_change_planning_route_reserves_advanced_differentiators_until_step19_unlock():
     import asyncio
 
     provider, _ = asyncio.run(_run_chat("Plan change for VLAN 20 on SW1"))
 
     first_call = provider.calls[0]
     tool_names = {tool["name"] for tool in first_call["tools"]}
-    assert "analyze_change_intelligence" in tool_names
+    assert "analyze_change_intelligence" not in tool_names
+    assert "get_digital_twin" not in tool_names
 
 
 def test_planned_vs_live_answer_surfaces_management_ip_conflict():

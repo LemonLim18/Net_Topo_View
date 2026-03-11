@@ -27,6 +27,7 @@ try:
         summarize_proposals,
         summarize_validation_outcomes,
     )
+    from llm.advanced_differentiators import build_advanced_differentiator_status
     from llm import network_tools
     from llm.proposal import ProposalManager
     from rag.context_bundle import ContextBundleBuilder
@@ -44,14 +45,16 @@ except ImportError:  # pragma: no cover - package import path
         summarize_proposals,
         summarize_validation_outcomes,
     )
+    from ..llm.advanced_differentiators import build_advanced_differentiator_status
     from ..llm import network_tools
     from ..llm.proposal import ProposalManager
     from ..rag.context_bundle import ContextBundleBuilder
 
 try:
-    from .server import db, mcp
+    from .server import agent as controller_agent, db, mcp
 except ImportError:  # pragma: no cover - direct test/runtime fallback
     from mcp.server import db, mcp
+    controller_agent = None
 
 
 logger = logging.getLogger("mcp.resources")
@@ -243,7 +246,30 @@ def _build_canonical_device_state_payload() -> Dict[str, Any]:
     return _tool_payload(network_tools.compare_planned_vs_live)
 
 
+def _controller_implementation_status() -> Optional[Dict[str, Any]]:
+    return getattr(controller_agent, "controller_implementation_status", None) if controller_agent is not None else None
+
+
+def _advanced_differentiator_resource_payload(feature_name: str) -> Optional[Dict[str, Any]]:
+    status = build_advanced_differentiator_status(
+        _controller_implementation_status(),
+        feature_name=feature_name,
+    )
+    if status["availability"] == "enabled":
+        return None
+    return {
+        "status": "reserved",
+        "message": f"Advanced differentiator '{feature_name}' remains reserved until Milestone 3 stability is proven.",
+        "stability_gate": status,
+    }
+
+
 def _build_digital_twin_payload(hostname: Optional[str] = None) -> Dict[str, Any]:
+    reserved = _advanced_differentiator_resource_payload("digital_twin")
+    if reserved is not None:
+        if hostname:
+            reserved["hostname"] = hostname
+        return reserved
     if hostname:
         return _tool_payload(network_tools.get_digital_twin, hostname=hostname)
     return _tool_payload(network_tools.get_digital_twin)

@@ -152,6 +152,13 @@ def build_controller_implementation_status(tool_names: Sequence[str]) -> Dict[st
             next_gap="Extend the same explicit autonomy boundary into every operator-facing deployment surface and audit trail.",
         ),
         _capability(
+            name="advanced_differentiator_reservation",
+            status="implemented" if _module_exists("llm.advanced_differentiators") else "partial",
+            summary="Advanced differentiators such as digital-twin reasoning, change-outcome learning, policy simulation, and autonomous remediation are reserved behind a stability gate until Milestone 3 validation is explicitly accepted.",
+            evidence=["llm.advanced_differentiators", "llm.api:/advanced-differentiators", "rag.api:/digital-twin/preview", "agent.api:/agent/plan"],
+            next_gap="Unlock these surfaces only after the controller reaches operational stability and operators explicitly enable them.",
+        ),
+        _capability(
             name="mcp_semantic_alignment",
             status="partial" if has_tools("compare_planned_vs_live") and _module_exists("mcp.resources") else "not_implemented",
             summary="Canonical semantics mapping and MCP resources exist, but parity between MCP, REST, prompt context, and all controller decisions is not fully proven.",
@@ -177,7 +184,7 @@ def build_controller_implementation_status(tool_names: Sequence[str]) -> Dict[st
         "readiness": readiness,
         "summary": (
             "The backend already supports grounded querying and approval-gated planning, but action safety, bounded self-correction, "
-            "and bounded execution autonomy still require Milestone 3 hardening."
+            "bounded execution autonomy, and advanced-differentiator reservation still require Milestone 3 hardening."
         ),
         "counts": counts,
         "capabilities": capabilities,

@@ -27,6 +27,7 @@ from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 
 from db.manager import DatabaseManager
+from llm.advanced_differentiators import ensure_advanced_differentiator_available
 
 logger = logging.getLogger("agent.api")
 
@@ -178,6 +179,11 @@ def _require_agent():
     return _agent
 
 
+def _require_autonomous_remediation_gate() -> dict:
+    implementation_status = getattr(_agent, "controller_implementation_status", None) if _agent is not None else None
+    return ensure_advanced_differentiator_available("autonomous_remediation", implementation_status)
+
+
 _PLAN_SYSTEM = """\
 You are analysing a network change request for an autonomous agent workflow.
 Return ONLY valid JSON matching this exact schema — no markdown, no prose:
@@ -316,6 +322,7 @@ async def plan_action(req: PlanRequest):
 
     The frontend displays the plan for user review before execution.
     """
+    _require_autonomous_remediation_gate()
     agent = _require_agent()
 
     plan_data = await _llm_plan(agent, req.message, req.domain, req.context)
@@ -365,6 +372,7 @@ async def execute_plan(req: ExecuteRequest):
       "revise"   — regenerate with a different approach
       "cancel"   — discard the plan, return empty response
     """
+    _require_autonomous_remediation_gate()
     plan = _load_plan(req.plan_id)
     if not plan:
         raise HTTPException(404, f"Plan '{req.plan_id}' not found or expired")

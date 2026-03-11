@@ -1,5 +1,7 @@
 import asyncio
 
+import pytest
+
 from llm import api as llm_api
 from llm.controller_observability import clear_latest_controller_chat_snapshot, record_controller_chat_snapshot
 from llm.controller_scope import build_controller_implementation_status, build_controller_scope_contract
@@ -105,6 +107,7 @@ def test_info_endpoint_returns_controller_scope_and_status(monkeypatch):
     assert payload.milestone2_baseline["version"] == "phase0_step2_v1"
     capability_names = {item["name"] for item in payload.implementation_status["capabilities"]}
     assert "bounded_self_correction" in capability_names
+    assert "advanced_differentiator_reservation" in capability_names
 
 
 def test_observability_endpoint_returns_controller_snapshot(monkeypatch):
@@ -176,6 +179,18 @@ def test_scope_endpoint_returns_contract_and_baseline(monkeypatch):
     assert payload["milestone2_baseline"]["counts"]["implemented"] >= 1
     capability_names = {item["name"] for item in payload["implementation_status"]["capabilities"]}
     assert "bounded_action_autonomy" in capability_names
+    assert "advanced_differentiator_reservation" in capability_names
+
+
+def test_advanced_differentiators_endpoint_reports_reserved_status(monkeypatch):
+    monkeypatch.setattr(llm_api, "_get_agent", lambda: _FakeAgent())
+
+    payload = asyncio.run(llm_api.get_advanced_differentiators())
+
+    assert payload["version"] == "phase7_step19_v1"
+    assert payload["mode"] == "reserved_until_stable"
+    assert payload["availability"] == "reserved"
+    assert payload["features"]["digital_twin"]["availability"] == "reserved"
 
 
 def test_milestone2_baseline_endpoint_returns_foundation_report(monkeypatch):
@@ -265,59 +280,48 @@ def test_run_chat_resilience_endpoint_returns_structured_report(monkeypatch):
     assert payload["scenarios"][0]["id"] == "netbox_ok_telemetry_stale"
 
 
-def test_change_intelligence_info_endpoint_returns_step29_version():
+def test_change_intelligence_info_endpoint_returns_step29_version(monkeypatch):
+    monkeypatch.setattr(llm_api, "_get_agent", lambda: _FakeAgent())
     payload = asyncio.run(llm_api.get_change_intelligence_info())
 
     assert payload["analysis_version"] == "phase9_step29_v1"
+    assert payload["stability_gate"]["availability"] == "reserved"
+    assert payload["stability_gate"]["feature"]["name"] == "change_intelligence"
 
 
 def test_run_change_intelligence_endpoint_returns_structured_report(monkeypatch):
     monkeypatch.setattr(llm_api, "_get_agent", lambda: _FakeAgent())
-    monkeypatch.setattr(
-        llm_api.network_tools,
-        "analyze_change_intelligence",
-        lambda intent_json, user_role="operator": (
-            '{"analysis_version":"phase9_step29_v1","approval_recommendation":"manual_review",'
-            '"cross_domain_risk":{"level":"high","score":68},'
-            '"what_if_simulation":{"decision":"manual_review"}}'
-        ),
-    )
-
-    payload = asyncio.run(
-        llm_api.run_change_intelligence(
-            llm_api.ChangeIntelligenceRequest(intent_json='{"id":"intent-1"}', user_role="operator")
+    with pytest.raises(Exception) as exc_info:
+        asyncio.run(
+            llm_api.run_change_intelligence(
+                llm_api.ChangeIntelligenceRequest(intent_json='{"id":"intent-1"}', user_role="operator")
+            )
         )
-    )
 
-    assert payload["analysis_version"] == "phase9_step29_v1"
-    assert payload["approval_recommendation"] == "manual_review"
-    assert payload["cross_domain_risk"]["level"] == "high"
+    exc = exc_info.value
+    assert exc.status_code == 409
+    assert exc.detail["stability_gate"]["feature"]["name"] == "change_intelligence"
 
 
-def test_digital_twin_info_endpoint_returns_step30_version():
+def test_digital_twin_info_endpoint_returns_step30_version(monkeypatch):
+    monkeypatch.setattr(llm_api, "_get_agent", lambda: _FakeAgent())
     payload = asyncio.run(llm_api.get_digital_twin_info())
 
     assert payload["version"] == "phase9_step30_v1"
+    assert payload["stability_gate"]["availability"] == "reserved"
+    assert payload["stability_gate"]["feature"]["name"] == "digital_twin"
 
 
 def test_run_digital_twin_endpoint_returns_graph_snapshot(monkeypatch):
     monkeypatch.setattr(llm_api, "_get_agent", lambda: _FakeAgent())
-    monkeypatch.setattr(
-        llm_api.network_tools,
-        "get_digital_twin",
-        lambda hostname="", vendor_filter="", include_telemetry=True, include_sdn=True: (
-            '{"version":"phase9_step30_v1","summary":{"twin_count":1},'
-            '"twins":[{"hostname":"SW1","presence_state":"planned_and_live"}],'
-            '"graph":{"nodes":[],"edges":[]}}'
-        ),
-    )
 
-    payload = asyncio.run(
-        llm_api.run_digital_twin(
-            llm_api.DigitalTwinRequest(hostname="SW1", include_telemetry=True, include_sdn=True)
+    with pytest.raises(Exception) as exc_info:
+        asyncio.run(
+            llm_api.run_digital_twin(
+                llm_api.DigitalTwinRequest(hostname="SW1", include_telemetry=True, include_sdn=True)
+            )
         )
-    )
 
-    assert payload["version"] == "phase9_step30_v1"
-    assert payload["summary"]["twin_count"] == 1
-    assert payload["twins"][0]["hostname"] == "SW1"
+    exc = exc_info.value
+    assert exc.status_code == 409
+    assert exc.detail["stability_gate"]["feature"]["name"] == "digital_twin"

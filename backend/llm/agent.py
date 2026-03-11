@@ -21,6 +21,7 @@ import re
 from typing import Any, Dict, List, Optional
 
 from config_engine.rollback_planner import build_rollback_plan
+from llm.advanced_differentiators import build_advanced_differentiator_status
 from config_engine.safety import validate_action_artifact, validate_cli_artifact
 from llm.answer_release import build_answer_release_state
 from llm.answer_policy import build_answer_policy, policy_status
@@ -998,6 +999,13 @@ class NetworkAgent:
         heuristic_matches = re.findall(r"\b[A-Za-z][A-Za-z0-9_-]*\d+[A-Za-z0-9_-]*\b", user_message)
         return heuristic_matches[:3]
 
+    def _advanced_differentiator_enabled(self, feature_name: str) -> bool:
+        status = build_advanced_differentiator_status(
+            self.controller_implementation_status,
+            feature_name=feature_name,
+        )
+        return status["availability"] == "enabled"
+
     def _build_route_plan(
         self,
         user_message: str,
@@ -1005,6 +1013,8 @@ class NetworkAgent:
         hostnames: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         hostnames = hostnames or self._extract_candidate_hostnames(user_message)
+        digital_twin_enabled = self._advanced_differentiator_enabled("digital_twin")
+        change_intelligence_enabled = self._advanced_differentiator_enabled("change_intelligence")
         generic_read_tools = [
             "get_context_health",
             "get_last_sync_status",
@@ -1013,7 +1023,6 @@ class NetworkAgent:
             "get_audit_log",
             "list_templates",
             "get_template_schema",
-            "get_digital_twin",
         ]
 
         instruction = ""
@@ -1060,7 +1069,8 @@ class NetworkAgent:
                     arguments={"hostname": hostnames[0]} if hostnames else {},
                 )
             )
-            if hostnames:
+            if digital_twin_enabled and hostnames:
+                allowed_tools.append("get_digital_twin")
                 prefetch_tools.append(ToolCall(name="get_digital_twin", arguments={"hostname": hostnames[0]}))
 
         elif query_class == "live_only":
@@ -1110,9 +1120,11 @@ class NetworkAgent:
             prefetch_tools.append(ToolCall(name="get_context_health", arguments={}))
             prefetch_tools.append(ToolCall(name="get_recent_incidents", arguments={"limit": 5}))
             if hostnames:
+                if digital_twin_enabled:
+                    allowed_tools.append("get_digital_twin")
+                    prefetch_tools.append(ToolCall(name="get_digital_twin", arguments={"hostname": hostnames[0]}))
                 prefetch_tools.extend(
                     [
-                        ToolCall(name="get_digital_twin", arguments={"hostname": hostnames[0]}),
                         ToolCall(name="get_inventory_device", arguments={"hostname": hostnames[0]}),
                         ToolCall(name="get_device_details", arguments={"hostname": hostnames[0]}),
                         ToolCall(name="get_device_telemetry_snapshot", arguments={"hostname": hostnames[0], "limit": 10}),
@@ -1125,8 +1137,6 @@ class NetworkAgent:
             allowed_tools = [
                 "parse_intent",
                 "validate_intent",
-                "analyze_change_intelligence",
-                "get_digital_twin",
                 "plan_change",
                 "list_templates",
                 "get_template_schema",
@@ -1141,11 +1151,20 @@ class NetworkAgent:
             instruction = (
                 "For this change-planning query, use intent parsing and policy validation first, then run change intelligence before planning so you surface intent memory, outcome risk, and what-if blockers instead of guessing."
             )
+            if not change_intelligence_enabled:
+                instruction += " Advanced change-intelligence remains reserved until Milestone 3 stability is proven, so rely on validated intent, authoritative inventory, drift, and current config evidence instead."
+            if not digital_twin_enabled:
+                instruction += " Formal digital-twin reasoning remains reserved until Milestone 3 stability is proven, so do not require it for this route."
+            if change_intelligence_enabled:
+                allowed_tools.append("analyze_change_intelligence")
+            if digital_twin_enabled:
+                allowed_tools.append("get_digital_twin")
             prefetch_tools.append(ToolCall(name="get_context_health", arguments={}))
             if hostnames:
+                if digital_twin_enabled:
+                    prefetch_tools.append(ToolCall(name="get_digital_twin", arguments={"hostname": hostnames[0]}))
                 prefetch_tools.extend(
                     [
-                        ToolCall(name="get_digital_twin", arguments={"hostname": hostnames[0]}),
                         ToolCall(name="get_inventory_device", arguments={"hostname": hostnames[0]}),
                         ToolCall(name="get_device_running_config", arguments={"hostname": hostnames[0]}),
                     ]

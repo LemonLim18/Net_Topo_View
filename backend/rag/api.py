@@ -31,6 +31,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPExcepti
 from fastapi.responses import JSONResponse
 from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel
+from llm.advanced_differentiators import ensure_advanced_differentiator_available
 
 from rag.knowledge_curation import (
     KnowledgeDocumentMetadata,
@@ -138,6 +139,13 @@ class StatusResponse(BaseModel):
 _bundle_builder = None
 _db_manager = None
 _digital_twin_builder = None
+
+
+def _controller_implementation_status() -> Optional[dict]:
+    if _db_manager is None:
+        return None
+    agent = getattr(_db_manager, "agent", None)
+    return getattr(agent, "controller_implementation_status", None)
 
 
 def setup_context_bundle(db_manager) -> None:
@@ -503,6 +511,10 @@ async def preview_digital_twin(
     current_user: dict = Depends(_auth_dep),
 ):
     """Build the formal Step 30 digital-twin snapshot without invoking the chat agent."""
+    ensure_advanced_differentiator_available(
+        "digital_twin",
+        _controller_implementation_status(),
+    )
     if _digital_twin_builder is None:
         raise HTTPException(status_code=503, detail="Digital twin builder not initialised")
 

@@ -30,6 +30,10 @@ from starlette.concurrency import run_in_threadpool
 
 from auth.rbac import require_role
 from config_engine.safety import validate_action_artifact
+from llm.advanced_differentiators import (
+    build_advanced_differentiator_status,
+    ensure_advanced_differentiator_available,
+)
 from llm.benchmark_suite import benchmark_categories, list_benchmark_cases, run_benchmark_suite
 from llm.resilience_suite import list_resilience_scenarios, resilience_categories, run_resilience_suite
 from llm.change_intelligence import CHANGE_INTELLIGENCE_VERSION
@@ -172,6 +176,16 @@ def _resolve_device_access(proposal):
             logger.warning("Could not resolve management IP: %s", e)
 
     return ssh_host, creds
+
+
+def _advanced_differentiator_status(agent=None, feature_name: Optional[str] = None) -> Dict[str, Any]:
+    implementation_status = getattr(agent, "controller_implementation_status", None) if agent is not None else None
+    return build_advanced_differentiator_status(implementation_status, feature_name=feature_name)
+
+
+def _require_advanced_differentiator(feature_name: str, agent=None) -> Dict[str, Any]:
+    implementation_status = getattr(agent, "controller_implementation_status", None) if agent is not None else None
+    return ensure_advanced_differentiator_available(feature_name, implementation_status)
 
 
 class BenchmarkRunRequest(BaseModel):
@@ -460,6 +474,13 @@ async def get_benchmark_cases():
     }
 
 
+@router.get("/advanced-differentiators")
+async def get_advanced_differentiators():
+    """Return the Step 19 reservation and unlock status for advanced differentiator surfaces."""
+    agent = _get_agent()
+    return _advanced_differentiator_status(agent)
+
+
 @router.post("/benchmark")
 async def run_chat_benchmark(request: Optional[BenchmarkRunRequest] = None):
     """Execute the deterministic chat benchmark suite and return a structured scoring report."""
@@ -491,12 +512,18 @@ async def run_chat_resilience(request: Optional[ResilienceRunRequest] = None):
 @router.get("/change-intelligence/info")
 async def get_change_intelligence_info():
     """Return the active Step 29 change-intelligence analysis version."""
-    return {"analysis_version": CHANGE_INTELLIGENCE_VERSION}
+    agent = _get_agent()
+    return {
+        "analysis_version": CHANGE_INTELLIGENCE_VERSION,
+        "stability_gate": _advanced_differentiator_status(agent, feature_name="change_intelligence"),
+    }
 
 
 @router.post("/change-intelligence")
 async def run_change_intelligence(request: ChangeIntelligenceRequest):
     """Run the deterministic Step 29 change-intelligence analysis for a proposed change."""
+    agent = _get_agent()
+    _require_advanced_differentiator("change_intelligence", agent)
     payload = await _run_tool_json(
         network_tools.analyze_change_intelligence,
         request.intent_json,
@@ -510,12 +537,18 @@ async def run_change_intelligence(request: ChangeIntelligenceRequest):
 @router.get("/digital-twin/info")
 async def get_digital_twin_info():
     """Return the active Step 30 digital-twin schema version."""
-    return {"version": DIGITAL_TWIN_VERSION}
+    agent = _get_agent()
+    return {
+        "version": DIGITAL_TWIN_VERSION,
+        "stability_gate": _advanced_differentiator_status(agent, feature_name="digital_twin"),
+    }
 
 
 @router.post("/digital-twin")
 async def run_digital_twin(request: Optional[DigitalTwinRequest] = None):
     """Build the formal Step 30 digital-twin graph snapshot for a device or the whole network."""
+    agent = _get_agent()
+    _require_advanced_differentiator("digital_twin", agent)
     payload = await _run_tool_json(
         network_tools.get_digital_twin,
         request.hostname if request else "",
