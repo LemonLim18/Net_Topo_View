@@ -8,14 +8,18 @@ from typing import Any, Dict, List, Optional, Sequence
 from llm.context_contract import classify_query
 
 
-BENCHMARK_SUITE_VERSION = "phase6_step17_v1"
+BENCHMARK_SUITE_VERSION = "phase6_step18_v1"
 _PASSING_CASE_SCORE = 0.85
 _PASSING_METRIC_SCORE = 0.60
+_HONESTY_HINTS = ("stale", "missing", "unavailable", "lag", "degraded", "fallback", "limited answer", "queued")
 _METRIC_NAMES = (
+    "task_completion",
     "factuality",
     "freshness",
     "source_selection",
     "conflict_handling",
+    "honesty",
+    "retry_behavior",
     "approval_safety",
     "debugging_usefulness",
 )
@@ -36,19 +40,6 @@ BENCHMARK_CASES: List[Dict[str, Any]] = [
         "require_conflicts": False,
     },
     {
-        "id": "live_topology_status",
-        "category": "live_only",
-        "prompt": "Show me the live topology right now.",
-        "expected_query_class": "live_only",
-        "expected_answer_scope": "live",
-        "expected_response_types": ["text"],
-        "expected_policy_name": "live_state_lookup",
-        "expected_policy_required_tools": ["get_topology_summary"],
-        "required_source_groups": [["crawler_cache", "sdn_controller"]],
-        "freshness_expectation": "fresh_or_warm",
-        "require_conflicts": False,
-    },
-    {
         "id": "planned_live_conflict",
         "category": "mixed_state",
         "prompt": "Compare planned vs live state for SW1.",
@@ -62,17 +53,138 @@ BENCHMARK_CASES: List[Dict[str, Any]] = [
         "require_conflicts": True,
     },
     {
-        "id": "stale_telemetry_signal",
+        "id": "telemetry_stale_troubleshooting",
         "category": "stale_data",
-        "prompt": "Is telemetry stale for SW1 right now?",
+        "prompt": "Troubleshoot SW1 health while InfluxDB is stale and crawl data is fresh.",
+        "expected_query_class": "troubleshooting",
+        "expected_answer_scope": "mixed",
+        "expected_response_types": ["text"],
+        "expected_policy_name": "troubleshooting_multisource",
+        "expected_policy_required_tools": [
+            "get_inventory_device",
+            "get_device_details",
+            "get_device_telemetry_snapshot",
+        ],
+        "required_source_groups": [["local_db"], ["crawler_cache"], ["influxdb", "prometheus"]],
+        "freshness_expectation": "stale_signal",
+        "require_conflicts": True,
+        "degraded_sources": [{"source": "influxdb", "freshness_class": "stale"}],
+        "required_retry_paths": [
+            ["grounding_meta", "answer_release", "refresh_attempted"],
+            ["grounding_meta", "self_correction", "attempts"],
+        ],
+        "retry_attempt_path": ["grounding_meta", "self_correction", "attempts"],
+        "minimum_retry_attempts": 1,
+        "require_limited_answer": True,
+        "required_content_substrings": ["stale", "refresh"],
+    },
+    {
+        "id": "unsupported_vendor_feature",
+        "category": "generation_safety",
+        "prompt": "Plan change for MACsec on Huawei VRP for SW1.",
+        "expected_query_class": "change_planning",
+        "expected_answer_scope": "mixed",
+        "expected_response_types": ["text"],
+        "expected_policy_name": "change_planning_grounding",
+        "expected_policy_required_tools": ["get_inventory_device", "get_device_running_config"],
+        "required_source_groups": [["netbox", "local_db"], ["config_snapshots", "running_config_cache"], ["knowledge_base"]],
+        "freshness_expectation": "fresh_or_warm",
+        "require_conflicts": False,
+        "forbid_proposal": True,
+        "required_content_substrings": ["unsupported", "cannot"],
+    },
+    {
+        "id": "multi_device_change_plan",
+        "category": "multi_device_change",
+        "prompt": "Plan change for VLAN 30 on SW1 and R1.",
+        "expected_query_class": "change_planning",
+        "expected_answer_scope": "mixed",
+        "expected_response_types": ["intent_plan"],
+        "expected_policy_name": "change_planning_grounding",
+        "expected_policy_required_tools": ["get_inventory_device", "get_device_running_config"],
+        "required_source_groups": [["netbox", "local_db"], ["config_snapshots", "running_config_cache"]],
+        "freshness_expectation": "fresh_or_warm",
+        "require_conflicts": False,
+        "required_approval_status": "pending",
+        "task_completion_paths": [["proposal", "action_artifact", "scope", "device_count"]],
+    },
+    {
+        "id": "malformed_playbook_recovery",
+        "category": "ansible_refinement",
+        "prompt": "Plan change to recover a malformed playbook for SW1 interface change.",
+        "expected_query_class": "change_planning",
+        "expected_answer_scope": "mixed",
+        "expected_response_types": ["intent_plan"],
+        "expected_policy_name": "change_planning_grounding",
+        "expected_policy_required_tools": ["get_inventory_device", "get_device_running_config"],
+        "required_source_groups": [["netbox", "local_db"], ["config_snapshots", "running_config_cache"]],
+        "freshness_expectation": "fresh_or_warm",
+        "require_conflicts": False,
+        "required_approval_status": "pending",
+        "required_retry_paths": [["refinement", "attempts_used"]],
+        "retry_attempt_path": ["refinement", "attempts_used"],
+        "minimum_retry_attempts": 2,
+        "required_debug_paths": [
+            ["refinement", "attempts_used"],
+            ["refinement", "validation", "passed"],
+        ],
+        "required_debug_terms": ["refined", "validation"],
+    },
+    {
+        "id": "deployment_verification_failure",
+        "category": "verification_failure",
+        "prompt": "Troubleshoot why the last deployment on SW1 failed verification.",
+        "expected_query_class": "change_planning",
+        "expected_answer_scope": "mixed",
+        "expected_response_types": ["text"],
+        "expected_policy_name": "troubleshooting_multisource",
+        "expected_policy_required_tools": [
+            "get_inventory_device",
+            "get_device_details",
+            "get_device_running_config",
+        ],
+        "required_source_groups": [["deployment_repository"], ["config_snapshots", "running_config_cache"], ["influxdb", "prometheus"]],
+        "freshness_expectation": "fresh_or_warm",
+        "require_conflicts": True,
+        "required_recommended_action": "rollback_recommended",
+        "required_content_substrings": ["verification", "rollback"],
+        "required_debug_paths": [
+            ["post_change_verification", "outcome"],
+            ["recommended_action", "action"],
+        ],
+        "task_completion_paths": [["recommended_action", "action"]],
+    },
+    {
+        "id": "netbox_unreachable_inventory_lookup",
+        "category": "partial_dependency_outage",
+        "prompt": "What is the management IP of SW1 while NetBox is unreachable?",
+        "expected_query_class": "inventory_only",
+        "expected_answer_scope": "planned",
+        "expected_response_types": ["text"],
+        "expected_policy_name": "management_ip_lookup",
+        "expected_policy_required_tools": ["get_inventory_device"],
+        "required_source_groups": [["local_db"], ["netbox"]],
+        "freshness_expectation": "stale_signal",
+        "require_conflicts": True,
+        "degraded_sources": [{"source": "netbox", "freshness_class": "missing"}],
+        "required_retry_paths": [["grounding_meta", "self_correction", "attempts"]],
+        "retry_attempt_path": ["grounding_meta", "self_correction", "attempts"],
+        "minimum_retry_attempts": 1,
+        "require_limited_answer": True,
+        "required_content_substrings": ["netbox", "unavailable"],
+    },
+    {
+        "id": "live_topology_status",
+        "category": "live_only",
+        "prompt": "Show me the live topology right now.",
         "expected_query_class": "live_only",
         "expected_answer_scope": "live",
         "expected_response_types": ["text"],
         "expected_policy_name": "live_state_lookup",
-        "expected_policy_required_tools": ["get_device_details"],
-        "required_source_groups": [["influxdb", "prometheus"]],
-        "freshness_expectation": "stale_signal",
-        "require_conflicts": True,
+        "expected_policy_required_tools": ["get_topology_summary"],
+        "required_source_groups": [["crawler_cache", "sdn_controller"]],
+        "freshness_expectation": "fresh_or_warm",
+        "require_conflicts": False,
     },
     {
         "id": "incident_troubleshooting",
@@ -105,77 +217,7 @@ BENCHMARK_CASES: List[Dict[str, Any]] = [
         "freshness_expectation": "fresh_or_warm",
         "require_conflicts": False,
         "required_approval_status": "pending",
-    },
-    {
-        "id": "unsupported_vendor_feature",
-        "category": "generation_safety",
-        "prompt": "Plan change for MACsec on Huawei VRP for SW1.",
-        "expected_query_class": "change_planning",
-        "expected_answer_scope": "mixed",
-        "expected_response_types": ["text"],
-        "expected_policy_name": "change_planning_grounding",
-        "expected_policy_required_tools": ["get_inventory_device", "get_device_running_config"],
-        "required_source_groups": [["netbox", "local_db"], ["config_snapshots", "running_config_cache"], ["knowledge_base"]],
-        "freshness_expectation": "fresh_or_warm",
-        "require_conflicts": False,
-        "forbid_proposal": True,
-        "required_content_substrings": ["unsupported", "cannot"],
-    },
-    {
-        "id": "multi_device_change_plan",
-        "category": "multi_device_change",
-        "prompt": "Plan change for VLAN 30 on SW1 and R1.",
-        "expected_query_class": "change_planning",
-        "expected_answer_scope": "mixed",
-        "expected_response_types": ["intent_plan"],
-        "expected_policy_name": "change_planning_grounding",
-        "expected_policy_required_tools": ["get_inventory_device", "get_device_running_config"],
-        "required_source_groups": [["netbox", "local_db"], ["config_snapshots", "running_config_cache"]],
-        "freshness_expectation": "fresh_or_warm",
-        "require_conflicts": False,
-        "required_approval_status": "pending",
-    },
-    {
-        "id": "malformed_playbook_recovery",
-        "category": "ansible_refinement",
-        "prompt": "Plan change to recover a malformed playbook for SW1 interface change.",
-        "expected_query_class": "change_planning",
-        "expected_answer_scope": "mixed",
-        "expected_response_types": ["intent_plan"],
-        "expected_policy_name": "change_planning_grounding",
-        "expected_policy_required_tools": ["get_inventory_device", "get_device_running_config"],
-        "required_source_groups": [["netbox", "local_db"], ["config_snapshots", "running_config_cache"]],
-        "freshness_expectation": "fresh_or_warm",
-        "require_conflicts": False,
-        "required_approval_status": "pending",
-        "required_debug_paths": [
-            ["refinement", "attempts_used"],
-            ["refinement", "validation", "passed"],
-        ],
-        "required_debug_terms": ["refined", "validation"],
-    },
-    {
-        "id": "deployment_verification_failure",
-        "category": "verification_failure",
-        "prompt": "Troubleshoot why the last deployment on SW1 failed verification.",
-        "expected_query_class": "change_planning",
-        "expected_answer_scope": "mixed",
-        "expected_response_types": ["text"],
-        "expected_policy_name": "troubleshooting_multisource",
-        "expected_policy_required_tools": [
-            "get_inventory_device",
-            "get_device_details",
-            "get_device_running_config",
-        ],
-        "required_source_groups": [["deployment_repository"], ["config_snapshots", "running_config_cache"], ["influxdb", "prometheus"]],
-        "freshness_expectation": "fresh_or_warm",
-        "require_conflicts": True,
-        "required_recommended_action": "rollback_recommended",
-        "required_content_substrings": ["verification", "rollback"],
-        "required_debug_paths": [
-            ["post_change_verification", "outcome"],
-            ["recommended_action", "action"],
-        ],
+        "task_completion_paths": [["proposal", "action_artifact", "approval", "status"]],
     },
 ]
 
@@ -221,6 +263,43 @@ def _get_nested_value(payload: Dict[str, Any], path: Sequence[str]) -> Any:
             return None
         current = current[key]
     return current
+
+
+def _is_truthy_retry_value(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value >= 1
+    if isinstance(value, (list, tuple, set, dict, str)):
+        return len(value) > 0
+    return value is not None
+
+
+def _task_completion_metric(case: Dict[str, Any], response: Dict[str, Any]) -> Dict[str, Any]:
+    reasons: List[str] = []
+    matched = 0
+    checks = 0
+
+    checks += 1
+    if str(response.get("type") or "text") in set(case.get("expected_response_types") or ["text"]):
+        matched += 1
+    else:
+        reasons.append("response type did not match the benchmark task")
+
+    checks += 1
+    if str(response.get("content") or "").strip():
+        matched += 1
+    else:
+        reasons.append("response content was empty")
+
+    for path in case.get("task_completion_paths", []):
+        checks += 1
+        if _get_nested_value(response, path) is not None:
+            matched += 1
+        else:
+            reasons.append(f"task output missing required field at {'.'.join(path)}")
+
+    return _metric(matched / checks if checks else 0.0, reasons)
 
 
 def _source_selection_metric(case: Dict[str, Any], response: Dict[str, Any]) -> Dict[str, Any]:
@@ -283,6 +362,7 @@ def _freshness_metric(case: Dict[str, Any], response: Dict[str, Any]) -> Dict[st
         "telemetry_missing",
         "config_snapshot_stale",
         "config_snapshot_missing",
+        "planned_inventory_unavailable",
     }
     stale_signal_present = any(freshness_class in {"stale", "missing"} for freshness_class in freshness_classes)
     if not stale_signal_present:
@@ -312,6 +392,79 @@ def _conflict_metric(case: Dict[str, Any], response: Dict[str, Any]) -> Dict[str
         reasons.append("unexpected conflict surfaced for a clean benchmark case")
         return _metric(0.0 if "Conflicts:" in content else 0.25, reasons)
     return _metric(1.0, reasons)
+
+
+def _honesty_metric(case: Dict[str, Any], response: Dict[str, Any]) -> Dict[str, Any]:
+    grounding_meta = response.get("grounding_meta") or {}
+    source_age = list(grounding_meta.get("source_age") or [])
+    content = str(response.get("content") or "").lower()
+    answer_body = content.split("\n\ngrounding:", 1)[0]
+    degraded_sources = list(case.get("degraded_sources") or [])
+    reasons: List[str] = []
+    matched = 0
+    checks = 0
+
+    for degraded in degraded_sources:
+        checks += 1
+        source_name = str(degraded.get("source") or "")
+        freshness_class = str(degraded.get("freshness_class") or "")
+        entry = next((item for item in source_age if str(item.get("source") or "") == source_name), None)
+        if entry is None:
+            reasons.append(f"missing degraded source metadata for {source_name}")
+            continue
+        if str(entry.get("freshness_class") or "") != freshness_class:
+            reasons.append(f"source {source_name} freshness was not reported as {freshness_class}")
+            continue
+        if not any(hint in answer_body for hint in _HONESTY_HINTS):
+            reasons.append(f"answer did not explicitly acknowledge degraded source {source_name}")
+            continue
+        matched += 1
+
+    if case.get("require_limited_answer"):
+        checks += 1
+        if str(response.get("content") or "").startswith("Limited answer:"):
+            matched += 1
+        else:
+            reasons.append("degraded case did not surface a limited-answer prefix")
+
+    if checks == 0:
+        return _metric(1.0, reasons)
+    return _metric(matched / checks, reasons)
+
+
+def _retry_behavior_metric(case: Dict[str, Any], response: Dict[str, Any]) -> Dict[str, Any]:
+    reasons: List[str] = []
+    matched = 0
+    checks = 0
+
+    for path in case.get("required_retry_paths", []):
+        checks += 1
+        value = _get_nested_value(response, path)
+        if _is_truthy_retry_value(value):
+            matched += 1
+        else:
+            reasons.append(f"missing retry evidence at {'.'.join(path)}")
+
+    retry_path = case.get("retry_attempt_path")
+    minimum_attempts = case.get("minimum_retry_attempts")
+    if retry_path and minimum_attempts is not None:
+        checks += 1
+        value = _get_nested_value(response, retry_path)
+        observed_attempts = 0
+        if isinstance(value, (list, tuple, set)):
+            observed_attempts = len(value)
+        elif isinstance(value, (int, float)):
+            observed_attempts = int(value)
+        if observed_attempts >= int(minimum_attempts):
+            matched += 1
+        else:
+            reasons.append(
+                f"retry attempts at {'.'.join(retry_path)} were {observed_attempts}, expected at least {minimum_attempts}"
+            )
+
+    if checks == 0:
+        return _metric(1.0, reasons)
+    return _metric(matched / checks, reasons)
 
 
 def _factuality_metric(case: Dict[str, Any], response: Dict[str, Any]) -> Dict[str, Any]:
@@ -438,20 +591,26 @@ def evaluate_benchmark_response(
     latency_seconds: float,
 ) -> Dict[str, Any]:
     metrics = {
+        "task_completion": _task_completion_metric(case, response),
         "factuality": _factuality_metric(case, response),
         "freshness": _freshness_metric(case, response),
         "source_selection": _source_selection_metric(case, response),
         "conflict_handling": _conflict_metric(case, response),
+        "honesty": _honesty_metric(case, response),
+        "retry_behavior": _retry_behavior_metric(case, response),
         "approval_safety": _approval_safety_metric(case, response),
         "debugging_usefulness": _debugging_usefulness_metric(case, response),
     }
     weighted_score = (
-        metrics["factuality"]["score"] * 0.25
-        + metrics["freshness"]["score"] * 0.20
-        + metrics["source_selection"]["score"] * 0.20
-        + metrics["conflict_handling"]["score"] * 0.15
-        + metrics["approval_safety"]["score"] * 0.10
-        + metrics["debugging_usefulness"]["score"] * 0.10
+        metrics["task_completion"]["score"] * 0.10
+        + metrics["factuality"]["score"] * 0.18
+        + metrics["freshness"]["score"] * 0.12
+        + metrics["source_selection"]["score"] * 0.15
+        + metrics["conflict_handling"]["score"] * 0.08
+        + metrics["honesty"]["score"] * 0.12
+        + metrics["retry_behavior"]["score"] * 0.10
+        + metrics["approval_safety"]["score"] * 0.075
+        + metrics["debugging_usefulness"]["score"] * 0.075
     )
     overall_score = _rounded(weighted_score)
     passed = overall_score >= _PASSING_CASE_SCORE and all(metric["passed"] for metric in metrics.values())
@@ -546,7 +705,7 @@ async def run_benchmark_suite(agent, selected_categories: Optional[Sequence[str]
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "model": model_name,
         "categories": benchmark_categories(),
-        "scoring_method": "deterministic evidence-backed scoring using grounding, freshness, source selection, conflict handling, approval safety, and debugging usefulness",
+        "scoring_method": "deterministic evidence-backed scoring using task completion, factuality, freshness, source selection, conflict handling, honesty, retry behavior, approval safety, and debugging usefulness",
         **summary,
         "cases": case_results,
     }

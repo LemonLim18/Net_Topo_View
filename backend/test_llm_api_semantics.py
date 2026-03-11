@@ -198,8 +198,10 @@ def test_benchmark_cases_endpoint_returns_step26_categories(monkeypatch):
     assert "stale_data" in payload["categories"]
     assert "generation_safety" in payload["categories"]
     assert "verification_failure" in payload["categories"]
+    assert "partial_dependency_outage" in payload["categories"]
     assert any(case["id"] == "incident_troubleshooting" for case in payload["cases"])
     assert any(case["id"] == "deployment_verification_failure" for case in payload["cases"])
+    assert any(case["id"] == "netbox_unreachable_inventory_lookup" for case in payload["cases"])
 
 
 def test_run_chat_benchmark_endpoint_returns_structured_report(monkeypatch):
@@ -208,12 +210,12 @@ def test_run_chat_benchmark_endpoint_returns_structured_report(monkeypatch):
         llm_api,
         "run_benchmark_suite",
         lambda agent, selected_categories=None: asyncio.sleep(0, result={
-            "suite_version": "phase6_step17_v1",
+            "suite_version": "phase6_step18_v1",
             "total_cases": 1,
             "passed_cases": 1,
             "failed_cases": 0,
             "overall_score": 1.0,
-            "metric_summary": {"approval_safety": 1.0, "debugging_usefulness": 1.0},
+            "metric_summary": {"honesty": 1.0, "retry_behavior": 1.0, "approval_safety": 1.0, "debugging_usefulness": 1.0},
             "regression_guard": {"passed": True, "failed_case_ids": []},
             "cases": [{"id": "inventory_management_ip", "passed": True}],
         }),
@@ -223,8 +225,10 @@ def test_run_chat_benchmark_endpoint_returns_structured_report(monkeypatch):
         llm_api.run_chat_benchmark(llm_api.BenchmarkRunRequest(categories=["inventory_only"]))
     )
 
-    assert payload["suite_version"] == "phase6_step17_v1"
+    assert payload["suite_version"] == "phase6_step18_v1"
     assert payload["regression_guard"]["passed"] is True
+    assert payload["metric_summary"]["honesty"] == 1.0
+    assert payload["metric_summary"]["retry_behavior"] == 1.0
     assert payload["metric_summary"]["approval_safety"] == 1.0
     assert payload["cases"][0]["id"] == "inventory_management_ip"
 
