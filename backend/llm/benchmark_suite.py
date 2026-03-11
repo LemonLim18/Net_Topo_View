@@ -8,9 +8,17 @@ from typing import Any, Dict, List, Optional, Sequence
 from llm.context_contract import classify_query
 
 
-BENCHMARK_SUITE_VERSION = "phase8_step26_v1"
+BENCHMARK_SUITE_VERSION = "phase6_step17_v1"
 _PASSING_CASE_SCORE = 0.85
 _PASSING_METRIC_SCORE = 0.60
+_METRIC_NAMES = (
+    "factuality",
+    "freshness",
+    "source_selection",
+    "conflict_handling",
+    "approval_safety",
+    "debugging_usefulness",
+)
 
 
 BENCHMARK_CASES: List[Dict[str, Any]] = [
@@ -96,6 +104,78 @@ BENCHMARK_CASES: List[Dict[str, Any]] = [
         "required_source_groups": [["netbox", "local_db"], ["config_snapshots", "running_config_cache"]],
         "freshness_expectation": "fresh_or_warm",
         "require_conflicts": False,
+        "required_approval_status": "pending",
+    },
+    {
+        "id": "unsupported_vendor_feature",
+        "category": "generation_safety",
+        "prompt": "Plan change for MACsec on Huawei VRP for SW1.",
+        "expected_query_class": "change_planning",
+        "expected_answer_scope": "mixed",
+        "expected_response_types": ["text"],
+        "expected_policy_name": "change_planning_grounding",
+        "expected_policy_required_tools": ["get_inventory_device", "get_device_running_config"],
+        "required_source_groups": [["netbox", "local_db"], ["config_snapshots", "running_config_cache"], ["knowledge_base"]],
+        "freshness_expectation": "fresh_or_warm",
+        "require_conflicts": False,
+        "forbid_proposal": True,
+        "required_content_substrings": ["unsupported", "cannot"],
+    },
+    {
+        "id": "multi_device_change_plan",
+        "category": "multi_device_change",
+        "prompt": "Plan change for VLAN 30 on SW1 and R1.",
+        "expected_query_class": "change_planning",
+        "expected_answer_scope": "mixed",
+        "expected_response_types": ["intent_plan"],
+        "expected_policy_name": "change_planning_grounding",
+        "expected_policy_required_tools": ["get_inventory_device", "get_device_running_config"],
+        "required_source_groups": [["netbox", "local_db"], ["config_snapshots", "running_config_cache"]],
+        "freshness_expectation": "fresh_or_warm",
+        "require_conflicts": False,
+        "required_approval_status": "pending",
+    },
+    {
+        "id": "malformed_playbook_recovery",
+        "category": "ansible_refinement",
+        "prompt": "Plan change to recover a malformed playbook for SW1 interface change.",
+        "expected_query_class": "change_planning",
+        "expected_answer_scope": "mixed",
+        "expected_response_types": ["intent_plan"],
+        "expected_policy_name": "change_planning_grounding",
+        "expected_policy_required_tools": ["get_inventory_device", "get_device_running_config"],
+        "required_source_groups": [["netbox", "local_db"], ["config_snapshots", "running_config_cache"]],
+        "freshness_expectation": "fresh_or_warm",
+        "require_conflicts": False,
+        "required_approval_status": "pending",
+        "required_debug_paths": [
+            ["refinement", "attempts_used"],
+            ["refinement", "validation", "passed"],
+        ],
+        "required_debug_terms": ["refined", "validation"],
+    },
+    {
+        "id": "deployment_verification_failure",
+        "category": "verification_failure",
+        "prompt": "Troubleshoot why the last deployment on SW1 failed verification.",
+        "expected_query_class": "change_planning",
+        "expected_answer_scope": "mixed",
+        "expected_response_types": ["text"],
+        "expected_policy_name": "troubleshooting_multisource",
+        "expected_policy_required_tools": [
+            "get_inventory_device",
+            "get_device_details",
+            "get_device_running_config",
+        ],
+        "required_source_groups": [["deployment_repository"], ["config_snapshots", "running_config_cache"], ["influxdb", "prometheus"]],
+        "freshness_expectation": "fresh_or_warm",
+        "require_conflicts": True,
+        "required_recommended_action": "rollback_recommended",
+        "required_content_substrings": ["verification", "rollback"],
+        "required_debug_paths": [
+            ["post_change_verification", "outcome"],
+            ["recommended_action", "action"],
+        ],
     },
 ]
 
@@ -132,6 +212,15 @@ def _metric(score: float, reasons: List[str]) -> Dict[str, Any]:
         "passed": rounded >= _PASSING_METRIC_SCORE,
         "reasons": reasons,
     }
+
+
+def _get_nested_value(payload: Dict[str, Any], path: Sequence[str]) -> Any:
+    current: Any = payload
+    for key in path:
+        if not isinstance(current, dict) or key not in current:
+            return None
+        current = current[key]
+    return current
 
 
 def _source_selection_metric(case: Dict[str, Any], response: Dict[str, Any]) -> Dict[str, Any]:
@@ -271,6 +360,78 @@ def _factuality_metric(case: Dict[str, Any], response: Dict[str, Any]) -> Dict[s
     return _metric(matched / checks if checks else 0.0, reasons)
 
 
+def _approval_safety_metric(case: Dict[str, Any], response: Dict[str, Any]) -> Dict[str, Any]:
+    reasons: List[str] = []
+    matched = 0
+    checks = 0
+    proposal = response.get("proposal") or {}
+    content = str(response.get("content") or "").lower()
+
+    if case.get("forbid_proposal"):
+        checks += 1
+        if not proposal:
+            matched += 1
+        else:
+            reasons.append("unsafe case returned a proposal instead of blocking before approval")
+
+    required_status = case.get("required_approval_status")
+    if required_status:
+        checks += 1
+        status = _get_nested_value(proposal, ["action_artifact", "approval", "status"])
+        if str(status or "") == str(required_status):
+            matched += 1
+        else:
+            reasons.append(f"proposal approval status was {status!r}, expected {required_status!r}")
+
+    required_action = case.get("required_recommended_action")
+    if required_action:
+        checks += 1
+        observed_action = _get_nested_value(response, ["recommended_action", "action"])
+        if str(observed_action or "") == str(required_action):
+            matched += 1
+        else:
+            reasons.append(f"recommended action was {observed_action!r}, expected {required_action!r}")
+
+    required_terms = [str(term).lower() for term in case.get("required_content_substrings", [])]
+    if required_terms:
+        checks += 1
+        if all(term in content for term in required_terms):
+            matched += 1
+        else:
+            reasons.append("response content did not surface the required safety guidance")
+
+    if checks == 0:
+        return _metric(1.0, reasons)
+    return _metric(matched / checks, reasons)
+
+
+def _debugging_usefulness_metric(case: Dict[str, Any], response: Dict[str, Any]) -> Dict[str, Any]:
+    reasons: List[str] = []
+    matched = 0
+    checks = 0
+    required_paths = list(case.get("required_debug_paths") or [])
+    required_terms = [str(term).lower() for term in case.get("required_debug_terms") or []]
+    content = str(response.get("content") or "").lower()
+
+    for path in required_paths:
+        checks += 1
+        if _get_nested_value(response, path) is not None:
+            matched += 1
+        else:
+            reasons.append(f"missing debugging field at {'.'.join(path)}")
+
+    if required_terms:
+        checks += 1
+        if all(term in content for term in required_terms):
+            matched += 1
+        else:
+            reasons.append("response content did not provide the expected debugging guidance")
+
+    if checks == 0:
+        return _metric(1.0, reasons)
+    return _metric(matched / checks, reasons)
+
+
 def evaluate_benchmark_response(
     case: Dict[str, Any],
     response: Dict[str, Any],
@@ -281,12 +442,16 @@ def evaluate_benchmark_response(
         "freshness": _freshness_metric(case, response),
         "source_selection": _source_selection_metric(case, response),
         "conflict_handling": _conflict_metric(case, response),
+        "approval_safety": _approval_safety_metric(case, response),
+        "debugging_usefulness": _debugging_usefulness_metric(case, response),
     }
     weighted_score = (
-        metrics["factuality"]["score"] * 0.35
-        + metrics["freshness"]["score"] * 0.25
-        + metrics["source_selection"]["score"] * 0.25
+        metrics["factuality"]["score"] * 0.25
+        + metrics["freshness"]["score"] * 0.20
+        + metrics["source_selection"]["score"] * 0.20
         + metrics["conflict_handling"]["score"] * 0.15
+        + metrics["approval_safety"]["score"] * 0.10
+        + metrics["debugging_usefulness"]["score"] * 0.10
     )
     overall_score = _rounded(weighted_score)
     passed = overall_score >= _PASSING_CASE_SCORE and all(metric["passed"] for metric in metrics.values())
@@ -336,7 +501,7 @@ def summarize_benchmark_results(case_results: Sequence[Dict[str, Any]]) -> Dict[
 
     metric_summary: Dict[str, float] = {}
     if case_results:
-        for metric_name in ("factuality", "freshness", "source_selection", "conflict_handling"):
+        for metric_name in _METRIC_NAMES:
             metric_summary[metric_name] = _rounded(
                 mean(float(result["metrics"][metric_name]["score"]) for result in case_results)
             )
@@ -381,7 +546,7 @@ async def run_benchmark_suite(agent, selected_categories: Optional[Sequence[str]
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "model": model_name,
         "categories": benchmark_categories(),
-        "scoring_method": "deterministic evidence-backed scoring using grounding, freshness, source selection, and conflict metadata",
+        "scoring_method": "deterministic evidence-backed scoring using grounding, freshness, source selection, conflict handling, approval safety, and debugging usefulness",
         **summary,
         "cases": case_results,
     }
