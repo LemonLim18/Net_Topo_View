@@ -165,3 +165,192 @@ def test_snapshot_backed_rollback_counts_as_viable_for_safety():
     )
 
     assert report["passed"] is True
+
+
+def test_approve_proposal_returns_post_change_findings_and_persists_artifact(monkeypatch):
+    proposal = ConfigProposal(
+        id="proposal-2",
+        status="pending",
+        user_prompt="Configure VLAN 20 on SW1",
+        target_device="SW1",
+        target_device_id=1,
+        vendor="cisco_ios",
+        feature="vlan",
+        params={"vlans": [{"id": 20, "name": "Users"}]},
+        generated_config="vlan 20\n name Users",
+        rollback_config="no vlan 20",
+        action_artifact={"execution": {"primary_engine": "ssh_fallback"}},
+    )
+
+    class _Mgr:
+        def __init__(self):
+            self.proposal = proposal
+
+        def get(self, proposal_id):
+            return self.proposal if proposal_id == self.proposal.id else None
+
+        def approve(self, proposal_id):
+            self.proposal.status = "approved"
+            return self.proposal
+
+        def mark_deployed(self, proposal_id, job_id=None, request_id=None):
+            self.proposal.status = "deployed"
+            self.proposal.job_id = job_id
+            self.proposal.request_id = request_id
+            return self.proposal
+
+        def update_action_artifact(self, proposal_id, action_artifact):
+            self.proposal.action_artifact = action_artifact
+            return self.proposal
+
+    class _Db:
+        def get_device_by_id(self, device_id):
+            class _Device:
+                management_ip = "10.0.0.2"
+            return _Device()
+
+    class _Pipeline:
+        db_manager = _Db()
+
+        def create_change_request(self, title, requester, description=""):
+            return 101
+
+        def add_job(self, request_id, device_id):
+            return 202
+
+        def run_plan_stage(self, *args, **kwargs):
+            return True
+
+        def execute_job(self, **kwargs):
+            return True
+
+        def get_all_jobs(self):
+            return [{"id": 202, "status": "success", "stage": "commit"}]
+
+        def get_job_logs(self, job_id):
+            return [{"stage": "verify", "details": "pass"}]
+
+    class _Vault:
+        def get(self, device_id, kind):
+            return {"username": "netops", "password": "secret"}
+
+    class _Agent:
+        proposal_manager = _Mgr()
+
+    monkeypatch.setattr("llm.api._agent", _Agent())
+    monkeypatch.setattr("llm.api._pipeline", _Pipeline())
+    monkeypatch.setattr("llm.api._vault", _Vault())
+    monkeypatch.setattr("llm.api.validate_action_artifact", lambda *args, **kwargs: {"passed": True})
+    monkeypatch.setattr(
+        "llm.api.build_post_change_verification_report",
+        lambda *args, **kwargs: {
+            "version": "phase5_step15_v1",
+            "generated_at": "2026-03-11T10:00:00+00:00",
+            "outcome": "needs_review",
+            "recommended_action": {"action": "correction_recommended", "reason": "telemetry stale"},
+            "checks": {"telemetry_outcome": {"status": "warn"}},
+        },
+    )
+
+    payload = asyncio.run(approve_proposal("proposal-2", user={"username": "admin", "role": "admin"}))
+
+    assert payload["status"] == "deployed_with_findings"
+    assert payload["post_change_verification"]["outcome"] == "needs_review"
+    assert payload["recommended_action"]["action"] == "correction_recommended"
+    assert proposal.action_artifact["deployment_outcome"]["status"] == "deployed"
+    assert proposal.action_artifact["post_change_verification"]["outcome"] == "needs_review"
+
+
+def test_approve_proposal_marks_rolled_back_when_execution_fails(monkeypatch):
+    proposal = ConfigProposal(
+        id="proposal-3",
+        status="pending",
+        user_prompt="Configure BGP on R1",
+        target_device="R1",
+        target_device_id=1,
+        vendor="cisco_ios",
+        feature="bgp",
+        params={"asn": 65001},
+        generated_config="router bgp 65001",
+        rollback_config="no router bgp 65001",
+        action_artifact={"execution": {"primary_engine": "ssh_fallback"}},
+    )
+
+    class _Mgr:
+        def __init__(self):
+            self.proposal = proposal
+
+        def get(self, proposal_id):
+            return self.proposal if proposal_id == self.proposal.id else None
+
+        def approve(self, proposal_id):
+            self.proposal.status = "approved"
+            return self.proposal
+
+        def mark_rolled_back(self, proposal_id):
+            self.proposal.status = "rolled_back"
+            return self.proposal
+
+        def mark_failed(self, proposal_id):
+            self.proposal.status = "failed"
+            return self.proposal
+
+        def update_action_artifact(self, proposal_id, action_artifact):
+            self.proposal.action_artifact = action_artifact
+            return self.proposal
+
+    class _Db:
+        def get_device_by_id(self, device_id):
+            class _Device:
+                management_ip = "10.0.0.3"
+            return _Device()
+
+    class _Pipeline:
+        db_manager = _Db()
+
+        def create_change_request(self, title, requester, description=""):
+            return 303
+
+        def add_job(self, request_id, device_id):
+            return 404
+
+        def run_plan_stage(self, *args, **kwargs):
+            return True
+
+        def execute_job(self, **kwargs):
+            return False
+
+        def get_all_jobs(self):
+            return [{"id": 404, "status": "rolled_back", "stage": "rollback", "error_message": "Verification failed"}]
+
+        def get_job_logs(self, job_id):
+            return [{"stage": "rollback", "details": "rollback attempted"}]
+
+    class _Vault:
+        def get(self, device_id, kind):
+            return {"username": "netops", "password": "secret"}
+
+    class _Agent:
+        proposal_manager = _Mgr()
+
+    monkeypatch.setattr("llm.api._agent", _Agent())
+    monkeypatch.setattr("llm.api._pipeline", _Pipeline())
+    monkeypatch.setattr("llm.api._vault", _Vault())
+    monkeypatch.setattr("llm.api.validate_action_artifact", lambda *args, **kwargs: {"passed": True})
+    monkeypatch.setattr(
+        "llm.api.build_post_change_verification_report",
+        lambda *args, **kwargs: {
+            "version": "phase5_step15_v1",
+            "generated_at": "2026-03-11T10:05:00+00:00",
+            "outcome": "failed",
+            "recommended_action": {"action": "manual_correction", "reason": "rollback already attempted"},
+            "checks": {"command_success": {"status": "fail"}},
+        },
+    )
+
+    payload = asyncio.run(approve_proposal("proposal-3", user={"username": "admin", "role": "admin"}))
+
+    assert payload["status"] == "rolled_back"
+    assert payload["recommended_action"]["action"] == "manual_correction"
+    assert proposal.status == "rolled_back"
+    assert proposal.action_artifact["deployment_outcome"]["status"] == "rolled_back"

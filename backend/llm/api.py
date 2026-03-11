@@ -41,6 +41,7 @@ from llm.controller_observability import (
     summarize_proposals,
     summarize_validation_outcomes,
 )
+from llm.post_change_verification import build_post_change_verification_report
 from rag.digital_twin import DIGITAL_TWIN_VERSION
 from llm import network_tools
 from llm.refresh_fabric import register_refresh_listener
@@ -88,6 +89,25 @@ class ProposalReviewRequest(BaseModel):
     merged_config: str = Field(..., description="Reviewed merged config", min_length=1)
     accepted_line_indices: List[int] = Field(default_factory=list)
     rejected_line_indices: List[int] = Field(default_factory=list)
+
+
+def _persist_post_change_verification(
+    mgr,
+    proposal_id: str,
+    proposal,
+    report: Dict[str, Any],
+    execution_status: str,
+):
+    action_artifact = dict(proposal.action_artifact or {})
+    action_artifact["post_change_verification"] = report
+    action_artifact["deployment_outcome"] = {
+        "status": execution_status,
+        "verified_at": report.get("generated_at"),
+        "outcome": report.get("outcome"),
+        "recommended_action": report.get("recommended_action"),
+    }
+    updated = mgr.update_action_artifact(proposal_id, action_artifact)
+    return updated or mgr.get(proposal_id)
 
 
 class BenchmarkRunRequest(BaseModel):
@@ -454,7 +474,7 @@ async def list_proposals(status: Optional[str] = None):
     List all config proposals, optionally filtered by status.
 
     Query params:
-        status: "pending" | "approved" | "rejected" | "deployed" | "rolled_back"
+        status: "pending" | "approved" | "rejected" | "deployed" | "rolled_back" | "failed"
     """
     agent = _get_agent()
     mgr = agent.proposal_manager
@@ -658,13 +678,14 @@ async def approve_proposal(
         verification_checks = []
         _intent_meta = getattr(proposal, '_intent_meta', None)
         if _intent_meta and _intent_meta.get('verification_checks'):
-            from deploy.models import VerificationCheck
+            from deploy.verifier import VerificationCheck
             for vc in _intent_meta['verification_checks']:
                 verification_checks.append(VerificationCheck(
-                    check_type=vc.get('check_type', 'cli_output_match'),
-                    command=vc.get('command', ''),
+                    name=vc.get('name') or vc.get('description') or vc.get('check_type', 'verification_check'),
+                    check_type=vc.get('check_type', 'command_output'),
+                    target=vc.get('target') or vc.get('command', ''),
                     expected=vc.get('expected', ''),
-                    description=vc.get('description', ''),
+                    timeout=int(vc.get('timeout', 5) or 5),
                 ))
             logger.info(
                 "Intent pipeline provided %d auto-verification checks",
@@ -687,22 +708,64 @@ async def approve_proposal(
             **execute_kwargs,
         )
 
+        verification_report = build_post_change_verification_report(
+            proposal,
+            job_id=job_id,
+            request_id=req_id,
+            pipeline=_pipeline,
+            db_manager=getattr(_pipeline, "db_manager", None),
+        )
+
         if success:
-            mgr.mark_deployed(proposal_id, job_id=job_id, request_id=req_id)
+            proposal = mgr.mark_deployed(proposal_id, job_id=job_id, request_id=req_id)
+            proposal = _persist_post_change_verification(
+                mgr,
+                proposal_id,
+                proposal,
+                verification_report,
+                execution_status="deployed",
+            )
+            if verification_report.get("outcome") != "passed":
+                return {
+                    "status": "deployed_with_findings",
+                    "message": f"Configuration deployed to {proposal.target_device}, but post-change verification requires review.",
+                    "job_id": job_id,
+                    "request_id": req_id,
+                    "proposal": proposal.model_dump(),
+                    "post_change_verification": verification_report,
+                    "recommended_action": verification_report.get("recommended_action"),
+                }
             return {
                 "status": "deployed",
                 "message": f"Configuration deployed to {proposal.target_device}",
                 "job_id": job_id,
                 "request_id": req_id,
-                "proposal": mgr.get(proposal_id).model_dump(),
+                "proposal": proposal.model_dump(),
+                "post_change_verification": verification_report,
             }
         else:
-            # Deployment failed — pipeline handles rollback internally
+            jobs = _pipeline.get_all_jobs()
+            job_state = next((row for row in jobs if row.get("id") == job_id), {})
+            job_status = str(job_state.get("status") or "failed").lower()
+            if job_status == "rolled_back":
+                proposal = mgr.mark_rolled_back(proposal_id)
+            else:
+                proposal = mgr.mark_failed(proposal_id)
+            proposal = _persist_post_change_verification(
+                mgr,
+                proposal_id,
+                proposal,
+                verification_report,
+                execution_status=job_status,
+            )
             return {
-                "status": "failed",
-                "message": f"Deployment to {proposal.target_device} failed (rolled back if possible)",
+                "status": job_status,
+                "message": f"Deployment to {proposal.target_device} failed; review the post-change verification report and recommended recovery action.",
                 "job_id": job_id,
-                "proposal": mgr.get(proposal_id).model_dump(),
+                "request_id": req_id,
+                "proposal": proposal.model_dump(),
+                "post_change_verification": verification_report,
+                "recommended_action": verification_report.get("recommended_action"),
             }
 
     except Exception as e:

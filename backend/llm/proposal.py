@@ -188,6 +188,10 @@ class ProposalManager:
         """Transition proposal from pending → rejected."""
         return self._update_status(proposal_id, "rejected", from_status="pending")
 
+    def mark_failed(self, proposal_id: str) -> Optional[ConfigProposal]:
+        """Transition proposal into failed when execution could not complete or rollback also failed."""
+        return self._update_status(proposal_id, "failed", from_status=("approved", "deployed"))
+
     def mark_deployed(
         self, proposal_id: str, job_id: Optional[int], request_id: Optional[int]
     ) -> Optional[ConfigProposal]:
@@ -213,7 +217,34 @@ class ProposalManager:
 
     def mark_rolled_back(self, proposal_id: str) -> Optional[ConfigProposal]:
         """Transition proposal from deployed → rolled_back."""
-        return self._update_status(proposal_id, "rolled_back", from_status="deployed")
+        return self._update_status(proposal_id, "rolled_back", from_status=("approved", "deployed", "failed"))
+
+    def update_action_artifact(
+        self,
+        proposal_id: str,
+        action_artifact: Optional[Dict[str, Any]],
+    ) -> Optional[ConfigProposal]:
+        """Persist an updated action artifact without changing proposal status."""
+        conn = self._connect()
+        try:
+            cur = conn.execute(
+                """
+                UPDATE config_proposals
+                SET action_artifact_json = ?, updated_at = datetime('now')
+                WHERE id = ?
+                """,
+                (
+                    json.dumps(action_artifact) if action_artifact is not None else None,
+                    proposal_id,
+                ),
+            )
+            conn.commit()
+            if cur.rowcount == 0:
+                logger.warning("Action artifact update failed for proposal %s", proposal_id)
+                return None
+            return self.get(proposal_id)
+        finally:
+            conn.close()
 
     def update_pending_generated_config(
         self,
@@ -262,26 +293,28 @@ class ProposalManager:
     # -- internal helpers --
 
     def _update_status(
-        self, proposal_id: str, new_status: str, from_status: str
+        self, proposal_id: str, new_status: str, from_status: str | tuple[str, ...]
     ) -> Optional[ConfigProposal]:
         conn = self._connect()
         try:
+            allowed = (from_status,) if isinstance(from_status, str) else tuple(from_status)
+            placeholders = ", ".join("?" for _ in allowed)
             cur = conn.execute(
-                """
+                f"""
                 UPDATE config_proposals
                 SET status = ?, updated_at = datetime('now')
-                WHERE id = ? AND status = ?
+                WHERE id = ? AND status IN ({placeholders})
                 """,
-                (new_status, proposal_id, from_status),
+                (new_status, proposal_id, *allowed),
             )
             conn.commit()
             if cur.rowcount == 0:
                 logger.warning(
                     "Status transition %s → %s failed for proposal %s (not found or wrong status)",
-                    from_status, new_status, proposal_id,
+                    allowed, new_status, proposal_id,
                 )
                 return None
-            logger.info("Proposal %s: %s → %s", proposal_id, from_status, new_status)
+            logger.info("Proposal %s: %s → %s", proposal_id, allowed, new_status)
             return self.get(proposal_id)
         finally:
             conn.close()
