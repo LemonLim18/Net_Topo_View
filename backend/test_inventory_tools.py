@@ -121,6 +121,22 @@ def test_get_inventory_device_returns_single_device():
     assert payload["device"]["management_ip"] == "10.0.0.2"
 
 
+def test_get_inventory_device_supports_fuzzy_alias_lookup():
+    network_tools.set_db_manager(_InventoryFakeDb())
+    payload = json.loads(network_tools.get_inventory_device("access switch huawei 1"))
+
+    assert payload["device"]["hostname"] == "SW1"
+    assert payload["resolved_hostname"] == "SW1"
+
+
+def test_search_inventory_devices_supports_natural_language_alias_query():
+    network_tools.set_db_manager(_InventoryFakeDb())
+    payload = json.loads(network_tools.search_inventory_devices("What is the management IP of access switch huawei 1 in inventory?"))
+
+    assert payload["total"] >= 1
+    assert payload["matches"][0]["hostname"] == "SW1"
+
+
 def test_compare_planned_vs_live_separates_state():
     network_tools.set_db_manager(_InventoryFakeDb())
     payload = json.loads(network_tools.compare_planned_vs_live())
@@ -128,6 +144,13 @@ def test_compare_planned_vs_live_separates_state():
     assert payload["planned_only"] == ["SW1"]
     assert payload["live_only"] == ["FW1"]
     assert payload["semantics_map"]["version"] == "phase6_step22_v1"
+
+
+def test_compare_planned_vs_live_supports_fuzzy_alias_lookup():
+    network_tools.set_db_manager(_InventoryFakeDb())
+    payload = json.loads(network_tools.compare_planned_vs_live("core cisco 1"))
+
+    assert payload["devices"][0]["hostname"] == "R1"
 
 
 def test_inventory_surfaces_include_canonical_semantics_fields():

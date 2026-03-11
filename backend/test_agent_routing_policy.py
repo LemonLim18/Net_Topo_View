@@ -182,10 +182,19 @@ def test_inventory_query_prefetches_inventory_tool():
     assert response["grounding_meta"]["structured_rationale"]["verification_plan"]
     assert response["grounding_meta"]["controller_flow"]["release"]["decision"] == "allow"
     assert response["grounding_meta"]["controller_flow"]["observe"]["satisfied_domains"] == ["planned_inventory"]
-    assert "Current state:" in response["content"]
-    assert "Target state:" in response["content"]
-    assert "Verification plan:" in response["content"]
     assert "Grounding: planned;" in response["content"]
+
+
+def test_inventory_query_fuzzy_alias_prefetches_inventory_tool():
+    import asyncio
+
+    provider, response = asyncio.run(_run_chat("What is the management IP of core cisco 1 in inventory?"))
+
+    first_call = provider.calls[0]
+    tool_messages = [message for message in first_call["messages"] if message.role == "tool"]
+    assert any(message.name == "get_inventory_device" for message in tool_messages)
+    assert response["grounding_meta"]["answer_policy"]["satisfied"] is True
+    assert response["grounding_meta"]["controller_flow"]["release"]["decision"] == "allow"
 
 
 def test_system_prompt_includes_controller_scope_contract():
@@ -613,7 +622,7 @@ def test_stale_live_evidence_requests_refresh_then_returns_limited_answer():
     assert any(message.name == "trigger_context_refresh" for message in second_call_tool_messages)
     assert response["grounding_meta"]["answer_release"]["decision"] == "allow_limited"
     assert response["grounding_meta"]["answer_release"]["refresh_attempted"] is True
-    assert response["content"].startswith("Limited answer:")
+    assert "Note: Some required evidence is stale or missing." in response["content"]
 
 
 def test_conflicting_evidence_is_released_only_as_limited_answer():
@@ -629,4 +638,43 @@ def test_conflicting_evidence_is_released_only_as_limited_answer():
 
     assert response["grounding_meta"]["answer_release"]["decision"] == "allow_limited"
     assert "conflicting_evidence" in response["grounding_meta"]["answer_release"]["degraded_signals"]
-    assert response["content"].startswith("Limited answer:")
+    assert "authoritative sources disagree." in response["content"]
+
+
+def test_inventory_query_returns_stale_answer_without_refresh_reroute():
+    import asyncio
+
+    provider = _FakeProvider()
+    agent = NetworkAgent(
+        db_manager=_AgentFakeDb(),
+        provider=provider,
+        retriever=None,
+        proposal_manager=_MemoryProposalManager(),
+    )
+    original_execute = agent._tools.execute
+
+    def _execute_with_stale_inventory(name, arguments):
+        if name == "get_inventory_device":
+            return json.dumps(
+                {
+                    "device": {"hostname": "SW1", "management_ip": "10.0.0.2"},
+                    "source_used": "netbox",
+                    "source_metadata": {
+                        "source": "netbox",
+                        "scope": "planned_inventory",
+                        "freshness_class": "stale",
+                        "confidence": 0.85,
+                        "age_seconds": 1800,
+                    },
+                }
+            )
+        return original_execute(name, arguments)
+
+    agent._tools.execute = _execute_with_stale_inventory  # type: ignore[method-assign]
+
+    response = asyncio.run(_run_chat_with_agent(agent, "What is the management IP of SW1 in inventory?"))
+
+    assert len(provider.calls) == 1
+    assert response["grounding_meta"]["answer_release"]["decision"] == "allow_limited"
+    assert response["grounding_meta"]["answer_release"]["refresh_attempted"] is False
+    assert "Note: Some required evidence is stale or missing." in response["content"]

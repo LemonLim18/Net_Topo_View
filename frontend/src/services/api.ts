@@ -132,6 +132,80 @@ export const llmApi = {
       method: 'POST',
       body: JSON.stringify({ message }),
     }),
+
+  /**
+   * SSE streaming chat — emits progress phases then a final response.
+   *
+   * Usage:
+   *   llmApi.chatStream(msg, {
+   *     onProgress: ({ phase, label, elapsed_ms }) => ...,
+   *     onComplete: (response) => ...,
+   *     onError: (err) => ...,
+   *   });
+   */
+  chatStream: async (
+    message: string,
+    callbacks: {
+      onProgress?: (data: { phase: string; label: string; elapsed_ms: number }) => void;
+      onComplete?: (data: any) => void;
+      onError?: (err: Error) => void;
+    },
+  ) => {
+    const url = `${BASE_URL}/api/v1/llm/chat/stream`;
+    const token = localStorage.getItem('auth_token');
+    try {
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({ message }),
+      });
+
+      if (!response.ok) {
+        const errorBody = await response.json().catch(() => ({}));
+        throw new Error(errorBody.detail || `API Error: ${response.statusText}`);
+      }
+
+      const reader = response.body?.getReader();
+      if (!reader) throw new Error('No readable stream');
+
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+
+        let eventType = 'progress';
+        for (const line of lines) {
+          if (line.startsWith('event: ')) {
+            eventType = line.slice(7).trim();
+          } else if (line.startsWith('data: ')) {
+            const raw = line.slice(6);
+            try {
+              const data = JSON.parse(raw);
+              if (eventType === 'progress' && callbacks.onProgress) {
+                callbacks.onProgress(data);
+              } else if (eventType === 'complete' && callbacks.onComplete) {
+                callbacks.onComplete(data);
+              } else if (eventType === 'error' && callbacks.onError) {
+                callbacks.onError(new Error(data.error || 'Stream error'));
+              }
+            } catch { /* skip malformed */ }
+          }
+        }
+      }
+    } catch (err: any) {
+      if (callbacks.onError) callbacks.onError(err);
+      else throw err;
+    }
+  },
   
   clearHistory: () =>
     request<{ status: string }>('/llm/chat/clear', { method: 'POST' }),

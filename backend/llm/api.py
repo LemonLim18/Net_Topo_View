@@ -20,11 +20,13 @@ Endpoints:
     POST /api/chat/proposals/{id}/rollback  — Rollback → revert deployed change
 """
 
+import asyncio
 import logging
 import json
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
@@ -342,6 +344,48 @@ async def chat(request: ChatRequest):
     except Exception as e:
         logger.error("Chat error: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/stream")
+async def chat_stream(request: ChatRequest):
+    """
+    SSE streaming chat endpoint.
+
+    Emits ``event: progress`` frames as the agent works, then a single
+    ``event: complete`` frame with the final response.
+
+    Use this from the frontend to show real-time phase indicators with
+    elapsed timing (e.g. "Consulting device inventory (NetBox)… 0.8 s").
+    """
+    agent = _get_agent()
+
+    async def _sse_generator():
+        try:
+            async for event in agent.chat_streaming(request.message):
+                event_type = event.pop("event", "progress")
+                yield f"event: {event_type}\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
+                # Allow event loop to flush
+                await asyncio.sleep(0)
+
+            # Record the last event for observability
+            if event_type == "complete":
+                record_controller_chat_snapshot(
+                    request.message, event, model=agent.model_name
+                )
+        except Exception as exc:
+            logger.error("Chat stream error: %s", exc)
+            error_payload = json.dumps({"error": str(exc)})
+            yield f"event: error\ndata: {error_payload}\n\n"
+
+    return StreamingResponse(
+        _sse_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @router.post("/clear")

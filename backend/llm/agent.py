@@ -18,7 +18,8 @@ for human-in-the-loop approval before deployment.
 import json
 import logging
 import re
-from typing import Any, Dict, List, Optional
+import time
+from typing import Any, AsyncIterator, Dict, List, Optional
 
 from config_engine.rollback_planner import build_rollback_plan
 from llm.advanced_differentiators import build_advanced_differentiator_status
@@ -126,6 +127,203 @@ class NetworkAgent:
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
+
+    # Friendly labels for each query-class source used in SSE progress
+    _SOURCE_LABELS: Dict[str, str] = {
+        "inventory_only": "device inventory (NetBox)",
+        "planned_vs_live": "planned vs. live state comparison",
+        "live_only": "live network topology",
+        "troubleshooting": "incidents, telemetry & live state",
+        "change_planning": "intent pipeline & configuration engine",
+        "compliance": "compliance & drift records",
+        "knowledge_heavy": "knowledge base documents",
+        "general": "network context",
+    }
+
+    def _try_inventory_fast_path(
+        self,
+        user_message: str,
+        query_class: str,
+        tool_results: Dict[str, Any],
+        tool_args: Dict[str, Dict],
+    ) -> Optional[Dict[str, Any]]:
+        """
+        For simple inventory_only queries where the prefetch already has the
+        answer, compose a direct response WITHOUT calling the LLM.
+
+        Returns a chat-compatible dict if fast path succeeded, else None.
+        """
+        if query_class != "inventory_only":
+            return None
+
+        # Check get_inventory_device result
+        raw = tool_results.get("get_inventory_device")
+        if raw is None:
+            # Also check search_inventory_devices
+            raw = tool_results.get("search_inventory_devices")
+        if raw is None:
+            return None
+
+        try:
+            payload = json.loads(raw) if isinstance(raw, str) else raw
+        except (json.JSONDecodeError, TypeError):
+            return None
+
+        if payload.get("error"):
+            return None
+
+        # Single device lookup → compose direct answer
+        device = payload.get("device")
+        if isinstance(device, dict):
+            hostname = device.get("hostname", "Unknown")
+            mgmt_ip = device.get("management_ip")
+            vendor = device.get("vendor", "")
+            model = device.get("model", "")
+            role = device.get("role", "")
+            status = device.get("status", "")
+
+            # Build a concise, natural-language answer
+            parts = []
+            q_lower = user_message.lower()
+            if "management ip" in q_lower or "mgmt ip" in q_lower or "ip address" in q_lower:
+                if mgmt_ip:
+                    parts.append(f"The management IP address for **{hostname}** is **{mgmt_ip}**.")
+                else:
+                    parts.append(f"**{hostname}** does not have a management IP address configured in the inventory.")
+            elif "vendor" in q_lower or "manufacturer" in q_lower:
+                parts.append(f"**{hostname}** is a **{vendor or 'unknown vendor'}** device.")
+            elif "model" in q_lower:
+                parts.append(f"**{hostname}** is model **{model or 'unknown'}**.")
+            elif "status" in q_lower:
+                parts.append(f"**{hostname}** has status: **{status or 'unknown'}**.")
+            elif "role" in q_lower:
+                parts.append(f"**{hostname}** has role: **{role or 'unknown'}**.")
+            else:
+                # General device info
+                info_parts = [f"**{hostname}**"]
+                if mgmt_ip:
+                    info_parts.append(f"management IP **{mgmt_ip}**")
+                if vendor:
+                    info_parts.append(f"vendor **{vendor}**")
+                if model:
+                    info_parts.append(f"model **{model}**")
+                if role:
+                    info_parts.append(f"role **{role}**")
+                if status:
+                    info_parts.append(f"status **{status}**")
+                parts.append(f"Device {', '.join(info_parts)}.")
+
+            content = "\n\n".join(parts)
+
+            # Build grounding metadata
+            grounding_meta = self._build_grounding_meta(
+                query_class=query_class,
+                tool_results=tool_results,
+                tool_args=tool_args,
+            )
+
+            # Add the freshness note if needed
+            final_content = self._render_grounded_content(content, grounding_meta)
+
+            self._history.append(LLMMessage(role="user", content=user_message))
+            self._history.append(LLMMessage(role="assistant", content=final_content))
+
+            return {
+                "role": "assistant",
+                "content": final_content,
+                "type": "text",
+                "grounding_meta": grounding_meta,
+            }
+
+        # Multi-device search result
+        devices = payload.get("devices")
+        if isinstance(devices, list) and devices:
+            lines = []
+            for dev in devices[:10]:
+                if not isinstance(dev, dict):
+                    continue
+                hn = dev.get("hostname", "Unknown")
+                ip = dev.get("management_ip", "N/A")
+                v = dev.get("vendor", "")
+                lines.append(f"- **{hn}**: {ip}" + (f" ({v})" if v else ""))
+            content = f"Found **{len(devices)}** device(s) in inventory:\n\n" + "\n".join(lines)
+
+            grounding_meta = self._build_grounding_meta(
+                query_class=query_class,
+                tool_results=tool_results,
+                tool_args=tool_args,
+            )
+            final_content = self._render_grounded_content(content, grounding_meta)
+
+            self._history.append(LLMMessage(role="user", content=user_message))
+            self._history.append(LLMMessage(role="assistant", content=final_content))
+
+            return {
+                "role": "assistant",
+                "content": final_content,
+                "type": "text",
+                "grounding_meta": grounding_meta,
+            }
+
+        return None
+
+    async def chat_streaming(self, user_message: str) -> AsyncIterator[Dict[str, Any]]:
+        """
+        Streaming version of chat() that yields progress events.
+
+        Yields dicts of the form:
+            {"event": "progress", "phase": "...", "label": "...", "elapsed_ms": ...}
+            {"event": "complete", ...full chat response...}
+        """
+        t0 = time.monotonic()
+
+        def _elapsed() -> int:
+            return int((time.monotonic() - t0) * 1000)
+
+        # Phase 1: Classify
+        yield {"event": "progress", "phase": "classifying", "label": "Understanding your request…", "elapsed_ms": _elapsed()}
+
+        routing_decision = classify_query(user_message)
+        candidate_hostnames = self._extract_candidate_hostnames(user_message)
+        route_plan = self._build_route_plan(
+            user_message,
+            routing_decision.query_class,
+            candidate_hostnames,
+        )
+        route_plan["query_class"] = routing_decision.query_class
+        route_plan["required_domains"] = list(routing_decision.required_domains)
+        route_plan["hostnames"] = list(candidate_hostnames)
+
+        source_label = self._SOURCE_LABELS.get(routing_decision.query_class, "network context")
+
+        # Phase 2: Prefetch
+        yield {"event": "progress", "phase": "fetching", "label": f"Retrieving {source_label}…", "elapsed_ms": _elapsed()}
+
+        # Execute prefetched tools
+        tool_results: Dict[str, Any] = {}
+        tool_args: Dict[str, Dict] = {}
+        prefetch_tools = route_plan.get("prefetch_tools", [])
+        for tc in prefetch_tools:
+            result = self._tools.execute(tc.name, tc.arguments)
+            tool_results[tc.name] = result
+            tool_args[tc.name] = tc.arguments
+
+        # Phase 2b: Try fast path (skip LLM for simple inventory lookups)
+        fast_result = self._try_inventory_fast_path(
+            user_message, routing_decision.query_class, tool_results, tool_args
+        )
+        if fast_result is not None:
+            fast_result["elapsed_ms"] = _elapsed()
+            yield {"event": "complete", **fast_result}
+            return
+
+        # Phase 3: LLM reasoning
+        yield {"event": "progress", "phase": "reasoning", "label": "Analyzing and composing response…", "elapsed_ms": _elapsed()}
+
+        # Fall through to full chat pipeline
+        result = await self.chat(user_message)
+        result["elapsed_ms"] = _elapsed()
+        yield {"event": "complete", **result}
 
     async def chat(self, user_message: str) -> Dict[str, Any]:
         """
@@ -997,7 +1195,14 @@ class NetworkAgent:
             return [hostname for _, hostname in sorted(matches, key=lambda item: item[0])]
 
         heuristic_matches = re.findall(r"\b[A-Za-z][A-Za-z0-9_-]*\d+[A-Za-z0-9_-]*\b", user_message)
-        return heuristic_matches[:3]
+        if heuristic_matches:
+            return heuristic_matches[:3]
+
+        fuzzy_matches = network_tools.suggest_device_hostnames(user_message, limit=3)
+        if fuzzy_matches:
+            return fuzzy_matches
+
+        return []
 
     def _advanced_differentiator_enabled(self, feature_name: str) -> bool:
         status = build_advanced_differentiator_status(
@@ -1042,7 +1247,6 @@ class NetworkAgent:
                 "For this inventory-focused query, treat source-of-truth inventory as authoritative. "
                 "Do not answer from live topology unless the prefetched inventory data is missing, and say so explicitly if fallback is needed."
             )
-            prefetch_tools.append(ToolCall(name="get_context_health", arguments={}))
             if hostnames:
                 prefetch_tools.append(ToolCall(name="get_inventory_device", arguments={"hostname": hostnames[0]}))
             else:
@@ -1827,15 +2031,14 @@ class NetworkAgent:
         return release_state, str(release_state.get("decision") or "allow")
 
     def _render_limited_answer(self, content: str, answer_release: Dict[str, Any]) -> str:
-        prefix = (
-            "Limited answer: "
-            + str(answer_release.get("reason") or "Grounded evidence is degraded, so this answer should not be treated as fully current.")
+        note = "Note: " + str(
+            answer_release.get("reason") or "Grounded evidence is degraded, so this answer should not be treated as fully current."
         )
-        if content.startswith("Limited answer:"):
+        if content.startswith("Limited answer:") or note in content:
             return content
         if not content:
-            return prefix
-        return f"{prefix}\n\n{content}"
+            return note
+        return f"{content}\n\n{note}"
 
     def _network_context_cache_key(
         self,
@@ -1933,21 +2136,43 @@ class NetworkAgent:
         return grounding_meta
 
     def _render_grounded_content(self, content: str, grounding_meta: Dict[str, Any]) -> str:
-        rationale = format_operator_rationale(grounding_meta)
-        summary = format_grounding_summary(grounding_meta)
+        """Append a brief, human-readable freshness note only when data is stale or missing.
+
+        The full grounding metadata is always available in the ``grounding_meta``
+        field of the JSON response; the frontend renders it as a structured UI
+        element.  We no longer append the raw debug-style grounding string.
+        """
+        freshness = grounding_meta.get("freshness_class", "unknown")
+        source_age = grounding_meta.get("source_age") or []
+
+        # Only add a note for stale / missing evidence
+        note = ""
+        if freshness == "stale" and source_age:
+            # Find human-readable age
+            max_age = max(
+                (entry.get("age_seconds") or 0 for entry in source_age),
+                default=0,
+            )
+            if max_age > 0:
+                if max_age < 3600:
+                    age_text = f"{max_age // 60} minutes"
+                elif max_age < 86400:
+                    age_text = f"{max_age // 3600} hours"
+                else:
+                    age_text = f"{max_age // 86400} days"
+                note = f"ℹ️ *Based on inventory data last refreshed {age_text} ago.*"
+        elif freshness == "missing":
+            note = "⚠️ *Some required evidence was unavailable. Results may be incomplete.*"
+
         conflict_summary = format_conflict_summary(grounding_meta)
-        tail_parts = []
-        if rationale:
-            tail_parts.append(rationale)
-        tail_parts.append(summary)
         if conflict_summary:
-            tail_parts.append(conflict_summary)
-        suffix = "\n".join(tail_parts)
+            note = (note + "\n\n" + conflict_summary) if note else conflict_summary
+
         if not content:
-            return suffix
-        if summary in content and (not rationale or rationale in content):
+            return note or "No data available."
+        if not note:
             return content
-        return f"{content}\n\n{suffix}"
+        return f"{content}\n\n{note}"
 
     def refresh_context(self) -> None:
         """

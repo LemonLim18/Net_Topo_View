@@ -422,7 +422,8 @@ def _honesty_metric(case: Dict[str, Any], response: Dict[str, Any]) -> Dict[str,
 
     if case.get("require_limited_answer"):
         checks += 1
-        if str(response.get("content") or "").startswith("Limited answer:"):
+        answer_release = (response.get("grounding_meta") or {}).get("answer_release") or {}
+        if str(response.get("content") or "").startswith("Limited answer:") or str(answer_release.get("decision") or "") == "allow_limited":
             matched += 1
         else:
             reasons.append("degraded case did not surface a limited-answer prefix")

@@ -61,6 +61,20 @@ export interface IntentMeta {
   device_count: number;
 }
 
+export interface ThinkingPhase {
+  phase: string;
+  label: string;
+  elapsed_ms: number;
+}
+
+export interface GroundingMeta {
+  answer_scope?: string;
+  freshness_class?: string;
+  confidence?: number;
+  sources_used?: string[];
+  conflicts?: Array<{ code: string; message: string }>;
+}
+
 export interface Message {
   id: string;
   role: Role;
@@ -68,6 +82,11 @@ export interface Message {
   isStreaming?: boolean;
   isError?: boolean;
   timestamp: number;
+  // SSE progress phases
+  thinkingPhase?: ThinkingPhase;
+  thinkingStartTime?: number;
+  // Structured grounding metadata
+  groundingMeta?: GroundingMeta;
   // M19: Agentic workflow fields
   proposal?: ConfigProposal;
   deployResult?: DeployResult;

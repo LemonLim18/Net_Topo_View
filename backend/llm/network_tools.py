@@ -7,6 +7,8 @@ network controller.  They are registered with the ``ToolRegistry``.
 
 import json
 import logging
+import re
+from difflib import SequenceMatcher
 from typing import Any, Dict, List, Optional
 
 from llm.context_contract import (
@@ -37,6 +39,46 @@ from llm.semantics import (
 
 
 logger = logging.getLogger("llm.network_tools")
+
+_DEVICE_QUERY_STOPWORDS = {
+    "a",
+    "an",
+    "and",
+    "are",
+    "by",
+    "can",
+    "current",
+    "device",
+    "devices",
+    "for",
+    "get",
+    "in",
+    "inventory",
+    "ip",
+    "is",
+    "management",
+    "me",
+    "mgmt",
+    "of",
+    "on",
+    "planned",
+    "primary",
+    "show",
+    "tell",
+    "the",
+    "to",
+    "what",
+}
+
+_DEVICE_TOKEN_ALIASES = {
+    "acc": "access",
+    "dist": "distribution",
+    "disribution": "distribution",
+    "huawei_vrp": "huawei",
+    "cisco_ios": "cisco",
+    "cisco_xe": "cisco",
+    "juniper_junos": "juniper",
+}
 
 
 # -----------------------------------------------------------------------
@@ -227,18 +269,142 @@ def _find_inventory_record(records: List[Dict[str, Any]], hostname: str) -> Opti
     return None
 
 
+def _normalize_device_phrase(text: str) -> str:
+    normalized = str(text or "").replace("_", " ").replace("-", " ")
+    normalized = re.sub(r"([A-Za-z])(\d)", r"\1 \2", normalized)
+    normalized = re.sub(r"(\d)([A-Za-z])", r"\1 \2", normalized)
+    normalized = re.sub(r"[^a-zA-Z0-9]+", " ", normalized.lower()).strip()
+    return " ".join(_DEVICE_TOKEN_ALIASES.get(token, token) for token in normalized.split())
+
+
+def _device_query_tokens(text: str) -> List[str]:
+    tokens = []
+    for token in _normalize_device_phrase(text).split():
+        if token in _DEVICE_QUERY_STOPWORDS:
+            continue
+        tokens.append(token)
+    return tokens
+
+
+def _device_query_phrases(query: str) -> List[str]:
+    phrases: List[str] = []
+    for part in re.split(r"\b(?:and|plus)\b|,|&|/", str(query or ""), flags=re.IGNORECASE):
+        cleaned = part.strip()
+        if cleaned:
+            phrases.append(cleaned)
+    full_query = str(query or "").strip()
+    if full_query and full_query not in phrases:
+        phrases.append(full_query)
+    return phrases
+
+
+def _inventory_candidate_score(record: Dict[str, Any], query: str) -> float:
+    query_tokens = _device_query_tokens(query)
+    if not query_tokens:
+        return 0.0
+
+    numeric_tokens = {token for token in query_tokens if token.isdigit()}
+    hostname_tokens = set(_device_query_tokens(str(record.get("hostname") or "")))
+    metadata_tokens = set(
+        _device_query_tokens(
+            " ".join(
+                str(record.get(field) or "")
+                for field in ("vendor", "model", "role", "management_ip")
+            )
+        )
+    )
+    candidate_tokens = hostname_tokens | metadata_tokens
+    candidate_numeric = {token for token in candidate_tokens if token.isdigit()}
+    if numeric_tokens and candidate_numeric and not numeric_tokens.issubset(candidate_numeric):
+        return 0.0
+
+    token_overlap = len(set(query_tokens) & candidate_tokens) / max(len(set(query_tokens)), 1)
+    sequence_ratio = SequenceMatcher(
+        None,
+        " ".join(query_tokens),
+        " ".join(_device_query_tokens(" ".join(str(record.get(field) or "") for field in ("hostname", "vendor", "role", "model")))),
+    ).ratio()
+    hostname_ratio = SequenceMatcher(
+        None,
+        " ".join(query_tokens),
+        " ".join(_device_query_tokens(str(record.get("hostname") or ""))),
+    ).ratio()
+    return max(token_overlap, hostname_ratio * 0.8 + sequence_ratio * 0.2)
+
+
+def _rank_inventory_records(records: List[Dict[str, Any]], query: str, limit: int) -> List[Dict[str, Any]]:
+    scored: List[tuple[float, Dict[str, Any]]] = []
+    for record in records:
+        best_score = max((_inventory_candidate_score(record, phrase) for phrase in _device_query_phrases(query)), default=0.0)
+        if best_score < 0.58:
+            continue
+        enriched = dict(record)
+        enriched["match_score"] = round(best_score, 3)
+        scored.append((best_score, enriched))
+    scored.sort(key=lambda item: (-item[0], str(item[1].get("hostname") or "")))
+    return [item[1] for item in scored[: max(limit, 1)]]
+
+
+def _resolve_inventory_record(records: List[Dict[str, Any]], query: str) -> Optional[Dict[str, Any]]:
+    exact = _find_inventory_record(records, query)
+    if exact is not None:
+        return exact
+
+    ranked = _rank_inventory_records(records, query, limit=2)
+    if not ranked:
+        return None
+
+    best = ranked[0]
+    second_score = ranked[1].get("match_score", 0.0) if len(ranked) > 1 else 0.0
+    best_score = best.get("match_score", 0.0)
+    if best_score >= 0.8 or (best_score >= 0.68 and (best_score - second_score) >= 0.08):
+        return best
+    return None
+
+
+def _resolve_hostname_alias(hostname: str) -> str:
+    inventory_records, _source = _get_inventory_records()
+    inventory_match = _resolve_inventory_record(inventory_records, hostname)
+    if inventory_match is not None:
+        return str(inventory_match.get("hostname") or hostname)
+
+    if _db_manager:
+        topo = _db_manager.get_topology() or {}
+        live_names = [{"hostname": name} for name in (topo.get("nodes") or {}).keys()]
+        live_match = _resolve_inventory_record(live_names, hostname)
+        if live_match is not None:
+            return str(live_match.get("hostname") or hostname)
+    return hostname
+
+
+def suggest_device_hostnames(query: str, limit: int = 3) -> List[str]:
+    inventory_records, _source = _get_inventory_records()
+    candidates = _rank_inventory_records(inventory_records, query, limit)
+    seen = set()
+    suggestions: List[str] = []
+    for record in candidates:
+        hostname = str(record.get("hostname") or "")
+        if not hostname or hostname.lower() in seen:
+            continue
+        seen.add(hostname.lower())
+        suggestions.append(hostname)
+    return suggestions[: max(limit, 1)]
+
+
 def _search_inventory_records(records: List[Dict[str, Any]], query: str, limit: int) -> List[Dict[str, Any]]:
     query_lower = query.lower().strip()
-    matches = []
+    direct_matches = []
     for record in records:
         haystack = " ".join(
             str(record.get(field) or "")
             for field in ("hostname", "management_ip", "vendor", "model", "role")
         ).lower()
-        if query_lower in haystack:
-            matches.append(record)
+        if query_lower and query_lower in haystack:
+            direct_matches.append(record)
 
-    return sorted(matches, key=lambda item: str(item.get("hostname") or ""))[: max(limit, 1)]
+    if direct_matches:
+        return sorted(direct_matches, key=lambda item: str(item.get("hostname") or ""))[: max(limit, 1)]
+    return _rank_inventory_records(records, query, limit)
 
 
 def _get_inventory_records() -> tuple[List[Dict[str, Any]], str]:
@@ -373,6 +539,7 @@ def get_device_details(hostname: str) -> str:
     if not _db_manager:
         return json.dumps({"error": "Database not available"})
 
+    hostname = _resolve_hostname_alias(hostname)
     topo = _db_manager.get_topology()
     if not topo or not topo.get("nodes"):
         return json.dumps({"error": "No topology data available"})
@@ -751,10 +918,11 @@ def get_recent_drift_events(limit: int = 10, hostname: str = "") -> str:
         return json.dumps({"error": "Database not available"})
 
     try:
+        resolved_hostname = _resolve_hostname_alias(hostname) if hostname else ""
         rows = _db_manager.get_drift_events(limit=limit)
         events = []
         for row in rows:
-            if hostname and str(getattr(row, "hostname", "")).lower() != hostname.lower():
+            if resolved_hostname and str(getattr(row, "hostname", "")).lower() != resolved_hostname.lower():
                 continue
             events.append(
                 {
@@ -789,6 +957,7 @@ def get_device_telemetry_snapshot(hostname: str, limit: int = 20) -> str:
     try:
         from rag.context_bundle import ContextBundleBuilder
 
+        hostname = _resolve_hostname_alias(hostname)
         inventory_records, _inventory_source = _get_inventory_records()
         inventory_record = _find_inventory_record(inventory_records, hostname)
         topo = _db_manager.get_topology() if _db_manager else {}
@@ -941,7 +1110,7 @@ def get_inventory_device(hostname: str) -> str:
     Retrieve a specific device from source-of-truth inventory.
     """
     netbox_records = _inventory_records_from_netbox()
-    record = _find_inventory_record(netbox_records, hostname)
+    record = _resolve_inventory_record(netbox_records, hostname)
     if record is not None:
         topo = _db_manager.get_topology() if _db_manager else {}
         live_nodes = topo.get("nodes", {}) if isinstance(topo, dict) else {}
@@ -967,6 +1136,8 @@ def get_inventory_device(hostname: str) -> str:
                         )
                     },
                 },
+                "query_hostname": hostname,
+                "resolved_hostname": record.get("hostname") or hostname,
                 "source_used": "netbox",
                 "captured_at": record.get("updated_at"),
                 "source_metadata": _inventory_source_metadata("netbox", record.get("updated_at")),
@@ -977,7 +1148,7 @@ def get_inventory_device(hostname: str) -> str:
         )
 
     local_records = _inventory_records_from_local_db()
-    record = _find_inventory_record(local_records, hostname)
+    record = _resolve_inventory_record(local_records, hostname)
     if record is not None:
         topo = _db_manager.get_topology() if _db_manager else {}
         live_nodes = topo.get("nodes", {}) if isinstance(topo, dict) else {}
@@ -1003,6 +1174,8 @@ def get_inventory_device(hostname: str) -> str:
                         )
                     },
                 },
+                "query_hostname": hostname,
+                "resolved_hostname": record.get("hostname") or hostname,
                 "source_used": "local_db",
                 "captured_at": record.get("updated_at"),
                 "source_metadata": _inventory_source_metadata("local_db", record.get("updated_at")),
@@ -1012,9 +1185,11 @@ def get_inventory_device(hostname: str) -> str:
             ensure_ascii=False,
         )
 
+    suggested = _rank_inventory_records(netbox_records or local_records, hostname, limit=3)
     return json.dumps(
         {
             "error": f"Inventory device '{hostname}' not found",
+            "suggested_devices": [record.get("hostname") for record in suggested if record.get("hostname")],
             "source_used": "local_db" if local_records else "netbox",
             "captured_at": None,
             "source_metadata": _inventory_source_metadata("netbox" if netbox_records else "local_db", None, confidence=0.0),
@@ -1090,7 +1265,8 @@ def compare_planned_vs_live(hostname: str = "") -> str:
     """
     Compare planned inventory devices with live discovered topology, optionally scoped to a hostname.
     """
-    return json.dumps(_build_canonical_state_payload(hostname), ensure_ascii=False)
+    resolved_hostname = _resolve_hostname_alias(hostname) if hostname else ""
+    return json.dumps(_build_canonical_state_payload(resolved_hostname), ensure_ascii=False)
 
 
 def find_path(source: str, destination: str) -> str:
@@ -1100,6 +1276,9 @@ def find_path(source: str, destination: str) -> str:
     """
     if not _db_manager:
         return json.dumps({"error": "Database not available"})
+
+    source = _resolve_hostname_alias(source)
+    destination = _resolve_hostname_alias(destination)
 
     topo = _db_manager.get_topology()
     if not topo or not topo.get("nodes"):
@@ -1910,6 +2089,7 @@ def get_device_running_config(hostname: str) -> str:
         return json.dumps({"error": "Database not available"})
 
     try:
+        hostname = _resolve_hostname_alias(hostname)
         device = _db_manager.get_device_by_hostname(hostname)
         if not device:
             return json.dumps({"error": f"Device '{hostname}' not found"})

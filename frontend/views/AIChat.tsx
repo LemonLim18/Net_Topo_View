@@ -951,14 +951,17 @@ const GeminiChat: React.FC<AIChatProps> = ({ domain }) => {
     setMessages(prev => [...prev, userMessage]);
     setIsLoading(true);
 
-    // Create placeholder for AI Message
+    // Create placeholder for AI Message with thinking indicator
     const aiMsgId = generateId();
+    const thinkingStartTime = Date.now();
     const aiPlaceholder: Message = {
       id: aiMsgId,
       role: Role.Model,
       content: "",
       isStreaming: true,
-      timestamp: Date.now()
+      timestamp: Date.now(),
+      thinkingStartTime,
+      thinkingPhase: { phase: 'classifying', label: 'Understanding your request…', elapsed_ms: 0 },
     };
     setMessages(prev => [...prev, aiPlaceholder]);
 
@@ -976,43 +979,79 @@ const GeminiChat: React.FC<AIChatProps> = ({ domain }) => {
     }
 
     try {
-      // Call Backend API
-      const response = await llmApi.chat(text);
+      // Use SSE streaming endpoint for real-time progress
+      await llmApi.chatStream(text, {
+        onProgress: (data) => {
+          // Update the placeholder with the current thinking phase
+          setMessages(prev => prev.map(msg =>
+            msg.id === aiMsgId
+              ? {
+                  ...msg,
+                  thinkingPhase: {
+                    phase: data.phase,
+                    label: data.label,
+                    elapsed_ms: data.elapsed_ms,
+                  },
+                }
+              : msg
+          ));
+        },
+        onComplete: (response) => {
+          if ((response.type === 'proposal' || response.type === 'intent_plan') && response.proposal) {
+            // M19/M24: AI generated a config proposal
+            const proposal = response.proposal as ConfigProposal;
+            const intentMeta = response.type === 'intent_plan' && response.intent_meta
+              ? response.intent_meta as IntentMeta
+              : undefined;
+            setCurrentProposal(proposal);
 
-      if ((response.type === 'proposal' || response.type === 'intent_plan') && response.proposal) {
-        // M19/M24: AI generated a config proposal → show ProposalCard or IntentReviewCard
-        const proposal = response.proposal as ConfigProposal;
-        const intentMeta = response.type === 'intent_plan' && response.intent_meta
-          ? response.intent_meta as IntentMeta
-          : undefined;
-        setCurrentProposal(proposal);
-
-        setMessages(prev => prev.map(msg =>
-          msg.id === aiMsgId
-            ? {
-                ...msg,
-                isStreaming: false,
-                content: response.content,
-                proposal: proposal,
-                intentMeta: intentMeta,
-              }
-            : msg
-        ));
-      } else {
-        // Normal text response
-        setMessages(prev => prev.map(msg =>
-          msg.id === aiMsgId
-            ? { ...msg, isStreaming: false, content: response.content }
-            : msg
-        ));
-      }
+            setMessages(prev => prev.map(msg =>
+              msg.id === aiMsgId
+                ? {
+                    ...msg,
+                    isStreaming: false,
+                    content: response.content,
+                    proposal: proposal,
+                    intentMeta: intentMeta,
+                    thinkingPhase: undefined,
+                    groundingMeta: response.grounding_meta,
+                  }
+                : msg
+            ));
+          } else {
+            // Normal text response
+            setMessages(prev => prev.map(msg =>
+              msg.id === aiMsgId
+                ? {
+                    ...msg,
+                    isStreaming: false,
+                    content: response.content || '',
+                    thinkingPhase: undefined,
+                    groundingMeta: response.grounding_meta,
+                  }
+                : msg
+            ));
+          }
+          setIsLoading(false);
+        },
+        onError: (err) => {
+          console.error("Chat stream error:", err);
+          Toast.error('Chat Error', err.message || 'Failed to get response');
+          setMessages(prev => prev.map(msg =>
+            msg.id === aiMsgId
+              ? { ...msg, isStreaming: false, isError: true, content: `Error: ${err.message || "Failed to get response"}`, thinkingPhase: undefined }
+              : msg
+          ));
+          setIsLoading(false);
+        },
+      });
 
     } catch (error: any) {
       console.error("Chat error:", error);
       Toast.error('Chat Error', error.message || 'Failed to get response');
       setMessages(prev => prev.map(msg => 
         msg.id === aiMsgId 
-          ? { ...msg, isStreaming: false, isError: true, content: `Error: ${error.message || "Failed to get response"}` } 
+          ? { ...msg, isStreaming: false, isError: true, content: `Error: ${error.message || "Failed to get response"}`, thinkingPhase: undefined } 
           : msg
       ));
     } finally {

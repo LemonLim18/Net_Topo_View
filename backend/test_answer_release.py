@@ -61,3 +61,32 @@ def test_answer_release_limits_conflicting_authoritative_evidence_without_refres
     assert state["decision"] == "allow_limited"
     assert state["refresh_tool_calls"] == []
     assert "conflicting_evidence" in state["degraded_signals"]
+
+
+def test_answer_release_prefers_immediate_limited_release_for_stale_inventory_reads():
+    state = build_answer_release_state(
+        query_class="inventory_only",
+        grounding={
+            "freshness_class": "stale",
+            "source_age": [
+                {
+                    "source": "netbox",
+                    "scope": "planned_inventory",
+                    "freshness_class": "stale",
+                }
+            ],
+            "conflicts": [],
+            "evidence_authority": {
+                "preferred_evidence_present": True,
+                "substitution_risk": False,
+                "summary": "planned evidence present",
+            },
+        },
+        tool_args={},
+        allowed_tools=["get_last_sync_status", "trigger_context_refresh"],
+    )
+
+    assert state["decision"] == "allow_limited"
+    assert state["refresh_recommended"] is True
+    assert state["refresh_attempted"] is False
+    assert state["refresh_tool_calls"][0]["name"] == "get_last_sync_status"

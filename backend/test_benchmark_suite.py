@@ -419,7 +419,7 @@ def test_evaluate_benchmark_response_flags_missing_retry_evidence_for_stale_outa
     }
     response = {
         "type": "text",
-        "content": "Limited answer: telemetry is stale.\n\nGrounding: mixed; sources=local_db,crawler_cache,influxdb; source_age=local_db:0s/live,crawler_cache:10s/live,influxdb:1900s/stale; confidence=medium (0.7).\nConflicts: Telemetry freshness is stale for SW1.",
+        "content": "telemetry is stale.\n\nNote: Some required evidence is stale or missing.\n\nGrounding: mixed; sources=local_db,crawler_cache,influxdb; source_age=local_db:0s/live,crawler_cache:10s/live,influxdb:1900s/stale; confidence=medium (0.7).\nConflicts: Telemetry freshness is stale for SW1.",
         "grounding_meta": {
             "answer_scope": "mixed",
             "source_used": ["local_db", "crawler_cache", "influxdb"],

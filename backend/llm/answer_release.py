@@ -115,7 +115,9 @@ def build_answer_release_state(
     if substitution_risk or not preferred_evidence_present:
         degraded_signals.append("authority_gap")
 
-    if stale_entries and refresh_calls and not refresh_attempted:
+    prefer_immediate_limited_release = query_class == "inventory_only"
+
+    if stale_entries and refresh_calls and not refresh_attempted and not prefer_immediate_limited_release:
         decision = "reroute"
         reason = "Required evidence is stale or missing, so the controller requested a refresh before releasing the answer."
     elif degraded_signals:
