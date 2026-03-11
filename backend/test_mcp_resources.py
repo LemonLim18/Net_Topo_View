@@ -7,6 +7,9 @@ from types import SimpleNamespace
 from types import ModuleType
 from pathlib import Path
 
+from llm.controller_observability import clear_latest_controller_chat_snapshot, record_controller_chat_snapshot
+from llm.proposal import ConfigProposal
+
 
 class _FakeMCP:
     def resource(self, _uri: str):
@@ -195,6 +198,52 @@ def test_context_health_resource_combines_health_and_sync(monkeypatch):
 
     assert payload["context_health"]["versions"]["live_topology"] == 4
     assert payload["last_sync_status"]["operations"]["inventory"]["status"] == "idle"
+
+
+def test_controller_observability_resource_exposes_debug_snapshot(monkeypatch):
+    class _FakeProposalManager:
+        def list_all(self):
+            return [
+                ConfigProposal(
+                    id="prop-1",
+                    status="approved",
+                    target_device="R1",
+                    feature="bgp",
+                    action_artifact={
+                        "action_type": "single_device_cli",
+                        "validation": {"passed": False, "errors": ["unsafe command"], "warnings": [], "version": "phase3_step10_v1"},
+                        "approval": {"status": "approved", "safety_validated": False, "safety_errors": ["unsafe command"]},
+                    },
+                )
+            ]
+
+    clear_latest_controller_chat_snapshot()
+    record_controller_chat_snapshot(
+        "Show controller state",
+        {
+            "type": "text",
+            "grounding_meta": {"answer_scope": "mixed", "source_used": ["crawler_cache", "local_db"]},
+        },
+        model="test-model",
+    )
+
+    monkeypatch.setattr(resources.network_tools, "set_db_manager", lambda db_manager: None)
+    monkeypatch.setattr(resources.network_tools, "get_context_health", lambda: json.dumps({"versions": {"live_topology": 7}}))
+    monkeypatch.setattr(resources.network_tools, "get_last_sync_status", lambda: json.dumps({"operations": {"planned_topology": {"status": "success"}}}))
+    monkeypatch.setattr(resources, "_build_config_snapshots_payload", lambda: {"devices_with_snapshots": 2, "snapshots": []})
+    monkeypatch.setattr(resources, "_build_change_jobs_payload", lambda: {"jobs": [{"id": 91, "status": "running"}], "intents": [], "change_requests": []})
+    monkeypatch.setattr(resources, "ProposalManager", _FakeProposalManager)
+
+    payload = json.loads(resources.get_controller_observability_resource())
+
+    assert payload["version"] == "phase4_step14_v1"
+    assert payload["controller"]["surface"] == "mcp_resource"
+    assert payload["context_health"]["last_sync_status"]["operations"]["planned_topology"]["status"] == "success"
+    assert payload["sync_freshness"]["operations"]["planned_topology"]["status"] == "success"
+    assert payload["proposal_state"]["counts_by_status"]["approved"] == 1
+    assert payload["validation_outcomes"]["failed"] == 1
+    assert payload["deployment_state"]["jobs"][0]["id"] == 91
+    assert payload["grounding_metadata"]["latest"]["grounding_meta"]["answer_scope"] == "mixed"
 
 
 def test_semantics_resources_return_shared_contract(monkeypatch):

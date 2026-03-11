@@ -10,6 +10,7 @@ Endpoints:
     GET  /api/chat/history                  — Get conversation history
     GET  /api/chat/tools                    — List available tools
     GET  /api/chat/info                     — Get agent info (model, status)
+    GET  /api/chat/observability            — Get controller observability snapshot
     POST /api/chat/refresh                  — Refresh network context
 
     GET  /api/chat/proposals                — List all proposals
@@ -32,9 +33,18 @@ from config_engine.safety import validate_action_artifact
 from llm.benchmark_suite import benchmark_categories, list_benchmark_cases, run_benchmark_suite
 from llm.resilience_suite import list_resilience_scenarios, resilience_categories, run_resilience_suite
 from llm.change_intelligence import CHANGE_INTELLIGENCE_VERSION
+from llm.controller_observability import (
+    build_controller_observability_payload,
+    clear_latest_controller_chat_snapshot,
+    get_latest_controller_chat_snapshot,
+    record_controller_chat_snapshot,
+    summarize_proposals,
+    summarize_validation_outcomes,
+)
 from rag.digital_twin import DIGITAL_TWIN_VERSION
 from llm import network_tools
 from llm.refresh_fabric import register_refresh_listener
+from rag.context_bundle import ContextBundleBuilder
 
 logger = logging.getLogger("llm.api")
 
@@ -160,6 +170,37 @@ def _get_agent():
     return _agent
 
 
+def _build_config_snapshots_payload(agent) -> Dict[str, Any]:
+    try:
+        builder = ContextBundleBuilder(db_manager=getattr(agent, "_db", None))
+        config_history = builder._fetch_config_history()
+    except Exception as exc:
+        return {"snapshots": [], "devices_with_snapshots": 0, "devices_missing_snapshots": [], "error": str(exc)}
+    return {
+        "snapshots": config_history.snapshots,
+        "latest_snapshot_at": config_history.latest_snapshot_at,
+        "devices_with_snapshots": config_history.devices_with_snapshots,
+        "devices_missing_snapshots": config_history.devices_missing_snapshots,
+        "source_used": config_history.source,
+        "source_metadata": config_history.freshness.to_dict(),
+    }
+
+
+def _build_deployment_state_payload(agent) -> Dict[str, Any]:
+    try:
+        builder = ContextBundleBuilder(db_manager=getattr(agent, "_db", None))
+        deployment = builder._fetch_deployment_status()
+    except Exception as exc:
+        return {"intents": [], "change_requests": [], "jobs": [], "error": str(exc)}
+    return {
+        "intents": deployment.intents,
+        "change_requests": deployment.change_requests,
+        "jobs": deployment.jobs,
+        "source_used": deployment.source,
+        "source_metadata": deployment.freshness.to_dict(),
+    }
+
+
 async def _run_tool_json(tool_func, *args, **kwargs) -> Dict[str, Any]:
     _get_agent()
     raw = await run_in_threadpool(tool_func, *args, **kwargs)
@@ -190,6 +231,7 @@ async def chat(request: ChatRequest):
 
     try:
         result = await agent.chat(request.message)
+        record_controller_chat_snapshot(request.message, result, model=agent.model_name)
         return ChatResponse(
             role=result.get("role", "assistant"),
             content=result.get("content", ""),
@@ -209,6 +251,7 @@ async def clear_history():
     """Clear the conversation history."""
     agent = _get_agent()
     agent.clear_history()
+    clear_latest_controller_chat_snapshot()
     return {"status": "ok", "message": "Conversation history cleared"}
 
 
@@ -238,6 +281,29 @@ async def get_info():
         scope_contract=getattr(agent, "controller_scope_contract", None),
         implementation_status=getattr(agent, "controller_implementation_status", None),
         milestone2_baseline=getattr(agent, "milestone2_baseline", None),
+    )
+
+
+@router.get("/observability")
+async def get_controller_observability():
+    """Return a canonical controller observability snapshot for debugging and higher-level agent integration."""
+    agent = _get_agent()
+    proposals = agent.proposal_manager.list_all()
+    return build_controller_observability_payload(
+        controller={
+            "model": agent.model_name,
+            "history_length": len(agent.get_history()),
+            "scope_contract": getattr(agent, "controller_scope_contract", None),
+            "implementation_status": getattr(agent, "controller_implementation_status", None),
+            "milestone2_baseline": getattr(agent, "milestone2_baseline", None),
+        },
+        context_health=await _run_tool_json(network_tools.get_context_health),
+        sync_freshness=await _run_tool_json(network_tools.get_last_sync_status),
+        config_snapshots=_build_config_snapshots_payload(agent),
+        proposal_state=summarize_proposals(proposals),
+        deployment_state=_build_deployment_state_payload(agent),
+        validation_outcomes=summarize_validation_outcomes(proposals),
+        latest_chat=get_latest_controller_chat_snapshot(),
     )
 
 

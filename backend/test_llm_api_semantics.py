@@ -1,8 +1,10 @@
 import asyncio
 
 from llm import api as llm_api
+from llm.controller_observability import clear_latest_controller_chat_snapshot, record_controller_chat_snapshot
 from llm.controller_scope import build_controller_implementation_status, build_controller_scope_contract
 from llm.milestone_baseline import build_milestone2_baseline
+from llm.proposal import ConfigProposal
 
 
 class _FakeAgent:
@@ -103,6 +105,65 @@ def test_info_endpoint_returns_controller_scope_and_status(monkeypatch):
     assert payload.milestone2_baseline["version"] == "phase0_step2_v1"
     capability_names = {item["name"] for item in payload.implementation_status["capabilities"]}
     assert "bounded_self_correction" in capability_names
+
+
+def test_observability_endpoint_returns_controller_snapshot(monkeypatch):
+    class _FakeProposalManager:
+        def list_all(self):
+            return [
+                ConfigProposal(
+                    id="prop-1",
+                    status="pending",
+                    target_device="R1",
+                    feature="ospf",
+                    risk_level="medium",
+                    action_artifact={
+                        "action_type": "single_device_cli",
+                        "validation": {"passed": True, "errors": [], "warnings": [], "version": "phase3_step10_v1"},
+                        "approval": {"status": "pending", "safety_validated": True, "safety_errors": []},
+                    },
+                )
+            ]
+
+    class _ObservabilityAgent(_FakeAgent):
+        @property
+        def proposal_manager(self):
+            return _FakeProposalManager()
+
+    clear_latest_controller_chat_snapshot()
+    record_controller_chat_snapshot(
+        "What changed on R1?",
+        {
+            "type": "text",
+            "grounding_meta": {"answer_scope": "live", "source_used": ["crawler_cache"]},
+        },
+        model="test-model",
+    )
+
+    monkeypatch.setattr(llm_api, "_get_agent", lambda: _ObservabilityAgent())
+    monkeypatch.setattr(llm_api.network_tools, "get_context_health", lambda: '{"versions":{"live_topology":5}}')
+    monkeypatch.setattr(llm_api.network_tools, "get_last_sync_status", lambda: '{"operations":{"inventory":{"status":"success"}}}')
+    monkeypatch.setattr(
+        llm_api,
+        "_build_config_snapshots_payload",
+        lambda agent: {"devices_with_snapshots": 1, "devices_missing_snapshots": [], "snapshots": []},
+    )
+    monkeypatch.setattr(
+        llm_api,
+        "_build_deployment_state_payload",
+        lambda agent: {"jobs": [{"id": 21, "status": "running"}], "intents": [], "change_requests": []},
+    )
+
+    payload = asyncio.run(llm_api.get_controller_observability())
+
+    assert payload["version"] == "phase4_step14_v1"
+    assert payload["controller"]["model"] == "test-model"
+    assert payload["context_health"]["versions"]["live_topology"] == 5
+    assert payload["sync_freshness"]["operations"]["inventory"]["status"] == "success"
+    assert payload["proposal_state"]["total"] == 1
+    assert payload["validation_outcomes"]["passed"] == 1
+    assert payload["deployment_state"]["jobs"][0]["id"] == 21
+    assert payload["grounding_metadata"]["latest"]["grounding_meta"]["answer_scope"] == "live"
 
 
 def test_scope_endpoint_returns_contract_and_baseline(monkeypatch):

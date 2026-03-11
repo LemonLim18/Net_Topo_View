@@ -21,7 +21,14 @@ try:
         CONTEXT_DOMAIN_PLANNED_TOPOLOGY,
         CONTEXT_DOMAIN_TELEMETRY,
     )
+    from llm.controller_observability import (
+        build_controller_observability_payload,
+        get_latest_controller_chat_snapshot,
+        summarize_proposals,
+        summarize_validation_outcomes,
+    )
     from llm import network_tools
+    from llm.proposal import ProposalManager
     from rag.context_bundle import ContextBundleBuilder
 except ImportError:  # pragma: no cover - package import path
     from ..llm.context_contract import (
@@ -31,7 +38,14 @@ except ImportError:  # pragma: no cover - package import path
         CONTEXT_DOMAIN_PLANNED_TOPOLOGY,
         CONTEXT_DOMAIN_TELEMETRY,
     )
+    from ..llm.controller_observability import (
+        build_controller_observability_payload,
+        get_latest_controller_chat_snapshot,
+        summarize_proposals,
+        summarize_validation_outcomes,
+    )
     from ..llm import network_tools
+    from ..llm.proposal import ProposalManager
     from ..rag.context_bundle import ContextBundleBuilder
 
 try:
@@ -194,6 +208,31 @@ def _build_context_health_payload() -> Dict[str, Any]:
         "context_health": health,
         "last_sync_status": sync,
     }
+
+
+def _build_controller_observability_snapshot() -> Dict[str, Any]:
+    try:
+        proposals = ProposalManager().list_all()
+    except Exception as exc:
+        proposals = []
+        proposal_error = str(exc)
+    else:
+        proposal_error = None
+
+    proposal_state = summarize_proposals(proposals)
+    if proposal_error:
+        proposal_state["error"] = proposal_error
+
+    return build_controller_observability_payload(
+        controller={"surface": "mcp_resource"},
+        context_health=_build_context_health_payload(),
+        sync_freshness=_tool_payload(network_tools.get_last_sync_status),
+        config_snapshots=_build_config_snapshots_payload(),
+        proposal_state=proposal_state,
+        deployment_state=_build_change_jobs_payload(),
+        validation_outcomes=summarize_validation_outcomes(proposals),
+        latest_chat=get_latest_controller_chat_snapshot(),
+    )
 
 
 def _build_semantics_payload() -> Dict[str, Any]:
@@ -655,6 +694,12 @@ def get_change_jobs() -> str:
 def get_context_health_resource() -> str:
     """Returns context versioning health and latest sync status."""
     return _json_resource(_build_context_health_payload())
+
+
+@mcp.resource("network://controller-observability")
+def get_controller_observability_resource() -> str:
+    """Returns the canonical controller observability snapshot for operator debugging and higher-level agents."""
+    return _json_resource(_build_controller_observability_snapshot())
 
 
 @mcp.resource("network://semantics")
