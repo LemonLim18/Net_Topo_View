@@ -132,12 +132,29 @@ class NetBoxClient:
                 except Exception:
                     pass
 
+                # Fetch link connectivity details
+                connected_endpoint = None
+                link_status = None
+                if getattr(iface, "link_peers", None):
+                    peers = iface.link_peers
+                    if peers:
+                        peer = peers[0]
+                        connected_endpoint = {
+                            "device": getattr(getattr(peer, "device", None), "name", "Unknown"),
+                            "interface": getattr(peer, "name", "Unknown")
+                        }
+                        # Find cable status if possible
+                        if getattr(iface, "cable", None):
+                            link_status = str(getattr(iface.cable, "status", "unknown"))
+
                 result.append({
                     "name": iface.name,
                     "ip_address": ip_address,
                     "subnet_mask": subnet_mask,
                     "mac_address": getattr(iface, "mac_address", None),
                     "type": str(getattr(iface, "type", "other")),
+                    "connected_endpoint": connected_endpoint,
+                    "link_status": link_status,
                 })
             return result
         except Exception as e:

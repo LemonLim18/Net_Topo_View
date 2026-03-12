@@ -12,7 +12,10 @@ from typing import Any, Dict, List, Optional
 
 from llm.context_contract import (
     CONTEXT_DOMAIN_CONFIG,
+    CONTEXT_DOMAIN_INVENTORY,
+    CONTEXT_DOMAIN_KNOWLEDGE,
     CONTEXT_DOMAIN_LIVE_TOPOLOGY,
+    CONTEXT_DOMAIN_PLANNED_TOPOLOGY,
     QueryRoutingDecision,
     build_authoritative_context_contract,
     build_source_matrix,
@@ -205,6 +208,8 @@ class ContextBuilder:
 
         parts = []
 
+        # The Contract and Source Matrix are the "brain" of the agent. 
+        # They MUST always be present so the LLM knows its identity and tools.
         if include_contract:
             parts.append(build_authoritative_context_contract())
             parts.append(self.build_source_matrix_context())

@@ -222,6 +222,7 @@ def _normalize_inventory_device(record: Any, source: str) -> Dict[str, Any]:
         updated_at = str(getattr(record, "last_updated", "") or "") or None
 
     return {
+        "id": getattr(record, "id", None) if not isinstance(record, dict) else record.get("id"),
         "hostname": hostname,
         "management_ip": management_ip,
         "vendor": vendor,
@@ -286,10 +287,104 @@ def _inventory_records_from_local_db() -> List[Dict[str, Any]]:
 
 
 def _find_inventory_record(records: List[Dict[str, Any]], hostname: str) -> Optional[Dict[str, Any]]:
+    # 1. Try case-insensitive exact match
+    h_lower = str(hostname or "").lower().strip()
     for record in records:
-        if str(record.get("hostname", "")).lower() == hostname.lower():
+        if str(record.get("hostname", "")).lower() == h_lower:
             return record
+            
+    # 2. Try normalized match (space, underscore, dash transparency)
+    h_norm = _normalize_device_phrase(h_lower)
+    for record in records:
+        if _normalize_device_phrase(str(record.get("hostname", ""))) == h_norm:
+            return record
+            
     return None
+
+
+def _enrich_inventory_record(record: Dict[str, Any]) -> Dict[str, Any]:
+    """Fetch detailed interfaces and links for a device from its source."""
+    if not record or not record.get("hostname"):
+        return record
+
+    source = record.get("source", "local_db")
+    hostname = record["hostname"]
+
+    # Initialize empty slots
+    record["interfaces"] = []
+    record["links"] = []
+
+    try:
+        if source == "netbox" and record.get("id"):
+            from netbox.client import NetBoxClient
+            client = NetBoxClient.get_client()
+            if client and client.api:
+                ifaces = client.get_interfaces_for_device(record["id"])
+                record["interfaces"] = ifaces
+                
+                # Derrive links from connected_endpoint info in interfaces
+                links = []
+                for iface in ifaces:
+                    peer = iface.get("connected_endpoint")
+                    if peer:
+                        links.append({
+                            "peer_hostname": peer.get("device"),
+                            "local_interface": iface.get("name"),
+                            "peer_interface": peer.get("interface"),
+                            "status": iface.get("link_status", "unknown")
+                        })
+                record["links"] = links
+
+        elif source == "local_db" and _db_manager:
+            # Query local DB for interfaces and links
+            dev_id = record.get("id")
+            if dev_id:
+                local_ifaces = _db_manager.get_interfaces_for_device(dev_id)
+                record["interfaces"] = [
+                    {
+                        "name": i.name,
+                        "ip_address": i.ip_address,
+                        "subnet_mask": i.subnet_mask,
+                        "mac_address": i.mac_address,
+                        "status": i.status
+                    }
+                    for i in local_ifaces
+                ]
+                
+                local_links = _db_manager.get_links_for_device(dev_id)
+                record["links"] = []
+                for l in local_links:
+                    # Resolve peer hostname
+                    peer_id = l.dst_device_id if l.src_device_id == dev_id else l.src_device_id
+                    peer_dev = _db_manager.get_device_by_id(peer_id)
+                    
+                    # Resolve interface names if possible
+                    local_iface_id = l.src_interface_id if l.src_device_id == dev_id else l.dst_interface_id
+                    peer_iface_id = l.dst_interface_id if l.src_device_id == dev_id else l.src_interface_id
+                    
+                    local_iface_name = "Unknown"
+                    peer_iface_name = "Unknown"
+                    
+                    # This is slightly expensive (N queries), but fine for single-device lookup
+                    if local_iface_id:
+                        with _db_manager._connect() as conn:
+                            row = conn.execute("SELECT name FROM interfaces WHERE id = ?", (local_iface_id,)).fetchone()
+                            if row: local_iface_name = row["name"]
+                    if peer_iface_id:
+                        with _db_manager._connect() as conn:
+                            row = conn.execute("SELECT name FROM interfaces WHERE id = ?", (peer_iface_id,)).fetchone()
+                            if row: peer_iface_name = row["name"]
+
+                    record["links"].append({
+                        "peer_hostname": peer_dev.hostname if peer_dev else "Unknown",
+                        "local_interface": local_iface_name,
+                        "peer_interface": peer_iface_name,
+                        "status": "up" # Local links don't track dynamic status yet
+                    })
+    except Exception as e:
+        logger.warning(f"Failed to enrich inventory record for '{hostname}': {e}")
+
+    return record
 
 
 def _normalize_device_phrase(text: str) -> str:
@@ -1149,6 +1244,7 @@ def get_inventory_device(hostname: str) -> str:
     if _should_prefer_local_inventory_lookup(hostname):
         record = _resolve_inventory_record(local_records, hostname)
         if record is not None:
+            record = _enrich_inventory_record(record)
             topo = _db_manager.get_topology() if _db_manager else {}
             live_nodes = topo.get("nodes", {}) if isinstance(topo, dict) else {}
             semantics = canonical_device_record(
@@ -1187,6 +1283,7 @@ def get_inventory_device(hostname: str) -> str:
     netbox_records = _inventory_records_from_netbox()
     record = _resolve_inventory_record(netbox_records, hostname)
     if record is not None:
+        record = _enrich_inventory_record(record)
         topo = _db_manager.get_topology() if _db_manager else {}
         live_nodes = topo.get("nodes", {}) if isinstance(topo, dict) else {}
         semantics = canonical_device_record(
@@ -1224,6 +1321,48 @@ def get_inventory_device(hostname: str) -> str:
 
     record = _resolve_inventory_record(local_records, hostname)
     if record is not None:
+        # If it's a NetBox record, try to enrich with interfaces and links
+        if record.get("source") == "netbox" and record.get("id"):
+            try:
+                from netbox.client import NetBoxClient
+                client = NetBoxClient.get_client()
+                if client and client.api:
+                    record["interfaces"] = client.get_interfaces_for_device(record["id"])
+                    # Links (cables)
+                    all_cables = client.get_cables()
+                    device_links = []
+                    for cable in all_cables:
+                        # Cable endpoints in pynetbox are a list of terminations
+                        a_terms = getattr(cable, "a_terminations", [])
+                        b_terms = getattr(cable, "b_terminations", [])
+                        
+                        involved = False
+                        peer_hostname = None
+                        local_iface = None
+                        peer_iface = None
+                        
+                        # Simplified link extraction for the device
+                        for term in a_terms + b_terms:
+                            if getattr(term, "object_type", "") == "dcim.interface":
+                                term_device = getattr(term, "device", None)
+                                if term_device and term_device.id == record["id"]:
+                                    involved = True
+                                    local_iface = term.name
+                                else:
+                                    peer_hostname = getattr(term_device, "name", "Unknown") if term_device else "Unknown"
+                                    peer_iface = term.name
+                                    
+                        if involved and peer_hostname:
+                            device_links.append({
+                                "peer_hostname": peer_hostname,
+                                "local_interface": local_iface,
+                                "peer_interface": peer_iface,
+                                "status": str(getattr(cable, "status", "unknown")),
+                            })
+                    record["links"] = device_links
+            except Exception as e:
+                logger.warning(f"Failed to enrich NetBox record for '{hostname}': {e}")
+
         topo = _db_manager.get_topology() if _db_manager else {}
         live_nodes = topo.get("nodes", {}) if isinstance(topo, dict) else {}
         semantics = canonical_device_record(

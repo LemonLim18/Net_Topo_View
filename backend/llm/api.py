@@ -24,6 +24,7 @@ import json
 import asyncio
 import logging
 import os
+from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 import httpx
@@ -76,6 +77,13 @@ class ChatRuntimeUpdateRequest(BaseModel):
     model: Optional[str] = Field(default=None, description="Model identifier to activate")
     ollama_base_url: Optional[str] = Field(default=None, description="Ollama server base URL")
     clear_history: bool = Field(default=True, description="Clear chat history when switching runtimes")
+
+
+class OllamaPlaygroundRequest(BaseModel):
+    """Direct unrestricted prompt for the local Ollama instance."""
+    prompt: str = Field(..., description="The user prompt", min_length=1)
+    model: Optional[str] = Field(default=None, description="Optional model override")
+    temperature: float = Field(default=0.7)
 
 
 class ChatResponse(BaseModel):
@@ -281,7 +289,7 @@ def _gemini_provider_descriptor(active_model: Optional[str]) -> Dict[str, Any]:
 
 def _fetch_ollama_models(base_url: str) -> tuple[List[str], bool, Optional[str]]:
     try:
-        response = httpx.get(f"{base_url.rstrip('/')}/api/tags", timeout=5)
+        response = httpx.get(f"{base_url.rstrip('/')}/api/tags", timeout=15)
         response.raise_for_status()
         payload = response.json()
         models = [str(item.get("name") or "").strip() for item in payload.get("models", []) if item.get("name")]
@@ -598,6 +606,176 @@ async def get_info():
 @router.get("/observability")
 async def get_controller_observability():
     """Return a canonical controller observability snapshot for debugging and higher-level agent integration."""
+    agent = _get_agent()
+    # Build payload using the helper
+    payload = build_controller_observability_payload(
+        agent=agent,
+        config_snapshots=_build_config_snapshots_payload(agent),
+        deployment_state=_build_deployment_state_payload(agent),
+    )
+    return payload
+
+
+# ── Floating Overlay APIs ──────────────────────────────────────────────
+
+@router.post("/ollama/playground")
+async def ollama_playground(request: OllamaPlaygroundRequest):
+    """
+    Direct, unrestricted chat with the local Ollama instance.
+    Bypasses standard agent context and grounding.
+    """
+    base_url = os.getenv("OLLAMA_BASE_URL", _DEFAULT_OLLAMA_VM_URL).rstrip("/")
+    model = request.model or os.getenv("OLLAMA_MODEL", "llama3.2")
+    
+    from llm.ollama_provider import OllamaProvider
+    from llm.provider import LLMMessage
+    
+    provider = OllamaProvider(base_url=base_url, model=model)
+    try:
+        response = await provider.generate(
+            messages=[LLMMessage(role="user", content=request.prompt)],
+            temperature=request.temperature
+        )
+        return {
+            "content": response.content,
+            "model": model,
+            "provider": "ollama",
+            "raw": response.raw
+        }
+    except Exception as e:
+        logger.error(f"Ollama playground error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/ollama/context_query")
+async def ollama_context_query(request: OllamaPlaygroundRequest):
+    """
+    Chat with Ollama using the current network inventory as context.
+    Provides a RAG-lite experience for the floating overlay.
+    """
+    base_url = os.getenv("OLLAMA_BASE_URL", _DEFAULT_OLLAMA_VM_URL).rstrip("/")
+    model = request.model or os.getenv("OLLAMA_MODEL", "llama3.2")
+    
+    from llm.ollama_provider import OllamaProvider
+    from llm.provider import LLMMessage
+    
+    try:
+        # 1. Fetch inventory snapshot
+        agent = _get_agent()
+        if agent._db and not network_tools._db_manager:
+            network_tools.set_db_manager(agent._db)
+
+        netbox_records = network_tools._inventory_records_from_netbox()
+        local_records = network_tools._inventory_records_from_local_db()
+        
+        merged = { r["hostname"]: r for r in local_records }
+        for r in netbox_records:
+            merged[r["hostname"]] = r
+        
+        devices = list(merged.values())
+        
+        # 2. Format context
+        inventory_text = "DEVICE INVENTORY SNAPSHOT:\n"
+        for d in devices:
+            inventory_text += f"- Hostname: {d['hostname']}, IP: {d.get('management_ip')}, Vendor: {d.get('vendor')}, Role: {d.get('role')}, Source: {d.get('source')}\n"
+        
+        # 3. Build prompt
+        system_prompt = (
+            "You are a Network Inventory Assistant. "
+            "You have access to the following real-time inventory snapshot. "
+            "Use this data to answer the user accurately. "
+            "Respond concisely. If the information is not in the snapshot, say you don't know.\n\n"
+            f"{inventory_text}"
+        )
+        
+        provider = OllamaProvider(base_url=base_url, model=model)
+        response = await provider.generate(
+            messages=[
+                LLMMessage(role="system", content=system_prompt),
+                LLMMessage(role="user", content=request.prompt)
+            ],
+            temperature=request.temperature
+        )
+        
+        return {
+            "content": response.content,
+            "model": model,
+            "provider": "ollama",
+            "context_size": len(devices)
+        }
+    except Exception as e:
+        logger.error(f"Ollama context query error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/ollama/models")
+async def get_ollama_models(ollama_base_url: Optional[str] = None):
+    """List available models from the local Ollama instance."""
+    base_url = (ollama_base_url or os.getenv("OLLAMA_BASE_URL") or _DEFAULT_OLLAMA_VM_URL).rstrip("/")
+    models, reachable, error = _fetch_ollama_models(base_url)
+    if not reachable:
+        raise HTTPException(status_code=503, detail=f"Ollama unreachable: {error}")
+    return {"models": models}
+
+
+@router.get("/inventory/snapshot")
+async def get_inventory_snapshot():
+    """
+    Rapid, combined snapshot of NetBox and SQLite device inventory.
+    """
+    try:
+        # Ensure network_tools has the DB manager if it was lost or not set
+        agent = _get_agent()
+        if agent._db and not network_tools._db_manager:
+            network_tools.set_db_manager(agent._db)
+
+        netbox_records = network_tools._inventory_records_from_netbox()
+        local_records = network_tools._inventory_records_from_local_db()
+        
+        # Merge by hostname, preferring NetBox if available
+        merged = { r["hostname"]: r for r in local_records }
+        for r in netbox_records:
+            merged[r["hostname"]] = r
+            
+        return {
+            "devices": list(merged.values()),
+            "count": len(merged),
+            "timestamp": datetime.now().isoformat()
+        }
+    except Exception as e:
+        logger.error(f"Inventory snapshot error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/inventory/device/{hostname}")
+async def get_device_enrichment(hostname: str):
+    """
+    Fetch detailed interfaces and links for a specific device.
+    """
+    try:
+        # Ensure network_tools has the DB manager
+        agent = _get_agent()
+        if agent._db and not network_tools._db_manager:
+            network_tools.set_db_manager(agent._db)
+
+        # 1. Resolve canonical hostname first
+        canonical_name = network_tools._resolve_hostname_alias(hostname)
+        
+        # 2. Find the basic record (from NB or local DB)
+        records, _source = network_tools._get_inventory_records()
+        record = network_tools._find_inventory_record(records, canonical_name)
+        
+        if not record:
+            raise HTTPException(status_code=404, detail=f"Device '{hostname}' not found in inventory.")
+
+        # 3. Enrich with interfaces and links
+        enriched = network_tools._enrich_inventory_record(record)
+        return enriched
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Device enrichment error for {hostname}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
     agent = _get_agent()
     proposals = agent.proposal_manager.list_all()
     return build_controller_observability_payload(

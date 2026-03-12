@@ -530,7 +530,8 @@ const GraphSkeleton: React.FC<{ height?: number }> = ({ height = 210 }) => (
       <RefreshCw className="h-6 w-6 text-primary animate-spin" />
       <div className="flex flex-col items-center drop-shadow-sm">
         <p className="text-[11px] font-bold text-primary uppercase tracking-[0.2em] animate-pulse">Loading</p>
-        <p className="text-[9px] font-medium opacity-80 text-primary uppercase tracking-widest mt-0.5">the graph data</p>
+        {/* <p className="text-[9px] font-medium opacity-80 text-primary uppercase tracking-widest mt-0.5">the graph data</p> */}
+        <p className="text-[9px] font-medium opacity-80 text-white tracking-widest mt-0.5">the graph data...</p>
       </div>
     </div>
     <div className="animate-pulse h-full">

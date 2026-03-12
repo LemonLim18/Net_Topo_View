@@ -17,6 +17,7 @@ import IntentHistoryView from '../views/IntentHistoryView';
 import SDNDashboardView from '../views/SDNDashboardView';
 import PlaybookComparisonView from '../views/PlaybookComparisonView';
 import ApprovalQueueView from '../views/ApprovalQueueView';
+import FloatingInventoryOverlay from '../components/FloatingInventoryOverlay';
 
 import Login from '../views/Login';
 import NetworkPerformance from '../views/NetworkPerformance';
@@ -25,7 +26,7 @@ import SecurityAnalysis from '../views/SecurityAnalysis';
 import SecurityDashboard from '../views/SecurityDashboard';
 import { NotificationProvider } from '../contexts/NotificationContext';
 import { DeviceProvider } from '../contexts/DeviceContext';
-import { Bot } from 'lucide-react';
+import { Bot, Database } from 'lucide-react';
 
 import type { ViewId, User, AppDomain } from '../types';
 
@@ -81,6 +82,7 @@ const App: React.FC = () => {
     const saved = localStorage.getItem('aiPanelOpen');
     return saved !== null ? JSON.parse(saved) : true;
   });
+  const [overlayOpen, setOverlayOpen] = useState(false);
 
   // ── Hydrate user from stored JWT on mount ──
   useEffect(() => {
@@ -268,6 +270,22 @@ const App: React.FC = () => {
                 >
                   <Bot className="w-5 h-5" />
                 </button>
+              )}
+
+              {/* Floating Overlay Button */}
+              {!overlayOpen && (
+                <button 
+                  onClick={() => setOverlayOpen(true)}
+                  className="absolute left-4 bottom-4 btn btn-accent btn-circle shadow-lg z-20"
+                  title="Inventory & Ollama Playground"
+                >
+                  <Database className="w-5 h-5 text-accent-content" />
+                </button>
+              )}
+
+              {/* The Floating Overlay */}
+              {overlayOpen && (
+                <FloatingInventoryOverlay onClose={() => setOverlayOpen(false)} />
               )}
             </main>
         </div>

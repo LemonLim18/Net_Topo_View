@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Dict, Optional, Sequence
+from typing import Any, Dict, List, Optional, Set
 
 
 CONTEXT_DOMAIN_INVENTORY = "planned_inventory"
@@ -205,11 +205,27 @@ INVENTORY_ONLY_TRIGGERS = (
     "netbox",
     "source of truth",
     "management ip",
-    "planned device",
+    "ip address",
+    "ip of",
+    "ip for",
+    "ip",
+    "mac address",
     "serial number",
+    "serial",
     "device role",
+    "device model",
+    "vendor",
+    "model",
     "site",
     "rack",
+    "interfaces",
+    "interface",
+    "links",
+    "link",
+    "connections",
+    "connection",
+    "neighbors",
+    "neighbor",
 )
 
 PLANNED_VS_LIVE_TRIGGERS = (
@@ -474,6 +490,34 @@ def _is_architecture_planning_query(query: str) -> bool:
 def classify_query(query: str) -> QueryRoutingDecision:
     q_lower = query.lower()
 
+    # --- M19 IMPROVEMENT: Check for hostnames FIRST ---
+    # If the user is asking about a specific device, steer to inventory/live
+    # instead of knowledge base, even if it starts with "what is".
+    hostnames = _extract_hostname_hints(q_lower)
+    if hostnames:
+        if _contains_any(q_lower, INVENTORY_ONLY_TRIGGERS) or not _contains_any(q_lower, LIVE_ONLY_TRIGGERS):
+             return QueryRoutingDecision(
+                query_class=QueryClass.INVENTORY_ONLY.value,
+                use_live_context=False,
+                use_knowledge=False,
+                include_inventory=True,
+                include_telemetry=False,
+                include_sdn=False,
+                required_domains=(CONTEXT_DOMAIN_INVENTORY, CONTEXT_DOMAIN_PLANNED_TOPOLOGY),
+                reasoning=f"query mentions specific device(s) {', '.join(hostnames)}, prioritizing inventory lookup",
+            )
+        else:
+            return QueryRoutingDecision(
+                query_class=QueryClass.LIVE_ONLY.value,
+                use_live_context=True,
+                use_knowledge=False,
+                include_inventory=True,
+                include_telemetry=True,
+                include_sdn=True,
+                required_domains=(CONTEXT_DOMAIN_LIVE_TOPOLOGY, CONTEXT_DOMAIN_TELEMETRY),
+                reasoning=f"query mentions specific device(s) {', '.join(hostnames)} with live-state intent",
+            )
+
     if _contains_any(q_lower, PLANNED_VS_LIVE_TRIGGERS):
         return QueryRoutingDecision(
             query_class=QueryClass.PLANNED_VS_LIVE.value,
@@ -592,3 +636,37 @@ def classify_query(query: str) -> QueryRoutingDecision:
         required_domains=(CONTEXT_DOMAIN_INVENTORY, CONTEXT_DOMAIN_LIVE_TOPOLOGY),
         reasoning="default to combined planned inventory and current live state",
     )
+
+
+def _extract_hostname_hints(query: str) -> Set[str]:
+    """Simple regex or pattern matcher for candidate hostnames."""
+    # 1. Standard hostname patterns (alphanumeric with _, -, or . separators)
+    # 2. Support names with spaces if they look like "Vendor Name Number" (e.g. Cisco Switch 1)
+    #    Matched via keywords + following terms.
+    
+    import re
+    hints = set()
+
+    # Pattern A: Standard network hostnames (e.g., Core_Cisco_1, dist-01, spine.A)
+    std_pattern = r"\b[a-zA-Z0-9_\-\.]{3,}\b"
+    std_matches = re.findall(std_pattern, query)
+    for m in std_matches:
+        if any(c in m for c in "_-."):
+            hints.add(m)
+        elif any(c.isdigit() for c in m) and any(c.isalpha() for c in m) and not m.startswith(("what", "show", "tell")):
+            hints.add(m)
+
+    # Pattern B: Entity-led names (e.g., "switch cisco 1", "device core-01")
+    # Captures the word following a common network prefix if it looks like a name.
+    prefix_pattern = r"(?:switch|device|router|core|host|node|distribution|dist|access|spine|leaf|ip|model|vendor|interface|interfaces)\s+([a-zA-Z0-9\s_\-]{1,20})"
+    prefix_matches = re.finditer(prefix_pattern, query, re.IGNORECASE)
+    for match in prefix_matches:
+        name = match.group(1).strip()
+        # Clean up leading junk like "of" or "the"
+        name = re.sub(r"^(?:of|the)\s+", "", name, flags=re.IGNORECASE).strip()
+        # Clean up ending junk
+        name = re.sub(r"(?:\sis|\sas|\sat|\swith).*$", "", name, flags=re.IGNORECASE).strip()
+        if name:
+            hints.add(name)
+
+    return hints

@@ -248,6 +248,28 @@ class NetworkAgent:
             return None
 
         if payload.get("error"):
+            # M19: Handle "Did you mean?" suggestions in the fast-path
+            suggestions = payload.get("suggested_devices")
+            if suggestions:
+                suggestion_str = ", ".join([f"**{s}**" for s in suggestions])
+                content = f"I couldn't find a device exactly matching your query. Did you mean: {suggestion_str}?"
+                
+                grounding_meta = self._build_grounding_meta(
+                    query_class=query_class,
+                    tool_results=tool_results,
+                    tool_args=tool_args,
+                )
+                final_content = self._render_grounded_content(content, grounding_meta)
+
+                self._history.append(LLMMessage(role="user", content=user_message))
+                self._history.append(LLMMessage(role="assistant", content=final_content))
+
+                return {
+                    "role": "assistant",
+                    "content": final_content,
+                    "type": "text",
+                    "grounding_meta": grounding_meta,
+                }
             return None
 
         # Single device lookup → compose direct answer
@@ -276,6 +298,24 @@ class NetworkAgent:
                 parts.append(f"**{hostname}** has status: **{status or 'unknown'}**.")
             elif "role" in q_lower:
                 parts.append(f"**{hostname}** has role: **{role or 'unknown'}**.")
+            elif "interface" in q_lower:
+                ifaces = device.get("interfaces", [])
+                if ifaces:
+                    parts.append(f"**{hostname}** has the following interfaces in inventory:")
+                    for iface in ifaces:
+                        ip = iface.get("ip_address")
+                        ip_str = f" (**{ip}**)" if ip else ""
+                        parts.append(f"- **{iface.get('name')}**{ip_str}")
+                else:
+                    parts.append(f"No interface information found for **{hostname}** in the inventory.")
+            elif "link" in q_lower or "neighbor" in q_lower or "connection" in q_lower:
+                links = device.get("links", [])
+                if links:
+                    parts.append(f"**{hostname}** has the following links in inventory:")
+                    for link in links:
+                        parts.append(f"- **{link.get('local_interface')}** -> **{link.get('peer_hostname')}** (**{link.get('peer_interface')}**)")
+                else:
+                    parts.append(f"No link information found for **{hostname}** in the inventory.")
             else:
                 # General device info
                 info_parts = [f"**{hostname}**"]
@@ -324,17 +364,17 @@ class NetworkAgent:
             }
 
         # Multi-device search result
-        devices = payload.get("devices")
-        if isinstance(devices, list) and devices:
+        matches = payload.get("matches") or payload.get("devices")
+        if isinstance(matches, list) and matches:
             lines = []
-            for dev in devices[:10]:
+            for dev in matches[:10]:
                 if not isinstance(dev, dict):
                     continue
                 hn = dev.get("hostname", "Unknown")
                 ip = dev.get("management_ip", "N/A")
                 v = dev.get("vendor", "")
                 lines.append(f"- **{hn}**: {ip}" + (f" ({v})" if v else ""))
-            content = f"Found **{len(devices)}** device(s) in inventory:\n\n" + "\n".join(lines)
+            content = f"Found **{len(matches)}** device(s) matching your request:\n\n" + "\n".join(lines)
 
             grounding_meta = self._build_grounding_meta(
                 query_class=query_class,
@@ -523,7 +563,23 @@ class NetworkAgent:
                 grounding_meta["answer_release"] = answer_release
                 if answer_release_action == "reroute":
                     continue
-                response_content = response.content
+                
+                # --- M19 IMPROVEMENT: Prevent raw tool JSON leakage ---
+                # Some local models or Gemini variants might output the tool call JSON string 
+                # instead of a natural answer. If content looks like JSON and we have tool results,
+                # we force one last turn to summarize.
+                response_content = response.content or ""
+                trimmed = response_content.strip()
+                is_json_like = trimmed.startswith("{") and trimmed.endswith("}")
+                if (not trimmed or is_json_like) and round_num < MAX_TOOL_ROUNDS - 1:
+                    has_data = bool(tool_results) or bool(prefetched_tool_results)
+                    if has_data:
+                        logger.info("Content is empty/JSON, forcing summarization turn.")
+                        messages.append(LLMMessage(
+                            role="user",
+                            content="The tools have returned data. Please provide a clear, natural language summary of the results for the user, focusing on their original question."
+                        ))
+                        continue
                 if flow_action == "block":
                     response_content = self._render_controller_flow_block(flow_state)
                 elif answer_release_action == "allow_limited":
@@ -1286,6 +1342,13 @@ class NetworkAgent:
         if matches:
             return [hostname for _, hostname in sorted(matches, key=lambda item: item[0])]
 
+        # Fallback to pattern-based hints (handles spaces and prefixes like "core", "dist", etc.)
+        from llm.context_contract import _extract_hostname_hints
+        hints = _extract_hostname_hints(user_message)
+        if hints:
+            # Sort by length descending to prioritize more specific names
+            return sorted(list(hints), key=len, reverse=True)[:3]
+
         heuristic_matches = re.findall(r"\b[A-Za-z][A-Za-z0-9_-]*\d+[A-Za-z0-9_-]*\b", user_message)
         if heuristic_matches:
             return heuristic_matches[:3]
@@ -1342,7 +1405,8 @@ class NetworkAgent:
             if hostnames:
                 prefetch_tools.append(ToolCall(name="get_inventory_device", arguments={"hostname": hostnames[0]}))
             else:
-                prefetch_tools.append(ToolCall(name="search_inventory_devices", arguments={"query": user_message, "limit": 5}))
+                clean_query = self._clean_search_query(user_message)
+                prefetch_tools.append(ToolCall(name="search_inventory_devices", arguments={"query": clean_query, "limit": 5}))
 
         elif query_class == "planned_vs_live":
             allowed_tools = generic_read_tools + [
@@ -2310,6 +2374,30 @@ class NetworkAgent:
         if not note:
             return content
         return f"{content}\n\n{note}"
+
+    def _clean_search_query(self, query: str) -> str:
+        """Strip natural language filler from a query to optimize direct search hits."""
+        q = query.lower().strip()
+        prefixes = [
+            "what are the interfaces of", "what are the interfaces for", "what are interfaces for", "interfaces of", "interfaces for",
+            "what are the links of", "what are the links for", "show links for", "links for", "links of",
+            "what is the ip address of", "what is the ip of", "what is the management ip of",
+            "show me the ip of", "tell me the ip of", "get the ip of", "ip of", "ip address of",
+            "find device", "search for", "lookup", "who is", "what is"
+        ]
+        import re
+        for p in sorted(prefixes, key=len, reverse=True):
+            if q.startswith(p):
+                q = q[len(p):].strip()
+                break
+        
+        # Strip trailing punctuation
+        q = re.sub(r"[?!.]$", "", q).strip()
+        # If it's a "the core switch cisco 1", strip "the"
+        if q.startswith("the "):
+            q = q[4:].strip()
+            
+        return q or query
 
     def refresh_context(self) -> None:
         """
