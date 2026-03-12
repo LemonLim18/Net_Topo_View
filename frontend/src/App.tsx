@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import Header from '../components/Header';
 import { authApi } from './services/api';
 import Sidebar from '../components/Sidebar';
@@ -6,7 +6,6 @@ import OverviewDashboard from '../views/OverviewDashboard';
 import Dashboard from '../views/Dashboard';
 import GeminiChat from  "../views/AIChat";
 import NetBoxDevices from '../views/NetBoxDevices';
-import AIAgentPanel from '../components/AIAgentPanel';
 import KnowledgeBase from '../views/KnowledgeBase';
 import AnsibleStudioView from '../views/AnsibleStudioView';
 import TemplateStudioView from '../views/TemplateStudioView';
@@ -26,9 +25,9 @@ import SecurityAnalysis from '../views/SecurityAnalysis';
 import SecurityDashboard from '../views/SecurityDashboard';
 import { NotificationProvider } from '../contexts/NotificationContext';
 import { DeviceProvider } from '../contexts/DeviceContext';
-import { Bot, Database } from 'lucide-react';
+import { Bot } from 'lucide-react';
 
-import type { ViewId, User, AppDomain } from '../types';
+import type { ViewId, User } from '../types';
 
 const CURRENT_VIEW_KEY = 'currentView';
 const SELECTED_DEVICE_KEY = 'selectedDeviceId';
@@ -78,11 +77,13 @@ const App: React.FC = () => {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
     return localStorage.getItem('sidebarCollapsed') === 'true';
   });
-  const [aiPanelOpen, setAiPanelOpen] = useState(() => {
-    const saved = localStorage.getItem('aiPanelOpen');
-    return saved !== null ? JSON.parse(saved) : true;
-  });
   const [overlayOpen, setOverlayOpen] = useState(false);
+  
+  // Custom Draggable Button State
+  const [buttonPos, setButtonPos] = useState({ x: window.innerWidth - 80, y: window.innerHeight - 80 });
+  const [isDraggingButton, setIsDraggingButton] = useState(false);
+  const [hasMoved, setHasMoved] = useState(false);
+  const buttonDragStart = useRef({ x: 0, y: 0 });
 
   // ── Hydrate user from stored JWT on mount ──
   useEffect(() => {
@@ -132,18 +133,47 @@ const App: React.FC = () => {
   }, [selectedDeviceId]);
 
   useEffect(() => {
-    localStorage.setItem('aiPanelOpen', JSON.stringify(aiPanelOpen));
-  }, [aiPanelOpen]);
-
-  useEffect(() => {
     localStorage.setItem('sidebarCollapsed', String(sidebarCollapsed));
   }, [sidebarCollapsed]);
 
-  // Determine domain based on current view
-  const getCurrentDomain = (): AppDomain => {
-    if (view.startsWith('sec_')) return 'security';
-    return 'network';
+  // --- Button Dragging Logic ---
+  const handleButtonMouseDown = (e: React.MouseEvent) => {
+    setIsDraggingButton(true);
+    setHasMoved(false);
+    buttonDragStart.current = {
+      x: e.clientX - buttonPos.x,
+      y: e.clientY - buttonPos.y
+    };
   };
+
+  useEffect(() => {
+    const handleMouseMove = (e: MouseEvent) => {
+      if (!isDraggingButton) return;
+      
+      const newX = e.clientX - buttonDragStart.current.x;
+      const newY = e.clientY - buttonDragStart.current.y;
+      
+      // If moved more than 5px, mark as moved
+      if (Math.abs(newX - buttonPos.x) > 5 || Math.abs(newY - buttonPos.y) > 5) {
+        setHasMoved(true);
+      }
+
+      setButtonPos({
+        x: Math.max(0, Math.min(window.innerWidth - 60, newX)),
+        y: Math.max(0, Math.min(window.innerHeight - 60, newY))
+      });
+    };
+    const handleMouseUp = () => setIsDraggingButton(false);
+
+    if (isDraggingButton) {
+      window.addEventListener('mousemove', handleMouseMove);
+      window.addEventListener('mouseup', handleMouseUp);
+    }
+    return () => {
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
+    };
+  }, [isDraggingButton]);
 
   const renderView = () => {
     switch (view) {
@@ -227,9 +257,7 @@ const App: React.FC = () => {
       );
   }
 
-  const handlePlaybookGenerated = (_playbook: any) => {
-    setView('ansible_studio');
-  };
+
 
   return (
     <NotificationProvider>
@@ -251,36 +279,46 @@ const App: React.FC = () => {
                 {renderView()}
               </div>
               
-              {/* AI Agent Panel (Docked Right) — hidden on Ansible Studio which has its own chat */}
-              {view !== 'ansible_studio' && (
-                <AIAgentPanel 
-                  isOpen={aiPanelOpen}
-                  onToggle={() => setAiPanelOpen(!aiPanelOpen)}
-                  domain={getCurrentDomain()}
-                  onPlaybookGenerated={handlePlaybookGenerated}
-                />
-              )}
-              
-              {/* Toggle Button when panel is closed */}
-              {view !== 'ansible_studio' && !aiPanelOpen && (
-                <button 
-                  onClick={() => setAiPanelOpen(true)}
-                  className="absolute right-4 bottom-4 btn btn-primary btn-circle shadow-lg z-20"
-                  title="Open AI Agent (Ctrl+Shift+I)"
-                >
-                  <Bot className="w-5 h-5" />
-                </button>
-              )}
-
-              {/* Floating Overlay Button */}
+              {/* Enriched Draggable Toggle Button */}
               {!overlayOpen && (
-                <button 
-                  onClick={() => setOverlayOpen(true)}
-                  className="absolute left-4 bottom-4 btn btn-accent btn-circle shadow-lg z-20"
-                  title="Inventory & Ollama Playground"
-                >
-                  <Database className="w-5 h-5 text-accent-content" />
-                </button>
+                <>
+                  <style>{`
+                    @keyframes agent-breath {
+                      0%, 100% { transform: scale(1); box-shadow: 0 0 20px rgba(var(--p), 0.2); }
+                      50% { transform: scale(1.05); box-shadow: 0 0 30px rgba(var(--p), 0.4); }
+                    }
+                    @keyframes agent-hover {
+                      0% { transform: rotate(0deg) scale(1.1); }
+                      25% { transform: rotate(5deg) scale(1.15); }
+                      75% { transform: rotate(-5deg) scale(1.15); }
+                      100% { transform: rotate(0deg) scale(1.1); }
+                    }
+                    .agent-breathing {
+                      animation: agent-breath 3s ease-in-out infinite;
+                    }
+                    .agent-button:hover {
+                      animation: agent-hover 0.5s ease-in-out infinite;
+                    }
+                  `}</style>
+                  <div 
+                    style={{ 
+                      position: 'fixed', 
+                      left: `${buttonPos.x}px`, 
+                      top: `${buttonPos.y}px`,
+                      zIndex: 50,
+                      cursor: isDraggingButton ? 'grabbing' : 'grab'
+                    }}
+                    onMouseDown={handleButtonMouseDown}
+                  >
+                    <button 
+                      onClick={() => !hasMoved && setOverlayOpen(true)}
+                      className="btn btn-primary btn-circle shadow-xl border-2 border-primary/20 agent-button agent-breathing transition-all active:scale-95"
+                      title="Open Inventory AI & Network Ops Center"
+                    >
+                      <Bot className="w-6 h-6" />
+                    </button>
+                  </div>
+                </>
               )}
 
               {/* The Floating Overlay */}
