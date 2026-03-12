@@ -1,4 +1,6 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import { 
   Bot, 
   Send, 
@@ -84,6 +86,33 @@ interface DiffHunkLine {
 interface DiffHunk {
   newStart: number;
   lines: DiffHunkLine[];
+}
+
+function MarkdownText({ content, className = '' }: { content: string; className?: string }) {
+  return (
+    <div className={`prose prose-sm max-w-none prose-invert ${className}`.trim()}>
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
+        components={{
+          code({ className: codeClassName, children, ...props }: any) {
+            const { ref, ...rest } = props as any;
+            const isInline = !/language-(\w+)/.exec(codeClassName || '') && !String(children).includes('\n');
+            return isInline ? (
+              <code className="bg-black/30 text-emerald-300 rounded px-1.5 py-0.5 text-sm font-mono" {...rest}>
+                {children}
+              </code>
+            ) : (
+              <pre className="bg-black/30 rounded-xl p-3 overflow-x-auto text-sm">
+                <code className={codeClassName} {...rest}>{children}</code>
+              </pre>
+            );
+          },
+        }}
+      >
+        {content}
+      </ReactMarkdown>
+    </div>
+  );
 }
 
 function parseReviewableDiffLines(diffText: string): ReviewableDiffLine[] {
@@ -329,7 +358,7 @@ const ProposalCard: React.FC<{
           <h4 className="font-semibold text-xs flex items-center gap-1 mb-2">
             <Zap className="w-3 h-3 text-warning" /> AI Explanation
           </h4>
-          <p className="text-xs leading-relaxed whitespace-pre-wrap">{proposal.ai_explanation}</p>
+          <MarkdownText content={proposal.ai_explanation} className="text-xs leading-relaxed" />
         </div>
       )}
 
@@ -853,7 +882,7 @@ const AIAgentPanel: React.FC<AIAgentPanelProps> = ({
                 ? 'bg-primary text-primary-content ml-4' 
                 : 'bg-base-200 mr-4'
             }`}>
-              {msg.content && <p className="text-sm whitespace-pre-wrap">{msg.content}</p>}
+              {msg.content && <MarkdownText content={msg.content} className="text-sm" />}
               
               {msg.mode === 'generating' && (
                 <div className="flex items-center gap-2 text-sm">

@@ -26,6 +26,7 @@
     dim,
     nord;
 }
+@plugin "@tailwindcss/typography";
 
 /* Custom Sleek Scrollbar */
 ::-webkit-scrollbar {

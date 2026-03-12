@@ -213,7 +213,7 @@ export const LLMRuntimeSelector: React.FC<LLMRuntimeSelectorProps> = ({
         </div>
 
         <div className="flex flex-wrap items-center gap-2 text-[11px] text-base-content/60">
-          <span className="badge badge-outline badge-sm">
+          <span className="badge badge-outline badge-sm max-w-full truncate" title={`${activeProvider} / ${prettifyModelName(activeProvider, activeModel || 'unset')}`}>
             Active: {activeProvider} / {prettifyModelName(activeProvider, activeModel || 'unset')}
           </span>
           <span className={`badge badge-sm ${selectedProvider === 'ollama' ? 'badge-secondary' : 'badge-primary'}`}>
