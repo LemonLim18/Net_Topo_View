@@ -178,6 +178,10 @@ class NetBoxClient:
 
     def _ensure_site(self, slug: str = "default", name: str = "Default Site"):
         """Get or create a NetBox Site."""
+        # Defensive check for null or 'None' string
+        if not slug or str(slug).lower() == "none": slug = "default"
+        if not name or str(name).lower() == "none": name = "Default Site"
+        
         try:
             site = self.api.dcim.sites.get(slug=slug)
             if site:
@@ -188,11 +192,12 @@ class NetBoxClient:
                 logger.info(f"Auto-created site '{slug}' (id={res_id})")
             return res_id
         except Exception as e:
-            logger.error(f"Failed to ensure site '{slug}': {e} (type={type(e)})")
+            logger.error(f"Failed to ensure site '{slug}': {e}")
             return None
 
     def _ensure_manufacturer(self, vendor: str):
         """Get or create a Manufacturer from our vendor string."""
+        if not vendor or str(vendor).lower() == "none": vendor = "unknown"
         # Map our vendor strings to friendly names
         vendor_map = {
             "cisco_ios":     ("Cisco",   "cisco"),
@@ -211,12 +216,15 @@ class NetBoxClient:
                 logger.info(f"Auto-created manufacturer '{name}' (id={res_id})")
             return res_id
         except Exception as e:
-            logger.error(f"Failed to ensure manufacturer '{slug}': {e} (type={type(e)})")
+            logger.error(f"Failed to ensure manufacturer '{slug}': {e}")
             return None
 
     def _ensure_device_type(self, vendor: str, model: str = None):
         """Get or create a DeviceType for the given vendor+model."""
+        if not vendor or str(vendor).lower() == "none": vendor = "unknown"
         model_name = model or "Generic"
+        if str(model_name).lower() == "none": model_name = "Generic"
+        
         slug = f"{vendor.replace('_', '-')}-{model_name.lower().replace(' ', '-')}"
         slug = slug[:50]  # NetBox slug max length
         try:
@@ -236,11 +244,12 @@ class NetBoxClient:
                 logger.info(f"Auto-created device_type '{slug}' (id={res_id})")
             return res_id
         except Exception as e:
-            logger.error(f"Failed to ensure device_type '{slug}': {e} (type={type(e)})")
+            logger.error(f"Failed to ensure device_type '{slug}': {e}")
             return None
 
     def _ensure_device_role(self, role: str = "network-device"):
         """Get or create a DeviceRole."""
+        if not role or str(role).lower() == "none": role = "network-device"
         # Use mapping or fallback to title-cased slug
         name = ROLE_MAPPING.get(role, role.replace("-", " ").title())
         slug = role.lower().replace(" ", "-")
@@ -293,6 +302,7 @@ class NetBoxClient:
     # ------------------------------------------------------------------
 
     def create_device(self, name: str, mgmt_ip: str = None,
+                      mgmt_mask: str = None,
                       vendor: str = "cisco_ios",
                       model: str = None,
                       site: str = "default",
@@ -338,7 +348,7 @@ class NetBoxClient:
 
             # Optionally assign management IP
             if mgmt_ip and result:
-                self._assign_management_ip(result, mgmt_ip)
+                self._assign_management_ip(result, mgmt_ip, mgmt_mask)
 
             return result
         except Exception as e:
@@ -346,16 +356,18 @@ class NetBoxClient:
             return None
 
     def update_device(self, name: str, mgmt_ip: str = None,
+                      mgmt_mask: str = None,
                       vendor: str = None,
                       model: str = None,
                       site: str = None,
-                      role: str = None):
+                      role: str = None,
+                      original_name: str = None):
         """Update an existing device in NetBox."""
         if not self.api: return None
         try:
-            device = self.api.dcim.devices.get(name=name)
+            device = self.api.dcim.devices.get(name=original_name or name)
             if not device:
-                return self.create_device(name, mgmt_ip, vendor, model, site, role)
+                return self.create_device(name, mgmt_ip, mgmt_mask, vendor, model, site, role)
 
             updates = {}
             if site:
@@ -367,6 +379,8 @@ class NetBoxClient:
             if role:
                 r_id = self._ensure_device_role(role)
                 if r_id: updates["role"] = r_id
+            if name and name != (original_name or device.name):
+                updates["name"] = name
             if vendor:
                 p_id = self._ensure_platform(vendor)
                 if p_id: updates["platform"] = p_id
@@ -377,7 +391,7 @@ class NetBoxClient:
                 logger.info(f"Updated device '{name}' in NetBox with {list(updates.keys())}")
 
             if mgmt_ip:
-                self._assign_management_ip(device, mgmt_ip)
+                self._assign_management_ip(device, mgmt_ip, mgmt_mask)
 
             return device
         except Exception as e:
@@ -408,7 +422,8 @@ class NetBoxClient:
             logger.error(f"Error ensuring interface '{name}' on '{device_name}': {e}")
             return None
 
-    def assign_ip_to_interface(self, device_name: str, interface_name: str, ip_address: str, set_as_primary: bool = False):
+    def assign_ip_to_interface(self, device_name: str, interface_name: str, ip_address: str, 
+                               subnet_mask: str = None, set_as_primary: bool = False):
         """Assign an IP address to a specific interface on a device."""
         if not self.api: return None
         try:
@@ -420,7 +435,18 @@ class NetBoxClient:
 
             # Ensure IP has CIDR notation
             if "/" not in ip_address:
-                ip_with_cidr = f"{ip_address}/24"
+                # Convert dot-decimal mask to prefix length if provided
+                prefix = 24
+                if subnet_mask:
+                    try:
+                        # Simple mask-to-prefix conversion for 255.255.255.0 etc.
+                        octets = [int(o) for o in subnet_mask.split(".")]
+                        binary_str = "".join([bin(o).lstrip("0b").zfill(8) for o in octets])
+                        prefix = binary_str.find("0")
+                        if prefix == -1: prefix = 32
+                    except:
+                        pass
+                ip_with_cidr = f"{ip_address}/{prefix}"
             else:
                 ip_with_cidr = ip_address
 
@@ -480,9 +506,9 @@ class NetBoxClient:
             logger.error(f"Error creating cable: {e}")
             return None
 
-    def _assign_management_ip(self, device, mgmt_ip: str):
+    def _assign_management_ip(self, device, mgmt_ip: str, mgmt_mask: str = None):
         """Legacy helper for setting primary management IP."""
-        return self.assign_ip_to_interface(device.name, "Management", mgmt_ip, set_as_primary=True)
+        return self.assign_ip_to_interface(device.name, "Management", mgmt_ip, subnet_mask=mgmt_mask, set_as_primary=True)
 
     def delete_device_by_name(self, name: str):
         """Delete a device from NetBox by name (best-effort)."""

@@ -586,15 +586,15 @@ def test_auto_embedder_handles_refresh_events_for_config_incident_drift_and_inve
             "source": "netbox_api",
             "action": "inventory_mutation",
             "domains": ["planned_inventory", "planned_topology"],
-            "metadata": {"hostname": "R1"},
+            "metadata": {"hostname": "R1", "skip_vector_refresh": True},
         }
     )
 
     assert any(item["doc_id"] == "config_R1" and item["partition"] == PARTITION_CONFIG_HISTORY for item in store.upserts)
     assert any(item["doc_id"] == "incident_INC-1" and item["partition"] == PARTITION_INCIDENTS for item in store.upserts)
     assert any(item["doc_id"] == "drift_R1" and item["partition"] == PARTITION_CHANGE_OUTCOMES for item in store.upserts)
-    assert any(item["doc_id"] == "planned_device_R1" and item["partition"] == PARTITION_PLANNED_STATE for item in store.upserts)
     assert config_targets[0]["kind"] == "embedding"
     assert incident_targets[0]["name"] == "incidents"
     assert drift_targets[0]["name"] == "change_outcomes"
-    assert {item["name"] for item in inventory_targets} == {"planned_inventory", "planned_topology"}
+    assert inventory_targets == []
+    assert not any(item["partition"] == PARTITION_PLANNED_STATE for item in store.upserts)

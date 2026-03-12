@@ -435,6 +435,7 @@ export interface DeviceRecord {
   id: number;
   hostname: string;
   management_ip: string | null;
+  management_subnet_mask: string | null;
   vendor: string | null;
   model: string | null;
   os_version: string | null;
@@ -488,6 +489,7 @@ export const netboxApi = {
   createDevice: (device: {
     hostname: string;
     management_ip?: string;
+    management_subnet_mask?: string;
     vendor?: string;
     model?: string;
     os_version?: string;
@@ -506,6 +508,7 @@ export const netboxApi = {
   updateDevice: (id: number, device: {
     hostname?: string;
     management_ip?: string;
+    management_subnet_mask?: string;
     vendor?: string;
     model?: string;
     os_version?: string;

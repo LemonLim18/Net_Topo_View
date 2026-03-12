@@ -51,10 +51,8 @@ async def netbox_webhook(
         refresh_targets = []
         if model in {"device", "interface", "ipaddress"}:
             domains.append(CONTEXT_DOMAIN_INVENTORY)
-            refresh_targets.append("inventory")
         if model in {"device", "cable", "interface"}:
             domains.append(CONTEXT_DOMAIN_PLANNED_TOPOLOGY)
-            refresh_targets.append("planned_topology")
 
         publication = publish_context_refresh_event(
             source="netbox_webhook",

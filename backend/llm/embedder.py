@@ -1,7 +1,7 @@
 """
 Embedding wrapper for the Vector-Embedded RAG layer (M21).
 
-Uses Google Gemini ``text-embedding-004`` (768-dim) when available.
+Uses Google Gemini ``embedding-001`` (768-dim) when available.
 If Gemini is unavailable or misconfigured, falls back to a deterministic local
 embedding so retrieval remains functional.
 
@@ -25,7 +25,7 @@ from typing import Optional
 
 logger = logging.getLogger("llm.embedder")
 
-_EMBED_MODEL = "text-embedding-004"
+_EMBED_MODEL = "embedding-001"
 _BATCH_SIZE = 100
 _EMBED_DIM = 768
 _TOKEN_RE = re.compile(r"[a-z0-9_./-]+")
@@ -33,7 +33,7 @@ _TOKEN_RE = re.compile(r"[a-z0-9_./-]+")
 
 class GeminiEmbedder:
     """
-    Thin wrapper around the Gemini text-embedding-004 model.
+    Thin wrapper around the Gemini embedding-001 model.
 
     Usage::
 
@@ -58,6 +58,7 @@ class GeminiEmbedder:
             from google import genai  # type: ignore
             self._client = genai.Client(api_key=self._api_key)
             self._available = True
+            print(f"DEBUG: GeminiEmbedder model is {_EMBED_MODEL}")
             logger.info("GeminiEmbedder initialised (model=%s, dim=%d)", _EMBED_MODEL, _EMBED_DIM)
         except ImportError:
             logger.warning(

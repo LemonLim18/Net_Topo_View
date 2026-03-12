@@ -23,13 +23,17 @@ def _db() -> DatabaseManager:
 
 
 def _invalidate_inventory_context(source: str, summary: str, metadata: Optional[dict] = None) -> None:
+    event_metadata = dict(metadata or {})
+    # Device inventory CRUD should invalidate live caches only. It must not
+    # trigger any RAG/vector embedding work.
+    event_metadata.setdefault("skip_vector_refresh", True)
     publish_context_refresh_event(
         source=source,
         action="inventory_mutation",
         summary=summary,
         domains=(CONTEXT_DOMAIN_INVENTORY, CONTEXT_DOMAIN_PLANNED_TOPOLOGY),
-        refresh_targets=("inventory", "planned_topology"),
-        metadata=metadata,
+        metadata=event_metadata,
+        refresh_mode="none",
     )
 
 
@@ -40,6 +44,7 @@ def _invalidate_inventory_context(source: str, summary: str, metadata: Optional[
 class DeviceCreate(BaseModel):
     hostname: str
     management_ip: Optional[str] = None
+    management_subnet_mask: Optional[str] = None
     vendor: Optional[str] = None
     model: Optional[str] = None
     os_version: Optional[str] = None
@@ -53,6 +58,7 @@ class DeviceCreate(BaseModel):
 class DeviceUpdate(BaseModel):
     hostname: Optional[str] = None
     management_ip: Optional[str] = None
+    management_subnet_mask: Optional[str] = None
     vendor: Optional[str] = None
     model: Optional[str] = None
     os_version: Optional[str] = None
@@ -96,6 +102,7 @@ def _device_dict(d: Device) -> dict:
         "id": d.id,
         "hostname": d.hostname,
         "management_ip": d.management_ip,
+        "management_subnet_mask": d.management_subnet_mask,
         "vendor": d.vendor,
         "model": d.model,
         "os_version": d.os_version,
@@ -164,23 +171,28 @@ async def create_device(body: DeviceCreate):
 
     # Auto-push to NetBox (all manual entries sync immediately)
     status = body.status or "planned"
+    nb_id = None
     try:
         nb = NetBoxClient.get_client()
         if nb and nb.api:
-            nb.create_device(
+            nb_dev = nb.create_device(
                 name=body.hostname,
                 mgmt_ip=body.management_ip,
+                mgmt_mask=body.management_subnet_mask,
                 vendor=body.vendor or "cisco_ios",
                 model=body.model,
                 role=body.role,
             )
-            logger.info("Auto-pushed device '%s' to NetBox on registration", body.hostname)
+            if nb_dev:
+                nb_id = nb_dev.id
+                logger.info("Auto-pushed device '%s' to NetBox on registration (ID: %s)", body.hostname, nb_id)
     except Exception as e:
         logger.warning("Auto-push for '%s' failed: %s — still registering locally", body.hostname, e)
 
     device = Device(
         hostname=body.hostname,
         management_ip=body.management_ip,
+        management_subnet_mask=body.management_subnet_mask,
         vendor=body.vendor,
         model=body.model,
         os_version=body.os_version,
@@ -188,6 +200,7 @@ async def create_device(body: DeviceCreate):
         status=status,
         role=body.role,
         source="manual",
+        netbox_id=nb_id,
         ssh_user=body.ssh_user,
         ssh_password=body.ssh_password,
         ssh_port=body.ssh_port,
@@ -221,19 +234,24 @@ async def update_device(device_id: int, body: DeviceUpdate):
     role = body.role if body.role is not None else existing.role
 
     # Auto-push or Sync to NetBox
+    nb_id = existing.netbox_id
     try:
         nb = NetBoxClient.get_client()
         if nb and nb.api:
             # We sync to NetBox regardless of status (Planned/Active/Down)
             # to ensure the single source of truth stays updated.
-            nb.update_device(
+            nb_dev = nb.update_device(
                 name=hostname,
                 mgmt_ip=mgmt_ip,
+                mgmt_mask=body.management_subnet_mask if body.management_subnet_mask is not None else existing.management_subnet_mask,
                 vendor=vendor or "cisco_ios",
                 model=model,
                 role=role,
+                original_name=existing.hostname,
             )
-            logger.info("Synced updates for device '%s' to NetBox", hostname)
+            if nb_dev:
+                nb_id = nb_dev.id
+                logger.info("Synced updates for device '%s' (orig: '%s', ID: %s) to NetBox", hostname, existing.hostname, nb_id)
     except Exception as e:
         logger.warning("Auto-sync for '%s' failed: %s — still updating locally", hostname, e)
 
@@ -241,7 +259,9 @@ async def update_device(device_id: int, body: DeviceUpdate):
         id=device_id,
         hostname=hostname,
         management_ip=mgmt_ip,
+        management_subnet_mask=body.management_subnet_mask if body.management_subnet_mask is not None else existing.management_subnet_mask,
         vendor=vendor,
+        netbox_id=nb_id,
         model=model,
         os_version=body.os_version if body.os_version is not None else existing.os_version,
         serial_number=body.serial_number if body.serial_number is not None else existing.serial_number,

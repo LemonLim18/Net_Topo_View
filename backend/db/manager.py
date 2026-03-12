@@ -152,18 +152,31 @@ class DatabaseManager:
         }
         self._topo_lock = threading.Lock()
 
-        # ---- Safe migration: add 'source' and 'role' columns if missing ----
-        try:
-            with self._connect() as conn:
-                conn.execute("ALTER TABLE devices ADD COLUMN source TEXT DEFAULT 'manual'")
-        except Exception:
-            pass  # column already exists
-
-        try:
-            with self._connect() as conn:
-                conn.execute("ALTER TABLE devices ADD COLUMN role TEXT DEFAULT 'network-device'")
-        except Exception:
-            pass  # column already exists
+        # ---- Safe migrations: add columns if missing ----
+        _new_columns = [
+            ("devices", "source", "TEXT DEFAULT 'manual'"),
+            ("devices", "role", "TEXT DEFAULT 'network-device'"),
+            ("devices", "management_subnet_mask", "TEXT"),
+            ("devices", "netbox_id", "INTEGER"),
+        ]
+        with self._connect() as conn:
+            for table, col, col_def in _new_columns:
+                try:
+                    conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {col_def}")
+                    logger.info(f"Database migration: added {table}.{col}")
+                except sqlite3.OperationalError as e:
+                    if "duplicate column name" in str(e).lower():
+                        pass
+                    else:
+                        logger.warning(f"Migration error for {table}.{col}: {e}")
+                except Exception as e:
+                    logger.warning(f"Unexpected migration error for {table}.{col}: {e}")
+            
+            # Add Unique Index for netbox_id
+            try:
+                conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_devices_netbox_id ON devices(netbox_id) WHERE netbox_id IS NOT NULL")
+            except Exception as e:
+                logger.warning(f"Migration error creating index: {e}")
 
     # =============================================================
     # Initialisation
@@ -358,46 +371,57 @@ class DatabaseManager:
     # =============================================================
     def upsert_device(self, device: Device) -> int:
         """
-        Insert a new device or update an existing one (matched by hostname).
-        Returns the device row id.
+        Insert a new device or update an existing one. Matches by ID if provided, 
+        otherwise falls back to hostname.
         """
         now = datetime.now(tz=TZ_UTC8).isoformat(timespec="seconds")
         with self._connect() as conn:
-            cur = conn.execute(
-                "SELECT id, source FROM devices WHERE hostname = ?",
-                (device.hostname,),
-            )
-            row = cur.fetchone()
+            # 1. Match by local ID
+            row = None
+            if device.id is not None:
+                row = conn.execute("SELECT id FROM devices WHERE id = ?", (device.id,)).fetchone()
+            
+            # 2. Match by NetBox ID
+            if not row and device.netbox_id is not None:
+                row = conn.execute("SELECT id FROM devices WHERE netbox_id = ?", (device.netbox_id,)).fetchone()
+            
+            # 3. Match by hostname fallback
+            if not row:
+                row = conn.execute(
+                    "SELECT id FROM devices WHERE hostname = ?",
+                    (device.hostname,),
+                ).fetchone()
+
             if row:
                 conn.execute(
                     """UPDATE devices
-                       SET management_ip = ?, vendor = ?, model = ?,
+                       SET hostname = ?, management_ip = ?, management_subnet_mask = ?, vendor = ?, model = ?,
                            os_version = ?, serial_number = ?, status = ?,
                            role = ?, source = ?, last_polled = ?, ssh_user = ?,
-                           ssh_password = ?, ssh_port = ?, updated_at = ?
+                           ssh_password = ?, ssh_port = ?, netbox_id = ?, updated_at = ?
                      WHERE id = ?""",
                     (
-                        device.management_ip, device.vendor, device.model,
+                        device.hostname, device.management_ip, device.management_subnet_mask, device.vendor, device.model,
                         device.os_version, device.serial_number, device.status,
                         device.role, device.source, device.last_polled or now,
                         device.ssh_user, device.ssh_password, device.ssh_port,
-                        now, row["id"],
+                        device.netbox_id, now, row["id"],
                     ),
                 )
                 return row["id"]
             else:
                 cur2 = conn.execute(
                     """INSERT INTO devices
-                       (hostname, management_ip, vendor, model, os_version,
+                       (hostname, management_ip, management_subnet_mask, vendor, model, os_version,
                         serial_number, status, role, source, last_polled,
-                        ssh_user, ssh_password, ssh_port,
+                        ssh_user, ssh_password, ssh_port, netbox_id,
                         created_at, updated_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
-                        device.hostname, device.management_ip, device.vendor,
+                        device.hostname, device.management_ip, device.management_subnet_mask, device.vendor,
                         device.model, device.os_version, device.serial_number,
                         device.status, device.role, device.source, device.last_polled or now,
-                        device.ssh_user, device.ssh_password, device.ssh_port,
+                        device.ssh_user, device.ssh_password, device.ssh_port, device.netbox_id,
                         now, now,
                     ),
                 )
@@ -407,6 +431,17 @@ class DatabaseManager:
         with self._connect() as conn:
             row = conn.execute(
                 "SELECT * FROM devices WHERE hostname = ?", (hostname,)
+            ).fetchone()
+        return self._row_to_device(row) if row else None
+
+    def get_device_by_management_ip(self, management_ip: str) -> Optional[Device]:
+        """Return the first device with this management IP, if any. Used to match
+        the same device after a hostname change (e.g. NetBox rename)."""
+        if not management_ip or not str(management_ip).strip():
+            return None
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM devices WHERE management_ip = ?", (management_ip.strip(),)
             ).fetchone()
         return self._row_to_device(row) if row else None
 
@@ -445,6 +480,8 @@ class DatabaseManager:
             ssh_user=row["ssh_user"] if "ssh_user" in keys else None,
             ssh_password=row["ssh_password"] if "ssh_password" in keys else None,
             ssh_port=row["ssh_port"] if "ssh_port" in keys else 22,
+            management_subnet_mask=row["management_subnet_mask"] if "management_subnet_mask" in keys else None,
+            netbox_id=row["netbox_id"] if "netbox_id" in keys else None,
             created_at=row["created_at"],
             updated_at=row["updated_at"],
         )

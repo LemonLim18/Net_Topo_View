@@ -167,10 +167,8 @@ class NetworkStateEmbedder:
         return {"status": "embedded", "hostname": hostname, "chunks": result["chunk_count"]}
 
     def embed_planned_inventory(self, hostnames: Optional[List[str]] = None) -> Dict[str, Any]:
-        if not self._store.available:
-            return {"status": "skipped", "reason": "vector_store_unavailable"}
-        if self._db is None:
-            return {"status": "skipped", "reason": "db_unavailable"}
+        # DEPRECATED: real-time snapshot injection is used instead of vector RAG for inventory
+        return {"status": "skipped", "reason": "disabled"}
 
         now = datetime.now(timezone.utc).isoformat()
         all_devices = self._db.get_all_devices()
@@ -207,10 +205,8 @@ class NetworkStateEmbedder:
         }
 
     def embed_planned_links(self, hostnames: Optional[List[str]] = None) -> Dict[str, Any]:
-        if not self._store.available:
-            return {"status": "skipped", "reason": "vector_store_unavailable"}
-        if self._db is None:
-            return {"status": "skipped", "reason": "db_unavailable"}
+        # DEPRECATED: real-time snapshot injection is used instead of vector RAG for topology
+        return {"status": "skipped", "reason": "disabled"}
 
         now = datetime.now(timezone.utc).isoformat()
         documents = self._build_planned_link_documents(now, hostnames=hostnames)
@@ -307,6 +303,14 @@ class NetworkStateEmbedder:
         action = str(publication.get("action") or "")
         downstream: List[Dict[str, object]] = []
 
+        if metadata.get("skip_vector_refresh"):
+            logger.debug(
+                "Skipping vector refresh for source=%s action=%s due to skip_vector_refresh metadata",
+                source,
+                action,
+            )
+            return []
+
         if CONTEXT_DOMAIN_CONFIG in domains or source == "config_snapshot_writer":
             hostname = self._resolve_hostname(metadata)
             if hostname:
@@ -327,16 +331,19 @@ class NetworkStateEmbedder:
             downstream.append(self._downstream_target("change_outcomes", result, hostname=result.get("hostname")))
 
         if CONTEXT_DOMAIN_INVENTORY in domains or CONTEXT_DOMAIN_PLANNED_TOPOLOGY in domains:
-            related_hostnames = self._extract_related_hostnames(metadata)
-            full_inventory_refresh = source in {"netbox_sync", "netbox_webhook"} or action == "inventory_sync_completed"
-            full_topology_refresh = source in {"netbox_topology_sync", "netbox_webhook"} or action == "planned_topology_sync_completed"
-
-            if CONTEXT_DOMAIN_INVENTORY in domains:
-                result = self.embed_planned_inventory(None if full_inventory_refresh else related_hostnames)
-                downstream.append(self._downstream_target("planned_inventory", result))
-            if CONTEXT_DOMAIN_PLANNED_TOPOLOGY in domains:
-                result = self.embed_planned_links(None if full_topology_refresh or not related_hostnames else related_hostnames)
-                downstream.append(self._downstream_target("planned_topology", result))
+            # Structued inventory RAG is disabled in favor of real-time snapshot injection
+            # to prevent high latency during inventory mutations (e.g. deletions).
+            pass
+            # related_hostnames = self._extract_related_hostnames(metadata)
+            # full_inventory_refresh = source in {"netbox_sync", "netbox_webhook"} or action == "inventory_sync_completed"
+            # full_topology_refresh = source in {"netbox_topology_sync", "netbox_webhook"} or action == "planned_topology_sync_completed"
+            #
+            # if CONTEXT_DOMAIN_INVENTORY in domains:
+            #     result = self.embed_planned_inventory(None if full_inventory_refresh else related_hostnames)
+            #     downstream.append(self._downstream_target("planned_inventory", result))
+            # if CONTEXT_DOMAIN_PLANNED_TOPOLOGY in domains:
+            #     result = self.embed_planned_links(None if full_topology_refresh or not related_hostnames else related_hostnames)
+            #     downstream.append(self._downstream_target("planned_topology", result))
 
         return [item for item in downstream if item.get("status") != "skipped"]
 

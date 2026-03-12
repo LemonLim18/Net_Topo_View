@@ -116,6 +116,7 @@ const sourceBadge = (source: string) => {
 const EMPTY_FORM = {
   hostname: '',
   management_ip: '',
+  management_subnet_mask: '255.255.255.0',
   vendor: '',
   model: '',
   os_version: '',
@@ -352,6 +353,7 @@ const NetBoxDevices: React.FC = () => {
     setForm({
       hostname: d.hostname,
       management_ip: d.management_ip || '',
+      management_subnet_mask: d.management_subnet_mask || '255.255.255.0',
       vendor: d.vendor || '',
       model: d.model || '',
       os_version: d.os_version || '',
@@ -381,6 +383,7 @@ const NetBoxDevices: React.FC = () => {
         const updated = await netboxApi.updateDevice(editId, {
           hostname: form.hostname,
           management_ip: form.management_ip || undefined,
+          management_subnet_mask: form.management_subnet_mask || undefined,
           vendor: form.vendor || undefined,
           model: form.model || undefined,
           os_version: form.os_version || undefined,
@@ -397,6 +400,7 @@ const NetBoxDevices: React.FC = () => {
         const created = await netboxApi.createDevice({
           hostname: form.hostname,
           management_ip: form.management_ip || undefined,
+          management_subnet_mask: form.management_subnet_mask || undefined,
           vendor: form.vendor || undefined,
           model: form.model || undefined,
           os_version: form.os_version || undefined,
@@ -788,6 +792,7 @@ const NetBoxDevices: React.FC = () => {
                     <DetailRow label="ID" value={String(selected.id)} />
                     <DetailRow label="Hostname" value={selected.hostname} mono />
                     <DetailRow label="Management IP" value={selected.management_ip || '—'} mono />
+                    <DetailRow label="Subnet Mask" value={selected.management_subnet_mask || '—'} mono />
                     <DetailRow label="Vendor" value={vendorLabel(selected.vendor)} />
                     <DetailRow label="Role" value={ROLE_OPTIONS.find(r => r.value === selected.role)?.label || selected.role} />
                     <DetailRow label="Model" value={selected.model || '—'} />
@@ -973,11 +978,18 @@ const NetBoxDevices: React.FC = () => {
                   value={form.hostname} onChange={(e) => setForm({ ...form, hostname: e.target.value })} />
               </label>
 
-              <label className="form-control w-full">
-                <div className="label"><span className="label-text">Management IP</span></div>
-                <input type="text" className="input input-bordered w-full" placeholder="e.g. 192.168.1.1"
-                  value={form.management_ip} onChange={(e) => setForm({ ...form, management_ip: e.target.value })} />
-              </label>
+              <div className="grid grid-cols-2 gap-3">
+                <label className="form-control w-full">
+                  <div className="label"><span className="label-text">Management IP</span></div>
+                  <input type="text" className="input input-bordered w-full" placeholder="e.g. 192.168.1.1"
+                    value={form.management_ip} onChange={(e) => setForm({ ...form, management_ip: e.target.value })} />
+                </label>
+                <label className="form-control w-full">
+                  <div className="label"><span className="label-text">Subnet Mask</span></div>
+                  <input type="text" className="input input-bordered w-full" placeholder="255.255.255.0"
+                    value={form.management_subnet_mask} onChange={(e) => setForm({ ...form, management_subnet_mask: e.target.value })} />
+                </label>
+              </div>
 
               <div className="grid grid-cols-2 gap-3">
                 <label className="form-control w-full">

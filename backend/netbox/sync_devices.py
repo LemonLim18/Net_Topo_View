@@ -90,9 +90,15 @@ class DeviceSyncer:
                 # Smart source tracking:
                 # If the device already exists locally, keep its current source.
                 # Only brand-new devices (not yet in local DB) get source="netbox".
+                # Match by hostname first, then by management IP so that when a device
+                # is renamed in NetBox (e.g. Acc_Huawei_SW3 -> Acc_Huawei_3), we update
+                # the existing row instead of creating a duplicate.
                 existing = self.db.get_device_by_hostname(hostname)
+                if not existing and mgmt_ip:
+                    existing = self.db.get_device_by_management_ip(mgmt_ip)
                 source = existing.source if existing else "netbox"
-                
+                device_id_existing = existing.id if existing else None
+
                 device = Device(
                     hostname=hostname,
                     management_ip=mgmt_ip,
@@ -101,6 +107,8 @@ class DeviceSyncer:
                     status=status,
                     role=role,
                     source=source,
+                    netbox_id=nb_dev.id,
+                    id=device_id_existing,
                 )
                 
                 device_id = self.db.upsert_device(device)

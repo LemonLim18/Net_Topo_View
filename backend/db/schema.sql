@@ -19,10 +19,12 @@ CREATE TABLE IF NOT EXISTS devices (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     hostname        TEXT    NOT NULL UNIQUE,
     management_ip   TEXT,
+    management_subnet_mask TEXT,
     vendor          TEXT,                       -- cisco_ios | huawei_vrp | juniper_junos
     model           TEXT,
     os_version      TEXT,
     serial_number   TEXT,
+    netbox_id       INTEGER UNIQUE,
     status          TEXT    DEFAULT 'unknown',  -- planned | registered | provisioning | active | down | unknown
     role            TEXT    DEFAULT 'network-device', -- core | distribution | access | network-device
     source          TEXT    DEFAULT 'manual',   -- manual | crawler | netbox
