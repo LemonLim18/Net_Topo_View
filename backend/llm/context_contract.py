@@ -32,6 +32,7 @@ class QueryClass(str, Enum):
     PLANNED_VS_LIVE = "planned_vs_live"
     TROUBLESHOOTING = "troubleshooting"
     CHANGE_PLANNING = "change_planning"
+    ARCHITECTURE_PLANNING = "architecture_planning"
     COMPLIANCE = "compliance"
     KNOWLEDGE_HEAVY = "knowledge_heavy"
     GENERAL = "general"
@@ -278,6 +279,40 @@ KNOWLEDGE_HEAVY_TRIGGERS = (
     "syntax",
 )
 
+ARCHITECTURE_META_TERMS = (
+    "llm",
+    "rag",
+    "mcp",
+    "agentic",
+    "ollama",
+    "gemini",
+    "vector store",
+    "embedding",
+    "retrieval",
+    "prompt",
+    "inference",
+    "controller",
+    "runtime",
+    "latency",
+    "performance",
+)
+
+ARCHITECTURE_PLANNING_TRIGGERS = (
+    "architecture",
+    "system design",
+    "design a",
+    "design an",
+    "implementation plan",
+    "milestone",
+    "roadmap",
+    "blueprint",
+    "refactor",
+    "optimize",
+    "production-grade",
+    "high-performance",
+    "scalable",
+)
+
 
 def _parse_timestamp(value: Optional[str]) -> Optional[datetime]:
     if not value:
@@ -371,7 +406,7 @@ def build_authoritative_context_contract() -> str:
 
     lines.append("")
     lines.append("## Query Taxonomy")
-    lines.append("- live_only, inventory_only, planned_vs_live, troubleshooting, change_planning, compliance, knowledge_heavy")
+    lines.append("- live_only, inventory_only, planned_vs_live, troubleshooting, change_planning, architecture_planning, compliance, knowledge_heavy")
     return "\n".join(lines)
 
 
@@ -403,6 +438,11 @@ def build_source_matrix() -> list[dict[str, object]]:
             "fallback_domains": [CONTEXT_DOMAIN_LIVE_TOPOLOGY, CONTEXT_DOMAIN_DRIFT],
         },
         {
+            "query_class": QueryClass.ARCHITECTURE_PLANNING.value,
+            "primary_domains": [CONTEXT_DOMAIN_KNOWLEDGE],
+            "fallback_domains": [],
+        },
+        {
             "query_class": QueryClass.COMPLIANCE.value,
             "primary_domains": [CONTEXT_DOMAIN_CONFIG, CONTEXT_DOMAIN_DRIFT, CONTEXT_DOMAIN_KNOWLEDGE],
             "fallback_domains": [CONTEXT_DOMAIN_INVENTORY],
@@ -423,6 +463,12 @@ def _is_instructional_knowledge_query(query: str) -> bool:
     instructional_prefixes = ("how to", "what is", "what are", "explain", "describe")
     instructional_hints = ("best practice", "recommendation", "guideline", "syntax", "example")
     return query.startswith(instructional_prefixes) or _contains_any(query, instructional_hints)
+
+
+def _is_architecture_planning_query(query: str) -> bool:
+    has_planning_shape = _contains_any(query, ARCHITECTURE_PLANNING_TRIGGERS)
+    has_meta_system_scope = _contains_any(query, ARCHITECTURE_META_TERMS)
+    return has_planning_shape and has_meta_system_scope
 
 
 def classify_query(query: str) -> QueryRoutingDecision:
@@ -450,6 +496,18 @@ def classify_query(query: str) -> QueryRoutingDecision:
             include_sdn=False,
             required_domains=(CONTEXT_DOMAIN_INVENTORY, CONTEXT_DOMAIN_PLANNED_TOPOLOGY),
             reasoning="inventory query should prefer planned-state sources before live discovery",
+        )
+
+    if _is_architecture_planning_query(q_lower):
+        return QueryRoutingDecision(
+            query_class=QueryClass.ARCHITECTURE_PLANNING.value,
+            use_live_context=False,
+            use_knowledge=False,
+            include_inventory=False,
+            include_telemetry=False,
+            include_sdn=False,
+            required_domains=(),
+            reasoning="architecture and platform-design prompts should avoid live operational fetches unless the user explicitly asks for them",
         )
 
     if _is_instructional_knowledge_query(q_lower):

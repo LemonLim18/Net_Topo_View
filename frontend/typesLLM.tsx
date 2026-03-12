@@ -81,10 +81,12 @@ export interface Message {
   content: string;
   isStreaming?: boolean;
   isError?: boolean;
+  stopped?: boolean;
   timestamp: number;
   // SSE progress phases
   thinkingPhase?: ThinkingPhase;
   thinkingStartTime?: number;
+  elapsedMs?: number;
   // Structured grounding metadata
   groundingMeta?: GroundingMeta;
   // M19: Agentic workflow fields

@@ -17,8 +17,9 @@ const phaseIcons: Record<string, React.ReactNode> = {
 };
 
 function formatElapsed(ms: number): string {
-  if (ms < 1000) return `${ms}ms`;
-  return `${(ms / 1000).toFixed(1)}s`;
+  if (ms < 1000) return `${(ms / 1000).toFixed(1)}s`;
+  if (ms < 10000) return `${(ms / 1000).toFixed(1)}s`;
+  return `${Math.round(ms / 1000)}s`;
 }
 
 /** Animated thinking indicator with phase labels and elapsed time. */
@@ -131,6 +132,12 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({ message }) => {
         {/* Cursor for streaming effect (only when content is present) */}
         {message.isStreaming && message.content && (
           <span className="loading loading-dots loading-sm"></span>
+        )}
+
+        {!isUser && !message.isStreaming && typeof message.elapsedMs === 'number' && (
+          <div className="mt-3 text-[11px] text-base-content/50">
+            {message.stopped ? 'Stopped at' : 'Completed in'} {formatElapsed(message.elapsedMs)}
+          </div>
         )}
       </div>
     </div>

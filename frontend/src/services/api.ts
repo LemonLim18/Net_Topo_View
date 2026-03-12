@@ -126,6 +126,33 @@ export const deployApi = {
 };
 
 // --- M5: LLM Agent API ---
+export interface LlmRuntimeProviderDescriptor {
+  name: string;
+  label: string;
+  available: boolean;
+  base_url: string | null;
+  models: string[];
+  catalog_source?: string;
+  reachable?: boolean;
+  default_model_injected?: boolean;
+  error?: string;
+}
+
+export interface LlmRuntimeState {
+  active_provider: string;
+  active_model: string;
+  active_base_url: string | null;
+  scope: string;
+  providers: LlmRuntimeProviderDescriptor[];
+}
+
+export interface LlmRuntimeUpdatePayload {
+  provider: string;
+  model?: string;
+  ollama_base_url?: string;
+  clear_history?: boolean;
+}
+
 export const llmApi = {
   chat: (message: string) =>
     request<{ role: string; content: string; model: string; type: string; proposal: any | null; intent_meta: any | null }>('/llm/chat', {
@@ -149,7 +176,9 @@ export const llmApi = {
       onProgress?: (data: { phase: string; label: string; elapsed_ms: number }) => void;
       onComplete?: (data: any) => void;
       onError?: (err: Error) => void;
+      onAbort?: () => void;
     },
+    options?: { signal?: AbortSignal },
   ) => {
     const url = `${BASE_URL}/api/v1/llm/chat/stream`;
     const token = localStorage.getItem('auth_token');
@@ -161,6 +190,7 @@ export const llmApi = {
           ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
         },
         body: JSON.stringify({ message }),
+        signal: options?.signal,
       });
 
       if (!response.ok) {
@@ -202,10 +232,27 @@ export const llmApi = {
         }
       }
     } catch (err: any) {
+      if (err?.name === 'AbortError') {
+        callbacks.onAbort?.();
+        return;
+      }
       if (callbacks.onError) callbacks.onError(err);
       else throw err;
     }
   },
+
+  getRuntime: (ollamaBaseUrl?: string) => {
+    const params = new URLSearchParams();
+    if (ollamaBaseUrl) params.set('ollama_base_url', ollamaBaseUrl);
+    const suffix = params.toString() ? `?${params.toString()}` : '';
+    return request<LlmRuntimeState>(`/llm/chat/runtime${suffix}`);
+  },
+
+  updateRuntime: (payload: LlmRuntimeUpdatePayload) =>
+    request<LlmRuntimeState>('/llm/chat/runtime', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
   
   clearHistory: () =>
     request<{ status: string }>('/llm/chat/clear', { method: 'POST' }),

@@ -19,6 +19,8 @@ import logging
 import os
 import re
 import time
+import threading
+from collections import OrderedDict
 from typing import Optional
 
 logger = logging.getLogger("llm.embedder")
@@ -40,10 +42,14 @@ class GeminiEmbedder:
         qvec = embedder.embed_query("how to configure ospf")  # query time
     """
 
+    _QUERY_CACHE_MAXSIZE = 256
+
     def __init__(self, api_key: Optional[str] = None):
         self._api_key = api_key or os.getenv("GEMINI_API_KEY", "")
         self._client = None
         self._available = False
+        self._query_cache: OrderedDict[str, list[float]] = OrderedDict()
+        self._cache_lock = threading.Lock()
         self._init_client()
 
     def _init_client(self) -> None:
@@ -100,14 +106,30 @@ class GeminiEmbedder:
         """
         Embed a single query string (RETRIEVAL_QUERY task).
 
-        Returns a 768-dim float vector.
+        Returns a 768-dim float vector.  Results are cached in an LRU
+        cache (maxsize 256) so repeated identical queries skip the API
+        round-trip entirely (~300ms → <1ms on cache hit).
         """
-        if not text.strip():
+        stripped = text.strip()
+        if not stripped:
             return self._zero_vector()
         if not self._available:
-            return self._fallback_embedding(text)
-        results = self._embed_batch([text], task_type="RETRIEVAL_QUERY")
-        return results[0] if results else self._fallback_embedding(text)
+            return self._fallback_embedding(stripped)
+
+        with self._cache_lock:
+            if stripped in self._query_cache:
+                self._query_cache.move_to_end(stripped)
+                return self._query_cache[stripped]
+
+        results = self._embed_batch([stripped], task_type="RETRIEVAL_QUERY")
+        vector = results[0] if results else self._fallback_embedding(stripped)
+
+        with self._cache_lock:
+            self._query_cache[stripped] = vector
+            if len(self._query_cache) > self._QUERY_CACHE_MAXSIZE:
+                self._query_cache.popitem(last=False)
+
+        return vector
 
     # ------------------------------------------------------------------
     # Internal helpers

@@ -15,18 +15,21 @@ the agent automatically packages the result into a ConfigProposal
 for human-in-the-loop approval before deployment.
 """
 
+import asyncio
 import json
 import logging
 import re
 import time
 from typing import Any, AsyncIterator, Dict, List, Optional
 
+from starlette.concurrency import run_in_threadpool
+
 from config_engine.rollback_planner import build_rollback_plan
 from llm.advanced_differentiators import build_advanced_differentiator_status
 from config_engine.safety import validate_action_artifact, validate_cli_artifact
 from llm.answer_release import build_answer_release_state
 from llm.answer_policy import build_answer_policy, policy_status
-from llm.answer_grounding import build_answer_grounding, format_conflict_summary, format_grounding_summary, format_operator_rationale
+from llm.answer_grounding import build_answer_grounding, format_conflict_summary, format_grounding_summary
 from llm.controller_flow import build_controller_flow_state
 from llm.controller_policy import build_controller_policy, render_controller_policy_prompt
 from llm.controller_self_correction import build_self_correction_state, plan_self_correction
@@ -36,7 +39,7 @@ from llm.controller_scope import (
     render_controller_scope_prompt,
 )
 from llm.context_contract import classify_query
-from llm.context_state import get_context_state_manager
+
 from llm.milestone_baseline import build_milestone2_baseline, render_milestone2_baseline_prompt
 from llm.provider import LLMProvider, LLMMessage, LLMResponse, ToolCall
 from llm.system_prompt import build_system_prompt
@@ -50,6 +53,21 @@ logger = logging.getLogger("llm.agent")
 
 # Maximum tool-calling rounds before forcing a text response
 MAX_TOOL_ROUNDS = 5
+
+# Per-tool TTL (seconds) for the in-session result cache.
+# Tools not listed here are always re-executed.
+_TOOL_CACHE_TTL: Dict[str, int] = {
+    "get_context_health": 60,
+    "get_topology_summary": 30,
+    "get_last_sync_status": 60,
+    "get_refresh_job_status": 30,
+    "list_inventory_devices": 60,
+    "list_all_devices": 30,
+    "list_templates": 120,
+    "get_template_schema": 120,
+    "get_audit_log": 60,
+    "get_canonical_semantics_map": 300,
+}
 
 class NetworkAgent:
     """
@@ -118,6 +136,9 @@ class NetworkAgent:
 
         self._network_context_cache: Dict[str, str] = {}
 
+        # Tool result TTL cache: {(tool_name, args_key): (result, timestamp)}
+        self._tool_result_cache: Dict[str, tuple[str, float]] = {}
+
         logger.info(
             "NetworkAgent initialized (model=%s, tools=%d)",
             self._provider.model_name(),
@@ -135,10 +156,66 @@ class NetworkAgent:
         "live_only": "live network topology",
         "troubleshooting": "incidents, telemetry & live state",
         "change_planning": "intent pipeline & configuration engine",
+        "architecture_planning": "controller architecture guidance",
         "compliance": "compliance & drift records",
         "knowledge_heavy": "knowledge base documents",
         "general": "network context",
     }
+
+    def _prepare_turn_state(self, user_message: str) -> Dict[str, Any]:
+        routing_decision = classify_query(user_message)
+        logger.info(
+            "Query classified as %s (%s)",
+            routing_decision.query_class,
+            routing_decision.reasoning,
+        )
+
+        candidate_hostnames = self._extract_candidate_hostnames(user_message)
+        route_plan = self._build_route_plan(
+            user_message,
+            routing_decision.query_class,
+            candidate_hostnames,
+        )
+        route_plan["query_class"] = routing_decision.query_class
+        route_plan["required_domains"] = list(routing_decision.required_domains)
+        route_plan["hostnames"] = list(candidate_hostnames)
+
+        return {
+            "routing_decision": routing_decision,
+            "candidate_hostnames": candidate_hostnames,
+            "route_plan": route_plan,
+        }
+
+    async def _prefetch_route_tools(
+        self,
+        route_plan: Dict[str, Any],
+    ) -> tuple[Dict[str, Any], Dict[str, Dict[str, Any]]]:
+        tool_results: Dict[str, Any] = {}
+        tool_args: Dict[str, Dict[str, Any]] = {}
+        prefetch_tools = route_plan.get("prefetch_tools", [])
+        if not prefetch_tools:
+            return tool_results, tool_args
+
+        results = await asyncio.gather(
+            *(run_in_threadpool(self._execute_tool_cached, tc.name, tc.arguments) for tc in prefetch_tools)
+        )
+        for tc, result in zip(prefetch_tools, results):
+            tool_results[tc.name] = result
+            tool_args[tc.name] = tc.arguments
+        return tool_results, tool_args
+
+    def _should_include_network_context(self, routing_decision=None) -> bool:
+        if routing_decision is None:
+            return True
+        return any(
+            (
+                getattr(routing_decision, "use_live_context", False),
+                getattr(routing_decision, "include_inventory", False),
+                getattr(routing_decision, "include_telemetry", False),
+                getattr(routing_decision, "include_sdn", False),
+                bool(getattr(routing_decision, "required_domains", ())),
+            )
+        )
 
     def _try_inventory_fast_path(
         self,
@@ -146,6 +223,7 @@ class NetworkAgent:
         query_class: str,
         tool_results: Dict[str, Any],
         tool_args: Dict[str, Dict],
+        route_plan: Optional[Dict[str, Any]] = None,
     ) -> Optional[Dict[str, Any]]:
         """
         For simple inventory_only queries where the prefetch already has the
@@ -221,6 +299,16 @@ class NetworkAgent:
                 tool_results=tool_results,
                 tool_args=tool_args,
             )
+            answer_release = build_answer_release_state(
+                query_class=query_class,
+                grounding=grounding_meta,
+                tool_args=tool_args,
+                allowed_tools=(route_plan or {}).get("allowed_tools") or [],
+            )
+            grounding_meta["answer_release"] = answer_release
+
+            if str(answer_release.get("decision") or "") == "allow_limited":
+                content = self._render_limited_answer(content, answer_release)
 
             # Add the freshness note if needed
             final_content = self._render_grounded_content(content, grounding_meta)
@@ -283,34 +371,24 @@ class NetworkAgent:
         # Phase 1: Classify
         yield {"event": "progress", "phase": "classifying", "label": "Understanding your request…", "elapsed_ms": _elapsed()}
 
-        routing_decision = classify_query(user_message)
-        candidate_hostnames = self._extract_candidate_hostnames(user_message)
-        route_plan = self._build_route_plan(
-            user_message,
-            routing_decision.query_class,
-            candidate_hostnames,
-        )
-        route_plan["query_class"] = routing_decision.query_class
-        route_plan["required_domains"] = list(routing_decision.required_domains)
-        route_plan["hostnames"] = list(candidate_hostnames)
+        turn_state = self._prepare_turn_state(user_message)
+        routing_decision = turn_state["routing_decision"]
+        route_plan = turn_state["route_plan"]
 
         source_label = self._SOURCE_LABELS.get(routing_decision.query_class, "network context")
 
         # Phase 2: Prefetch
         yield {"event": "progress", "phase": "fetching", "label": f"Retrieving {source_label}…", "elapsed_ms": _elapsed()}
 
-        # Execute prefetched tools
-        tool_results: Dict[str, Any] = {}
-        tool_args: Dict[str, Dict] = {}
-        prefetch_tools = route_plan.get("prefetch_tools", [])
-        for tc in prefetch_tools:
-            result = self._tools.execute(tc.name, tc.arguments)
-            tool_results[tc.name] = result
-            tool_args[tc.name] = tc.arguments
+        tool_results, tool_args = await self._prefetch_route_tools(route_plan)
 
         # Phase 2b: Try fast path (skip LLM for simple inventory lookups)
         fast_result = self._try_inventory_fast_path(
-            user_message, routing_decision.query_class, tool_results, tool_args
+            user_message,
+            routing_decision.query_class,
+            tool_results,
+            tool_args,
+            route_plan,
         )
         if fast_result is not None:
             fast_result["elapsed_ms"] = _elapsed()
@@ -320,8 +398,12 @@ class NetworkAgent:
         # Phase 3: LLM reasoning
         yield {"event": "progress", "phase": "reasoning", "label": "Analyzing and composing response…", "elapsed_ms": _elapsed()}
 
-        # Fall through to full chat pipeline
-        result = await self.chat(user_message)
+        result = await self._chat_with_prepared_turn(
+            user_message,
+            turn_state,
+            prefetched_tool_results=tool_results,
+            prefetched_tool_args=tool_args,
+        )
         result["elapsed_ms"] = _elapsed()
         yield {"event": "complete", **result}
 
@@ -340,25 +422,21 @@ class NetworkAgent:
             {"role": "assistant", "content": "...", "type": "text"} or
             {"role": "assistant", "content": "...", "type": "proposal", "proposal": {...}}
         """
-        # Add user message to history
+        turn_state = self._prepare_turn_state(user_message)
+        return await self._chat_with_prepared_turn(user_message, turn_state)
+
+    async def _chat_with_prepared_turn(
+        self,
+        user_message: str,
+        turn_state: Dict[str, Any],
+        prefetched_tool_results: Optional[Dict[str, Any]] = None,
+        prefetched_tool_args: Optional[Dict[str, Dict[str, Any]]] = None,
+    ) -> Dict[str, Any]:
         self._history.append(LLMMessage(role="user", content=user_message))
 
-        routing_decision = classify_query(user_message)
-        logger.info(
-            "Query classified as %s (%s)",
-            routing_decision.query_class,
-            routing_decision.reasoning,
-        )
-
-        candidate_hostnames = self._extract_candidate_hostnames(user_message)
-        route_plan = self._build_route_plan(
-            user_message,
-            routing_decision.query_class,
-            candidate_hostnames,
-        )
-        route_plan["query_class"] = routing_decision.query_class
-        route_plan["required_domains"] = list(routing_decision.required_domains)
-        route_plan["hostnames"] = list(candidate_hostnames)
+        routing_decision = turn_state["routing_decision"]
+        candidate_hostnames = turn_state["candidate_hostnames"]
+        route_plan = turn_state["route_plan"]
 
         per_turn_system = self._render_system_prompt(
             user_message=user_message,
@@ -383,11 +461,11 @@ class NetworkAgent:
         ]
 
         # Track tool calls for proposal detection
-        tool_results: Dict[str, Any] = {}  # tool_name -> last result
-        tool_args: Dict[str, Dict] = {}    # tool_name -> last args
+        tool_results: Dict[str, Any] = dict(prefetched_tool_results or {})
+        tool_args: Dict[str, Dict] = dict(prefetched_tool_args or {})
         self_correction_state = build_self_correction_state()
 
-        self._apply_prefetched_route_tools(messages, route_plan, tool_results, tool_args, self_correction_state, user_message)
+        await self._apply_prefetched_route_tools(messages, route_plan, tool_results, tool_args, self_correction_state, user_message)
 
         # Get tool declarations
         tool_declarations = self._tools.get_declarations(route_plan["allowed_tools"])
@@ -1159,6 +1237,20 @@ class NetworkAgent:
         self._history.clear()
         logger.info("Conversation history cleared")
 
+    def set_provider(self, provider: LLMProvider, reset_history: bool = True) -> None:
+        """Swap the active LLM provider used by this agent."""
+        self._provider = provider
+        network_tools.set_intent_provider(provider)
+        self._network_context_cache.clear()
+        self._tool_result_cache.clear()
+        if reset_history:
+            self.clear_history()
+        logger.info(
+            "NetworkAgent provider switched (provider=%s, model=%s)",
+            self.provider_name,
+            self.model_name,
+        )
+
     def _known_hostnames(self) -> List[str]:
         hostnames: List[str] = []
         try:
@@ -1374,6 +1466,18 @@ class NetworkAgent:
                     ]
                 )
 
+        elif query_class == "architecture_planning":
+            allowed_tools = [
+                "get_knowledge_base_status",
+                "list_templates",
+                "get_template_schema",
+            ]
+            instruction = (
+                "For this architecture-planning query, treat the request as platform or controller design work. "
+                "Do not fetch live network evidence unless the user explicitly asks for current operational state. "
+                "Focus on implementation tradeoffs, latency bottlenecks, routing behavior, and milestone sequencing."
+            )
+
         elif query_class == "compliance":
             allowed_tools = generic_read_tools + [
                 "get_inventory_device",
@@ -1539,6 +1643,24 @@ class NetworkAgent:
 
         return None
 
+    def _execute_tool_cached(self, name: str, arguments: Dict[str, Any]) -> str:
+        """Execute a tool, returning a cached result when the TTL has not expired."""
+        ttl = _TOOL_CACHE_TTL.get(name)
+        if ttl is not None:
+            cache_key = f"{name}:{json.dumps(arguments, sort_keys=True)}"
+            cached = self._tool_result_cache.get(cache_key)
+            if cached is not None:
+                result, ts = cached
+                if (time.monotonic() - ts) < ttl:
+                    logger.debug("Tool cache HIT for %s (ttl=%ds)", name, ttl)
+                    return result
+
+            result = self._tools.execute(name, arguments)
+            self._tool_result_cache[cache_key] = (result, time.monotonic())
+            return result
+
+        return self._tools.execute(name, arguments)
+
     def _execute_controlled_tool_call(
         self,
         tool_call: ToolCall,
@@ -1558,7 +1680,7 @@ class NetworkAgent:
                 f"Controller policy blocked tool call: {tool_call.name}({json.dumps(tool_call.arguments, ensure_ascii=False)})",
             )
             return violation, tool_call
-        result = self._tools.execute(tool_call.name, tool_call.arguments)
+        result = self._execute_tool_cached(tool_call.name, tool_call.arguments)
         tool_results[tool_call.name] = result
         tool_args[tool_call.name] = tool_call.arguments
         messages.append(
@@ -1592,7 +1714,7 @@ class NetworkAgent:
         user_message: str,
     ) -> str:
         tool_call = ToolCall(name=name, arguments=arguments)
-        result = self._tools.execute(name, arguments)
+        result = self._execute_tool_cached(name, arguments)
         tool_results[tool_call.name] = result
         tool_args[tool_call.name] = tool_call.arguments
         self._record_tool_message(messages, tool_call, result, note)
@@ -1806,7 +1928,7 @@ class NetworkAgent:
 
         return executed
 
-    def _apply_prefetched_route_tools(
+    async def _apply_prefetched_route_tools(
         self,
         messages: List[LLMMessage],
         route_plan: Dict[str, Any],
@@ -1831,8 +1953,27 @@ class NetworkAgent:
             )
         )
 
+        pending_tools: List[ToolCall] = []
         for tc in prefetch_tools:
-            result = self._tools.execute(tc.name, tc.arguments)
+            if tc.name in tool_results and tool_args.get(tc.name) == tc.arguments:
+                continue
+            pending_tools.append(tc)
+
+        executed_results: List[Any] = []
+        if pending_tools:
+            executed_results = await asyncio.gather(
+                *(run_in_threadpool(self._execute_tool_cached, tc.name, tc.arguments) for tc in pending_tools)
+            )
+
+        results: List[Any] = []
+        executed_iter = iter(executed_results)
+        for tc in prefetch_tools:
+            if tc.name in tool_results and tool_args.get(tc.name) == tc.arguments:
+                results.append(tool_results[tc.name])
+            else:
+                results.append(next(executed_iter))
+
+        for tc, result in zip(prefetch_tools, results):
             tool_results[tc.name] = result
             tool_args[tc.name] = tc.arguments
             messages.append(
@@ -2040,27 +2181,18 @@ class NetworkAgent:
             return note
         return f"{content}\n\n{note}"
 
+    _CONTEXT_CACHE_MAXSIZE = 16
+
+    @staticmethod
     def _network_context_cache_key(
-        self,
-        user_message: Optional[str] = None,
         routing_decision=None,
         device_hostnames: Optional[List[str]] = None,
     ) -> str:
-        snapshot = get_context_state_manager().snapshot()
-        decision = routing_decision
-        return json.dumps(
-            {
-                "versions": snapshot.get("versions", {}),
-                "query_class": getattr(decision, "query_class", None),
-                "use_live_context": getattr(decision, "use_live_context", None),
-                "include_inventory": getattr(decision, "include_inventory", None),
-                "include_telemetry": getattr(decision, "include_telemetry", None),
-                "include_sdn": getattr(decision, "include_sdn", None),
-                "device_hostnames": sorted(device_hostnames or []),
-                "query_hint": (user_message or "").strip().lower()[:160],
-            },
-            sort_keys=True,
-        )
+        """Produce a compact, hashable cache key based on routing class and target hosts."""
+        qc = getattr(routing_decision, "query_class", None) or ""
+        hosts = ",".join(sorted(device_hostnames or []))
+        use_live = getattr(routing_decision, "use_live_context", True)
+        return f"{qc}|live={use_live}|{hosts}"
 
     def _build_network_context(
         self,
@@ -2069,7 +2201,6 @@ class NetworkAgent:
         device_hostnames: Optional[List[str]] = None,
     ) -> str:
         cache_key = self._network_context_cache_key(
-            user_message=user_message,
             routing_decision=routing_decision,
             device_hostnames=device_hostnames,
         )
@@ -2082,7 +2213,10 @@ class NetworkAgent:
             query=user_message,
             routing_decision=routing_decision,
         )
-        self._network_context_cache = {cache_key: network_context}
+        self._network_context_cache[cache_key] = network_context
+        if len(self._network_context_cache) > self._CONTEXT_CACHE_MAXSIZE:
+            oldest = next(iter(self._network_context_cache))
+            del self._network_context_cache[oldest]
         return network_context
 
     def _render_system_prompt(
@@ -2093,6 +2227,13 @@ class NetworkAgent:
         controller_policy: Optional[Dict[str, Any]] = None,
         route_instruction: str = "",
     ) -> str:
+        network_context = ""
+        if self._should_include_network_context(routing_decision):
+            network_context = self._build_network_context(
+                user_message=user_message,
+                routing_decision=routing_decision,
+                device_hostnames=device_hostnames,
+            )
         return build_system_prompt(
             controller_scope=render_controller_scope_prompt(self.available_tools),
             milestone2_baseline=render_milestone2_baseline_prompt(self.available_tools),
@@ -2100,11 +2241,7 @@ class NetworkAgent:
                 controller_policy or build_controller_policy("general", self.available_tools),
                 route_instruction,
             ),
-            network_context=self._build_network_context(
-                user_message=user_message,
-                routing_decision=routing_decision,
-                device_hostnames=device_hostnames,
-            ),
+            network_context=network_context,
         )
 
     def _build_grounding_meta(
@@ -2182,7 +2319,8 @@ class NetworkAgent:
         keeping per-turn prompt assembly authoritative.
         """
         self._network_context_cache.clear()
-        logger.info("Cached network context invalidated")
+        self._tool_result_cache.clear()
+        logger.info("Cached network context and tool results invalidated")
 
     def get_history(self) -> List[Dict[str, str]]:
         """Return the conversation history as a list of dicts."""
@@ -2195,6 +2333,14 @@ class NetworkAgent:
     def model_name(self) -> str:
         """Return the LLM model name."""
         return self._provider.model_name()
+
+    @property
+    def provider_name(self) -> str:
+        """Return the normalized provider name."""
+        provider_class = self._provider.__class__.__name__.lower()
+        if "ollama" in provider_class:
+            return "ollama"
+        return "gemini"
 
     @property
     def controller_scope_contract(self) -> Dict[str, Any]:

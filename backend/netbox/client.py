@@ -10,6 +10,16 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 # Configure logging
 logger = logging.getLogger("netbox.client")
 
+
+class _TimeoutSession(requests.Session):
+    def __init__(self, timeout_seconds: float):
+        super().__init__()
+        self._timeout_seconds = timeout_seconds
+
+    def request(self, *args, **kwargs):
+        kwargs.setdefault("timeout", self._timeout_seconds)
+        return super().request(*args, **kwargs)
+
 # M11: UI Role Key -> NetBox Role Name/Slug mapping
 ROLE_MAPPING = {
     "core": "Core Switch / Router",
@@ -36,6 +46,7 @@ class NetBoxClient:
 
         self.url = resolved_url
         self.token = resolved_token
+        self.timeout_seconds = float(os.environ.get("NETBOX_HTTP_TIMEOUT_SECONDS", "2.5"))
         self.api = None
         self._connect()
 
@@ -44,11 +55,15 @@ class NetBoxClient:
             self.api = pynetbox.api(self.url, token=self.token)
             
             # Disable SSL verification for lab environment
-            session = requests.Session()
+            session = _TimeoutSession(self.timeout_seconds)
             session.verify = False
             self.api.http_session = session
 
-            logger.info(f"Initialized NetBox client at {self.url} (SSL verification disabled)")
+            logger.info(
+                "Initialized NetBox client at %s (SSL verification disabled, timeout=%ss)",
+                self.url,
+                self.timeout_seconds,
+            )
         except Exception as e:
             logger.error(f"Failed to connect to NetBox: {e}")
             self.api = None
@@ -68,6 +83,16 @@ class NetBoxClient:
             return list(self.api.dcim.devices.all())
         except Exception as e:
             logger.error(f"Error fetching devices: {e}")
+            return []
+
+    def get_device_by_name(self, name: str):
+        """Fetch devices by exact NetBox name filter."""
+        if not self.api or not name:
+            return []
+        try:
+            return list(self.api.dcim.devices.filter(name=name))
+        except Exception as e:
+            logger.error(f"Error fetching device '{name}': {e}")
             return []
 
     def get_cables(self):

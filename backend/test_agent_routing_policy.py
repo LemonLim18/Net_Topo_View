@@ -160,6 +160,13 @@ async def _run_chat_with_agent(agent: NetworkAgent, message: str):
     return await agent.chat(message)
 
 
+async def _collect_stream_events(agent: NetworkAgent, message: str):
+    events = []
+    async for event in agent.chat_streaming(message):
+        events.append(event)
+    return events
+
+
 def test_inventory_query_prefetches_inventory_tool():
     import asyncio
 
@@ -391,6 +398,33 @@ def test_live_query_returns_live_grounding_and_confidence():
     assert "crawler_cache" in response["grounding_meta"]["source_used"]
     assert response["grounding_meta"]["confidence"]["level"] in {"medium", "high"}
     assert "source_age=" in response["content"]
+
+
+def test_streaming_query_reuses_prefetched_tools_without_duplicate_execution():
+    import asyncio
+
+    provider = _FakeProvider()
+    agent = NetworkAgent(
+        db_manager=_AgentFakeDb(),
+        provider=provider,
+        retriever=None,
+        proposal_manager=_MemoryProposalManager(),
+    )
+
+    original_execute = agent._tools.execute
+    execution_counts = {}
+
+    def _counting_execute(name, arguments):
+        execution_counts[name] = execution_counts.get(name, 0) + 1
+        return original_execute(name, arguments)
+
+    agent._tools.execute = _counting_execute  # type: ignore[method-assign]
+
+    events = asyncio.run(_collect_stream_events(agent, "Show me the live topology"))
+
+    assert events[-1]["event"] == "complete"
+    assert execution_counts["get_context_health"] == 1
+    assert execution_counts["get_topology_summary"] == 1
 
 
 def test_knowledge_query_returns_documentation_authority_profile():

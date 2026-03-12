@@ -11,6 +11,7 @@ from llm.proposal import ConfigProposal
 
 class _FakeAgent:
     model_name = "test-model"
+    provider_name = "gemini"
 
     @property
     def available_tools(self):
@@ -25,6 +26,13 @@ class _FakeAgent:
 
     def get_history(self):
         return []
+
+    def clear_history(self):
+        return None
+
+    def set_provider(self, provider, reset_history=True):
+        self.provider_name = "ollama" if "ollama" in provider.__class__.__name__.lower() else "gemini"
+        self.model_name = provider.model_name()
 
     @property
     def controller_scope_contract(self):
@@ -108,6 +116,88 @@ def test_info_endpoint_returns_controller_scope_and_status(monkeypatch):
     capability_names = {item["name"] for item in payload.implementation_status["capabilities"]}
     assert "bounded_self_correction" in capability_names
     assert "advanced_differentiator_reservation" in capability_names
+
+
+def test_runtime_endpoint_returns_provider_catalog(monkeypatch):
+    monkeypatch.setattr(llm_api, "_get_agent", lambda: _FakeAgent())
+    monkeypatch.setattr(
+        llm_api,
+        "_build_runtime_state",
+        lambda agent, ollama_base_url=None: {
+            "active_provider": "gemini",
+            "active_model": "gemini-2.5-flash",
+            "active_base_url": None,
+            "scope": "shared_agent",
+            "providers": [
+                {"name": "gemini", "label": "Google Gemini", "available": True, "base_url": None, "models": ["gemini-2.5-flash"]},
+                {"name": "ollama", "label": "Ollama VM", "available": True, "base_url": ollama_base_url, "models": ["qwen2.5:14b", "llama3.2"]},
+            ],
+        },
+    )
+
+    payload = asyncio.run(llm_api.get_chat_runtime(ollama_base_url="http://192.168.1.252:11434"))
+
+    assert payload["active_provider"] == "gemini"
+    assert payload["providers"][1]["base_url"] == "http://192.168.1.252:11434"
+    assert "qwen2.5:14b" in payload["providers"][1]["models"]
+
+
+def test_runtime_update_switches_agent_provider(monkeypatch):
+    class _DummyOllamaProvider:
+        def __init__(self, model: str, base_url: str):
+            self._model = model
+            self._base_url = base_url
+
+        def model_name(self) -> str:
+            return self._model
+
+    class _RuntimeAgent(_FakeAgent):
+        def __init__(self):
+            self.model_name = "gemini-2.5-flash"
+            self.provider_name = "gemini"
+            self.last_reset_history = None
+
+        def set_provider(self, provider, reset_history=True):
+            self.provider_name = "ollama"
+            self.model_name = provider.model_name()
+            self.active_base_url = provider._base_url
+            self.last_reset_history = reset_history
+
+    agent = _RuntimeAgent()
+
+    monkeypatch.setattr(llm_api, "_get_agent", lambda: agent)
+    monkeypatch.setattr(
+        llm_api,
+        "_instantiate_runtime_provider",
+        lambda provider_name, model, ollama_base_url: _DummyOllamaProvider(model or "qwen2.5:14b", ollama_base_url or "http://192.168.1.252:11434"),
+    )
+    monkeypatch.setattr(
+        llm_api,
+        "_build_runtime_state",
+        lambda current_agent, ollama_base_url=None: {
+            "active_provider": current_agent.provider_name,
+            "active_model": current_agent.model_name,
+            "active_base_url": getattr(current_agent, "active_base_url", None),
+            "scope": "shared_agent",
+            "providers": [],
+        },
+    )
+
+    payload = asyncio.run(
+        llm_api.update_chat_runtime(
+            llm_api.ChatRuntimeUpdateRequest(
+                provider="ollama",
+                model="qwen2.5:14b",
+                ollama_base_url="http://192.168.1.252:11434",
+                clear_history=True,
+            )
+        )
+    )
+
+    assert agent.provider_name == "ollama"
+    assert agent.model_name == "qwen2.5:14b"
+    assert agent.last_reset_history is True
+    assert payload["active_base_url"] == "http://192.168.1.252:11434"
 
 
 def test_observability_endpoint_returns_controller_snapshot(monkeypatch):

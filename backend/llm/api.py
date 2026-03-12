@@ -20,11 +20,13 @@ Endpoints:
     POST /api/chat/proposals/{id}/rollback  — Rollback → revert deployed change
 """
 
+import json
 import asyncio
 import logging
-import json
+import os
 from typing import Any, Dict, List, Optional
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
@@ -65,6 +67,15 @@ router = APIRouter(prefix="/llm/chat", tags=["Chat (M5)"])
 class ChatRequest(BaseModel):
     """User chat message."""
     message: str = Field(..., description="The user's message", min_length=1)
+
+
+class ChatRuntimeUpdateRequest(BaseModel):
+    """Runtime provider/model selection for the shared agent."""
+
+    provider: str = Field(..., description="LLM provider name")
+    model: Optional[str] = Field(default=None, description="Model identifier to activate")
+    ollama_base_url: Optional[str] = Field(default=None, description="Ollama server base URL")
+    clear_history: bool = Field(default=True, description="Clear chat history when switching runtimes")
 
 
 class ChatResponse(BaseModel):
@@ -222,6 +233,133 @@ class DigitalTwinRequest(BaseModel):
     vendor_filter: Optional[str] = Field(default=None, description="Optional vendor filter for network-wide twins")
     include_telemetry: bool = Field(default=True, description="Include telemetry trends in the digital twin")
     include_sdn: bool = Field(default=True, description="Include SDN state while building the twin")
+
+
+_GEMINI_MODELS = [
+    "gemini-2.5-flash",
+    "gemini-2.5-pro",
+]
+_DEFAULT_OLLAMA_VM_URL = os.getenv("OLLAMA_UI_BASE_URL", "http://192.168.1.252:11434")
+
+
+def _provider_kind(provider: Any) -> str:
+    provider_name = provider.__class__.__name__.lower() if provider is not None else ""
+    if "ollama" in provider_name:
+        return "ollama"
+    return "gemini"
+
+
+def _current_provider_name(agent: Any) -> str:
+    value = getattr(agent, "provider_name", None)
+    if isinstance(value, str) and value:
+        return value
+    return _provider_kind(getattr(agent, "_provider", None))
+
+
+def _current_provider_base_url(agent: Any) -> Optional[str]:
+    provider = getattr(agent, "_provider", None)
+    if _provider_kind(provider) != "ollama":
+        return None
+    base_url = getattr(provider, "_base_url", None)
+    return str(base_url).rstrip("/") if isinstance(base_url, str) and base_url else None
+
+
+def _gemini_provider_descriptor(active_model: Optional[str]) -> Dict[str, Any]:
+    models = list(_GEMINI_MODELS)
+    if active_model and active_model not in models:
+        models.insert(0, active_model)
+    return {
+        "name": "gemini",
+        "label": "Google Gemini",
+        "available": True,
+        "base_url": None,
+        "models": models,
+        "catalog_source": "built_in",
+        "reachable": True,
+    }
+
+
+def _fetch_ollama_models(base_url: str) -> tuple[List[str], bool, Optional[str]]:
+    try:
+        response = httpx.get(f"{base_url.rstrip('/')}/api/tags", timeout=5)
+        response.raise_for_status()
+        payload = response.json()
+        models = [str(item.get("name") or "").strip() for item in payload.get("models", []) if item.get("name")]
+        return models, True, None
+    except Exception as exc:
+        return [], False, str(exc)
+
+
+def _ollama_provider_descriptor(base_url: str, active_model: Optional[str]) -> Dict[str, Any]:
+    models, reachable, error = _fetch_ollama_models(base_url)
+    descriptor: Dict[str, Any] = {
+        "name": "ollama",
+        "label": "Ollama VM",
+        "available": bool(models),
+        "base_url": base_url,
+        "models": models,
+        "catalog_source": "live" if models else "fallback",
+        "reachable": reachable,
+    }
+    if active_model and active_model not in descriptor["models"]:
+        descriptor["models"].insert(0, active_model)
+        descriptor["default_model_injected"] = True
+    else:
+        descriptor["default_model_injected"] = False
+    if error:
+        descriptor["error"] = error
+    return descriptor
+
+
+def _build_runtime_state(agent: Any, ollama_base_url: Optional[str] = None) -> Dict[str, Any]:
+    active_provider = _current_provider_name(agent)
+    active_model = getattr(agent, "model_name", None)
+    if callable(active_model):
+        active_model = active_model()
+    active_model = str(active_model or "")
+    active_base_url = _current_provider_base_url(agent)
+    browser_base_url = (ollama_base_url or active_base_url or os.getenv("OLLAMA_BASE_URL") or _DEFAULT_OLLAMA_VM_URL).rstrip("/")
+
+    return {
+        "active_provider": active_provider,
+        "active_model": active_model,
+        "active_base_url": active_base_url,
+        "scope": "shared_agent",
+        "providers": [
+            _gemini_provider_descriptor(active_model if active_provider == "gemini" else None),
+            _ollama_provider_descriptor(browser_base_url, active_model if active_provider == "ollama" else os.getenv("OLLAMA_MODEL")),
+        ],
+    }
+
+
+def _instantiate_runtime_provider(provider_name: str, model: Optional[str], ollama_base_url: Optional[str]):
+    normalized = str(provider_name or "gemini").strip().lower()
+    if normalized == "ollama":
+        from llm.ollama_provider import OllamaProvider
+
+        return OllamaProvider(
+            base_url=(ollama_base_url or os.getenv("OLLAMA_BASE_URL") or _DEFAULT_OLLAMA_VM_URL).rstrip("/"),
+            model=model or os.getenv("OLLAMA_MODEL"),
+        )
+    if normalized == "gemini":
+        from llm.gemini_provider import GeminiProvider
+
+        return GeminiProvider(
+            api_key=os.getenv("GEMINI_API_KEY"),
+            model=model or os.getenv("GEMINI_MODEL") or None,
+        )
+    raise HTTPException(status_code=400, detail=f"Unsupported provider '{provider_name}'")
+
+
+def _apply_runtime_provider(agent: Any, provider_name: str, model: Optional[str], ollama_base_url: Optional[str], clear_history: bool):
+    provider = _instantiate_runtime_provider(provider_name, model, ollama_base_url)
+    if hasattr(agent, "set_provider"):
+        agent.set_provider(provider, reset_history=clear_history)
+    else:
+        setattr(agent, "_provider", provider)
+        if clear_history and hasattr(agent, "clear_history"):
+            agent.clear_history()
+    return provider
 
 
 # -----------------------------------------------------------------------
@@ -386,6 +524,37 @@ async def chat_stream(request: ChatRequest):
             "X-Accel-Buffering": "no",
         },
     )
+
+
+@router.get("/runtime")
+async def get_chat_runtime(ollama_base_url: Optional[str] = None):
+    """Return the active LLM runtime and selectable model catalog."""
+    agent = _get_agent()
+    return _build_runtime_state(agent, ollama_base_url=ollama_base_url)
+
+
+@router.post("/runtime")
+async def update_chat_runtime(config: ChatRuntimeUpdateRequest):
+    """Switch the shared chat agent to a different provider/model runtime."""
+    agent = _get_agent()
+    provider_name = str(config.provider or "").strip().lower()
+    model_name = (config.model or "").strip() or None
+    base_url = (config.ollama_base_url or "").strip() or None
+
+    _apply_runtime_provider(
+        agent,
+        provider_name=provider_name,
+        model=model_name,
+        ollama_base_url=base_url,
+        clear_history=config.clear_history,
+    )
+    logger.info(
+        "Chat runtime updated (provider=%s, model=%s, base_url=%s)",
+        provider_name,
+        model_name or getattr(agent, "model_name", ""),
+        base_url or _current_provider_base_url(agent),
+    )
+    return _build_runtime_state(agent, ollama_base_url=base_url)
 
 
 @router.post("/clear")

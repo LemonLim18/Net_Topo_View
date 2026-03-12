@@ -28,6 +28,7 @@ _TARGET_STATE_BY_QUERY_CLASS = {
     "live_only": "Requested current live operational state from authoritative network evidence.",
     "troubleshooting": "Requested an operational diagnosis grounded in live state, telemetry, incident, and config evidence.",
     "change_planning": "Requested a proposed target configuration or change plan that remains subject to approval.",
+    "architecture_planning": "Requested an architecture or implementation design recommendation for the platform rather than current network state.",
     "compliance": "Requested the current compliance state against intended policy or configuration evidence.",
     "knowledge_heavy": "Requested curated documentation or SOP guidance rather than a direct live-state assertion.",
     "general": "Requested a grounded network-state answer based on the authoritative evidence gathered for this turn.",
@@ -41,6 +42,7 @@ _PREFERRED_EVIDENCE_FAMILIES = {
     "live_only": ["live"],
     "troubleshooting": ["live"],
     "change_planning": ["planned", "documentation"],
+    "architecture_planning": ["documentation"],
     "compliance": ["live", "documentation"],
     "knowledge_heavy": ["documentation"],
     "general": ["planned", "live"],
@@ -52,6 +54,7 @@ _SUPPORTING_EVIDENCE_FAMILIES = {
     "live_only": ["planned"],
     "troubleshooting": ["documentation", "planned"],
     "change_planning": ["live"],
+    "architecture_planning": ["planned"],
     "compliance": ["planned"],
     "knowledge_heavy": ["planned"],
     "general": ["documentation"],
@@ -128,6 +131,8 @@ def _answer_scope_from_sources(query_class: str, source_age: List[Dict[str, Any]
         return "planned"
     if query_class in {"live_only", "troubleshooting"}:
         return "live"
+    if query_class == "architecture_planning":
+        return "inferred"
     if query_class == "knowledge_heavy":
         return "inferred"
     return "inferred"

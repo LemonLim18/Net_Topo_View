@@ -73,7 +73,14 @@ class NetworkStateEmbedder:
 
     def embed_crawl_result(self, topology: dict, previous_topology: Optional[dict] = None) -> Dict[str, Any]:
         """
-        Process a fresh crawl result and embed all network state.
+        Process a fresh crawl result and embed config snapshots.
+
+        Live network state (device status, interfaces, links) is **no
+        longer embedded** because it changes too frequently for vector
+        embeddings to stay useful.  Structured API queries via tool
+        calls (``get_topology_summary``, ``get_device_details``) already
+        serve real-time lookups.  Only config snapshots are embedded
+        since they change infrequently and benefit from semantic search.
 
         Parameters
         ----------
@@ -83,7 +90,7 @@ class NetworkStateEmbedder:
 
         Returns
         -------
-        dict with summary: {devices_embedded, config_chunks, link_chunks, total_chunks}
+        dict with summary: {config_chunks, total_chunks, ...}
         """
         if not self._store.available:
             logger.warning("Vector store not available — skipping auto-embedding")
@@ -94,10 +101,9 @@ class NetworkStateEmbedder:
         if not nodes:
             return {"status": "skipped", "reason": "no_nodes"}
 
-        live_documents = self._build_live_documents(nodes, now)
         config_documents = self._build_config_documents(nodes, now)
 
-        if not live_documents and not config_documents:
+        if not config_documents:
             return {"status": "skipped", "reason": "no_chunks_generated"}
 
         summary = {
@@ -110,33 +116,9 @@ class NetworkStateEmbedder:
             "total_chunks": 0,
             "documents_updated": 0,
             "documents_removed": 0,
+            "live_state_skipped": True,
             "embedded_at": now,
         }
-
-        removed_live = self._delete_missing_documents(
-            partition=PARTITION_LIVE_STATE,
-            current_doc_ids=set(live_documents),
-            prefix_filters=("live_device_", "live_interfaces_", "live_link_"),
-        )
-        summary["documents_removed"] += removed_live
-
-        for doc_id, payload in live_documents.items():
-            result = self._upsert_partitioned_document(
-                doc_id=doc_id,
-                chunks=payload["chunks"],
-                metas=payload["metas"],
-                partition=PARTITION_LIVE_STATE,
-            )
-            if result["status"] == "updated":
-                summary["documents_updated"] += 1
-                summary["total_chunks"] += result["chunk_count"]
-                sub_type = payload["metas"][0].get("sub_type", "") if payload["metas"] else ""
-                if sub_type == "topology":
-                    summary["devices_embedded"] += 1
-                elif sub_type == "links":
-                    summary["link_chunks"] += result["chunk_count"]
-                elif sub_type == "interfaces":
-                    summary["interface_chunks"] += result["chunk_count"]
 
         for doc_id, payload in config_documents.items():
             result = self._upsert_partitioned_document(
@@ -152,9 +134,8 @@ class NetworkStateEmbedder:
 
         self._last_embed_ts = now
         logger.info(
-            "Auto-embedded network state: %d docs updated, %d removed, %d total chunks",
+            "Auto-embedded config state: %d docs updated, %d total chunks (live_state skipped)",
             summary["documents_updated"],
-            summary["documents_removed"],
             summary["total_chunks"],
         )
         return summary

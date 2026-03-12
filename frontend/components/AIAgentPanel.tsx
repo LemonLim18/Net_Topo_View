@@ -2,6 +2,7 @@ import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { 
   Bot, 
   Send, 
+  Square,
   PanelRightClose, 
   CheckCircle,
   AlertTriangle,
@@ -18,6 +19,7 @@ import {
 } from 'lucide-react';
 import { llmApi, proposalApi } from '../src/services/api';
 import { Toast } from '../src/utils/swal';
+import { LLMRuntimeSelector } from './LLMRuntimeSelector';
 import type { AppDomain } from '../types';
 
 // ==================== TYPES ====================
@@ -52,6 +54,11 @@ interface Message {
   proposal?: ConfigProposal;
   deployResult?: { status: string; message: string; job_id?: number };
   mode?: AgentMode;
+  isStreaming?: boolean;
+  stopped?: boolean;
+  thinkingStartTime?: number;
+  elapsedMs?: number;
+  phaseLabel?: string;
 }
 
 interface ProposalReviewInput {
@@ -509,17 +516,39 @@ const AIAgentPanel: React.FC<AIAgentPanelProps> = ({
   const [currentProposal, setCurrentProposal] = useState<ConfigProposal | null>(null);
   const [isDeploying, setIsDeploying] = useState(false);
   const [isRollingBack, setIsRollingBack] = useState(false);
+  const [liveClockMs, setLiveClockMs] = useState(0);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const abortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
+
+  useEffect(() => {
+    const active = messages.find((message) => message.isStreaming && message.thinkingStartTime);
+    if (!active?.thinkingStartTime) {
+      setLiveClockMs(0);
+      return;
+    }
+
+    const tick = () => setLiveClockMs(Date.now() - (active.thinkingStartTime || Date.now()));
+    tick();
+    const timer = window.setInterval(tick, 250);
+    return () => window.clearInterval(timer);
+  }, [messages]);
+
+  const formatElapsed = (ms: number) => {
+    if (ms < 1000) return `${(ms / 1000).toFixed(1)}s`;
+    if (ms < 10000) return `${(ms / 1000).toFixed(1)}s`;
+    return `${Math.round(ms / 1000)}s`;
+  };
 
   const generateId = () => Math.random().toString(36).substring(2, 9);
 
   // ---- Send message to AI agent ----
   const handleSend = async () => {
     if (!input.trim()) return;
+    abortRef.current?.abort();
     const userInput = input;
 
     // Add user message
@@ -535,59 +564,127 @@ const AIAgentPanel: React.FC<AIAgentPanelProps> = ({
 
     // Add thinking indicator
     const thinkingId = generateId();
+    const thinkingStartTime = Date.now();
+    const abortController = new AbortController();
+    abortRef.current = abortController;
     setMessages(prev => [...prev, {
       id: thinkingId,
       role: 'agent',
-      content: 'Analyzing your request...',
+      content: '',
       timestamp: Date.now(),
-      mode: 'generating'
+      mode: 'generating',
+      isStreaming: true,
+      thinkingStartTime,
+      phaseLabel: 'Understanding your request…',
     }]);
+    setAgentMode('generating');
 
     try {
-      const result = await llmApi.chat(userInput);
+      await llmApi.chatStream(userInput, {
+        onProgress: (data) => {
+          setMessages(prev => prev.map(message =>
+            message.id === thinkingId
+              ? { ...message, phaseLabel: data.label }
+              : message
+          ));
+        },
+        onComplete: (result) => {
+          abortRef.current = null;
+          const elapsedMs = result.elapsed_ms ?? (Date.now() - thinkingStartTime);
+          if ((result.type === 'proposal' || result.type === 'intent_plan') && result.proposal) {
+            const proposal = result.proposal as ConfigProposal;
+            setCurrentProposal(proposal);
+            setMessages(prev => prev.map(message =>
+              message.id === thinkingId
+                ? {
+                    ...message,
+                    content: result.content,
+                    proposal,
+                    mode: 'awaiting_confirmation',
+                    isStreaming: false,
+                    elapsedMs,
+                    phaseLabel: undefined,
+                  }
+                : message
+            ));
+            setAgentMode('awaiting_confirmation');
+            return;
+          }
 
-      // Remove thinking indicator
-      setMessages(prev => prev.filter(m => m.id !== thinkingId));
-
-      if (result.type === 'proposal' && result.proposal) {
-        // AI generated a config proposal
-        const proposal = result.proposal as ConfigProposal;
-        setCurrentProposal(proposal);
-        
-        const proposalMsg: Message = {
-          id: generateId(),
-          role: 'agent',
-          content: result.content,
-          timestamp: Date.now(),
-          proposal: proposal,
-          mode: 'awaiting_confirmation'
-        };
-        setMessages(prev => [...prev, proposalMsg]);
-        setAgentMode('awaiting_confirmation');
-      } else {
-        // Normal text response
-        const agentMsg: Message = {
-          id: generateId(),
-          role: 'agent',
-          content: result.content,
-          timestamp: Date.now()
-        };
-        setMessages(prev => [...prev, agentMsg]);
-        setAgentMode('idle');
-      }
+          setMessages(prev => prev.map(message =>
+            message.id === thinkingId
+              ? {
+                  ...message,
+                  content: result.content,
+                  isStreaming: false,
+                  mode: 'idle',
+                  elapsedMs,
+                  phaseLabel: undefined,
+                }
+              : message
+          ));
+          setAgentMode('idle');
+        },
+        onAbort: () => {
+          abortRef.current = null;
+          const elapsedMs = Date.now() - thinkingStartTime;
+          setMessages(prev => prev.map(message =>
+            message.id === thinkingId
+              ? {
+                  ...message,
+                  content: 'Generation stopped.',
+                  isStreaming: false,
+                  stopped: true,
+                  mode: 'idle',
+                  elapsedMs,
+                  phaseLabel: undefined,
+                }
+              : message
+          ));
+          setAgentMode('idle');
+        },
+        onError: (error) => {
+          abortRef.current = null;
+          const elapsedMs = Date.now() - thinkingStartTime;
+          setMessages(prev => prev.map(message =>
+            message.id === thinkingId
+              ? {
+                  ...message,
+                  content: `❌ Error: ${error.message || 'Failed to reach the AI agent.'}`,
+                  isStreaming: false,
+                  mode: 'idle',
+                  elapsedMs,
+                  phaseLabel: undefined,
+                }
+              : message
+          ));
+          setAgentMode('idle');
+          Toast.error('Agent Error', error.message || 'Failed to reach the AI agent.');
+        },
+      }, {
+        signal: abortController.signal,
+      });
     } catch (error: any) {
-      // Remove thinking indicator and show error
-      setMessages(prev => prev.filter(m => m.id !== thinkingId));
-      const errorMsg: Message = {
-        id: generateId(),
-        role: 'agent',
-        content: `❌ Error: ${error.message || 'Failed to reach the AI agent.'}`,
-        timestamp: Date.now()
-      };
-      setMessages(prev => [...prev, errorMsg]);
+      abortRef.current = null;
+      setMessages(prev => prev.map(message =>
+        message.id === thinkingId
+          ? {
+              ...message,
+              content: `❌ Error: ${error.message || 'Failed to reach the AI agent.'}`,
+              isStreaming: false,
+              mode: 'idle',
+              elapsedMs: Date.now() - thinkingStartTime,
+              phaseLabel: undefined,
+            }
+          : message
+      ));
       setAgentMode('idle');
       Toast.error('Agent Error', error.message || 'Failed to reach the AI agent.');
     }
+  };
+
+  const handleStop = () => {
+    abortRef.current?.abort();
   };
 
   // ---- Accept & Deploy ----
@@ -731,6 +828,10 @@ const AIAgentPanel: React.FC<AIAgentPanelProps> = ({
         </button>
       </div>
 
+      <div className="px-4 py-3 border-b border-base-300 bg-base-100/70">
+        <LLMRuntimeSelector compact />
+      </div>
+
       {/* Messages */}
       <div className="flex-1 overflow-y-auto p-4 space-y-4">
         {messages.length === 0 && (
@@ -757,7 +858,14 @@ const AIAgentPanel: React.FC<AIAgentPanelProps> = ({
               {msg.mode === 'generating' && (
                 <div className="flex items-center gap-2 text-sm">
                   <Loader2 className="w-4 h-4 animate-spin" />
-                  <span>Analyzing...</span>
+                  <span>{msg.phaseLabel || 'Analyzing...'}</span>
+                  <span className="text-xs opacity-60">{formatElapsed(msg.thinkingStartTime ? liveClockMs : 0)}</span>
+                </div>
+              )}
+
+              {!msg.isStreaming && typeof msg.elapsedMs === 'number' && (
+                <div className="mt-2 text-[11px] opacity-60">
+                  {msg.stopped ? 'Stopped at' : 'Completed in'} {formatElapsed(msg.elapsedMs)}
                 </div>
               )}
 
@@ -800,11 +908,11 @@ const AIAgentPanel: React.FC<AIAgentPanelProps> = ({
             disabled={agentMode === 'generating' || agentMode === 'deploying'}
           />
           <button 
-            onClick={handleSend} 
-            className="btn btn-primary btn-sm btn-square"
-            disabled={!input.trim() || agentMode === 'generating' || agentMode === 'deploying'}
+            onClick={agentMode === 'generating' ? handleStop : handleSend} 
+            className={`btn btn-sm btn-square ${agentMode === 'generating' ? 'btn-error' : 'btn-primary'}`}
+            disabled={agentMode === 'deploying' || (agentMode !== 'generating' && !input.trim())}
           >
-            <Send className="w-4 h-4" />
+            {agentMode === 'generating' ? <Square className="w-4 h-4" fill="currentColor" /> : <Send className="w-4 h-4" />}
           </button>
         </div>
       </div>

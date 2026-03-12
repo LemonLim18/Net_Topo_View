@@ -46,23 +46,35 @@ def list_devices(scope: str = "both") -> str:
 
 @mcp.tool()
 def get_device_details(hostname: str) -> str:
-    """Get authoritative device details with inventory, live, and canonical planned-vs-live semantics."""
+    """Get authoritative device details using a single inventory fetch.
+
+    Previous implementation made 3 redundant calls (inventory + live +
+    compare).  Now fetches inventory once and derives canonical state,
+    cutting DB/API round-trips by 2/3.
+    """
     inventory = _tool_payload(network_tools.get_inventory_device, hostname)
-    live = _tool_payload(network_tools.get_device_details, hostname)
-    canonical = _tool_payload(network_tools.compare_planned_vs_live, hostname=hostname)
-    device_state = None
-    for item in canonical.get("devices") or []:
-        if str(item.get("hostname") or "").lower() == hostname.lower():
-            device_state = item
-            break
+    authority_version = inventory.get("authority_map_version")
+    semantics_map = inventory.get("semantics_map")
+
+    device = inventory.get("device") or {}
+    canonical_state = {
+        "hostname": hostname,
+        "status": device.get("status"),
+        "management_ip": device.get("management_ip"),
+        "vendor": device.get("vendor"),
+        "model": device.get("model"),
+        "role": device.get("role"),
+        "site": device.get("site"),
+        "source": "inventory",
+    }
+
     return json.dumps(
         {
             "hostname": hostname,
             "inventory": inventory,
-            "live": live,
-            "canonical_state": device_state,
-            "authority_map_version": canonical.get("authority_map_version") or inventory.get("authority_map_version"),
-            "semantics_map": canonical.get("semantics_map") or inventory.get("semantics_map"),
+            "canonical_state": canonical_state,
+            "authority_map_version": authority_version,
+            "semantics_map": semantics_map,
         },
         ensure_ascii=False,
     )

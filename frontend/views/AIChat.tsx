@@ -24,6 +24,7 @@ import type { Message, ChatSession, ConfigProposal, DeployResult, IntentMeta } f
 import { SidebarLLM } from '../components/SidebarLLM';
 import { ChatInput } from '../components/ChatInput';
 import { MessageBubble } from '../components/MessageBubble';
+import { LLMRuntimeSelector } from '../components/LLMRuntimeSelector';
 import { llmApi, proposalApi } from '../src/services/api';
 import { Toast } from '../src/utils/swal';
 
@@ -888,6 +889,7 @@ const GeminiChat: React.FC<AIChatProps> = ({ domain }) => {
   const [isRollingBack, setIsRollingBack] = useState(false);
   
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const chatAbortRef = useRef<AbortController | null>(null);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -939,6 +941,7 @@ const GeminiChat: React.FC<AIChatProps> = ({ domain }) => {
 
   const handleSendMessage = async (text: string) => {
     if (!text.trim() || !currentSessionId) return;
+    chatAbortRef.current?.abort();
 
     const userMsgId = generateId();
     const userMessage: Message = {
@@ -954,6 +957,8 @@ const GeminiChat: React.FC<AIChatProps> = ({ domain }) => {
     // Create placeholder for AI Message with thinking indicator
     const aiMsgId = generateId();
     const thinkingStartTime = Date.now();
+    const abortController = new AbortController();
+    chatAbortRef.current = abortController;
     const aiPlaceholder: Message = {
       id: aiMsgId,
       role: Role.Model,
@@ -997,6 +1002,8 @@ const GeminiChat: React.FC<AIChatProps> = ({ domain }) => {
           ));
         },
         onComplete: (response) => {
+          const elapsedMs = response.elapsed_ms ?? (Date.now() - thinkingStartTime);
+          chatAbortRef.current = null;
           if ((response.type === 'proposal' || response.type === 'intent_plan') && response.proposal) {
             // M19/M24: AI generated a config proposal
             const proposal = response.proposal as ConfigProposal;
@@ -1014,6 +1021,7 @@ const GeminiChat: React.FC<AIChatProps> = ({ domain }) => {
                     proposal: proposal,
                     intentMeta: intentMeta,
                     thinkingPhase: undefined,
+                    elapsedMs,
                     groundingMeta: response.grounding_meta,
                   }
                 : msg
@@ -1027,6 +1035,7 @@ const GeminiChat: React.FC<AIChatProps> = ({ domain }) => {
                     isStreaming: false,
                     content: response.content || '',
                     thinkingPhase: undefined,
+                    elapsedMs,
                     groundingMeta: response.grounding_meta,
                   }
                 : msg
@@ -1034,24 +1043,45 @@ const GeminiChat: React.FC<AIChatProps> = ({ domain }) => {
           }
           setIsLoading(false);
         },
+          onAbort: () => {
+            const elapsedMs = Date.now() - thinkingStartTime;
+            chatAbortRef.current = null;
+            setMessages(prev => prev.map(msg =>
+              msg.id === aiMsgId
+                ? {
+                    ...msg,
+                    isStreaming: false,
+                    stopped: true,
+                    content: 'Generation stopped.',
+                    thinkingPhase: undefined,
+                    elapsedMs,
+                  }
+                : msg
+            ));
+            setIsLoading(false);
+          },
         onError: (err) => {
           console.error("Chat stream error:", err);
           Toast.error('Chat Error', err.message || 'Failed to get response');
+            chatAbortRef.current = null;
           setMessages(prev => prev.map(msg =>
             msg.id === aiMsgId
-              ? { ...msg, isStreaming: false, isError: true, content: `Error: ${err.message || "Failed to get response"}`, thinkingPhase: undefined }
+                ? { ...msg, isStreaming: false, isError: true, content: `Error: ${err.message || "Failed to get response"}`, thinkingPhase: undefined, elapsedMs: Date.now() - thinkingStartTime }
               : msg
           ));
           setIsLoading(false);
         },
-      });
+        }, {
+          signal: abortController.signal,
+        });
 
     } catch (error: any) {
       console.error("Chat error:", error);
       Toast.error('Chat Error', error.message || 'Failed to get response');
+        chatAbortRef.current = null;
       setMessages(prev => prev.map(msg => 
         msg.id === aiMsgId 
-          ? { ...msg, isStreaming: false, isError: true, content: `Error: ${error.message || "Failed to get response"}`, thinkingPhase: undefined } 
+            ? { ...msg, isStreaming: false, isError: true, content: `Error: ${error.message || "Failed to get response"}`, thinkingPhase: undefined, elapsedMs: Date.now() - thinkingStartTime } 
           : msg
       ));
     } finally {
@@ -1178,7 +1208,7 @@ const GeminiChat: React.FC<AIChatProps> = ({ domain }) => {
   };
 
   const handleStopGeneration = () => {
-    setIsLoading(false);
+    chatAbortRef.current?.abort();
   };
 
   const handleDeleteChat = (id: string) => {
@@ -1234,7 +1264,12 @@ const GeminiChat: React.FC<AIChatProps> = ({ domain }) => {
                 {sessions.find(s => s.id === currentSessionId)?.title || 'NetTopo Assistant'}
             </span>
           </div>
-          <div className="text-xs text-gray-500 font-mono">Backend Agent (M5)</div>
+          <div className="flex items-center gap-3 min-w-0">
+            <div className="hidden lg:block text-xs text-gray-500 font-mono">Backend Agent (M5)</div>
+            <div className="w-[min(100%,30rem)]">
+              <LLMRuntimeSelector compact />
+            </div>
+          </div>
         </header>
 
         <div className="flex-1 overflow-y-auto scrollbar-thin scrollbar-thumb-gray-800 p-4 sm:p-6 md:p-10 scroll-smooth">

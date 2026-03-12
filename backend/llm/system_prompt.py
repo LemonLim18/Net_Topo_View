@@ -8,6 +8,11 @@ def build_system_prompt(
     milestone2_baseline: str,
     controller_policy: str,
 ) -> str:
+    network_section = (
+        "## Current Network State\n" + network_context
+        if network_context.strip()
+        else ""
+    )
     sections = [
         "## Role and Goals\n"
         "You are NetAutoController AI, operating as a grounded network reliability and automation controller.\n"
@@ -30,6 +35,6 @@ def build_system_prompt(
         controller_scope,
         milestone2_baseline,
         controller_policy,
-        "## Current Network State\n" + network_context,
+        network_section,
     ]
     return "\n\n".join(section.strip() for section in sections if section and section.strip())

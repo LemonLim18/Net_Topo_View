@@ -11,6 +11,7 @@ import logging
 from typing import Any, Dict, List, Optional
 
 from llm.context_contract import (
+    CONTEXT_DOMAIN_CONFIG,
     CONTEXT_DOMAIN_LIVE_TOPOLOGY,
     QueryRoutingDecision,
     build_authoritative_context_contract,
@@ -18,7 +19,6 @@ from llm.context_contract import (
     classify_query,
     compute_freshness,
 )
-from llm.context_state import get_context_state_manager
 from llm.semantics import build_canonical_semantics_prompt_text
 
 logger = logging.getLogger("llm.context")
@@ -194,20 +194,27 @@ class ContextBuilder:
         is invoked to fuse NetBox inventory, telemetry samples, and SDN
         controller state into the context, giving the LLM much richer
         grounding than topology alone (SRD UC06-UC09).
+
+        Domain filtering (R1): only inject context sections that
+        ``routing_decision.required_domains`` actually requests.  For
+        ``inventory_only`` queries this trims ~10K tokens by skipping
+        topology, telemetry, SDN, threats, drift, and knowledge.
         """
         decision = routing_decision or (classify_query(query) if query else None)
+        required = frozenset(decision.required_domains) if decision else None
 
         parts = []
 
         if include_contract:
             parts.append(build_authoritative_context_contract())
             parts.append(self.build_source_matrix_context())
-            parts.append(get_context_state_manager().to_prompt_text())
 
         if decision is None or decision.use_live_context:
-            parts.append(self.build_topology_context())
+            if required is None or CONTEXT_DOMAIN_LIVE_TOPOLOGY in required:
+                parts.append(self.build_topology_context())
 
-        parts.append(self.build_available_templates_context())
+        if required is None or CONTEXT_DOMAIN_CONFIG in required:
+            parts.append(self.build_available_templates_context())
 
         if include_bundle:
             bundle_text = self.build_network_bundle_context(

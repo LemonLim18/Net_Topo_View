@@ -129,6 +129,20 @@ def test_get_inventory_device_supports_fuzzy_alias_lookup():
     assert payload["resolved_hostname"] == "SW1"
 
 
+def test_get_inventory_device_uses_local_alias_fast_path_before_netbox(monkeypatch):
+    network_tools.set_db_manager(_InventoryFakeDb())
+
+    def _unexpected_netbox_fetch():
+        raise AssertionError("NetBox should not be queried for local fuzzy alias resolution")
+
+    monkeypatch.setattr(network_tools, "_inventory_records_from_netbox", _unexpected_netbox_fetch)
+
+    payload = json.loads(network_tools.get_inventory_device("core cisco 1"))
+
+    assert payload["device"]["hostname"] == "R1"
+    assert payload["source_used"] == "local_db"
+
+
 def test_search_inventory_devices_supports_natural_language_alias_query():
     network_tools.set_db_manager(_InventoryFakeDb())
     payload = json.loads(network_tools.search_inventory_devices("What is the management IP of access switch huawei 1 in inventory?"))

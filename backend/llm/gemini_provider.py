@@ -16,6 +16,8 @@ import logging
 import os
 from typing import Any, Dict, List, Optional
 
+from starlette.concurrency import run_in_threadpool
+
 from llm.provider import LLMProvider, LLMMessage, LLMResponse, ToolCall
 
 logger = logging.getLogger("llm.gemini")
@@ -79,37 +81,30 @@ class GeminiProvider(LLMProvider):
     ) -> LLMResponse:
         """
         Call Gemini with the conversation history and optional tools.
-        """
-        # Build contents for Gemini
-        contents = self._build_contents(messages)
 
-        # Build tool declarations
-        gemini_tools = None
-        if tools:
-            gemini_tools = self._build_tools(tools)
+        Uses native ``system_instruction`` and structured ``Content``
+        objects instead of string concatenation so Gemini can leverage
+        its built-in multi-turn support and reduce token overhead.
+        """
+        system_text, contents = self._build_contents(messages)
+
+        gemini_tools = self._build_tools(tools) if tools else None
 
         try:
-            # Generate config
-            gen_config = genai_types.GenerateContentConfig(
-                temperature=temperature,
-            )
-
-            # Call Gemini (synchronous SDK — run in executor if needed)
+            config_kwargs: Dict[str, Any] = {"temperature": temperature}
+            if system_text:
+                config_kwargs["system_instruction"] = system_text
             if gemini_tools:
-                response = self._client.models.generate_content(
-                    model=self._model,
-                    contents=contents,
-                    config=genai_types.GenerateContentConfig(
-                        temperature=temperature,
-                        tools=gemini_tools,
-                    ),
-                )
-            else:
-                response = self._client.models.generate_content(
-                    model=self._model,
-                    contents=contents,
-                    config=gen_config,
-                )
+                config_kwargs["tools"] = gemini_tools
+
+            config = genai_types.GenerateContentConfig(**config_kwargs)
+
+            response = await run_in_threadpool(
+                self._client.models.generate_content,
+                model=self._model,
+                contents=contents,
+                config=config,
+            )
 
             return self._parse_response(response)
 
@@ -124,21 +119,59 @@ class GeminiProvider(LLMProvider):
     # Message conversion
     # ------------------------------------------------------------------
 
-    def _build_contents(self, messages: List[LLMMessage]) -> str:
-        """Convert our LLMMessage list into a prompt string for Gemini."""
-        parts = []
+    def _build_contents(
+        self, messages: List[LLMMessage]
+    ) -> tuple[str, list[genai_types.Content]]:
+        """Convert LLMMessage list into Gemini-native structured objects.
+
+        Returns ``(system_instruction_text, contents_list)`` where
+        system messages are extracted into ``system_instruction`` (fed
+        via ``GenerateContentConfig``) and user/assistant/tool messages
+        become proper ``Content`` objects with the correct ``role``.
+        """
+        system_parts: List[str] = []
+        contents: list[genai_types.Content] = []
+
         for msg in messages:
             if msg.role == "system":
-                parts.append(f"System instructions: {msg.content}\n")
+                system_parts.append(msg.content)
             elif msg.role == "user":
-                parts.append(f"User: {msg.content}\n")
-            elif msg.role == "assistant":
-                parts.append(f"Assistant: {msg.content}\n")
-            elif msg.role == "tool":
-                parts.append(
-                    f"Tool result ({msg.name}): {msg.content}\n"
+                contents.append(
+                    genai_types.Content(
+                        role="user",
+                        parts=[genai_types.Part.from_text(text=msg.content)],
+                    )
                 )
-        return "\n".join(parts)
+            elif msg.role == "assistant":
+                parts: list[genai_types.Part] = []
+                if msg.content:
+                    parts.append(genai_types.Part.from_text(text=msg.content))
+                for tc in msg.tool_calls:
+                    parts.append(
+                        genai_types.Part.from_function_call(
+                            name=tc.name,
+                            args=tc.arguments,
+                        )
+                    )
+                if parts:
+                    contents.append(
+                        genai_types.Content(role="model", parts=parts)
+                    )
+            elif msg.role == "tool":
+                contents.append(
+                    genai_types.Content(
+                        role="user",
+                        parts=[
+                            genai_types.Part.from_function_response(
+                                name=msg.name or "tool",
+                                response={"result": msg.content},
+                            )
+                        ],
+                    )
+                )
+
+        system_text = "\n\n".join(system_parts) if system_parts else ""
+        return system_text, contents
 
     # ------------------------------------------------------------------
     # Tool declaration conversion

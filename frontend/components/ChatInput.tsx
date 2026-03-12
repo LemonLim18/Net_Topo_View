@@ -61,14 +61,13 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSend, disabled, isGenera
           onChange={(e) => setText(e.target.value)}
           onKeyDown={handleKeyDown}
           disabled={disabled || isGenerating}
-          placeholder={isGenerating ? "Gemini is thinking..." : "Ask anything..."}
+          placeholder={isGenerating ? "The assistant is thinking..." : "Ask anything..."}
           className="w-full resize-none border-none focus:outline-none focus:ring-0 bg-transparent p-3 text-base-content placeholder:base-content/40  max-h-[150px] text-base leading-relaxed scrollbar-hide"
           rows={1}
         />
         
         <div className="pb-2 pr-2">
-          {/* {isGenerating ? ( */}
-          {false ? (
+          {isGenerating && onStop ? (
              <button
              onClick={onStop}
              className="btn btn-circle btn-sm btn-error w-9 h-9 rounded-full"
@@ -88,7 +87,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSend, disabled, isGenera
         </div>
       </div>
       <div className="text-center text-xs text-base-content/40 mt-2">
-        Gemini can make mistakes. Check important info.
+        The assistant can make mistakes. Check important info.
       </div>
     </div>
   );

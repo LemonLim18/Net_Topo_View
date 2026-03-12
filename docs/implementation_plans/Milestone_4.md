@@ -212,20 +212,20 @@ Replace the single-entry dict with a proper LRU cache keyed by `(query_class, fr
 > All changes preserve existing functionality. No API contract changes.
 
 ### Phase 1 — Critical Latency Fixes (R1-R4)
-- [ ] **R1**: Domain-filtered system prompt in `context.py`
-- [ ] **R2**: Async Gemini call in `gemini_provider.py`
-- [ ] **R3**: Parallel prefetch in `agent.py`
-- [ ] **R4**: Embedding LRU cache in `embedder.py`
+- [x] **R1**: Domain-filtered system prompt in `context.py`
+- [x] **R2**: Async Gemini call in `gemini_provider.py`
+- [x] **R3**: Parallel prefetch in `agent.py`
+- [x] **R4**: Embedding LRU cache in `embedder.py`
 
 ### Phase 2 — Token & Compute Reduction (R5-R8)
-- [ ] **R5**: Structured Gemini contents in `gemini_provider.py`
-- [ ] **R6**: Tool result TTL cache in `agent.py`
-- [ ] **R7**: Remove context versions from prompt in `context.py`
-- [ ] **R8**: Stop embedding live state in `auto_embedder.py`
+- [x] **R5**: Structured Gemini contents in `gemini_provider.py`
+- [x] **R6**: Tool result TTL cache in `agent.py`
+- [x] **R7**: Remove context versions from prompt in `context.py`
+- [x] **R8**: Stop embedding live state in `auto_embedder.py`
 
 ### Phase 3 — Operational Polish (R9-R10)
-- [ ] **R9**: MCP device details consolidation in `mcp/tools.py`
-- [ ] **R10**: Network context LRU cache in `agent.py`
+- [x] **R9**: MCP device details consolidation in `mcp/tools.py`
+- [x] **R10**: Network context LRU cache in `agent.py`
 
 ---
 

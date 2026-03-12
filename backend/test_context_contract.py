@@ -78,6 +78,17 @@ def test_query_taxonomy_routes_inventory_and_comparison_queries():
     assert live_query.query_class == QueryClass.LIVE_ONLY.value
 
 
+def test_query_taxonomy_routes_platform_architecture_prompts_away_from_compliance():
+    architecture_query = classify_query(
+        "Create a production-grade implementation plan to optimize LLM, RAG, and MCP latency in this controller architecture."
+    )
+
+    assert architecture_query.query_class == QueryClass.ARCHITECTURE_PLANNING.value
+    assert architecture_query.use_live_context is False
+    assert architecture_query.use_knowledge is False
+    assert architecture_query.required_domains == ()
+
+
 def test_route_uses_phase0_taxonomy():
     assert route("Which devices are online right now?") == (True, False)
     assert route("What is the management IP of SW1 in NetBox?") == (False, False)

@@ -8,6 +8,7 @@ network controller.  They are registered with the ``ToolRegistry``.
 import json
 import logging
 import re
+import time
 from difflib import SequenceMatcher
 from typing import Any, Dict, List, Optional
 
@@ -85,6 +86,13 @@ _DEVICE_TOKEN_ALIASES = {
 # Global reference to the DB manager (set by the agent at startup)
 # -----------------------------------------------------------------------
 _db_manager = None
+_NETBOX_INVENTORY_CACHE_TTL_SECONDS = 30.0
+_NETBOX_INVENTORY_FAILURE_BACKOFF_SECONDS = 15.0
+_netbox_inventory_cache: Dict[str, Any] = {
+    "records": None,
+    "fetched_at": 0.0,
+    "failed_at": 0.0,
+}
 
 
 def set_db_manager(db) -> None:
@@ -226,6 +234,16 @@ def _normalize_inventory_device(record: Any, source: str) -> Dict[str, Any]:
 
 
 def _inventory_records_from_netbox() -> List[Dict[str, Any]]:
+    now = time.monotonic()
+    cached_records = _netbox_inventory_cache.get("records")
+    fetched_at = float(_netbox_inventory_cache.get("fetched_at") or 0.0)
+    failed_at = float(_netbox_inventory_cache.get("failed_at") or 0.0)
+
+    if cached_records is not None and (now - fetched_at) < _NETBOX_INVENTORY_CACHE_TTL_SECONDS:
+        return list(cached_records)
+    if failed_at and (now - failed_at) < _NETBOX_INVENTORY_FAILURE_BACKOFF_SECONDS:
+        return list(cached_records or [])
+
     try:
         from netbox.client import NetBoxClient
 
@@ -233,9 +251,14 @@ def _inventory_records_from_netbox() -> List[Dict[str, Any]]:
         if not client or not getattr(client, "api", None):
             return []
 
-        return [_normalize_inventory_device(device, "netbox") for device in client.get_devices()]
+        records = [_normalize_inventory_device(device, "netbox") for device in client.get_devices()]
+        _netbox_inventory_cache["records"] = list(records)
+        _netbox_inventory_cache["fetched_at"] = now
+        _netbox_inventory_cache["failed_at"] = 0.0
+        return records
     except Exception:
-        return []
+        _netbox_inventory_cache["failed_at"] = now
+        return list(cached_records or [])
 
 
 def _inventory_records_from_local_db() -> List[Dict[str, Any]]:
@@ -363,7 +386,9 @@ def _resolve_inventory_record(records: List[Dict[str, Any]], query: str) -> Opti
 
 
 def _resolve_hostname_alias(hostname: str) -> str:
-    inventory_records, _source = _get_inventory_records()
+    inventory_records = _inventory_records_from_local_db()
+    if not inventory_records:
+        inventory_records, _source = _get_inventory_records()
     inventory_match = _resolve_inventory_record(inventory_records, hostname)
     if inventory_match is not None:
         return str(inventory_match.get("hostname") or hostname)
@@ -378,8 +403,9 @@ def _resolve_hostname_alias(hostname: str) -> str:
 
 
 def suggest_device_hostnames(query: str, limit: int = 3) -> List[str]:
-    inventory_records, _source = _get_inventory_records()
-    candidates = _rank_inventory_records(inventory_records, query, limit)
+    candidates = _rank_inventory_records(_inventory_records_from_local_db(), query, limit)
+    if not candidates:
+        candidates = _rank_inventory_records(_inventory_records_from_netbox(), query, limit)
     seen = set()
     suggestions: List[str] = []
     for record in candidates:
@@ -412,6 +438,16 @@ def _get_inventory_records() -> tuple[List[Dict[str, Any]], str]:
     if netbox_records:
         return netbox_records, "netbox"
     return _inventory_records_from_local_db(), "local_db"
+
+
+def _should_prefer_local_inventory_lookup(query: str) -> bool:
+    tokens = _normalize_device_phrase(query).split()
+    if len(tokens) > 1:
+        return True
+    return any(
+        term in tokens
+        for term in ("core", "distribution", "access", "switch", "router", "firewall", "cisco", "huawei", "juniper")
+    )
 
 
 def _planned_topology_links_from_nodes(nodes: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -1109,6 +1145,45 @@ def get_inventory_device(hostname: str) -> str:
     """
     Retrieve a specific device from source-of-truth inventory.
     """
+    local_records = _inventory_records_from_local_db()
+    if _should_prefer_local_inventory_lookup(hostname):
+        record = _resolve_inventory_record(local_records, hostname)
+        if record is not None:
+            topo = _db_manager.get_topology() if _db_manager else {}
+            live_nodes = topo.get("nodes", {}) if isinstance(topo, dict) else {}
+            semantics = canonical_device_record(
+                record.get("hostname") or hostname,
+                inventory_record=record,
+                live_record=live_nodes.get(record.get("hostname")),
+                inventory_source="local_db",
+            )
+            return json.dumps(
+                {
+                    "device": {
+                        **record,
+                        **{
+                            key: semantics[key]
+                            for key in (
+                                "presence_state",
+                                "live_status",
+                                "management_ip_alignment",
+                                "source_scopes",
+                                "source_labels",
+                                "semantics_version",
+                            )
+                        },
+                    },
+                    "query_hostname": hostname,
+                    "resolved_hostname": record.get("hostname") or hostname,
+                    "source_used": "local_db",
+                    "captured_at": record.get("updated_at"),
+                    "source_metadata": _inventory_source_metadata("local_db", record.get("updated_at")),
+                    "authority_map_version": AUTHORITY_MAP_VERSION,
+                    "semantics_map": build_canonical_semantics_map(),
+                },
+                ensure_ascii=False,
+            )
+
     netbox_records = _inventory_records_from_netbox()
     record = _resolve_inventory_record(netbox_records, hostname)
     if record is not None:
@@ -1147,7 +1222,6 @@ def get_inventory_device(hostname: str) -> str:
             ensure_ascii=False,
         )
 
-    local_records = _inventory_records_from_local_db()
     record = _resolve_inventory_record(local_records, hostname)
     if record is not None:
         topo = _db_manager.get_topology() if _db_manager else {}
@@ -1204,13 +1278,18 @@ def search_inventory_devices(query: str, limit: int = 20) -> str:
     """
     Search source-of-truth inventory by hostname, management IP, vendor, model, or role.
     """
-    netbox_matches = _search_inventory_records(_inventory_records_from_netbox(), query, limit)
-    if netbox_matches:
-        source = "netbox"
-        matches = netbox_matches
-    else:
+    local_matches = _search_inventory_records(_inventory_records_from_local_db(), query, limit)
+    if local_matches and _should_prefer_local_inventory_lookup(query):
         source = "local_db"
-        matches = _search_inventory_records(_inventory_records_from_local_db(), query, limit)
+        matches = local_matches
+    else:
+        netbox_matches = _search_inventory_records(_inventory_records_from_netbox(), query, limit)
+        if netbox_matches:
+            source = "netbox"
+            matches = netbox_matches
+        else:
+            source = "local_db"
+            matches = local_matches
 
     captured_at = max((record.get("updated_at") for record in matches if record.get("updated_at")), default=None)
     topo = _db_manager.get_topology() if _db_manager else {}
