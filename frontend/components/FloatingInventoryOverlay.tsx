@@ -1,4 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import { 
   X, 
   Search, 
@@ -542,7 +544,7 @@ const FloatingInventoryOverlay: React.FC<{ onClose: () => void }> = ({ onClose }
                         ? 'bg-error/10 text-error border border-error/20 italic'
                         : 'bg-base-100 text-base-content rounded-tl-none shadow-sm'}`}
                   >
-                    {msg.content}
+                    <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.content}</ReactMarkdown>
                   </div>
                   <span className="text-[9px] opacity-30 mt-1 px-1">{msg.timestamp}</span>
                 </div>

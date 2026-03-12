@@ -676,19 +676,45 @@ async def ollama_context_query(request: OllamaPlaygroundRequest):
         
         # 2. Format context
         inventory_text = "DEVICE INVENTORY SNAPSHOT:\n"
-        for d in devices:
-            inventory_text += f"- Hostname: {d['hostname']}, IP: {d.get('management_ip')}, Vendor: {d.get('vendor')}, Role: {d.get('role')}, Source: {d.get('source')}\n"
+        enrich_limit = 8 # Limit to avoid excessive API latency
         
+        for i, d in enumerate(devices):
+            # Detailed enrichment for smaller inventories
+            interfaces_summary = ""
+            links_summary = ""
+            
+            # Prioritize current prompt mention if possible, or just first few
+            hostname = d['hostname']
+            should_enrich = i < enrich_limit or (request.prompt and hostname.lower() in request.prompt.lower())
+            
+            if should_enrich:
+                try:
+                    enriched = network_tools._enrich_inventory_record(d)
+                    if enriched.get("interfaces"):
+                        # Just names and IPs to save tokens
+                        ifaces = [f"{iface['name']} ({iface['ip_address'] or 'no-ip'})" for iface in enriched["interfaces"][:15]]
+                        interfaces_summary = f", Interfaces: [{', '.join(ifaces)}]"
+                    if enriched.get("links"):
+                        links = [f"{l['local_interface']}->{l['peer_hostname']}" for l in enriched["links"]]
+                        links_summary = f", Connections: [{', '.join(links)}]"
+                except Exception:
+                    pass # Skip enrichment on failure
+
+            inventory_text += f"- {hostname} ({d.get('management_ip')}), {d.get('vendor')} {d.get('role')}{interfaces_summary}{links_summary}\n"
+        
+        if len(devices) > enrich_limit:
+            inventory_text += f"\n(Note: Enrichment skipped for {len(devices) - enrich_limit} devices.)\n"
+
         # 3. Build prompt
         system_prompt = (
             "You are a Network Inventory Assistant. "
-            "You have access to the following real-time inventory snapshot. "
-            "Use this data to answer the user accurately. "
-            "Respond concisely. If the information is not in the snapshot, say you don't know.\n\n"
+            "Use the following device snapshot to answer accurately. "
+            "If interfaces are listed, use them. If not, state they aren't in the snapshot.\n\n"
             f"{inventory_text}"
         )
         
         provider = OllamaProvider(base_url=base_url, model=model)
+        # Use a longer timeout for the full context query
         response = await provider.generate(
             messages=[
                 LLMMessage(role="system", content=system_prompt),
