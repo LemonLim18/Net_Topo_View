@@ -17,6 +17,7 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
+from config_engine.renderer import TemplateRenderer
 from .config_generator import OnboardingConfigGenerator
 from db.manager import DatabaseManager
 
@@ -25,6 +26,7 @@ logger = logging.getLogger("onboarding.api")
 router = APIRouter(prefix="/onboarding", tags=["Onboarding (M0)"])
 
 DB_PATH = "db/netauto.db"
+_renderer = TemplateRenderer()
 
 
 def _db() -> DatabaseManager:
@@ -88,9 +90,8 @@ async def generate_for_device(device_id: int):
     if not device:
         raise HTTPException(404, f"Device {device_id} not found in inventory")
 
-    # Build params dict from the device record
-    # Use sensible defaults for fields not stored in inventory
-    params = {
+    # Build params dict from the device record.
+    raw_params = {
         "hostname":       device.hostname,
         "mgmt_ip":        device.management_ip or "0.0.0.0",
         "subnet_mask":    "255.255.255.0",
@@ -101,8 +102,9 @@ async def generate_for_device(device_id: int):
         "ssh_password":   device.ssh_password or "CHANGE_ME",
         "port":           device.ssh_port or 22,
     }
+    params = _normalize_day0_params(raw_params)
 
-    config = OnboardingConfigGenerator().generate(params)
+    config = _render_day0_config(params)
     filename = f"{device.hostname}_day0_config.txt"
 
     logger.info("Day-0 config generated for device '%s'", device.hostname)
@@ -129,7 +131,8 @@ class ManualParams(BaseModel):
 @router.post("/generate", response_model=GenerateResponse)
 async def generate_manual(params: ManualParams):
     """Generate a Day-0 config from manually supplied params (no device lookup)."""
-    config = OnboardingConfigGenerator().generate(params.model_dump())
+    normalized = _normalize_day0_params(params.model_dump())
+    config = _render_day0_config(normalized)
     filename = f"{params.hostname}_day0_config.txt"
     return GenerateResponse(config=config, filename=filename)
 
@@ -156,3 +159,31 @@ def _default_mgmt_iface(vendor: Optional[str]) -> str:
     if "juniper" in vendor:
         return "fxp0"
     return "GigabitEthernet0/0"
+
+
+def _normalize_day0_params(params: dict) -> dict:
+    normalized = dict(params)
+    normalized["vendor"] = (normalized.get("vendor") or "cisco_ios").lower()
+    normalized.setdefault("subnet_mask", "255.255.255.0")
+    normalized["mgmt_prefix_len"] = _prefix_from_mask(str(normalized.get("subnet_mask") or "255.255.255.0"))
+    return normalized
+
+
+def _render_day0_config(params: dict) -> str:
+    vendor = str(params.get("vendor") or "cisco_ios").lower()
+    try:
+        return _renderer.render(vendor, "day-0", params)
+    except Exception as exc:
+        logger.warning(
+            "Template day-0 render failed for vendor '%s'; using legacy fallback. reason=%s",
+            vendor,
+            exc,
+        )
+        return OnboardingConfigGenerator().generate(params)
+
+
+def _prefix_from_mask(mask: str) -> int:
+    try:
+        return sum(bin(int(octet)).count("1") for octet in mask.split("."))
+    except Exception:
+        return 24

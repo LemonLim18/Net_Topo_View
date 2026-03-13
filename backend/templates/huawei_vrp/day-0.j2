@@ -1,0 +1,31 @@
+# ===== Day-0 Bootstrap: {{ hostname }} (Huawei VRP) =====
+system-view
+#
+sysname {{ hostname }}
+#
+interface {{ mgmt_interface }}
+ ip address {{ mgmt_ip }} {{ mgmt_prefix_len if mgmt_prefix_len is defined else 24 }}
+ undo shutdown
+ quit
+#
+ip route-static 0.0.0.0 0.0.0.0 {{ gateway }}
+#
+stelnet server enable
+#
+aaa
+ local-user {{ ssh_user }} password irreversible-cipher {{ ssh_password }}
+ local-user {{ ssh_user }} privilege level 15
+ local-user {{ ssh_user }} service-type ssh
+ quit
+#
+ssh user {{ ssh_user }} authentication-type password
+ssh user {{ ssh_user }} service-type stelnet
+#
+user-interface vty 0 4
+ authentication-mode aaa
+ protocol inbound ssh
+ user privilege level 15
+ quit
+#
+return
+save force

@@ -1,0 +1,54 @@
+{
+  "required": [
+    "hostname",
+    "mgmt_ip",
+    "subnet_mask",
+    "gateway",
+    "mgmt_interface",
+    "vendor",
+    "ssh_user",
+    "ssh_password"
+  ],
+  "properties": {
+    "hostname": {
+      "type": "string",
+      "description": "Device hostname"
+    },
+    "mgmt_ip": {
+      "type": "string",
+      "description": "Management IP address"
+    },
+    "subnet_mask": {
+      "type": "string",
+      "description": "Management subnet mask"
+    },
+    "mgmt_prefix_len": {
+      "type": "integer",
+      "description": "Management prefix length for platforms that prefer CIDR"
+    },
+    "gateway": {
+      "type": "string",
+      "description": "Default gateway"
+    },
+    "mgmt_interface": {
+      "type": "string",
+      "description": "Management interface name"
+    },
+    "vendor": {
+      "type": "string",
+      "description": "Target vendor key"
+    },
+    "ssh_user": {
+      "type": "string",
+      "description": "SSH username"
+    },
+    "ssh_password": {
+      "type": "string",
+      "description": "SSH password"
+    },
+    "port": {
+      "type": "integer",
+      "description": "SSH port"
+    }
+  }
+}

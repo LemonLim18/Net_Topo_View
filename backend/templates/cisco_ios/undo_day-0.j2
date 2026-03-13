@@ -1,0 +1,21 @@
+! ===== Strict Rollback: {{ hostname }} (Cisco IOS) =====
+enable
+configure terminal
+!
+interface {{ mgmt_interface }}
+ shutdown
+ no ip address
+ exit
+!
+no username {{ ssh_user }}
+!
+line vty 0 4
+ transport input none
+ exit
+!
+no ip ssh version 2
+!
+no ip default-gateway {{ gateway }}
+!
+end
+write memory

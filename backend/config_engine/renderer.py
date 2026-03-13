@@ -30,7 +30,7 @@ _TEMPLATES_DIR = _PROJECT_ROOT / "templates"
 _SCHEMAS_DIR = Path(__file__).resolve().parent / "schemas"
 
 # Supported vendors (must match folder names under templates/)
-SUPPORTED_VENDORS = ["cisco_ios", "huawei_vrp", "juniper_junos"]
+SUPPORTED_VENDORS = ["cisco_ios", "cisco_xe", "huawei_vrp", "juniper_junos"]
 
 
 class TemplateRenderer:
@@ -67,7 +67,7 @@ class TemplateRenderer:
         Render a config template for a given vendor and feature.
 
         Args:
-            vendor:  One of 'cisco_ios', 'huawei_vrp', 'juniper_junos'
+            vendor:  One of 'cisco_ios', 'cisco_xe', 'huawei_vrp', 'juniper_junos'
             feature: Template name, e.g. 'ospf', 'bgp', 'interface'
             params:  Dictionary of parameters to pass to the template
 

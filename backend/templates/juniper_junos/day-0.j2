@@ -1,0 +1,14 @@
+# ===== Day-0 Bootstrap: {{ hostname }} (Juniper JunOS) =====
+configure
+#
+set system host-name {{ hostname }}
+set system root-authentication plain-text-password-value {{ ssh_password }}
+set system login user {{ ssh_user }} class super-user
+set system login user {{ ssh_user }} authentication plain-text-password-value {{ ssh_password }}
+set system services ssh root-login allow
+set system services ssh protocol-version v2
+#
+set interfaces {{ mgmt_interface }} unit 0 family inet address {{ mgmt_ip }}/{{ mgmt_prefix_len if mgmt_prefix_len is defined else 24 }}
+set routing-options static route 0.0.0.0/0 next-hop {{ gateway }}
+#
+commit and-quit

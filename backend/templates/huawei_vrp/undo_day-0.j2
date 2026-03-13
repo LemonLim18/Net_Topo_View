@@ -1,0 +1,24 @@
+# ===== Strict Rollback: {{ hostname }} (Huawei VRP) =====
+system-view
+#
+interface {{ mgmt_interface }}
+ shutdown
+ undo ip address
+ quit
+#
+undo ip route-static 0.0.0.0 0.0.0.0 {{ gateway }}
+#
+aaa
+ undo local-user {{ ssh_user }}
+ quit
+#
+undo ssh user {{ ssh_user }}
+#
+undo stelnet server enable
+#
+user-interface vty 0 4
+ protocol inbound all
+ quit
+#
+return
+save force
