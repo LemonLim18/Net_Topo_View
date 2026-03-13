@@ -43,7 +43,7 @@ const getParentDir = (path: string) => {
   const idx = path.lastIndexOf('/');
   return idx > 0 ? path.slice(0, idx) : '';
 };
-const isWritablePath = (path: string) => WRITABLE_ROOTS.has(getRoot(path));
+const isWritablePath = (path: string) => WRITABLE_ROOTS.has(getRoot(path)) || path.startsWith('roles/generated/');
 const isVirtualPath = (path: string) => VIRTUAL_ROOTS.has(getRoot(path));
 const isReadOnlyRootPath = (path: string) => READONLY_ROOTS.has(getRoot(path));
 const canMutatePath = (path: string) => isWritablePath(path) && !isVirtualPath(path) && !isReadOnlyRootPath(path);

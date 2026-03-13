@@ -132,6 +132,8 @@ CREATE TABLE IF NOT EXISTS jobs (
     -- M22: Ansible-first execution ----------------------------------------
     execution_engine TEXT    DEFAULT 'ssh_fallback',  -- ansible_native | ansible_cli | ssh_fallback | no_op
     ansible_playbook TEXT,                            -- LLM-generated YAML for this job
+    ansible_artifact_manifest TEXT,                   -- JSON manifest for generated multi-file bundles
+    ansible_entrypoint_path TEXT,                     -- Relative path to generated entry playbook
     -- ---------------------------------------------------------------------
     created_at      TEXT    DEFAULT (datetime('now')),
     updated_at      TEXT    DEFAULT (datetime('now'))

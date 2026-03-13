@@ -136,6 +136,8 @@ export interface AnsibleJob {
   status: string;          // pending | running | approved | success | failed
   stage: string;           // plan | approve | apply | commit | rollback
   hasPlaybook: boolean;
+  artifactType?: 'playbook' | 'bundle';
+  entrypointPath?: string | null;
   steps: AnsibleJobStep[];
 }
 
@@ -162,6 +164,7 @@ export interface AnsibleMessage {
   isError?: boolean;
   jobId?: number;
   playbookPath?: string;   // path opened in editor when playbook is ready
+  generatedPaths?: string[];
 }
 
 export interface CreateAndPlanRequest {
@@ -171,6 +174,16 @@ export interface CreateAndPlanRequest {
   feature: string;
   params: Record<string, any>;
   device_id?: number;      // optional; defaults to 0 (unknown)
+  provider?: string;
+  model?: string;
+  ollama_base_url?: string;
+}
+
+export interface AnsibleGeneratedArtifactFile {
+  path: string;
+  content: string;
+  writable?: boolean;
+  kind?: string;
 }
 
 export interface CreateAndPlanResult {
@@ -178,4 +191,8 @@ export interface CreateAndPlanResult {
   request_id: number;
   status: string;
   playbook: string;
+  artifact_type?: 'playbook' | 'bundle';
+  entrypoint_path?: string | null;
+  files?: AnsibleGeneratedArtifactFile[];
+  manifest?: Record<string, any>;
 }

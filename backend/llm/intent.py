@@ -26,6 +26,41 @@ from pydantic import BaseModel, Field
 
 logger = logging.getLogger("llm.intent")
 
+_ROLE_ALIASES = {
+    "access": "access",
+    "access_switch": "access",
+    "access-switch": "access",
+    "switch": "access",
+    "switches": "access",
+    "distribution": "distribution",
+    "distribution_switch": "distribution",
+    "distribution-switch": "distribution",
+    "dist": "distribution",
+    "core": "core",
+    "core_router": "core",
+    "core-router": "core",
+    "router": "core",
+    "routers": "core",
+    "firewall": "firewall",
+    "network-device": "network-device",
+}
+
+_VENDOR_ALIASES = {
+    "cisco": "cisco_ios",
+    "cisco-ios": "cisco_ios",
+    "cisco_ios": "cisco_ios",
+    "cisco-xe": "cisco_ios",
+    "cisco_xe": "cisco_ios",
+    "juniper": "juniper_junos",
+    "juniper-junos": "juniper_junos",
+    "juniper_junos": "juniper_junos",
+    "junos": "juniper_junos",
+    "huawei": "huawei_vrp",
+    "huawei-vrp": "huawei_vrp",
+    "huawei_vrp": "huawei_vrp",
+    "vrp": "huawei_vrp",
+}
+
 
 # -----------------------------------------------------------------------
 # Intent Types
@@ -350,7 +385,7 @@ class IntentParser:
             intent_type=intent_type,
             action=data.get("action", "unknown"),
             feature=data.get("feature", ""),
-            vendor=data.get("vendor", ""),
+            vendor=_normalize_vendor(data.get("vendor")),
             parameters=data.get("parameters", {}),
             scope=scope,
             risk_level=risk_level,
@@ -369,13 +404,26 @@ class IntentParser:
         topo = self._db.get_topology()
         nodes = topo.get("nodes", {}) if topo else {}
         all_hosts = list(nodes.keys())
+        inventory_records = self._inventory_records()
+        inventory_by_hostname = {
+            str(record.get("hostname") or ""): record
+            for record in inventory_records
+            if str(record.get("hostname") or "")
+        }
 
         # 1. Explicit hostnames — verify they exist
         if intent.scope.device_hostnames:
             resolved = []
             for h in intent.scope.device_hostnames:
                 # Case-insensitive match
-                match = next((n for n in all_hosts if n.lower() == h.lower()), None)
+                match = next(
+                    (
+                        n
+                        for n in list(inventory_by_hostname.keys()) + all_hosts
+                        if n.lower() == h.lower()
+                    ),
+                    None,
+                )
                 if match:
                     resolved.append(match)
                 else:
@@ -384,32 +432,84 @@ class IntentParser:
 
         # 2. all_devices flag
         if intent.scope.all_devices:
-            return all_hosts
+            return sorted(inventory_by_hostname.keys() or all_hosts)
 
-        # 3. Role / building / vendor filter — query device inventory
+        # 3. Role / building / vendor filter — query planned inventory
         try:
-            with self._db._connect() as conn:
-                clauses = []
-                params: list = []
-                if intent.scope.vendor_filter:
-                    clauses.append("vendor = ?")
-                    params.append(intent.scope.vendor_filter)
-                if intent.scope.device_role:
-                    # Role isn't in our schema yet — match on hostname prefix heuristic
-                    role = intent.scope.device_role.lower()
-                    if "access" in role or "switch" in role:
-                        clauses.append("hostname LIKE ?")
-                        params.append("SW%")
-                    elif "core" in role or "router" in role:
-                        clauses.append("hostname LIKE ?")
-                        params.append("R%")
+            requested_vendor = _normalize_vendor(intent.scope.vendor_filter or intent.vendor)
+            requested_role = _normalize_role(intent.scope.device_role)
+            requested_site = _normalize_site(intent.scope.building)
 
-                if not clauses:
-                    return []
+            resolved: List[str] = []
+            for hostname, record in inventory_by_hostname.items():
+                record_vendor = _normalize_vendor(record.get("vendor"))
+                record_role = _normalize_role(record.get("role"))
+                record_site = _normalize_site(record.get("site"))
 
-                sql = "SELECT hostname FROM devices WHERE " + " AND ".join(clauses)
-                rows = conn.execute(sql, params).fetchall()
-                return [r["hostname"] for r in rows]
+                if requested_vendor and record_vendor != requested_vendor:
+                    continue
+                if requested_role and record_role != requested_role:
+                    continue
+                if requested_site and record_site != requested_site:
+                    continue
+                resolved.append(hostname)
+
+            return sorted(resolved)
         except Exception as e:
             logger.warning("Device resolution query failed: %s", e)
             return list(intent.scope.device_hostnames)
+
+    def _inventory_records(self) -> List[Dict[str, Any]]:
+        records: List[Dict[str, Any]] = []
+
+        try:
+            from rag.context_bundle import ContextBundleBuilder
+
+            bundle = ContextBundleBuilder(db_manager=self._db).build_bundle(
+                include_inventory=True,
+                include_planned_topology=False,
+                include_telemetry=False,
+                include_sdn=False,
+                include_config=False,
+                include_deployment=False,
+                include_incidents=False,
+                include_threats=False,
+                include_drift=False,
+                include_knowledge=False,
+                include_freshness_warnings=False,
+            )
+            records = list(bundle.inventory.devices or [])
+        except Exception as exc:
+            logger.debug("Context-backed inventory lookup failed: %s", exc)
+
+        if records:
+            return records
+
+        return [
+            {
+                "hostname": device.hostname,
+                "vendor": device.vendor,
+                "role": device.role,
+                "site": None,
+            }
+            for device in self._db.get_all_devices()
+            if device.hostname
+        ]
+
+
+def _normalize_vendor(value: Any) -> str:
+    lowered = str(value or "").strip().lower().replace(" ", "_")
+    if not lowered:
+        return ""
+    return _VENDOR_ALIASES.get(lowered, lowered)
+
+
+def _normalize_role(value: Any) -> str:
+    lowered = str(value or "").strip().lower().replace(" ", "_")
+    if not lowered:
+        return ""
+    return _ROLE_ALIASES.get(lowered, lowered)
+
+
+def _normalize_site(value: Any) -> str:
+    return str(value or "").strip().lower().replace(" ", "_").replace("-", "_")

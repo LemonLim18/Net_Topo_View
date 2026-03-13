@@ -850,8 +850,20 @@ export const ansibleApi = {
     feature: string;
     params: Record<string, any>;
     device_id?: number;
+    provider?: string;
+    model?: string;
+    ollama_base_url?: string;
   }) =>
-    request<{ job_id: number; request_id: number; status: string; playbook: string }>(
+    request<{
+      job_id: number;
+      request_id: number;
+      status: string;
+      playbook: string;
+      artifact_type?: 'playbook' | 'bundle';
+      entrypoint_path?: string | null;
+      files?: { path: string; content: string; writable?: boolean; kind?: string }[];
+      manifest?: Record<string, any>;
+    }>(
       '/ansible/create-and-plan',
       { method: 'POST', body: JSON.stringify(req) }
     ),
@@ -867,6 +879,8 @@ export const ansibleApi = {
     request<{
       job_id: number; request_id: number; status: string;
       playbook: string; config: string; undo_config: string | null;
+      entrypoint_path?: string | null;
+      files?: { path: string; content: string; writable?: boolean; kind?: string }[];
     }>(
       '/ansible/create-from-template',
       { method: 'POST', body: JSON.stringify(req) }
@@ -901,6 +915,8 @@ export const ansibleApi = {
       stage: string;
       error: string | null;
       has_playbook: boolean;
+      artifact_type?: 'playbook' | 'bundle';
+      entrypoint_path?: string | null;
       steps: { stage: string; status: string; details: string; created_at: string }[];
     }>(`/ansible/jobs/${jobId}/result`),
 

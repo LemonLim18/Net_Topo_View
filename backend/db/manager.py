@@ -196,6 +196,8 @@ class DatabaseManager:
         _m22_columns = [
             ("jobs", "execution_engine", "TEXT DEFAULT 'ssh_fallback'"),
             ("jobs", "ansible_playbook", "TEXT"),
+            ("jobs", "ansible_artifact_manifest", "TEXT"),
+            ("jobs", "ansible_entrypoint_path", "TEXT"),
             ("config_proposals", "action_artifact_json", "TEXT"),
         ]
         with self._connect() as conn:

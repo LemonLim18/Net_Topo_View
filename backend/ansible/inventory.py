@@ -13,6 +13,8 @@ import logging
 from pathlib import Path
 from typing import Optional
 
+from ansible.planning_context import normalize_role, normalize_site, normalize_vendor
+
 logger = logging.getLogger("ansible.inventory")
 
 TOPO_FILE = Path(__file__).parent.parent / "topology_store" / "current_topo.json"
@@ -77,10 +79,14 @@ def build_inventory(
         if target_hosts and hostname not in target_hosts:
             continue
 
-        vendor = node.get("vendor", "").lower().replace("-", "_").replace(" ", "_")
+        vendor = normalize_vendor(node.get("vendor"))
         mgmt_ip = node.get("ip") or node.get("mgmt_ip") or hostname
+        role = normalize_role(node.get("role"))
+        site = normalize_site(node.get("site"))
         os_name = _VENDOR_OS_MAP.get(vendor, "default")
         connection = "netconf" if vendor in _NETCONF_VENDORS else "network_cli"
+        neighbor_names = list(node.get("connectedNode") or [])
+        interface_records = list(node.get("interfaces") or [])
 
         hosts[hostname] = {
             "ansible_host":         mgmt_ip,
@@ -93,13 +99,29 @@ def build_inventory(
             "ansible_become_pass":  "{{ vault_enable_pass }}",
             # Metadata for routing decisions
             "nettopo_vendor":       vendor,
+            "nettopo_role":         role,
+            "nettopo_site":         site,
+            "nettopo_model":        node.get("model"),
+            "nettopo_status":       node.get("status"),
+            "nettopo_interfaces":   interface_records,
+            "nettopo_neighbors":    neighbor_names,
             "nettopo_has_modules":  vendor in _NATIVE_MODULE_VENDORS,
             "nettopo_hop_chain":    node.get("hop_chain") or [],
         }
 
         # Group devices by vendor for group_vars
         group = f"vendor_{vendor}" if vendor else "ungrouped"
-        groups.setdefault(group, {"hosts": {}})[  "hosts"][hostname] = {}
+        groups.setdefault(group, {"hosts": {}})["hosts"][hostname] = {}
+        if role:
+            groups.setdefault(f"role_{role}", {"hosts": {}})["hosts"][hostname] = {}
+            if role == "access":
+                groups.setdefault("access_switches", {"hosts": {}})["hosts"][hostname] = {}
+            if role == "distribution":
+                groups.setdefault("distribution_switches", {"hosts": {}})["hosts"][hostname] = {}
+            if role == "core":
+                groups.setdefault("core_routers", {"hosts": {}})["hosts"][hostname] = {}
+        if site:
+            groups.setdefault(f"site_{site}", {"hosts": {}})["hosts"][hostname] = {}
 
     inventory: dict = {
         "all": {

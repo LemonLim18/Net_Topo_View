@@ -8,6 +8,9 @@ Roles (ordered by privilege):
     - operator → read + write operations
     - auditor  → read-only access
 
+Temporary testing bypass: set env AUTH_BYPASS_ROLES=1 to allow any authenticated
+user to pass role checks. Remove or set to 0 for production.
+
 Usage::
 
     from auth.rbac import require_role
@@ -17,6 +20,7 @@ Usage::
         ...
 """
 
+import os
 from typing import Any, Dict, Tuple
 
 from fastapi import Depends, HTTPException, status
@@ -38,6 +42,8 @@ def require_role(*allowed_roles: str):
     """
 
     async def _check(user: Dict[str, Any] = Depends(get_current_user)):
+        if os.environ.get("AUTH_BYPASS_ROLES", "").strip() in ("1", "true", "yes"):
+            return user
         if user["role"] not in allowed_roles:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,

@@ -1,11 +1,31 @@
-import React, { useState, useRef, useEffect, useCallback } from 'react';
+import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import ReactMarkdown from 'react-markdown';
-import { Send, Loader2, Bot, Sparkles, AlertCircle, FileCode, RotateCcw, ChevronRight, Paperclip, X, TriangleAlert } from 'lucide-react';
-import { ansibleApi } from '../../src/services/api';
-import type { AnsibleMessage, AnsibleJob } from '../../typesLLM';
+import { Send, Loader2, Bot, Sparkles, AlertCircle, FileCode, RotateCcw, ChevronRight, Paperclip, X, TriangleAlert, ChevronDown } from 'lucide-react';
+import { ansibleApi, llmApi } from '../../src/services/api';
+import type { LlmRuntimeState } from '../../src/services/api';
+import type { AnsibleGeneratedArtifactFile, AnsibleMessage, AnsibleJob } from '../../typesLLM';
+
+const ANSIBLE_MODEL_STORAGE_KEY = 'ansibleStudio.selectedModel';
+const OLLAMA_BASE_URL_STORAGE_KEY = 'llmRuntimeSelector.ollamaBaseUrl';
+const DEFAULT_OLLAMA_BASE_URL = 'http://192.168.1.252:11434';
+
+function prettifyModelLabel(providerName: string, modelName: string): string {
+  if (providerName === 'gemini') {
+    if (modelName === 'gemini-2.5-flash') return 'Gemini 2.5 Flash';
+    if (modelName === 'gemini-2.5-pro') return 'Gemini 2.5 Pro';
+    return modelName;
+  }
+  return providerName === 'ollama' ? `${modelName} | Ollama` : modelName;
+}
 
 interface AnsibleChatPanelProps {
-  onPlaybookReady: (jobId: number, playbook: string, name: string) => void;
+  onPlaybookReady: (payload: {
+    jobId: number;
+    content: string;
+    name: string;
+    entrypointPath?: string | null;
+    files?: AnsibleGeneratedArtifactFile[];
+  }) => void;
   onOpenFile:      (path: string) => void;
   activeJob:       AnsibleJob | null;
 }
@@ -116,6 +136,12 @@ const VscodeMarkdown: React.FC<MarkdownProps> = ({ content, onOpenFile }) => (
 );
 
 // ── Main chat panel ───────────────────────────────────────────────────────────
+interface AnsibleModelSelection {
+  provider: string;
+  model: string;
+  ollama_base_url?: string | null;
+}
+
 const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
   onPlaybookReady, onOpenFile, activeJob,
 }) => {
@@ -129,14 +155,101 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
   const [isGenerating, setGenerating]   = useState(false);
   const [isDragOver, setIsDragOver]     = useState(false);
   const [attachedFiles, setAttachedFiles] = useState<{ name: string; content: string; lang: string; size: number; truncated: boolean }[]>([]);
+  const [runtime, setRuntime]           = useState<LlmRuntimeState | null>(null);
+  const [ansibleModel, setAnsibleModel] = useState<AnsibleModelSelection>({ provider: 'gemini', model: 'gemini-2.5-flash', ollama_base_url: null });
+  const [modelSearch, setModelSearch]   = useState('');
+  const [modelDropdownOpen, setModelDropdownOpen] = useState(false);
   const bottomRef      = useRef<HTMLDivElement>(null);
   const textareaRef    = useRef<HTMLTextAreaElement>(null);
   const fileInputRef   = useRef<HTMLInputElement>(null);
   const dragCounterRef = useRef(0);
+  const modelDropdownRef = useRef<HTMLDivElement>(null);
+
+  // Load LLM runtime (Gemini + Ollama models) and restore Ansible model selection
+  useEffect(() => {
+    const ollamaBaseUrl = localStorage.getItem(OLLAMA_BASE_URL_STORAGE_KEY) || DEFAULT_OLLAMA_BASE_URL;
+    llmApi.getRuntime(ollamaBaseUrl).then((r) => {
+      setRuntime(r);
+      try {
+        const raw = localStorage.getItem(ANSIBLE_MODEL_STORAGE_KEY);
+        if (raw) {
+          const parsed = JSON.parse(raw) as AnsibleModelSelection;
+          if (parsed?.provider && parsed?.model) {
+            const ollamaDesc = r.providers.find((p) => p.name === 'ollama');
+            setAnsibleModel({
+              provider: parsed.provider,
+              model: parsed.model,
+              ollama_base_url: parsed.provider === 'ollama' ? (parsed.ollama_base_url ?? ollamaDesc?.base_url ?? null) : null,
+            });
+            return;
+          }
+        }
+      } catch (_) { /* ignore */ }
+      setAnsibleModel({
+        provider: r.active_provider || 'gemini',
+        model: r.active_model || 'gemini-2.5-flash',
+        ollama_base_url: r.active_base_url ?? null,
+      });
+    }).catch(() => { /* keep defaults */ });
+  }, []);
+
+  const combinedModelOptions = useMemo(() => {
+    if (!runtime?.providers) return [];
+    return runtime.providers.flatMap((provider) =>
+      provider.models.map((modelName) => ({
+        providerName: provider.name,
+        providerLabel: provider.label,
+        modelName,
+        displayLabel: prettifyModelLabel(provider.name, modelName),
+      })),
+    );
+  }, [runtime?.providers]);
+
+  const filteredModelOptions = useMemo(() => {
+    if (!modelSearch.trim()) return combinedModelOptions;
+    const q = modelSearch.trim().toLowerCase();
+    return combinedModelOptions.filter(
+      (o) =>
+        o.displayLabel.toLowerCase().includes(q) ||
+        o.modelName.toLowerCase().includes(q) ||
+        o.providerName.toLowerCase().includes(q),
+    );
+  }, [combinedModelOptions, modelSearch]);
+
+  const currentModelLabel = useMemo(() => {
+    return prettifyModelLabel(ansibleModel.provider, ansibleModel.model);
+  }, [ansibleModel.provider, ansibleModel.model]);
+
+  const persistAnsibleModel = useCallback((sel: AnsibleModelSelection) => {
+    setAnsibleModel(sel);
+    try {
+      localStorage.setItem(ANSIBLE_MODEL_STORAGE_KEY, JSON.stringify(sel));
+    } catch (_) { /* ignore */ }
+  }, []);
+
+  const handleSelectModel = useCallback((providerName: string, modelName: string) => {
+    const ollamaDesc = runtime?.providers.find((p) => p.name === 'ollama');
+    persistAnsibleModel({
+      provider: providerName,
+      model: modelName,
+      ollama_base_url: providerName === 'ollama' ? (ollamaDesc?.base_url ?? null) : null,
+    });
+    setModelDropdownOpen(false);
+    setModelSearch('');
+  }, [runtime?.providers, persistAnsibleModel]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
+
+  useEffect(() => {
+    if (!modelDropdownOpen) return;
+    const onOutside = (e: MouseEvent) => {
+      if (modelDropdownRef.current && !modelDropdownRef.current.contains(e.target as Node)) setModelDropdownOpen(false);
+    };
+    document.addEventListener('mousedown', onOutside);
+    return () => document.removeEventListener('mousedown', onOutside);
+  }, [modelDropdownOpen]);
 
   // ── File helpers ────────────────────────────────────────────────────────
   const langFor = (name: string) =>
@@ -264,7 +377,7 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
           target_hosts: ['all'],
         });
 
-        const playbookName = `playbook_${result.job_id}.yml`;
+        const playbookName = result.entrypoint_path || `playbook_${result.job_id}.yml`;
         setMessages(prev => prev.map(m =>
           m.id === loadingId ? {
             ...m,
@@ -277,10 +390,17 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
               `Recommend running **Check** to see the dry-run diff before deploying.`,
             jobId: result.job_id,
             playbookPath: playbookName,
+            generatedPaths: result.files?.map((file) => file.path) || [playbookName],
           } : m
         ));
 
-        onPlaybookReady(result.job_id, result.playbook, playbookName);
+        onPlaybookReady({
+          jobId: result.job_id,
+          content: result.playbook,
+          name: playbookName.split('/').pop() ?? playbookName,
+          entrypointPath: result.entrypoint_path,
+          files: result.files,
+        });
       } else {
         // ── Standard LLM generation ─────────────────────────────────────────
         const { vendor, feature, target_hosts, params } = parseIntent(text);
@@ -291,38 +411,57 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
           vendor,
           feature,
           params,
+          provider: ansibleModel.provider,
+          model: ansibleModel.model,
+          ollama_base_url: ansibleModel.ollama_base_url ?? undefined,
         });
 
-        const playbookName = `playbook_${result.job_id}.yml`;
+        const playbookName = result.entrypoint_path || `playbook_${result.job_id}.yml`;
 
         setMessages(prev => prev.map(m =>
           m.id === loadingId ? {
             ...m,
             isLoading: false,
             content:
-              `✅ **Playbook generated** → \`${playbookName}\`\n\n` +
+              `✅ **${result.artifact_type === 'bundle' ? 'Bundle generated' : 'Playbook generated'}** → \`${playbookName}\`\n\n` +
               `- **Job ID:** ${result.job_id}\n` +
               `- **Vendor:** \`${vendor}\`  **Feature:** \`${feature}\`\n` +
-              `- **Targets:** ${target_hosts.join(', ')}\n\n` +
+              `- **Targets:** ${target_hosts.join(', ')}\n` +
+              (result.artifact_type === 'bundle' ? `- **Files:** ${(result.files?.length ?? 0)} generated files\n\n` : `\n`) +
               `Recommend running **Check** to see the dry-run diff before deploying.`,
             jobId: result.job_id,
             playbookPath: playbookName,
+            generatedPaths: result.files?.map((file) => file.path) || [playbookName],
           } : m
         ));
 
-        onPlaybookReady(result.job_id, result.playbook, playbookName);
+        onPlaybookReady({
+          jobId: result.job_id,
+          content: result.playbook,
+          name: playbookName.split('/').pop() ?? playbookName,
+          entrypointPath: result.entrypoint_path,
+          files: result.files,
+        });
       }
     } catch (err: any) {
+      let errorMsg = err.message || 'Unknown error';
+      if (typeof err.message === 'object') {
+        try {
+          errorMsg = err.message.message || JSON.stringify(err.message, null, 1);
+        } catch {
+          errorMsg = String(err.message);
+        }
+      }
       setMessages(prev => prev.map(m =>
         m.id === loadingId ? {
           ...m, isLoading: false, isError: true,
-          content: `❌ Failed to generate playbook: ${err.message}`,
+          content: `❌ **Failed to generate playbook**\n\n${errorMsg}`,
         } : m
       ));
     } finally {
       setGenerating(false);
     }
-  }, [input, isGenerating, addMsg, onPlaybookReady]);
+  }, [input, isGenerating, addMsg, onPlaybookReady, attachedFiles, ansibleModel]);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); }
@@ -337,7 +476,7 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
   return (
     <div
       className="flex flex-col h-full"
-      style={{ background: '#1e1e1e', fontFamily: "'Menlo','Monaco','Consolas','Courier New',monospace", position: 'relative' }}
+      style={{ background: '#1e1e1e', fontFamily: "'Menlo','Monaco','Consolas','Courier New',monospace", position: 'relative', userSelect: 'text' }}
       onDragEnter={handlePanelDragEnter}
       onDragLeave={handlePanelDragLeave}
       onDragOver={e => e.preventDefault()}
@@ -367,6 +506,72 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
         <div className="flex items-center gap-2">
           <Sparkles style={{ width: 13, height: 13, color: '#c586c0' }} />
           <span style={{ fontSize: 11, fontWeight: 600, letterSpacing: '0.06em', color: '#bbbbbb', textTransform: 'uppercase' }}>ANSIBLE AI</span>
+          {/* VSCode-style model selector */}
+          <div ref={modelDropdownRef} style={{ position: 'relative' }}>
+            <button
+              type="button"
+              onClick={() => setModelDropdownOpen((o) => !o)}
+              style={{
+                display: 'flex', alignItems: 'center', gap: 4, padding: '2px 8px', borderRadius: 4,
+                background: modelDropdownOpen ? '#3c3c3c' : 'transparent', border: '1px solid transparent',
+                color: '#9cdcfe', fontSize: 11, fontFamily: 'inherit', cursor: 'pointer',
+              }}
+              className="hover:bg-[#2d2d2d]"
+            >
+              <span style={{ maxWidth: 140, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{currentModelLabel}</span>
+              <ChevronDown style={{ width: 12, height: 12, opacity: modelDropdownOpen ? 1 : 0.7, transform: modelDropdownOpen ? 'rotate(180deg)' : 'none', transition: 'transform 0.15s' }} />
+            </button>
+            {modelDropdownOpen && (
+              <div
+                style={{
+                  position: 'absolute', top: '100%', left: 0, marginTop: 2, zIndex: 100,
+                  minWidth: 220, maxWidth: 320, maxHeight: 280,
+                  background: '#252526', border: '1px solid #3c3c3c', borderRadius: 4, boxShadow: '0 4px 12px rgba(0,0,0,0.4)',
+                  display: 'flex', flexDirection: 'column', overflow: 'hidden',
+                }}
+              >
+                <div style={{ padding: 6, borderBottom: '1px solid #3c3c3c' }}>
+                  <input
+                    type="text"
+                    placeholder="Search models"
+                    value={modelSearch}
+                    onChange={(e) => setModelSearch(e.target.value)}
+                    autoFocus
+                    style={{
+                      width: '100%', padding: '4px 8px', fontSize: 12, background: '#3c3c3c', border: '1px solid #555',
+                      borderRadius: 4, color: '#cccccc', outline: 'none',
+                    }}
+                  />
+                </div>
+                <div style={{ overflowY: 'auto', flex: 1, padding: 4 }}>
+                  {filteredModelOptions.length === 0 ? (
+                    <div style={{ padding: 8, fontSize: 11, color: '#858585' }}>No models found</div>
+                  ) : (
+                    filteredModelOptions.map((opt) => {
+                      const isSelected = ansibleModel.provider === opt.providerName && ansibleModel.model === opt.modelName;
+                      return (
+                        <button
+                          key={`${opt.providerName}::${opt.modelName}`}
+                          type="button"
+                          onClick={() => handleSelectModel(opt.providerName, opt.modelName)}
+                          style={{
+                            width: '100%', textAlign: 'left', padding: '5px 8px', borderRadius: 4, border: 'none',
+                            background: isSelected ? '#0e639c' : 'transparent', color: isSelected ? '#fff' : '#cccccc',
+                            fontSize: 12, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6,
+                          }}
+                          className="hover:bg-[#2d2d2d]"
+                        >
+                          {isSelected && <span style={{ color: '#4fc3f7' }}>✓</span>}
+                          <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{opt.displayLabel}</span>
+                          <span style={{ fontSize: 10, color: '#858585', flexShrink: 0 }}>{opt.providerName === 'ollama' ? 'Local' : 'Cloud'}</span>
+                        </button>
+                      );
+                    })
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
         </div>
         <div className="flex items-center gap-1">
           {activeJob && (
@@ -399,7 +604,7 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
                   <span style={{ fontSize: 11, fontWeight: 600, color: '#cccccc' }}>You</span>
                   <span style={{ fontSize: 10, color: '#444' }}>{new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
                 </div>
-                <div style={{ paddingLeft: 23, fontSize: 13, color: '#cccccc', lineHeight: 1.5, fontFamily: 'system-ui,-apple-system,sans-serif' }}>
+                <div style={{ paddingLeft: 23, fontSize: 13, color: '#cccccc', lineHeight: 1.5, fontFamily: 'system-ui,-apple-system,sans-serif', userSelect: 'text' }}>
                   {msg.content}
                 </div>
               </div>
@@ -413,7 +618,7 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
                   <span style={{ fontSize: 11, fontWeight: 600, color: '#c586c0' }}>Ansible AI</span>
                 </div>
 
-                <div style={{ paddingLeft: 23, fontFamily: 'system-ui,-apple-system,sans-serif' }}>
+                <div style={{ paddingLeft: 23, fontFamily: 'system-ui,-apple-system,sans-serif', userSelect: 'text' }}>
                   {msg.isLoading ? (
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: '#858585', fontSize: 13 }}>
                       <Loader2 style={{ width: 14, height: 14, color: '#569cd6' }} className="animate-spin" />

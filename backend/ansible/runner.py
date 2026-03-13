@@ -51,14 +51,16 @@ class AnsibleRunResult:
 
 
 def run_playbook(
-    playbook_content: str,
-    inventory:        dict,
-    extra_vars:       dict,
+    playbook_content: str = "",
+    inventory:        Optional[dict] = None,
+    extra_vars:       Optional[dict] = None,
     check_mode:       bool = False,
     job_id:           Optional[int] = None,
     timeout:          int  = 300,
     tags:             Optional[list[str]] = None,
     limit:            Optional[str] = None,
+    playbook_path:    Optional[str] = None,
+    project_files:    Optional[list[dict]] = None,
 ) -> AnsibleRunResult:
     """
     Run a playbook string via ansible-runner.
@@ -76,6 +78,8 @@ def run_playbook(
         timeout:           Per-task timeout in seconds.
         tags:              Optional list of Ansible tags to run.
         limit:             Optional host/group limit pattern.
+        playbook_path:     Relative path to the entry playbook inside the project.
+        project_files:     Optional list of {"path", "content"} files to materialize.
 
     Returns:
         AnsibleRunResult with success flag, stdout, stats.
@@ -95,8 +99,24 @@ def run_playbook(
         project = priv / "project"
         project.mkdir(parents=True)
 
-        pb_path = project / "site.yml"
-        pb_path.write_text(playbook_content)
+        runtime_playbook = playbook_path or "site.yml"
+        if project_files:
+            for artifact in project_files:
+                rel_path = Path(str(artifact.get("path") or "").replace("\\", "/"))
+                if rel_path.is_absolute() or ".." in rel_path.parts:
+                    return AnsibleRunResult(
+                        success=False,
+                        rc=1,
+                        stdout="",
+                        stderr=f"Invalid generated artifact path: {rel_path}",
+                    )
+                target = project / rel_path
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text(str(artifact.get("content") or ""), encoding="utf-8")
+        else:
+            pb_path = project / runtime_playbook
+            pb_path.parent.mkdir(parents=True, exist_ok=True)
+            pb_path.write_text(playbook_content, encoding="utf-8")
 
         # Copy ansible.cfg
         if ANSIBLE_CFG.exists():
@@ -115,14 +135,14 @@ def run_playbook(
         # ── Inventory ──────────────────────────────────────────────────────
         inv_dir = priv / "inventory"
         inv_dir.mkdir(parents=True)
-        (inv_dir / "hosts.yml").write_text(yaml.dump(inventory, default_flow_style=False))
+        (inv_dir / "hosts.yml").write_text(yaml.dump(inventory or {}, default_flow_style=False))
 
         # ── Environment / Extra vars ───────────────────────────────────────
         env_dir = priv / "env"
         env_dir.mkdir(exist_ok=True)
 
         # Extra vars as JSON file (avoids shell escaping issues)
-        ev = dict(extra_vars)
+        ev = dict(extra_vars or {})
         if job_id is not None:
             ev["run_id"] = str(job_id)
         (env_dir / "extravars").write_text(
@@ -152,7 +172,7 @@ def run_playbook(
 
         runner = ansible_runner.run(
             private_data_dir=str(priv),
-            playbook="site.yml",
+            playbook=runtime_playbook,
             cmdline=" ".join(cmdline_parts) if cmdline_parts else None,
             quiet=True,
             timeout=timeout,

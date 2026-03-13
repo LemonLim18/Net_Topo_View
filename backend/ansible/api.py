@@ -30,6 +30,16 @@ from fastapi.responses import StreamingResponse
 from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel
 
+from ansible.bundle_artifacts import AnsibleArtifactBundle, bundle_from_dict
+from ansible.planning_context import (
+    build_scoped_planning_context,
+    infer_vendor_hint,
+    normalize_vendor,
+    planning_context_readiness,
+    planning_context_to_prompt_text,
+    reconcile_inventory_state,
+    topology_override_from_planning_context,
+)
 from config_engine.safety import validate_playbook_yaml
 
 logger = logging.getLogger("ansible.api")
@@ -59,6 +69,345 @@ def _require_builder():
     return _builder
 
 
+def _resolve_target_hosts(target_hosts: List[str]) -> List[str]:
+    """
+    Expand semantic group names (all, access, switches, core, distribution) to
+    actual device hostnames from the device DB. Fixes intent like "all access
+    switches" being parsed as literal ["all", "access", "switches"].
+    """
+    if not target_hosts or _db is None:
+        return list(target_hosts) if target_hosts else []
+
+    devices = _db.get_all_devices()
+    all_hostnames = [d.hostname for d in devices if d.hostname]
+    role_lower = {d.hostname: (d.role or "").lower() for d in devices if d.hostname}
+    name_lower = {d.hostname: (d.hostname or "").lower() for d in devices if d.hostname}
+
+    def is_access(h: str) -> bool:
+        r = role_lower.get(h, "")
+        n = name_lower.get(h, "")
+        return r == "access" or n.startswith("acc_")
+
+    def is_core(h: str) -> bool:
+        r = role_lower.get(h, "")
+        n = name_lower.get(h, "")
+        return r == "core" or n.startswith("core_")
+
+    def is_distribution(h: str) -> bool:
+        r = role_lower.get(h, "")
+        n = name_lower.get(h, "")
+        return r == "distribution" or n.startswith("dist_")
+
+    tokens_lower = [str(x).strip().lower() for x in target_hosts if str(x).strip()]
+    if "all" in tokens_lower and ("access" in tokens_lower or "switches" in tokens_lower):
+        return [h for h in all_hostnames if is_access(h)]
+    if "all" in tokens_lower and ("core" in tokens_lower or "distribution" in tokens_lower or "dist" in tokens_lower):
+        return [h for h in all_hostnames if is_core(h) or is_distribution(h)]
+
+    expanded: List[str] = []
+    seen: set = set()
+    for raw in target_hosts:
+        t = str(raw).strip().lower()
+        if not t:
+            continue
+        if t == "all":
+            for h in all_hostnames:
+                if h not in seen:
+                    seen.add(h)
+                    expanded.append(h)
+            continue
+        if t in ("access", "switches", "access_switches"):
+            for h in all_hostnames:
+                if is_access(h) and h not in seen:
+                    seen.add(h)
+                    expanded.append(h)
+            continue
+        if t == "core":
+            for h in all_hostnames:
+                if is_core(h) and h not in seen:
+                    seen.add(h)
+                    expanded.append(h)
+            continue
+        if t in ("distribution", "dist"):
+            for h in all_hostnames:
+                if is_distribution(h) and h not in seen:
+                    seen.add(h)
+                    expanded.append(h)
+            continue
+        # Concrete hostname: keep if it exists in DB
+        for d in devices:
+            if d.hostname and d.hostname.lower() == t:
+                if d.hostname not in seen:
+                    seen.add(d.hostname)
+                    expanded.append(d.hostname)
+                break
+        else:
+            # Not a known group and not found in DB; keep original for clearer error
+            orig = str(raw).strip()
+            if orig not in seen:
+                seen.add(orig)
+                expanded.append(orig)
+    return expanded if expanded else list(target_hosts)
+
+
+def _build_topo_from_db(hostnames: List[str]) -> dict:
+    """Build a minimal topology dict from the device DB for inventory when topology file is empty."""
+    if not hostnames or _db is None:
+        return {"nodes": {}}
+    nodes = {}
+    for d in _db.get_all_devices():
+        if not d.hostname or (hostnames and d.hostname not in hostnames):
+            continue
+        vendor = (d.vendor or "").lower().replace("-", "_").replace(" ", "_")
+        nodes[d.hostname] = {
+            "id": d.hostname,
+            "hostname": d.hostname,
+            "name": d.hostname,
+            "mgmt_ip": d.management_ip or d.hostname,
+            "ip": d.management_ip or d.hostname,
+            "vendor": vendor,
+        }
+    return {"nodes": nodes}
+
+
+def _provider_for_request(provider: Optional[str], model: Optional[str], ollama_base_url: Optional[str]):
+    if provider and str(provider).strip():
+        from llm.api import _instantiate_runtime_provider
+
+        return _instantiate_runtime_provider(str(provider).strip(), model, ollama_base_url)
+    if _agent is not None and hasattr(_agent, "_provider"):
+        return getattr(_agent, "_provider")
+    if _builder is not None and hasattr(_builder, "_provider"):
+        return getattr(_builder, "_provider")
+    return None
+
+
+def _build_intent_parse_context(intent_description: str) -> str:
+    if _db is None:
+        return ""
+    try:
+        from rag.context_bundle import ContextBundleBuilder
+
+        bundle = ContextBundleBuilder(db_manager=_db).build_bundle(
+            include_inventory=True,
+            include_planned_topology=True,
+            include_telemetry=False,
+            include_sdn=False,
+            include_config=False,
+            include_deployment=False,
+            include_incidents=False,
+            include_threats=False,
+            include_drift=False,
+            include_knowledge=False,
+            include_freshness_warnings=True,
+            query=intent_description,
+        )
+        return bundle.to_prompt_text()
+    except Exception as exc:
+        logger.warning("Could not build intent parse context: %s", exc)
+        return ""
+
+
+def _policy_validate_intent(intent_json: str, user_role: str) -> dict[str, Any]:
+    from llm.policy import PolicyEngine
+
+    engine = PolicyEngine(db_manager=_db)
+    raw = engine.validate(intent_json, user_role=user_role)
+    return json.loads(raw)
+
+
+def _resolve_backend_intent_request(req, user: dict) -> tuple["PlanAnsibleRequest", dict[str, Any], dict[str, Any]]:
+    from llm.intent import IntentParser, IntentType, ParsedIntent
+
+    parser = IntentParser(
+        provider=_provider_for_request(req.provider, req.model, req.ollama_base_url),
+        db_manager=_db,
+    )
+    parsed = ParsedIntent.model_validate_json(
+        parser.parse(
+            req.intent_description,
+            topology_context=_build_intent_parse_context(req.intent_description),
+        )
+    )
+
+    if req.feature:
+        parsed.feature = str(req.feature).strip()
+    if req.vendor:
+        parsed.vendor = normalize_vendor(req.vendor)
+    if req.params:
+        parsed.parameters = dict(req.params)
+    if req.target_hosts:
+        parsed.scope.device_hostnames = list(req.target_hosts)
+        parsed.scope.all_devices = False
+        parsed.resolved_devices = _resolve_target_hosts(req.target_hosts)
+    else:
+        parsed.resolved_devices = _resolve_target_hosts(parsed.resolved_devices)
+
+    if not parsed.vendor:
+        parsed.vendor = infer_vendor_hint(parsed.resolved_devices, _db)
+
+    if parsed.requires_disambiguation:
+        raise HTTPException(422, parsed.disambiguation_message or "Intent requires disambiguation before planning.")
+    if parsed.intent_type not in {IntentType.CONFIGURE, IntentType.DEPLOY}:
+        raise HTTPException(422, f"Intent '{parsed.intent_type.value}' is not a configuration change.")
+    if not parsed.feature:
+        raise HTTPException(422, "Intent parser did not resolve a configuration feature.")
+    if not parsed.resolved_devices:
+        raise HTTPException(422, "Intent parser did not resolve any target devices.")
+
+    policy = _policy_validate_intent(
+        parsed.model_dump_json(),
+        user_role=str(user.get("role") or "operator"),
+    )
+    if policy.get("approved") is not True:
+        raise HTTPException(
+            422,
+            detail={
+                "message": "Parsed intent was rejected by policy validation.",
+                "intent": parsed.model_dump(),
+                "policy": policy,
+            },
+        )
+
+    plan_req = PlanAnsibleRequest(
+        intent_description=req.intent_description,
+        target_hosts=parsed.resolved_devices,
+        vendor=normalize_vendor(parsed.vendor or infer_vendor_hint(parsed.resolved_devices, _db)),
+        feature=parsed.feature,
+        params=dict(parsed.parameters or {}),
+        max_interfaces=getattr(req, "max_interfaces", 5),
+        auto_refine=getattr(req, "auto_refine", True),
+        max_refinement_attempts=getattr(req, "max_refinement_attempts", 3),
+        verify_with_dry_run=getattr(req, "verify_with_dry_run", False),
+        provider=req.provider,
+        model=req.model,
+        ollama_base_url=req.ollama_base_url,
+    )
+    return plan_req, parsed.model_dump(), policy
+
+
+async def _ensure_planning_context(
+    *,
+    target_hosts: List[str],
+    vendor: str,
+    intent_description: str,
+    feature: str,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    if _db is None or not hasattr(_db, "get_all_devices"):
+        return _minimal_planning_context(
+            target_hosts,
+            vendor=vendor,
+            intent_description=intent_description,
+            feature=feature,
+        ), {"reconciled": False, "issues": ["database_inventory_unavailable"]}
+
+    planning_context = build_scoped_planning_context(
+        _db,
+        target_hosts,
+        vendor_filter=vendor or None,
+        query=intent_description,
+        feature=feature,
+    )
+    readiness = planning_context_readiness(planning_context)
+    if readiness.get("ready"):
+        return planning_context, {"reconciled": False, "issues": []}
+
+    reconciliation = await run_in_threadpool(reconcile_inventory_state, _db)
+    planning_context = build_scoped_planning_context(
+        _db,
+        target_hosts,
+        vendor_filter=vendor or None,
+        query=intent_description,
+        feature=feature,
+    )
+    post_reconcile = planning_context_readiness(planning_context)
+    if not post_reconcile.get("ready"):
+        raise HTTPException(
+            422,
+            detail={
+                "message": "Inventory reconciliation completed but planning context is still incomplete.",
+                "issues": post_reconcile.get("issues", []),
+                "reconciliation": reconciliation,
+            },
+        )
+    return planning_context, {
+        "reconciled": True,
+        "issues": readiness.get("issues", []),
+        "reconciliation": reconciliation,
+    }
+
+
+def _build_inventory_for_hosts(
+    target_hosts: List[str],
+    planning_context: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    from ansible.inventory import build_inventory
+
+    topology_override = None
+    if planning_context:
+        topology_override = topology_override_from_planning_context(planning_context)
+    if topology_override is None or not (topology_override.get("nodes") or {}):
+        topology_override = _build_topo_from_db(target_hosts)
+    return build_inventory(target_hosts=target_hosts or None, topology_override=topology_override)
+
+
+def _minimal_planning_context(
+    target_hosts: List[str],
+    *,
+    vendor: str,
+    intent_description: str,
+    feature: str,
+) -> dict[str, Any]:
+    return {
+        "target_hosts": list(target_hosts or []),
+        "feature": str(feature or ""),
+        "query": str(intent_description or ""),
+        "inventory": {
+            "source": "request",
+            "source_detail": "Using request-scoped fallback planning context.",
+            "freshness": {
+                "source": "request",
+                "scope": "planned_inventory",
+                "freshness_class": "live",
+                "confidence": 0.5,
+            },
+            "total_devices": len(target_hosts or []),
+            "interfaces_included": 0,
+        },
+        "planned_topology": {
+            "source": "request",
+            "source_detail": "No planned topology context available in fallback mode.",
+            "freshness": {
+                "source": "request",
+                "scope": "planned_topology",
+                "freshness_class": "live",
+                "confidence": 0.5,
+            },
+            "link_count": 0,
+        },
+        "freshness_warnings": [],
+        "fallback_evidence": [{"domain": "planned_inventory", "source": "request", "detail": "fallback"}],
+        "devices": [
+            {
+                "hostname": host,
+                "management_ip": host,
+                "vendor": normalize_vendor(vendor),
+                "role": "",
+                "site": "",
+                "model": None,
+                "status": None,
+                "serial": None,
+                "interfaces": [],
+                "neighbors": [],
+                "inventory_source": "request",
+                "planned_topology_source": "request",
+                "live_neighbor_source": None,
+            }
+            for host in (target_hosts or [])
+        ],
+    }
+
+
 def _require_pipeline():
     if _pipeline is None:
         raise HTTPException(503, "Deployment pipeline not initialized")
@@ -80,14 +429,17 @@ except ImportError:
 
 class PlanAnsibleRequest(BaseModel):
     intent_description: str
-    target_hosts:       List[str]
-    vendor:             str
-    feature:            str
+    target_hosts:       List[str] = []
+    vendor:             str = ""
+    feature:            str = ""
     params:             Dict[str, Any] = {}
     max_interfaces:     int = 5
     auto_refine:        bool = True
     max_refinement_attempts: int = 3
     verify_with_dry_run: bool = False
+    provider:           Optional[str] = None  # "gemini" | "ollama" for playbook LLM
+    model:              Optional[str] = None
+    ollama_base_url:    Optional[str] = None
 
 
 class CheckResult(BaseModel):
@@ -118,6 +470,14 @@ async def plan_ansible(
     Device dry-run contact remains optional and disabled unless requested.
     """
     builder = _require_builder()
+    resolved_hosts = _resolve_target_hosts(req.target_hosts)
+    effective_vendor = normalize_vendor(req.vendor or infer_vendor_hint(resolved_hosts, _db))
+    planning_context, planning_meta = await _ensure_planning_context(
+        target_hosts=resolved_hosts,
+        vendor=effective_vendor,
+        intent_description=req.intent_description,
+        feature=req.feature,
+    )
 
     # Pull live RAG context from the agent (read-only)
     rag_context = ""
@@ -125,7 +485,10 @@ async def plan_ansible(
     if _agent is not None:
         try:
             # Context-Injection RAG: live topology digest from ContextBuilder
-            rag_context = _agent._context.build_full_context()
+            rag_context = _agent._context.build_full_context(
+                device_hostnames=resolved_hosts,
+                query=req.intent_description,
+            )
         except Exception as exc:
             logger.warning("Could not fetch RAG context: %s", exc)
 
@@ -140,56 +503,112 @@ async def plan_ansible(
                 ]
         except Exception as exc:
             logger.debug("Vector-RAG retrieval skipped: %s", exc)
-
     intent = {
         "description":   req.intent_description,
-        "target_hosts":  req.target_hosts,
-        "vendor":        req.vendor,
+        "target_hosts":  resolved_hosts,
+        "vendor":        effective_vendor,
         "feature":       req.feature,
         "params":        req.params,
         "max_interfaces": req.max_interfaces,
+        "planning_context": planning_context,
+        "device_inventory_context": planning_context_to_prompt_text(planning_context),
     }
 
+    use_bundle = bool(getattr(builder, "supports_role_bundle", lambda *_: False)(req.feature))
     try:
-        orchestration = await _build_playbook_with_refinement(
-            job_id=job_id,
-            intent=intent,
-            rag_context=rag_context,
-            kb_snippets=kb_snippets,
-            auto_refine=req.auto_refine,
-            max_attempts=req.max_refinement_attempts,
-            verify_with_dry_run=req.verify_with_dry_run,
-        )
+        if use_bundle:
+            orchestration = await _build_bundle_with_refinement(
+                job_id=job_id,
+                intent=intent,
+                rag_context=rag_context,
+                kb_snippets=kb_snippets,
+                auto_refine=req.auto_refine,
+                max_attempts=req.max_refinement_attempts,
+                verify_with_dry_run=req.verify_with_dry_run,
+                provider=req.provider,
+                model=req.model,
+                ollama_base_url=req.ollama_base_url,
+            )
+        else:
+            orchestration = await _build_playbook_with_refinement(
+                job_id=job_id,
+                intent=intent,
+                rag_context=rag_context,
+                kb_snippets=kb_snippets,
+                auto_refine=req.auto_refine,
+                max_attempts=req.max_refinement_attempts,
+                verify_with_dry_run=req.verify_with_dry_run,
+                provider=req.provider,
+                model=req.model,
+                ollama_base_url=req.ollama_base_url,
+            )
     except HTTPException:
         raise
     except Exception as exc:
-        logger.error("Playbook build failed job=%d: %s", job_id, exc)
-        raise HTTPException(422, f"Playbook generation failed: {exc}")
+        detail = str(exc).strip() or repr(exc)
+        logger.exception(
+            "Playbook build failed job=%d type=%s detail=%s",
+            job_id,
+            type(exc).__name__,
+            detail,
+        )
+        raise HTTPException(422, f"Playbook generation failed: {detail}")
 
     if not orchestration.get("success", False):
+        detail = {
+            "message": "Playbook generation failed after bounded refinement attempts",
+            "job_id": job_id,
+            "attempts_used": orchestration.get("attempts_used", 0),
+            "max_attempts": orchestration.get("max_attempts", req.max_refinement_attempts),
+            "escalation_reason": orchestration.get("escalation_reason", "validation_failed"),
+            "issues": orchestration.get("final_validation", {}).get("issues", []),
+            "refinement_history": orchestration.get("history", []),
+        }
+        logger.error("Playbook generation failed job=%d: %s", job_id, detail)
         raise HTTPException(
             422,
-            detail={
-                "message": "Playbook generation failed after bounded refinement attempts",
-                "job_id": job_id,
-                "attempts_used": orchestration.get("attempts_used", 0),
-                "max_attempts": orchestration.get("max_attempts", req.max_refinement_attempts),
-                "escalation_reason": orchestration.get("escalation_reason", "validation_failed"),
-                "issues": orchestration.get("final_validation", {}).get("issues", []),
-                "refinement_history": orchestration.get("history", []),
-            },
+            detail=detail,
         )
 
     playbook_yaml = str(orchestration.get("playbook") or "")
+    bundle_payload = orchestration.get("bundle")
 
-    # Persist the playbook against the job
     if _db is not None:
         try:
-            with _db._connect() as conn:
-                conn.execute(
-                    "UPDATE jobs SET ansible_playbook = ?, stage = 'plan', "
-                    "status = 'pending' WHERE id = ?",
-                    (playbook_yaml, job_id),
+            if bundle_payload:
+                bundle_manifest = dict(bundle_payload)
+                bundle_manifest.setdefault("manifest", {})
+                bundle_manifest["manifest"].update(
+                    {
+                        "job_id": job_id,
+                        "target_hosts": resolved_hosts,
+                        "provider": req.provider or "gemini",
+                        "model": req.model or "",
+                        "artifact_type": "bundle",
+                        "inventory_reconciled": bool(planning_meta.get("reconciled")),
+                    }
+                )
+                _persist_job_bundle(job_id=job_id, bundle=bundle_manifest, playbook_yaml=playbook_yaml)
+                _append_playbook_version(
+                    _db,
+                    job_id,
+                    playbook_yaml,
+                    notes="Original bundle generation",
+                    bundle=bundle_manifest,
+                )
+                bundle_payload = bundle_manifest
+            else:
+                with _db._connect() as conn:
+                    conn.execute(
+                        "UPDATE jobs SET ansible_playbook = ?, stage = 'plan', "
+                        "status = 'pending' WHERE id = ?",
+                        (playbook_yaml, job_id),
+                    )
+                _append_playbook_version(
+                    _db,
+                    job_id,
+                    playbook_yaml,
+                    notes="Original playbook generation",
                 )
         except Exception as exc:
             logger.warning("Could not persist playbook to DB: %s", exc)
@@ -199,6 +618,13 @@ async def plan_ansible(
         "job_id":   job_id,
         "status":   "playbook_generated",
         "playbook": playbook_yaml,
+        "artifact_type": "bundle" if bundle_payload else "playbook",
+        "entrypoint_path": (bundle_payload or {}).get("entrypoint_path"),
+        "files": (bundle_payload or {}).get("files", []),
+        "manifest": {
+            **((bundle_payload or {}).get("manifest", {})),
+            "inventory_reconciled": bool(planning_meta.get("reconciled")),
+        },
         "refinement": {
             "auto_refine": req.auto_refine,
             "verify_with_dry_run": req.verify_with_dry_run,
@@ -244,9 +670,10 @@ async def plan_ansible_candidates(
         except Exception:
             pass
 
+    resolved_hosts = _resolve_target_hosts(req.target_hosts)
     intent = {
         "description":   req.intent_description,
-        "target_hosts":  req.target_hosts,
+        "target_hosts":  resolved_hosts,
         "vendor":        req.vendor,
         "feature":       req.feature,
         "params":        req.params,
@@ -310,25 +737,47 @@ async def select_candidate(
 )
 async def check_playbook(
     job_id: int,
-    user:   dict = Depends(require_role("operator")),
+    user:   dict = Depends(get_current_user),
 ):
     """
     Run ansible-playbook --check --diff against the stored playbook.
-    Returns per-host diff for operator review.  No changes are applied.
+    Returns per-host diff for review.  No changes are applied; any authenticated user may run check.
     """
-    playbook_yaml, target_hosts = _load_job_playbook(job_id)
-
-    from ansible.inventory import build_inventory
+    artifact = _load_job_artifact(job_id)
     from ansible.runner import run_playbook
 
-    inventory = build_inventory(target_hosts=target_hosts)
+    try:
+        planning_context = (
+            build_scoped_planning_context(
+                _db,
+                artifact["target_hosts"] or [],
+                query=artifact["playbook_yaml"],
+            )
+            if _db is not None and hasattr(_db, "get_all_devices")
+            else _minimal_planning_context(
+                artifact["target_hosts"] or [],
+                vendor="",
+                intent_description=artifact["playbook_yaml"],
+                feature="",
+            )
+        )
+    except Exception:
+        planning_context = _minimal_planning_context(
+            artifact["target_hosts"] or [],
+            vendor="",
+            intent_description=artifact["playbook_yaml"],
+            feature="",
+        )
+    inventory = _build_inventory_for_hosts(artifact["target_hosts"], planning_context)
     result = await run_in_threadpool(
         run_playbook,
-        playbook_content=playbook_yaml,
         inventory=inventory,
         extra_vars={},
         check_mode=True,
         job_id=job_id,
+        playbook_content=artifact["playbook_yaml"],
+        playbook_path=artifact["entrypoint_path"] or None,
+        project_files=artifact["project_files"],
     )
 
     logger.info("Check run job=%d rc=%d user=%s", job_id, result.rc, user.get("username"))
@@ -387,7 +836,7 @@ async def execute_playbook(
 
     with _db._connect() as conn:
         row = conn.execute(
-            "SELECT status, ansible_playbook, generated_config, rollback_config "
+            "SELECT status, ansible_playbook, ansible_artifact_manifest, generated_config, rollback_config "
             "FROM jobs WHERE id = ?",
             (job_id,)
         ).fetchone()
@@ -401,29 +850,38 @@ async def execute_playbook(
             f"Job {job_id} must be 'approved' before execution. Current status: {row['status']}"
         )
 
-    playbook_yaml = row["ansible_playbook"]
-    if not playbook_yaml:
+    artifact = _load_job_artifact(job_id)
+    if not artifact["playbook_yaml"]:
         raise HTTPException(
             422,
             "No Ansible playbook stored for this job. Run /plan-ansible first."
         )
 
-    # Extract target hosts from the stored playbook's `hosts:` field
-    import yaml as _yaml
-    try:
-        plays = _yaml.safe_load(playbook_yaml)
-        hosts_val = plays[0].get("hosts", "") if plays else ""
-        if isinstance(hosts_val, str) and hosts_val not in ("all", ""):
-            target_hosts = [h.strip() for h in hosts_val.split(",")]
-        else:
-            target_hosts = None
-    except Exception:
-        target_hosts = None
-
-    from ansible.inventory import build_inventory
     from ansible.runner import run_playbook
 
-    inventory = build_inventory(target_hosts=target_hosts)
+    try:
+        planning_context = (
+            build_scoped_planning_context(
+                _db,
+                artifact["target_hosts"] or [],
+                query=artifact["playbook_yaml"],
+            )
+            if _db is not None and hasattr(_db, "get_all_devices")
+            else _minimal_planning_context(
+                artifact["target_hosts"] or [],
+                vendor="",
+                intent_description=artifact["playbook_yaml"],
+                feature="",
+            )
+        )
+    except Exception:
+        planning_context = _minimal_planning_context(
+            artifact["target_hosts"] or [],
+            vendor="",
+            intent_description=artifact["playbook_yaml"],
+            feature="",
+        )
+    inventory = _build_inventory_for_hosts(artifact["target_hosts"] or [], planning_context)
 
     # Mark running
     with _db._connect() as conn:
@@ -434,11 +892,13 @@ async def execute_playbook(
 
     result = await run_in_threadpool(
         run_playbook,
-        playbook_content=playbook_yaml,
         inventory=inventory,
         extra_vars={},
         check_mode=False,
         job_id=job_id,
+        playbook_content=artifact["playbook_yaml"],
+        playbook_path=artifact["entrypoint_path"] or None,
+        project_files=artifact["project_files"],
     )
 
     final_status = "success" if result.success else "failed"
@@ -470,7 +930,8 @@ async def get_result(
 
     with _db._connect() as conn:
         row = conn.execute(
-            "SELECT id, status, stage, error_message, ansible_playbook "
+            "SELECT id, status, stage, error_message, ansible_playbook, "
+            "ansible_artifact_manifest, ansible_entrypoint_path "
             "FROM jobs WHERE id = ?",
             (job_id,)
         ).fetchone()
@@ -488,7 +949,9 @@ async def get_result(
         "status":  row["status"],
         "stage":   row["stage"],
         "error":   row["error_message"],
-        "has_playbook": bool(row["ansible_playbook"]),
+        "has_playbook": bool(row["ansible_playbook"] or row["ansible_artifact_manifest"]),
+        "entrypoint_path": row["ansible_entrypoint_path"],
+        "artifact_type": "bundle" if row["ansible_artifact_manifest"] else "playbook",
         "steps":   [dict(r) for r in logs],
     }
 
@@ -497,32 +960,8 @@ async def get_result(
 
 def _load_job_playbook(job_id: int) -> tuple[str, list[str]]:
     """Load playbook YAML and target hosts from DB. Raises HTTPException on error."""
-    if _db is None:
-        raise HTTPException(503, "Database not initialized")
-
-    with _db._connect() as conn:
-        row = conn.execute(
-            "SELECT ansible_playbook FROM jobs WHERE id = ?", (job_id,)
-        ).fetchone()
-
-    if not row:
-        raise HTTPException(404, f"Job {job_id} not found")
-    if not row["ansible_playbook"]:
-        raise HTTPException(422, "No Ansible playbook stored. Run /plan-ansible first.")
-
-    # Extract target host list from the stored playbook YAML `hosts:` field
-    import yaml
-    try:
-        plays = yaml.safe_load(row["ansible_playbook"])
-        hosts_val = plays[0].get("hosts", "") if plays else ""
-        if isinstance(hosts_val, str) and hosts_val not in ("all", ""):
-            target_hosts = [h.strip() for h in hosts_val.split(",")]
-        else:
-            target_hosts = None   # no filter → inventory goes to all
-    except Exception:
-        target_hosts = None
-
-    return row["ansible_playbook"], target_hosts
+    artifact = _load_job_artifact(job_id)
+    return artifact["playbook_yaml"], artifact["target_hosts"]
 
 
 def _normalize_refinement_errors(issues: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -569,10 +1008,9 @@ async def _validate_playbook_candidate(
     validation = builder.validate_playbook(intent=intent, playbook_yaml=playbook_yaml)
     issues = [dict(issue) for issue in validation.get("issues") or []]
 
-    requested_hosts = [str(host).strip() for host in intent.get("target_hosts") or [] if str(host).strip()]
-    from ansible.inventory import build_inventory
-
-    inventory = build_inventory(target_hosts=requested_hosts)
+    requested_hosts = [str(h).strip() for h in (intent.get("target_hosts") or []) if str(h).strip()]
+    planning_context = dict(intent.get("planning_context") or {})
+    inventory = _build_inventory_for_hosts(requested_hosts, planning_context or None)
     inventory_hosts = ((inventory.get("all") or {}).get("hosts") or {}) if isinstance(inventory, dict) else {}
     missing_hosts = [host for host in requested_hosts if host not in inventory_hosts]
     if missing_hosts:
@@ -617,6 +1055,83 @@ async def _validate_playbook_candidate(
     }
 
 
+async def _validate_bundle_candidate(
+    *,
+    bundle: AnsibleArtifactBundle,
+    intent: dict,
+    job_id: int,
+    verify_with_dry_run: bool,
+) -> dict[str, Any]:
+    builder = _require_builder()
+    validation = builder.validate_bundle(intent=intent, bundle=bundle)
+    issues = [dict(issue) for issue in validation.get("issues") or []]
+
+    requested_hosts = [str(h).strip() for h in (intent.get("target_hosts") or []) if str(h).strip()]
+    planning_context = dict(intent.get("planning_context") or {})
+    inventory = _build_inventory_for_hosts(requested_hosts, planning_context or None)
+    inventory_hosts = ((inventory.get("all") or {}).get("hosts") or {}) if isinstance(inventory, dict) else {}
+    missing_hosts = [host for host in requested_hosts if host not in inventory_hosts]
+    if missing_hosts:
+        issues.append(
+            {
+                "phase": "inventory",
+                "rule": "missing_inventory_hosts",
+                "message": f"Requested targets are not present in inventory/topology: {', '.join(missing_hosts)}",
+                "refinable": False,
+            }
+        )
+
+    if verify_with_dry_run and not missing_hosts:
+        from ansible.runner import run_playbook
+
+        dry_run_result = await run_in_threadpool(
+            run_playbook,
+            inventory=inventory,
+            extra_vars={},
+            check_mode=True,
+            job_id=job_id,
+            playbook_path=bundle.entrypoint_path,
+            project_files=[artifact.to_dict() for artifact in bundle.files],
+        )
+        if not dry_run_result.success:
+            result_text = "\n".join(part for part in [dry_run_result.stderr, dry_run_result.stdout] if part).strip()
+            issues.append(
+                {
+                    "phase": "dry_run",
+                    "rule": "ansible_check_failed",
+                    "message": result_text or dry_run_result.summary or "Ansible dry-run failed",
+                    "refinable": _dry_run_is_refinable(result_text),
+                }
+            )
+
+    for issue in issues:
+        issue.setdefault("refinable", True)
+
+    return {
+        "passed": len(issues) == 0,
+        "issues": issues,
+        "errors": [_format_issue_summary(issue) for issue in issues],
+    }
+
+
+def _builder_for_request(
+    provider: Optional[str],
+    model: Optional[str],
+    ollama_base_url: Optional[str],
+):
+    """Return a PlaybookBuilder for this request: request-scoped if provider/model set, else global."""
+    if provider and str(provider).strip().lower() in ("gemini", "ollama"):
+        from llm.api import _instantiate_runtime_provider
+        from ansible.builder import PlaybookBuilder
+        p = _instantiate_runtime_provider(
+            str(provider).strip().lower(),
+            model and str(model).strip() or None,
+            ollama_base_url and str(ollama_base_url).strip() or None,
+        )
+        return PlaybookBuilder(p)
+    return _require_builder()
+
+
 async def _build_playbook_with_refinement(
     job_id: int,
     intent: dict,
@@ -625,8 +1140,11 @@ async def _build_playbook_with_refinement(
     auto_refine: bool,
     max_attempts: int,
     verify_with_dry_run: bool,
+    provider: Optional[str] = None,
+    model: Optional[str] = None,
+    ollama_base_url: Optional[str] = None,
 ) -> dict[str, Any]:
-    builder = _require_builder()
+    builder = _builder_for_request(provider, model, ollama_base_url)
     bounded_attempts = max(1, min(int(max_attempts or 1), 5))
     history: list[dict[str, Any]] = []
 
@@ -699,6 +1217,7 @@ async def _build_playbook_with_refinement(
             original=current_playbook,
             errors=_normalize_refinement_errors(refinable_issues),
             feedback="Preserve working tasks and fix only the reported validation failures.",
+            builder=builder,
         )
         if refined_playbook.strip() == current_playbook.strip():
             return {
@@ -731,6 +1250,89 @@ async def _build_playbook_with_refinement(
     }
 
 
+async def _build_bundle_with_refinement(
+    job_id: int,
+    intent: dict,
+    rag_context: str,
+    kb_snippets: list[str],
+    auto_refine: bool,
+    max_attempts: int,
+    verify_with_dry_run: bool,
+    provider: Optional[str] = None,
+    model: Optional[str] = None,
+    ollama_base_url: Optional[str] = None,
+) -> dict[str, Any]:
+    builder = _builder_for_request(provider, model, ollama_base_url)
+    bounded_attempts = max(1, min(int(max_attempts or 1), 5))
+    history: list[dict[str, Any]] = []
+    extra_guidance = ""
+    current_bundle = await builder.build_bundle_draft(
+        intent=intent,
+        rag_context=rag_context,
+        kb_snippets=kb_snippets,
+        run_id=str(job_id),
+    )
+
+    for attempt in range(1, bounded_attempts + 1):
+        validation = await _validate_bundle_candidate(
+            bundle=current_bundle,
+            intent=intent,
+            job_id=job_id,
+            verify_with_dry_run=verify_with_dry_run,
+        )
+        history.append(
+            {
+                "attempt": attempt,
+                "passed": validation.get("passed", False),
+                "issues": validation.get("issues", []),
+            }
+        )
+        if validation.get("passed", False):
+            return {
+                "success": True,
+                "bundle": current_bundle.to_dict(),
+                "playbook": current_bundle.file_map().get(current_bundle.normalized_entrypoint(), ""),
+                "attempts_used": attempt,
+                "max_attempts": bounded_attempts,
+                "final_validation": validation,
+                "history": history,
+            }
+        refinable_issues = [issue for issue in validation.get("issues", []) if issue.get("refinable", True)]
+        if not auto_refine or not refinable_issues or attempt >= bounded_attempts:
+            return {
+                "success": False,
+                "bundle": current_bundle.to_dict(),
+                "playbook": current_bundle.file_map().get(current_bundle.normalized_entrypoint(), ""),
+                "attempts_used": attempt,
+                "max_attempts": bounded_attempts,
+                "final_validation": validation,
+                "history": history,
+                "escalation_reason": "bundle_validation_failed",
+            }
+        extra_guidance = (
+            "Previous bundle validation failed. Regenerate the full bundle and fix these issues only:\n"
+            + "\n".join(f"- {item}" for item in validation.get("errors") or [])
+        )
+        current_bundle = await builder.build_bundle_draft(
+            intent=intent,
+            rag_context=rag_context,
+            kb_snippets=kb_snippets,
+            run_id=str(job_id),
+            extra_guidance=extra_guidance,
+        )
+
+    return {
+        "success": False,
+        "bundle": current_bundle.to_dict(),
+        "playbook": current_bundle.file_map().get(current_bundle.normalized_entrypoint(), ""),
+        "attempts_used": bounded_attempts,
+        "max_attempts": bounded_attempts,
+        "final_validation": {"passed": False, "issues": [], "errors": []},
+        "history": history,
+        "escalation_reason": "max_refinement_attempts_reached",
+    }
+
+
 # =============================================================================
 # M23 ─ Ansible Workflow Studio  (new endpoints)
 # =============================================================================
@@ -738,6 +1340,8 @@ async def _build_playbook_with_refinement(
 ANSIBLE_BASE = Path(__file__).parent
 _ALLOWED_ROOTS = ("playbooks", "roles", "inventory", "awx")
 _WRITABLE_ROOTS = ("playbooks", "inventory")   # roles/awx are read-only from UI
+_GENERATED_ROLE_ROOT = "roles/generated"
+_GENERATED_PLAYBOOK_ROOT = "playbooks/generated"
 
 
 def _safe_path(relative: str) -> Path:
@@ -797,24 +1401,135 @@ def _safe_writable_path(relative: str) -> tuple[Path, tuple[str, ...]]:
     """
     path = _safe_path(relative)
     rel_parts = Path(relative).parts
-    if not rel_parts or rel_parts[0] not in _WRITABLE_ROOTS:
+    relative_norm = str(relative).replace("\\", "/").strip("/")
+    allow_generated_role = relative_norm.startswith(f"{_GENERATED_ROLE_ROOT}/")
+    if not rel_parts or (rel_parts[0] not in _WRITABLE_ROOTS and not allow_generated_role):
         raise HTTPException(
             403,
-            f"Only {_WRITABLE_ROOTS} directories are writable. "
-            "roles/ and awx/ are read-only.",
+            f"Only {_WRITABLE_ROOTS} and {_GENERATED_ROLE_ROOT}/ are writable. "
+            "Hand-maintained roles/ and awx/ remain read-only.",
         )
     return path, rel_parts
+
+
+def _entrypoint_content(bundle: dict[str, Any]) -> str:
+    entrypoint_path = str(bundle.get("entrypoint_path") or "").replace("\\", "/").strip("/")
+    for item in bundle.get("files") or []:
+        if str(item.get("path") or "").replace("\\", "/").strip("/") == entrypoint_path:
+            return str(item.get("content") or "")
+    return ""
+
+
+def _persist_bundle_to_workspace(bundle: dict[str, Any]) -> None:
+    for item in bundle.get("files") or []:
+        rel_path = str(item.get("path") or "").replace("\\", "/").strip("/")
+        if not rel_path:
+            continue
+        path = _safe_path(rel_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(str(item.get("content") or ""), encoding="utf-8")
+
+
+def _bundle_target_hosts(bundle: dict[str, Any], fallback_playbook: str = "") -> list[str]:
+    manifest = bundle.get("manifest") or {}
+    hosts = manifest.get("target_hosts")
+    if isinstance(hosts, list) and hosts:
+        return [str(host).strip() for host in hosts if str(host).strip()]
+    entrypoint_yaml = _entrypoint_content(bundle) or fallback_playbook
+    if not entrypoint_yaml:
+        return []
+    try:
+        import yaml
+
+        plays = yaml.safe_load(entrypoint_yaml)
+        hosts_value = plays[0].get("hosts", "") if plays else ""
+        if isinstance(hosts_value, str) and hosts_value not in ("", "all"):
+            return [item.strip() for item in hosts_value.split(",") if item.strip()]
+    except Exception:
+        return []
+    return []
+
+
+def _persist_job_bundle(
+    *,
+    job_id: int,
+    bundle: dict[str, Any],
+    playbook_yaml: str,
+    status_value: str = "pending",
+    stage_value: str = "plan",
+) -> None:
+    if _db is None:
+        return
+    _persist_bundle_to_workspace(bundle)
+    with _db._connect() as conn:
+        conn.execute(
+            "UPDATE jobs SET ansible_playbook = ?, ansible_artifact_manifest = ?, "
+            "ansible_entrypoint_path = ?, stage = ?, status = ? WHERE id = ?",
+            (
+                playbook_yaml,
+                json.dumps(bundle),
+                str(bundle.get("entrypoint_path") or ""),
+                stage_value,
+                status_value,
+                job_id,
+            ),
+        )
+
+
+def _load_job_artifact(job_id: int) -> dict[str, Any]:
+    if _db is None:
+        raise HTTPException(503, "Database not initialized")
+
+    with _db._connect() as conn:
+        row = conn.execute(
+            "SELECT ansible_playbook, ansible_artifact_manifest, ansible_entrypoint_path "
+            "FROM jobs WHERE id = ?",
+            (job_id,),
+        ).fetchone()
+
+    if not row:
+        raise HTTPException(404, f"Job {job_id} not found")
+
+    bundle_raw = row["ansible_artifact_manifest"] if "ansible_artifact_manifest" in row.keys() else None
+    if bundle_raw:
+        try:
+            bundle = bundle_from_dict(json.loads(bundle_raw)).to_dict()
+        except Exception as exc:
+            raise HTTPException(500, f"Stored Ansible bundle is invalid: {exc}")
+        return {
+            "mode": "bundle",
+            "bundle": bundle,
+            "playbook_yaml": _entrypoint_content(bundle),
+            "entrypoint_path": str(bundle.get("entrypoint_path") or ""),
+            "target_hosts": _bundle_target_hosts(bundle),
+            "project_files": list(bundle.get("files") or []),
+        }
+
+    playbook_yaml = row["ansible_playbook"]
+    if not playbook_yaml:
+        raise HTTPException(422, "No Ansible playbook stored. Run /plan-ansible first.")
+    return {
+        "mode": "playbook",
+        "bundle": None,
+        "playbook_yaml": playbook_yaml,
+        "entrypoint_path": str(row["ansible_entrypoint_path"] or ""),
+        "target_hosts": _bundle_target_hosts({}, playbook_yaml),
+        "project_files": None,
+    }
 
 
 # ── M23: create-and-plan ───────────────────────────────────────────────────
 
 class CreateAndPlanRequest(BaseModel):
     intent_description: str
-    target_hosts:       List[str]
-    vendor:             str
-    feature:            str
+    target_hosts:       List[str] = []
+    vendor:             str = ""
+    feature:            str = ""
     params:             Dict[str, Any] = {}
     device_id:          int = 0
+    provider:           Optional[str] = None  # "gemini" | "ollama" for playbook LLM
+    model:              Optional[str] = None
+    ollama_base_url:    Optional[str] = None
 
 
 @router.post(
@@ -834,43 +1549,76 @@ async def create_and_plan(
     if _db is None or _pipeline is None:
         raise HTTPException(503, "Backend not fully initialized")
 
-    # Resolve device_id: if caller passes 0 / unknown, look up by first target host
+    plan_req, parsed_intent, policy = _resolve_backend_intent_request(req, user)
+
+    # Resolve device_id: if caller passes 0 / unknown, look up by first target host,
+    # or fallback to first available device to avoid FK violations.
     device_id = req.device_id
-    if device_id == 0 and req.target_hosts:
-        with _db._connect() as conn:
-            row = conn.execute(
-                "SELECT id FROM devices WHERE hostname = ? LIMIT 1",
-                (req.target_hosts[0],),
-            ).fetchone()
-            if row:
-                device_id = row["id"]
     if device_id == 0:
-        device_id = 1  # sentinel — prevents FK violation
+        with _db._connect() as conn:
+            # 1. Try first target host
+            if plan_req.target_hosts:
+                row = conn.execute(
+                    "SELECT id FROM devices WHERE hostname = ? LIMIT 1",
+                    (plan_req.target_hosts[0],),
+                ).fetchone()
+                if row:
+                    device_id = row["id"]
+            
+            # 2. Fallback to any device if still not resolved
+            if device_id == 0:
+                row = conn.execute("SELECT id FROM devices ORDER BY id LIMIT 1").fetchone()
+                if row:
+                    device_id = row["id"]
+
+    if device_id == 0:
+        raise HTTPException(
+            400, "Device inventory is empty. Please add a device before generating playbooks."
+        )
+
+    logger.info("create_and_plan: Resolved device_id=%d for hosts=%s", device_id, plan_req.target_hosts)
 
     # Create the change request + job
     from deploy.models import ChangeRequest, Job, DeploymentRepository
     repo = DeploymentRepository(_db)
-    cr_id = repo.create_request(ChangeRequest(
-        title=f"Ansible Studio: {req.intent_description[:60]}",
-        description=req.intent_description,
-        requester=user.get("username", "ansible_studio"),
-    ))
-    job_id = repo.create_job(Job(request_id=cr_id, device_id=device_id))
 
-    # Delegate to plan_ansible logic
-    plan_req = PlanAnsibleRequest(
-        intent_description=req.intent_description,
-        target_hosts=req.target_hosts,
-        vendor=req.vendor,
-        feature=req.feature,
-        params=req.params,
-    )
+    try:
+        # 1. New CR
+        cr_id = repo.create_request(ChangeRequest(
+            title=f"Ansible Studio: {req.intent_description[:60]}",
+            description=req.intent_description,
+            requester=user.get("username", "ansible_studio"),
+        ))
+        logger.info("create_and_plan: Created ChangeRequest id=%d", cr_id)
+
+        # 2. New Job linked to first device (for bookkeeping)
+        job_id = repo.create_job(Job(request_id=cr_id, device_id=device_id))
+        logger.info("create_and_plan: Created Job id=%d linked to device_id=%d", job_id, device_id)
+    except Exception as exc:
+        logger.error("create_and_plan: Database error during CR/Job creation: %s", exc)
+        if "FOREIGN KEY" in str(exc).upper():
+             # Detailed FK debug: check if IDs exist
+             with _db._connect() as conn:
+                 cr_exists = conn.execute("SELECT 1 FROM change_requests WHERE id=?", (cr_id if 'cr_id' in locals() else -1,)).fetchone()
+                 dev_exists = conn.execute("SELECT 1 FROM devices WHERE id=?", (device_id,)).fetchone()
+                 logger.error("FK Debug: device_id=%d exists=%s, cr_id=%s exists=%s", 
+                              device_id, bool(dev_exists), 
+                              cr_id if 'cr_id' in locals() else 'N/A', bool(cr_exists))
+        raise HTTPException(status_code=500, detail=f"Database record creation failed: {exc}")
+
+    # Delegate to plan_ansible logic (pass through LLM provider/model for playbook generation)
     result = await plan_ansible(job_id=job_id, req=plan_req, user=user)
     return {
         "job_id":      job_id,
         "request_id":  cr_id,
         "status":      result.get("status"),
         "playbook":    result.get("playbook"),
+        "artifact_type": result.get("artifact_type"),
+        "entrypoint_path": result.get("entrypoint_path"),
+        "files": result.get("files", []),
+        "manifest": result.get("manifest", {}),
+        "parsed_intent": parsed_intent,
+        "policy": policy,
     }
 
 
@@ -964,16 +1712,25 @@ async def create_from_template(
 
     # ── 3. Create ChangeRequest + Job ───────────────────────────────────
     device_id = req.device_id
-    if device_id == 0 and req.target_hosts:
-        with _db._connect() as conn:
-            row = conn.execute(
-                "SELECT id FROM devices WHERE hostname = ? LIMIT 1",
-                (req.target_hosts[0],),
-            ).fetchone()
-            if row:
-                device_id = row["id"]
     if device_id == 0:
-        device_id = 1  # sentinel
+        with _db._connect() as conn:
+            if req.target_hosts:
+                row = conn.execute(
+                    "SELECT id FROM devices WHERE hostname = ? LIMIT 1",
+                    (req.target_hosts[0],),
+                ).fetchone()
+                if row:
+                    device_id = row["id"]
+            
+            if device_id == 0:
+                row = conn.execute("SELECT id FROM devices ORDER BY id LIMIT 1").fetchone()
+                if row:
+                    device_id = row["id"]
+
+    if device_id == 0:
+        raise HTTPException(
+            400, "Device inventory is empty. Please add a device before using templates."
+        )
 
     from deploy.models import ChangeRequest, Job, DeploymentRepository
     repo = DeploymentRepository(_db)
@@ -1055,7 +1812,7 @@ async def write_file(
     user:       dict = Depends(require_role("operator", "admin")),
 ):
     path = _safe_path(file_path)
-    # Only playbooks/ and inventory/ are writable from the UI
+    # Only playbooks/, inventory/, and generated roles/ are writable from the UI
     rel_parts = Path(file_path).parts
     if not rel_parts or rel_parts[0] not in _WRITABLE_ROOTS:
         raise HTTPException(
@@ -1077,7 +1834,7 @@ async def create_file(
 ):
     path, rel_parts = _safe_writable_path(file_path)
     if len(rel_parts) < 2:
-        raise HTTPException(400, "Provide a file path under playbooks/ or inventory/")
+        raise HTTPException(400, "Provide a file path under playbooks/, inventory/, or roles/generated/")
     if path.exists():
         raise HTTPException(409, f"Path already exists: {file_path}")
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -1093,7 +1850,7 @@ async def create_folder(
 ):
     path, rel_parts = _safe_writable_path(folder_path)
     if len(rel_parts) < 2:
-        raise HTTPException(400, "Provide a folder path under playbooks/ or inventory/")
+        raise HTTPException(400, "Provide a folder path under playbooks/, inventory/, or roles/generated/")
     if path.exists() and not path.is_dir():
         raise HTTPException(409, f"Path exists as file: {folder_path}")
     path.mkdir(parents=True, exist_ok=True)
@@ -1240,14 +1997,17 @@ async def _ai_refine_playbook(
     original: str,
     errors: list[dict],
     feedback: str,
+    builder: Any = None,
 ) -> tuple[str, list[str]]:
     """Ask the LLM to fix a playbook given error/feedback."""
-    if _agent is None and _builder is None:
+    if builder is None and _agent is None and _builder is None:
         raise HTTPException(503, "LLM not available for playbook refinement")
 
-    # Get the provider from the agent, or the builder
+    # Prefer request-scoped builder, then agent, then global builder
     provider = None
-    if _agent is not None:
+    if builder is not None and hasattr(builder, "_provider"):
+        provider = builder._provider
+    elif _agent is not None:
         provider = _agent._provider
     elif hasattr(_builder, "_provider"):
         provider = _builder._provider
@@ -1308,6 +2068,7 @@ def _append_playbook_version(
     playbook: str,
     notes: str = "",
     set_current: bool = True,
+    bundle: Optional[dict[str, Any]] = None,
 ) -> int:
     """
     Load current playbook_versions for a job, append a new entry, save back.
@@ -1332,6 +2093,9 @@ def _append_playbook_version(
     versions.append({
         "version":          new_version,
         "playbook":         playbook,
+        "entrypoint_path":  (bundle or {}).get("entrypoint_path"),
+        "artifact_type":    "bundle" if bundle else "playbook",
+        "file_count":       len((bundle or {}).get("files", [])),
         "created_at":       datetime.now(timezone.utc).isoformat(),
         "refinement_notes": notes,
     })
@@ -1339,10 +2103,23 @@ def _append_playbook_version(
     try:
         with db._connect() as conn:
             if set_current:
-                conn.execute(
-                    "UPDATE jobs SET playbook_versions=?, ansible_playbook=? WHERE id=?",
-                    (json.dumps(versions), playbook, job_id),
-                )
+                if bundle:
+                    conn.execute(
+                        "UPDATE jobs SET playbook_versions=?, ansible_playbook=?, "
+                        "ansible_artifact_manifest=?, ansible_entrypoint_path=? WHERE id=?",
+                        (
+                            json.dumps(versions),
+                            playbook,
+                            json.dumps(bundle),
+                            str(bundle.get("entrypoint_path") or ""),
+                            job_id,
+                        ),
+                    )
+                else:
+                    conn.execute(
+                        "UPDATE jobs SET playbook_versions=?, ansible_playbook=? WHERE id=?",
+                        (json.dumps(versions), playbook, job_id),
+                    )
             else:
                 conn.execute(
                     "UPDATE jobs SET playbook_versions=? WHERE id=?",
@@ -1403,6 +2180,9 @@ class PlaybookVersion(BaseModel):
     playbook:         str
     created_at:       str
     refinement_notes: str = ""
+    artifact_type:    str = "playbook"
+    entrypoint_path:  Optional[str] = None
+    file_count:       int = 0
 
 
 @router.get(

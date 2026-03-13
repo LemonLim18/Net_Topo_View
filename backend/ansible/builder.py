@@ -12,6 +12,7 @@ Only the builder emits new playbooks.  The runner.py executes them.
 """
 
 import asyncio
+import json
 import logging
 import re
 import subprocess
@@ -20,12 +21,17 @@ import yaml
 from pathlib import Path
 from typing import Any, Optional
 
+from ansible.bundle_artifacts import AnsibleArtifactBundle, AnsibleArtifactFile, parse_bundle_response
 from config_engine.safety import validate_playbook_yaml
+from config_engine.safety import validate_playbook_bundle
 
 logger = logging.getLogger("ansible.builder")
 
 PROMPT_TEMPLATE = (
     Path(__file__).parent / "prompt_templates" / "llm_to_ansible.txt"
+).read_text()
+BUNDLE_PROMPT_TEMPLATE = (
+    Path(__file__).parent / "prompt_templates" / "llm_to_ansible_bundle.txt"
 ).read_text()
 
 # Regex to extract a YAML fenced code block from LLM response
@@ -35,6 +41,7 @@ _YAML_FENCE = re.compile(r"```ya?ml\s*(.*?)```", re.DOTALL | re.IGNORECASE)
 _RAG_CONTEXT_MAX_CHARS  = 6000
 _KB_SNIPPETS_MAX        = 3
 _KB_SNIPPET_MAX_CHARS   = 1200
+SUPPORTED_ROLE_BUNDLE_FEATURES = frozenset({"vlan", "interface", "acl", "routing"})
 
 
 class PlaybookBuildError(RuntimeError):
@@ -51,6 +58,10 @@ class PlaybookBuilder:
 
     def __init__(self, provider) -> None:
         self._provider = provider
+
+    @staticmethod
+    def supports_role_bundle(feature: str) -> bool:
+        return str(feature or "").strip().lower() in SUPPORTED_ROLE_BUNDLE_FEATURES
 
     async def build(
         self,
@@ -102,26 +113,12 @@ class PlaybookBuilder:
     ) -> str:
         """Generate a YAML playbook draft without rejecting it on validation errors."""
         # ── Build prompt ───────────────────────────────────────────────────
-        params_yaml = yaml.dump(
-            intent.get("params", {}),
-            default_flow_style=False,
-            indent=2,
-        ).strip()
-
-        snippets_text = "\n---\n".join(
-            s[:_KB_SNIPPET_MAX_CHARS]
-            for s in kb_snippets[:_KB_SNIPPETS_MAX]
-        ) or "(none retrieved)"
-
-        prompt_text = PROMPT_TEMPLATE.format(
-            rag_context=rag_context[:_RAG_CONTEXT_MAX_CHARS],
-            kb_snippets=snippets_text,
-            run_id=run_id or "unknown",
-            intent_description=intent.get("description", ""),
-            target_hosts=", ".join(intent.get("target_hosts", [])),
-            vendor=intent.get("vendor", ""),
-            feature=intent.get("feature", ""),
-            params_yaml=params_yaml,
+        prompt_text = self._render_prompt(
+            template=PROMPT_TEMPLATE,
+            intent=intent,
+            rag_context=rag_context,
+            kb_snippets=kb_snippets,
+            run_id=run_id,
         )
         if extra_guidance:
             prompt_text += f"\n\n{extra_guidance.strip()}"
@@ -142,6 +139,66 @@ class PlaybookBuilder:
 
         # ── Extract YAML ────────────────────────────────────────────────────
         return self._extract_yaml(raw_text)
+
+    async def build_bundle_draft(
+        self,
+        intent: dict,
+        rag_context: str,
+        kb_snippets: list[str],
+        run_id: Optional[str] = None,
+        temperature: float = 0.1,
+        extra_guidance: str = "",
+    ) -> AnsibleArtifactBundle:
+        prompt_text = self._render_prompt(
+            template=BUNDLE_PROMPT_TEMPLATE,
+            intent=intent,
+            rag_context=rag_context,
+            kb_snippets=kb_snippets,
+            run_id=run_id,
+        )
+        if extra_guidance:
+            prompt_text += f"\n\n{extra_guidance.strip()}"
+
+        from llm.provider import LLMMessage
+        response = await self._provider.generate(
+            messages=[LLMMessage(role="user", content=prompt_text)],
+            temperature=temperature,
+        )
+        if response is None:
+            raise PlaybookBuildError("LLM provider returned no response object for bundle generation")
+        raw = response.content or ""
+        if not raw.strip():
+            raise PlaybookBuildError(
+                f"LLM returned empty content for bundle generation "
+                f"(finish_reason={getattr(response, 'finish_reason', 'unknown')})"
+            )
+
+        try:
+            return parse_bundle_response(raw)
+        except (ValueError, json.JSONDecodeError) as e:
+            logger.warning(
+                "Bundle JSON parse failed (%s), falling back to single-playbook extraction. "
+                "finish_reason=%s preview=%r",
+                e,
+                getattr(response, "finish_reason", "unknown"),
+                raw[:500],
+            )
+            try:
+                playbook_yaml = self._extract_yaml(raw)
+            except PlaybookBuildError:
+                raise PlaybookBuildError(
+                    "LLM did not return valid bundle JSON or a single YAML playbook. "
+                    "Expected a ```json ... ``` block with entrypoint_path and files, or a ```yaml ... ``` playbook."
+                ) from e
+            run_suffix = str(run_id or "unknown")
+            entrypoint_path = f"playbooks/generated/job_{run_suffix}/playbook.yml"
+            return AnsibleArtifactBundle(
+                entrypoint_path=entrypoint_path,
+                files=[
+                    AnsibleArtifactFile(path=entrypoint_path, content=playbook_yaml, kind="playbook"),
+                ],
+                manifest={"generator": "fallback_single_playbook", "run_id": run_suffix},
+            )
 
     def validate_playbook(self, intent: dict, playbook_yaml: str) -> dict[str, Any]:
         """Return a structured validation report for a playbook draft."""
@@ -176,6 +233,23 @@ class PlaybookBuilder:
             "errors": [self._format_issue(issue) for issue in issues],
         }
 
+    def validate_bundle(self, intent: dict, bundle: AnsibleArtifactBundle) -> dict[str, Any]:
+        issues: list[dict[str, Any]] = []
+        bundle_validation = validate_playbook_bundle(
+            bundle=bundle.to_dict(),
+            vendor=str(intent.get("vendor", "")),
+            feature=str(intent.get("feature", "")),
+            target_hosts=list(intent.get("target_hosts", [])),
+            execution_engine=self._expected_execution_engine(str(intent.get("vendor", ""))),
+        )
+        for error in bundle_validation.get("errors") or []:
+            issues.append(self._issue("bundle", str(error), rule="bundle_validation"))
+        return {
+            "passed": len(issues) == 0,
+            "issues": issues,
+            "errors": [self._format_issue(issue) for issue in issues],
+        }
+
     async def build_candidates(
         self,
         intent:      dict,
@@ -200,29 +274,15 @@ class PlaybookBuilder:
             {"label": "aggressive",   "temp": 0.4,  "extra": "Optimise for completeness. Include pre/post validation tasks."},
         ][:n]
 
-        params_yaml = yaml.dump(
-            intent.get("params", {}),
-            default_flow_style=False,
-            indent=2,
-        ).strip()
-
-        snippets_text = "\n---\n".join(
-            s[:_KB_SNIPPET_MAX_CHARS]
-            for s in kb_snippets[:_KB_SNIPPETS_MAX]
-        ) or "(none retrieved)"
-
         candidates = []
         for i, approach in enumerate(approaches):
             try:
-                prompt_text = PROMPT_TEMPLATE.format(
-                    rag_context=rag_context[:_RAG_CONTEXT_MAX_CHARS],
-                    kb_snippets=snippets_text,
-                    run_id=run_id or "unknown",
-                    intent_description=intent.get("description", ""),
-                    target_hosts=", ".join(intent.get("target_hosts", [])),
-                    vendor=intent.get("vendor", ""),
-                    feature=intent.get("feature", ""),
-                    params_yaml=params_yaml,
+                prompt_text = self._render_prompt(
+                    template=PROMPT_TEMPLATE,
+                    intent=intent,
+                    rag_context=rag_context,
+                    kb_snippets=kb_snippets,
+                    run_id=run_id,
                 )
                 # Append approach guidance
                 prompt_text += f"\n\n**Approach: {approach['label']}** — {approach['extra']}"
@@ -270,6 +330,38 @@ class PlaybookBuilder:
         if not extracted:
             raise PlaybookBuildError("LLM returned an empty YAML code block")
         return extracted
+
+    def _render_prompt(
+        self,
+        *,
+        template: str,
+        intent: dict,
+        rag_context: str,
+        kb_snippets: list[str],
+        run_id: Optional[str],
+    ) -> str:
+        params_yaml = yaml.dump(
+            intent.get("params", {}),
+            default_flow_style=False,
+            indent=2,
+        ).strip()
+
+        snippets_text = "\n---\n".join(
+            s[:_KB_SNIPPET_MAX_CHARS]
+            for s in kb_snippets[:_KB_SNIPPETS_MAX]
+        ) or "(none retrieved)"
+
+        return template.format(
+            rag_context=rag_context[:_RAG_CONTEXT_MAX_CHARS],
+            kb_snippets=snippets_text,
+            run_id=run_id or "unknown",
+            intent_description=intent.get("description", ""),
+            target_hosts=", ".join(intent.get("target_hosts", [])),
+            vendor=intent.get("vendor", ""),
+            feature=intent.get("feature", ""),
+            params_yaml=params_yaml,
+            device_inventory_context=intent.get("device_inventory_context", "(no scoped device inventory provided)"),
+        )
 
     def _validate_yaml_structure(self, yaml_text: str):
         """Parse YAML and check it is a non-empty list of plays."""

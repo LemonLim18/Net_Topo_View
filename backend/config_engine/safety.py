@@ -92,9 +92,31 @@ _NATIVE_PLAYBOOK_COLLECTIONS: Dict[str, Sequence[str]] = {
     "juniper_junos": ("junipernetworks.junos.",),
 }
 
+# Short names allowed when play declares collections: [cisco.ios] (task key is "ios_vlans" not "cisco.ios.ios_vlans")
+_CISCO_IOS_COLLECTION_SHORT_NAMES: frozenset = frozenset({
+    "ios_vlans", "ios_config", "ios_command", "ios_facts", "ios_interfaces",
+    "ios_l2_interfaces", "ios_l3_interfaces", "ios_static_route", "ios_bgp",
+    "ios_ospf", "ios_acl", "ios_banner", "ios_lag_interfaces", "ios_lldp_global",
+    "ios_logging", "ios_ntp", "ios_snmp_server", "ios_system", "ios_user",
+    "ios_vrf", "ios_ntp_access_group", "ios_ospfv2", "ios_ospfv3",
+})
+
 _CLI_PLAYBOOK_COLLECTIONS: Dict[str, Sequence[str]] = {
     "huawei_vrp": ("community.network.", "ansible.netcommon."),
 }
+
+_HARD_CODED_SECRET_PATTERNS: Tuple[Tuple[str, re.Pattern[str], str], ...] = (
+    (
+        "hard_coded_ip",
+        re.compile(r"\b\d{1,3}(?:\.\d{1,3}){3}\b"),
+        "Generated bundle contains a hard-coded IPv4 address; inventory should own device addressing.",
+    ),
+    (
+        "hard_coded_password",
+        re.compile(r"\b(password|passwd|secret)\s*:\s*['\"][^'\"]+['\"]", re.IGNORECASE),
+        "Generated bundle appears to contain a hard-coded password/secret value.",
+    ),
+)
 
 
 def _normalize_block(text: str) -> str:
@@ -350,18 +372,26 @@ def validate_playbook_yaml(
     if not engine_ok:
         add_error(f"Execution engine '{execution_engine}' is incompatible with vendor '{vendor}'.")
 
-    module_keys: List[str] = []
-    for play in plays:
-        if not isinstance(play, dict):
-            continue
-        tasks = play.get("tasks") or []
-        for task in tasks:
+    def collect_task_keys(task_list: list) -> None:
+        for task in task_list or []:
             if not isinstance(task, dict):
+                continue
+            if "block" in task:
+                collect_task_keys(task.get("block") or [])
+                collect_task_keys(task.get("rescue") or [])
                 continue
             for key in task.keys():
                 if key == "name":
                     continue
                 module_keys.append(str(key))
+
+    module_keys: List[str] = []
+    for play in plays:
+        if not isinstance(play, dict):
+            continue
+        collect_task_keys(play.get("tasks") or [])
+        collect_task_keys(play.get("pre_tasks") or [])
+        collect_task_keys(play.get("post_tasks") or [])
 
     expected_prefixes = ()
     if execution_engine == ExecutionAction.ANSIBLE_NATIVE.value:
@@ -369,8 +399,16 @@ def validate_playbook_yaml(
     elif execution_engine == ExecutionAction.ANSIBLE_CLI.value:
         expected_prefixes = _CLI_PLAYBOOK_COLLECTIONS.get(vendor, ("ansible.netcommon.",))
 
+    def module_matches(m: str) -> bool:
+        if any(m.startswith(prefix) for prefix in expected_prefixes):
+            return True
+        if vendor == "cisco_ios" and execution_engine == ExecutionAction.ANSIBLE_NATIVE.value:
+            if m in _CISCO_IOS_COLLECTION_SHORT_NAMES:
+                return True
+        return False
+
     if expected_prefixes:
-        module_ok = any(any(module.startswith(prefix) for prefix in expected_prefixes) for module in module_keys)
+        module_ok = any(module_matches(m) for m in module_keys) if module_keys else False
         add_check(
             "module_family_match",
             module_ok,
@@ -379,6 +417,175 @@ def validate_playbook_yaml(
         if not module_ok:
             add_error(
                 f"Playbook modules do not match the expected module family for vendor '{vendor}' and execution engine '{execution_engine}'."
+            )
+
+    return report
+
+
+def validate_playbook_bundle(
+    *,
+    bundle: Dict[str, Any],
+    vendor: str,
+    feature: str,
+    target_hosts: Sequence[str],
+    execution_engine: str,
+) -> Dict[str, Any]:
+    report: Dict[str, Any] = {
+        "version": SAFETY_VALIDATION_VERSION,
+        "artifact_type": "ansible_bundle",
+        "vendor": vendor,
+        "feature": feature,
+        "passed": True,
+        "blocked": False,
+        "errors": [],
+        "warnings": [],
+        "checks": [],
+    }
+
+    def add_check(name: str, passed: bool, details: Optional[str] = None) -> None:
+        report["checks"].append({"name": name, "passed": passed, "details": details or ""})
+        if not passed:
+            report["passed"] = False
+            report["blocked"] = True
+
+    def add_error(message: str) -> None:
+        report["errors"].append(message)
+        report["passed"] = False
+        report["blocked"] = True
+
+    entrypoint_path = str(bundle.get("entrypoint_path") or "").replace("\\", "/").strip("/")
+    files = bundle.get("files") or []
+    add_check("entrypoint_present", bool(entrypoint_path), entrypoint_path or "missing")
+    add_check("files_present", isinstance(files, list) and len(files) > 0, f"{len(files) if isinstance(files, list) else 0} file(s)")
+    if not entrypoint_path or not isinstance(files, list) or not files:
+        if not entrypoint_path:
+            add_error("Bundle entrypoint_path is missing.")
+        if not isinstance(files, list) or not files:
+            add_error("Bundle must contain a non-empty files list.")
+        return report
+
+    file_map: Dict[str, Dict[str, Any]] = {}
+    for item in files:
+        if not isinstance(item, dict):
+            add_error("Bundle contains a non-object file entry.")
+            continue
+        path = str(item.get("path") or "").replace("\\", "/").strip("/")
+        if not path:
+            add_error("Bundle file entry is missing path.")
+            continue
+        if path in file_map:
+            add_error(f"Bundle contains duplicate path '{path}'.")
+            continue
+        file_map[path] = item
+
+        if ".." in Path(path).parts:
+            add_error(f"Bundle file path '{path}' contains parent traversal.")
+        if not (path.startswith("playbooks/generated/") or path.startswith("roles/generated/")):
+            add_error(f"Bundle file path '{path}' is outside the approved generated subtrees.")
+
+        content = str(item.get("content") or "")
+        for finding in _scan_patterns(content, _HARD_CODED_SECRET_PATTERNS):
+            add_error(f"{finding['message']} File: {path}")
+
+    add_check("entrypoint_in_files", entrypoint_path in file_map, entrypoint_path)
+    if entrypoint_path not in file_map:
+        add_error(f"Bundle entrypoint '{entrypoint_path}' is not present in files.")
+        return report
+
+    entrypoint_yaml = str(file_map[entrypoint_path].get("content") or "")
+    try:
+        plays = yaml.safe_load(entrypoint_yaml)
+        plays_ok = isinstance(plays, list) and len(plays) > 0
+        add_check(
+            "entrypoint_yaml_structure",
+            plays_ok,
+            "Parsed entrypoint as a non-empty YAML list of plays." if plays_ok else "Entrypoint must be a non-empty YAML list.",
+        )
+        if not plays_ok:
+            add_error("Entrypoint playbook must be a non-empty YAML list of plays.")
+            return report
+    except yaml.YAMLError as exc:
+        add_check("entrypoint_yaml_structure", False, str(exc))
+        add_error(f"Entrypoint YAML parse error: {exc}")
+        return report
+
+    dangerous = _scan_patterns(entrypoint_yaml, _DANGEROUS_PLAYBOOK_PATTERNS)
+    add_check("entrypoint_dangerous_patterns", len(dangerous) == 0, "; ".join(item["message"] for item in dangerous))
+    for finding in dangerous:
+        add_error(finding["message"])
+
+    if not target_hosts:
+        add_check("target_hosts_present", False, "Target hosts are required.")
+        add_error("Bundle target_hosts must not be empty.")
+    else:
+        add_check("target_hosts_present", True, ", ".join(target_hosts))
+
+    try:
+        compatible_engines = list(_compatible_execution_engines(vendor, feature, ""))
+    except Exception as exc:
+        compatible_engines = []
+        add_error(f"Execution engine validation failed: {exc}")
+    engine_ok = execution_engine in compatible_engines if compatible_engines else False
+    add_check(
+        "execution_engine_compatible",
+        engine_ok,
+        f"Engine '{execution_engine}' compatible set: {', '.join(compatible_engines)}",
+    )
+    if compatible_engines and not engine_ok:
+        add_error(f"Execution engine '{execution_engine}' is incompatible with vendor '{vendor}'.")
+
+    task_files = [path for path in file_map if "/tasks/" in path]
+    add_check("role_task_files_present", len(task_files) >= 4, ", ".join(sorted(task_files)))
+    if len(task_files) < 4:
+        add_error("Bundle must contain role task files for main/cisco/huawei/juniper.")
+
+    module_keys: List[str] = []
+
+    def collect_task_keys(task_list: list) -> None:
+        for task in task_list or []:
+            if not isinstance(task, dict):
+                continue
+            if "block" in task:
+                collect_task_keys(task.get("block") or [])
+                collect_task_keys(task.get("rescue") or [])
+                continue
+            for key in task.keys():
+                if key in {"name", "when", "vars", "register", "delegate_to", "tags"}:
+                    continue
+                module_keys.append(str(key))
+
+    for path in task_files:
+        try:
+            parsed = yaml.safe_load(str(file_map[path].get("content") or ""))
+        except yaml.YAMLError as exc:
+            add_error(f"Role task file '{path}' has invalid YAML: {exc}")
+            continue
+        if isinstance(parsed, list):
+            collect_task_keys(parsed)
+
+    expected_prefixes = ()
+    if execution_engine == ExecutionAction.ANSIBLE_NATIVE.value:
+        expected_prefixes = _NATIVE_PLAYBOOK_COLLECTIONS.get(vendor, ())
+    elif execution_engine == ExecutionAction.ANSIBLE_CLI.value:
+        expected_prefixes = _CLI_PLAYBOOK_COLLECTIONS.get(vendor, ("ansible.netcommon.",))
+
+    def module_matches(m: str) -> bool:
+        if any(m.startswith(prefix) for prefix in expected_prefixes):
+            return True
+        if vendor == "cisco_ios" and execution_engine == ExecutionAction.ANSIBLE_NATIVE.value:
+            return m in _CISCO_IOS_COLLECTION_SHORT_NAMES
+        return False
+
+    if expected_prefixes:
+        module_ok = any(module_matches(m) for m in module_keys) if module_keys else False
+        add_check(
+            "module_family_match",
+            module_ok,
+            f"Observed bundle modules: {', '.join(module_keys) or '(none)'}",
+        )
+        if not module_ok:
+            add_error(
+                f"Bundle modules do not match the expected module family for vendor '{vendor}' and execution engine '{execution_engine}'."
             )
 
     return report

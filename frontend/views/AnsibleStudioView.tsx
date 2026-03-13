@@ -6,7 +6,7 @@ import AnsibleChatPanel                             from '../components/ansible/
 import SSHTerminalDrawer, { type SSHTab }           from '../components/ansible/SSHTerminalDrawer';
 import { ansibleApi, configApi }                    from '../src/services/api';
 import type {
-  AnsibleTab, AnsibleJob, AnsibleCheckResult,
+  AnsibleTab, AnsibleJob, AnsibleCheckResult, AnsibleGeneratedArtifactFile,
 } from '../typesLLM';
 import type { SSHConnectionState } from '../components/SSHTerminal';
 import type { User }               from '../types';
@@ -89,6 +89,8 @@ const AnsibleStudioView: React.FC<AnsibleStudioViewProps> = ({ user }) => {
         status:      r.status,
         stage:       r.stage,
         hasPlaybook: r.has_playbook,
+        artifactType: r.artifact_type,
+        entrypointPath: r.entrypoint_path,
         steps:       r.steps ?? [],
       });
     } catch { /* ignore */ }
@@ -148,11 +150,22 @@ const AnsibleStudioView: React.FC<AnsibleStudioViewProps> = ({ user }) => {
   }, [activeTabId]);
 
   // ── Chat → new playbook ──────────────────────────────────────────────────
-  const handlePlaybookReady = useCallback((jobId: number, content: string, name: string) => {
-    setActiveJobId(jobId);
+  const handlePlaybookReady = useCallback((payload: {
+    jobId: number;
+    content: string;
+    name: string;
+    entrypointPath?: string | null;
+    files?: AnsibleGeneratedArtifactFile[];
+  }) => {
+    setActiveJobId(payload.jobId);
     setCheckResult(null);
     setSseLines([]);
-    openTab(`job_${jobId}`, name, content, false, false, jobId);
+    if (payload.entrypointPath) {
+      openTab(payload.entrypointPath, payload.name, payload.content, false, false, payload.jobId);
+      setFileTreeRefresh(n => n + 1);
+    } else {
+      openTab(`job_${payload.jobId}`, payload.name, payload.content, false, false, payload.jobId);
+    }
   }, [openTab]);
 
   // ── File tree → open file ────────────────────────────────────────────────

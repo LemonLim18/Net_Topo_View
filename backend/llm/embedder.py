@@ -1,7 +1,7 @@
 """
 Embedding wrapper for the Vector-Embedded RAG layer (M21).
 
-Uses Google Gemini ``embedding-001`` (768-dim) when available.
+Uses Google Gemini ``gemini-embedding-001`` (768-dim) when available.
 If Gemini is unavailable or misconfigured, falls back to a deterministic local
 embedding so retrieval remains functional.
 
@@ -25,7 +25,7 @@ from typing import Optional
 
 logger = logging.getLogger("llm.embedder")
 
-_EMBED_MODEL = "embedding-001"
+_EMBED_MODEL = "gemini-embedding-001"
 _BATCH_SIZE = 100
 _EMBED_DIM = 768
 _TOKEN_RE = re.compile(r"[a-z0-9_./-]+")
@@ -144,7 +144,10 @@ class GeminiEmbedder:
             response = self._client.models.embed_content(
                 model=_EMBED_MODEL,
                 contents=texts,
-                config=genai_types.EmbedContentConfig(task_type=task_type),
+                config=genai_types.EmbedContentConfig(
+                    task_type=task_type,
+                    output_dimensionality=_EMBED_DIM,
+                ),
             )
             # response.embeddings is a list of ContentEmbedding objects
             return [list(e.values) for e in response.embeddings]

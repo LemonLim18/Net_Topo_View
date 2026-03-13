@@ -77,6 +77,8 @@ class Job(BaseModel):
     # M22 — Ansible-first execution
     execution_engine: Optional[ExecutionEngine] = None  # None → SSH_FALLBACK at runtime
     ansible_playbook: Optional[str] = None              # LLM-generated YAML stored here
+    ansible_artifact_manifest: Optional[str] = None     # JSON manifest for generated Ansible bundles
+    ansible_entrypoint_path: Optional[str] = None       # Relative file path of generated entry playbook
 
     # Joined fields (for API response)
     hostname: Optional[str] = None
