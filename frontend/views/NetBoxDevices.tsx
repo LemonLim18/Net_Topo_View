@@ -17,6 +17,8 @@ import {
   Cable,
   Clock,
   Cpu,
+  ChevronUp,
+  ChevronDown,
 } from 'lucide-react';
 import { netboxApi, type DeviceRecord, type InterfaceRecord, type LinkRecord } from '../src/services/api';
 import { useDeviceContext } from '../contexts/DeviceContext';
@@ -110,6 +112,58 @@ const sourceBadge = (source: string) => {
   }
 };
 
+const roleBadge = (role: string | null) => {
+  if (!role) return <span className="badge badge-xs badge-ghost">Unknown</span>;
+  const label = ROLE_OPTIONS.find((o) => o.value === role)?.label || role;
+  
+  let colorClass = 'badge-ghost';
+  switch (role) {
+    case 'core':
+      colorClass = 'badge-primary';
+      break;
+    case 'distribution':
+      colorClass = 'badge-secondary';
+      break;
+    case 'access':
+      colorClass = 'badge-accent';
+      break;
+    case 'firewall':
+      colorClass = 'badge-error';
+      break;
+  }
+  
+  return (
+    <span className={`badge ${colorClass} badge-xs badge-outline opacity-80`}>
+      {label}
+    </span>
+  );
+};
+
+interface SortHeaderProps {
+  label: string;
+  sortKey: string;
+  currentKey: string;
+  order: 'asc' | 'desc';
+  onSort: (key: string) => void;
+}
+
+const SortHeader: React.FC<SortHeaderProps> = ({ label, sortKey, currentKey, order, onSort }) => {
+  const isActive = currentKey === sortKey;
+  return (
+    <th 
+      className="cursor-pointer hover:bg-base-300 transition-colors select-none group"
+      onClick={() => onSort(sortKey)}
+    >
+      <div className="flex items-center gap-1">
+        {label}
+        <div className={`transition-opacity ${isActive ? 'opacity-100' : 'opacity-0 group-hover:opacity-40'}`}>
+          {isActive && order === 'desc' ? <ChevronDown className="w-3 h-3" /> : <ChevronUp className="w-3 h-3" />}
+        </div>
+      </div>
+    </th>
+  );
+};
+
 // ---------------------------------------------------------------------------
 //  Empty form
 // ---------------------------------------------------------------------------
@@ -185,6 +239,10 @@ const NetBoxDevices: React.FC = () => {
   const [search, setSearch] = useState(() => localStorage.getItem(NETBOX_SEARCH_KEY) || '');
   const [filterVendor, setFilterVendor] = useState(() => localStorage.getItem(NETBOX_FILTER_VENDOR_KEY) || '');
   const [filterStatus, setFilterStatus] = useState(() => localStorage.getItem(NETBOX_FILTER_STATUS_KEY) || '');
+
+  // Sorting state
+  const [sortKey, setSortKey] = useState<string>('hostname');
+  const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('asc');
 
   // Device modal state
   const [showModal, setShowModal] = useState(false);
@@ -337,6 +395,32 @@ const NetBoxDevices: React.FC = () => {
     return matchesSearch && matchesVendor && matchesStatus;
   });
 
+  const sortedDevices = React.useMemo(() => {
+    const result = [...filtered];
+    result.sort((a: any, b: any) => {
+      let valA = a[sortKey] || '';
+      let valB = b[sortKey] || '';
+
+      // Special handling for labels if needed, but strings work fine for these fields
+      if (typeof valA === 'string') valA = valA.toLowerCase();
+      if (typeof valB === 'string') valB = valB.toLowerCase();
+
+      if (valA < valB) return sortOrder === 'asc' ? -1 : 1;
+      if (valA > valB) return sortOrder === 'asc' ? 1 : -1;
+      return 0;
+    });
+    return result;
+  }, [filtered, sortKey, sortOrder]);
+
+  const toggleSort = (key: string) => {
+    if (sortKey === key) {
+      setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc');
+    } else {
+      setSortKey(key);
+      setSortOrder('asc');
+    }
+  };
+
   // -----------------------------------------------------------------------
   //  Device CRUD handlers
   // -----------------------------------------------------------------------
@@ -382,16 +466,16 @@ const NetBoxDevices: React.FC = () => {
       if (isEditing && editId !== null) {
         const updated = await netboxApi.updateDevice(editId, {
           hostname: form.hostname,
-          management_ip: form.management_ip || undefined,
-          management_subnet_mask: form.management_subnet_mask || undefined,
-          vendor: form.vendor || undefined,
-          model: form.model || undefined,
-          os_version: form.os_version || undefined,
-          serial_number: form.serial_number || undefined,
+          management_ip: form.management_ip,
+          management_subnet_mask: form.management_subnet_mask,
+          vendor: form.vendor,
+          model: form.model,
+          os_version: form.os_version,
+          serial_number: form.serial_number,
           status: form.status,
           role: form.role,
-          ssh_user: form.ssh_user || undefined,
-          ssh_password: form.ssh_password || undefined,
+          ssh_user: form.ssh_user,
+          ssh_password: form.ssh_password,
           ssh_port: form.ssh_port ? Number(form.ssh_port) : undefined,
         });
         Toast.success(`Device "${updated.hostname}" updated`);
@@ -399,16 +483,16 @@ const NetBoxDevices: React.FC = () => {
       } else {
         const created = await netboxApi.createDevice({
           hostname: form.hostname,
-          management_ip: form.management_ip || undefined,
-          management_subnet_mask: form.management_subnet_mask || undefined,
-          vendor: form.vendor || undefined,
-          model: form.model || undefined,
-          os_version: form.os_version || undefined,
-          serial_number: form.serial_number || undefined,
+          management_ip: form.management_ip,
+          management_subnet_mask: form.management_subnet_mask,
+          vendor: form.vendor,
+          model: form.model,
+          os_version: form.os_version,
+          serial_number: form.serial_number,
           status: form.status,
           role: form.role,
-          ssh_user: form.ssh_user || undefined,
-          ssh_password: form.ssh_password || undefined,
+          ssh_user: form.ssh_user,
+          ssh_password: form.ssh_password,
           ssh_port: form.ssh_port ? Number(form.ssh_port) : undefined,
         });
         Toast.success(`Device "${created.hostname}" added`, `ID ${created.id}`);
@@ -500,19 +584,19 @@ const NetBoxDevices: React.FC = () => {
       if (isEditingIface && editIfaceId) {
         await netboxApi.updateInterface(selected.id, editIfaceId, {
           name: ifaceForm.name,
-          ip_address: ifaceForm.ip_address || undefined,
-          subnet_mask: ifaceForm.subnet_mask || undefined,
-          mac_address: ifaceForm.mac_address || undefined,
-          speed: ifaceForm.speed || undefined,
+          ip_address: ifaceForm.ip_address,
+          subnet_mask: ifaceForm.subnet_mask,
+          mac_address: ifaceForm.mac_address,
+          speed: ifaceForm.speed,
         });
         Toast.success(`Interface "${ifaceForm.name}" updated`);
       } else {
         await netboxApi.createInterface(selected.id, {
           name: ifaceForm.name,
-          ip_address: ifaceForm.ip_address || undefined,
-          subnet_mask: ifaceForm.subnet_mask || undefined,
-          mac_address: ifaceForm.mac_address || undefined,
-          speed: ifaceForm.speed || undefined,
+          ip_address: ifaceForm.ip_address,
+          subnet_mask: ifaceForm.subnet_mask,
+          mac_address: ifaceForm.mac_address,
+          speed: ifaceForm.speed,
         });
         Toast.success(`Interface "${ifaceForm.name}" added`);
       }
@@ -673,25 +757,26 @@ const NetBoxDevices: React.FC = () => {
             <table className="table table-sm table-zebra w-full">
               <thead className="sticky top-0 bg-base-200 z-10">
                 <tr>
-                  <th>Hostname</th>
-                  <th>Management IP</th>
-                  <th>Vendor</th>
-                  <th>Status</th>
-                  <th>Source</th>
+                  <SortHeader label="Hostname" sortKey="hostname" currentKey={sortKey} order={sortOrder} onSort={toggleSort} />
+                  <SortHeader label="Role" sortKey="role" currentKey={sortKey} order={sortOrder} onSort={toggleSort} />
+                  <SortHeader label="Management IP" sortKey="management_ip" currentKey={sortKey} order={sortOrder} onSort={toggleSort} />
+                  <SortHeader label="Vendor" sortKey="vendor" currentKey={sortKey} order={sortOrder} onSort={toggleSort} />
+                  <SortHeader label="Status" sortKey="status" currentKey={sortKey} order={sortOrder} onSort={toggleSort} />
+                  <SortHeader label="Source" sortKey="source" currentKey={sortKey} order={sortOrder} onSort={toggleSort} />
                   <th className="text-right">Actions</th>
                 </tr>
               </thead>
               <tbody>
                 {isGlobalLoading && devices.length === 0 ? (
                   <tr>
-                    <td colSpan={6} className="text-center py-12 opacity-50">
+                    <td colSpan={7} className="text-center py-12 opacity-50">
                       <Loader2 className="w-6 h-6 animate-spin mx-auto mb-2" />
                       Loading devices…
                     </td>
                   </tr>
-                ) : filtered.length === 0 ? (
+                ) : sortedDevices.length === 0 ? (
                   <tr>
-                    <td colSpan={6} className="text-center py-12 opacity-50">
+                    <td colSpan={7} className="text-center py-12 opacity-50">
                       <Server className="w-6 h-6 mx-auto mb-2" />
                       {devices.length === 0
                         ? 'No devices yet. Click "Add Device" or "Sync from NetBox".'
@@ -699,7 +784,7 @@ const NetBoxDevices: React.FC = () => {
                     </td>
                   </tr>
                 ) : (
-                  filtered.map((d) => (
+                  sortedDevices.map((d) => (
                     <tr
                       key={d.id}
                       className={`cursor-pointer hover:bg-base-200 transition-colors ${
@@ -708,6 +793,9 @@ const NetBoxDevices: React.FC = () => {
                       onClick={() => setSelected(d)}
                     >
                       <td className="font-mono font-semibold">{d.hostname}</td>
+                      <td className="text-xs">
+                        {roleBadge(d.role)}
+                      </td>
                       <td className="font-mono text-xs">{d.management_ip || '—'}</td>
                       <td className="text-xs">{vendorLabel(d.vendor)}</td>
                       <td>{statusBadge(d.status)}</td>

@@ -675,7 +675,24 @@ async def ollama_context_query(request: OllamaPlaygroundRequest):
         devices = list(merged.values())
         
         # 2. Format context
-        inventory_text = "DEVICE INVENTORY SNAPSHOT:\n"
+        total_count = len(devices)
+        roles = {}
+        vendors = {}
+        for d in devices:
+            r = d.get('role', 'unknown')
+            v = d.get('vendor', 'unknown')
+            roles[r] = roles.get(r, 0) + 1
+            vendors[v] = vendors.get(v, 0) + 1
+
+        summary_parts = [f"{count} {role}" for role, count in roles.items()]
+        vendor_parts = [f"{count} {vendor}" for vendor, count in vendors.items()]
+        
+        inventory_text = f"REAL-TIME INVENTORY METADATA:\n"
+        inventory_text += f"- Total Inventory Count: {total_count} devices\n"
+        inventory_text += f"- Role Summary: {', '.join(summary_parts)}\n"
+        inventory_text += f"- Vendor Summary: {', '.join(vendor_parts)}\n\n"
+        inventory_text += "DEVICE SNAPSHOT LIST:\n"
+        
         enrich_limit = 8 # Limit to avoid excessive API latency
         
         for i, d in enumerate(devices):
@@ -702,14 +719,15 @@ async def ollama_context_query(request: OllamaPlaygroundRequest):
 
             inventory_text += f"- {hostname} ({d.get('management_ip')}), {d.get('vendor')} {d.get('role')}{interfaces_summary}{links_summary}\n"
         
-        if len(devices) > enrich_limit:
-            inventory_text += f"\n(Note: Enrichment skipped for {len(devices) - enrich_limit} devices.)\n"
+        if total_count > enrich_limit:
+            inventory_text += f"\n(Note: Detailed enrichment skipped for {total_count - enrich_limit} devices.)\n"
 
         # 3. Build prompt
         system_prompt = (
             "You are a Network Inventory Assistant. "
-            "Use the following device snapshot to answer accurately. "
-            "If interfaces are listed, use them. If not, state they aren't in the snapshot.\n\n"
+            f"There are exactly {total_count} devices in the inventory. "
+            "Use the metadata and snapshot below for accurate counts. "
+            "If asked 'how many', always refer to the 'Total Inventory Count' metadata.\n\n"
             f"{inventory_text}"
         )
         
