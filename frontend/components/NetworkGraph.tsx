@@ -19,7 +19,7 @@ function loadSavedPositions(): SavedPositions {
 }
 
 function savePosToStorage(positions: Map<string, { x?: number; y?: number; vx?: number; vy?: number; fx?: number | null; fy?: number | null }>) {
-  const obj: SavedPositions = {};
+  const obj: SavedPositions = loadSavedPositions();
   positions.forEach((v, k) => {
     if (typeof v.x === 'number' && typeof v.y === 'number') {
       obj[k] = { x: v.x, y: v.y, fx: v.fx ?? null, fy: v.fy ?? null };
@@ -172,12 +172,6 @@ const NetworkGraph: React.FC<NetworkGraphProps> = ({ nodes, links, onNodeClick, 
     });
 
     const nodeById = new Map(nodes.map(n => [n.id, n] as const));
-    const liveNodeIds = new Set(nodes.map(n => n.id));
-    Array.from(positionsRef.current.keys()).forEach(id => {
-      if (!liveNodeIds.has(id)) {
-        positionsRef.current.delete(id);
-      }
-    });
 
     simulation
         .nodes(nodes)
@@ -286,19 +280,19 @@ const NetworkGraph: React.FC<NetworkGraphProps> = ({ nodes, links, onNodeClick, 
           
           const sourceLabel = g.append('text').attr('class', 'source-label fill-current text-base-content text-[10px] font-mono select-none');
           sourceLabel.append('tspan').attr('class', 'source-interface font-semibold').attr('x', 0).attr('dy', 0);
-          sourceLabel.append('tspan').attr('class', 'source-ip').attr('x', 0).attr('dy', '1.1em');
+          sourceLabel.append('tspan').attr('class', 'source-ip text-[9px] opacity-80').attr('x', 0).attr('dy', '0.85em');
               
           const targetLabel = g.append('text').attr('class', 'target-label fill-current text-base-content text-[10px] font-mono select-none');
           targetLabel.append('tspan').attr('class', 'target-interface font-semibold').attr('x', 0).attr('dy', 0);
-          targetLabel.append('tspan').attr('class', 'target-ip').attr('x', 0).attr('dy', '1.1em');
+          targetLabel.append('tspan').attr('class', 'target-ip text-[9px] opacity-80').attr('x', 0).attr('dy', '0.85em');
           return g;
       });
 
     // Update labels and ensure link stroke classes reflect diffStatus for existing links
     linkG.select('.source-interface').text(d => d.sourceInterface);
-    linkG.select('.source-ip').text(d => d.sourceIp);
+    linkG.select('.source-ip').text(d => d.sourceIp).attr('dy', '0.85em').attr('class', 'source-ip text-[9px] opacity-80');
     linkG.select('.target-interface').text(d => d.targetInterface);
-    linkG.select('.target-ip').text(d => d.targetIp);
+    linkG.select('.target-ip').text(d => d.targetIp).attr('dy', '0.85em').attr('class', 'target-ip text-[9px] opacity-80');
     linkG.select('line').attr('class', (d: any) => {
       if (topologyView === 'diff') {
         const status = d.diffStatus || 'unchanged';
@@ -388,52 +382,92 @@ const NetworkGraph: React.FC<NetworkGraphProps> = ({ nodes, links, onNodeClick, 
     });
 
     const renderPositions = () => {
-      linkG.each(function(d) {
+      // Pre-calculate incidence counts and angles to detect overlaps
+      const nodeIncidence = new Map<string, { angle: number; linkIndex: number; isSource: boolean }[]>();
+      links.forEach((l, idx) => {
+        const sId = typeof l.source === 'string' ? l.source : (l.source as D3Node).id;
+        const tId = typeof l.target === 'string' ? l.target : (l.target as D3Node).id;
+        const s = nodeById.get(sId);
+        const t = nodeById.get(tId);
+        if (s && t && typeof s.x === 'number' && typeof t.x === 'number') {
+          const angle = Math.atan2(t.y! - s.y!, t.x! - s.x!);
+          if (!nodeIncidence.has(sId)) nodeIncidence.set(sId, []);
+          nodeIncidence.get(sId)!.push({ angle, linkIndex: idx, isSource: true });
+          if (!nodeIncidence.has(tId)) nodeIncidence.set(tId, []);
+          nodeIncidence.get(tId)!.push({ angle: angle + Math.PI, linkIndex: idx, isSource: false });
+        }
+      });
+
+      // Sort and group by angle for each node to apply staggers
+      const staggers = new Map<string, number>(); // key: "linkIndex-isSource", value: radial stagger index
+
+      nodeIncidence.forEach((list) => {
+        list.sort((a, b) => a.angle - b.angle);
+        let currentStagger = 0;
+        for (let j = 0; j < list.length; j++) {
+          if (j > 0) {
+            let diff = Math.abs(list[j].angle - list[j - 1].angle);
+            if (diff > Math.PI) diff = 2 * Math.PI - diff;
+            if (diff < 0.4) { // ~23°: nearby links get staggered to avoid overlap
+              currentStagger++;
+            } else {
+              currentStagger = 0;
+            }
+          }
+          staggers.set(`${list[j].linkIndex}-${list[j].isSource}`, currentStagger);
+        }
+      });
+
+      linkG.each(function(d, i) {
         const sourceRef = d.source as D3Node | string;
         const targetRef = d.target as D3Node | string;
-        const source = typeof sourceRef === 'string' ? nodeById.get(sourceRef) : sourceRef;
-        const target = typeof targetRef === 'string' ? nodeById.get(targetRef) : targetRef;
+        const source = typeof sourceRef === 'string' ? nodeById.get(sourceRef) : (sourceRef as D3Node);
+        const target = typeof targetRef === 'string' ? nodeById.get(targetRef) : (targetRef as D3Node);
         if (!source || !target) return;
-        if (typeof source.x !== 'number' || typeof source.y !== 'number' || typeof target.x !== 'number' || typeof target.y !== 'number') {
-          return;
-        }
+        if (typeof source.x !== 'number' || typeof source.y !== 'number' || typeof target.x !== 'number' || typeof target.y !== 'number') return;
 
         const el = d3.select(this);
         el.select('line').attr('x1', source.x).attr('y1', source.y).attr('x2', target.x).attr('y2', target.y);
 
         const dx = target.x - source.x;
         const dy = target.y - source.y;
+        const len = Math.hypot(dx, dy) || 1;
         const angle = Math.atan2(dy, dx);
+        const perpX = -dy / len;
+        const perpY = dx / len;
 
-        const nodeRadius = 45;
-        const offset = 15;
-        const yThreshold = 30;
+        // Place labels along the link (not at the node) to avoid pile-up: 28% from each endpoint.
+        const alongFrac = 0.28;
+        const basePerp = 18;
+        const minAlong = 40; // minimum distance from node so label stays off the circle
+        const alongSource = Math.max(minAlong, len * alongFrac);
+        const alongTarget = Math.max(minAlong, len * alongFrac);
 
-        if (source.y > target.y + yThreshold) {
-          el.select('text.source-label')
-            .attr('transform', `translate(${source.x}, ${source.y - 65})`)
-            .attr('text-anchor', 'middle');
-        } else {
-          const perpOffset = dx >= 0 ? offset : -offset;
-          const sourceLabelX = source.x + nodeRadius * Math.cos(angle) + perpOffset * Math.sin(angle);
-          const sourceLabelY = source.y + nodeRadius * Math.sin(angle) - perpOffset * Math.cos(angle);
-          el.select('text.source-label')
-            .attr('transform', `translate(${sourceLabelX}, ${sourceLabelY})`)
-            .attr('text-anchor', dx >= 0 ? 'start' : 'end');
-        }
+        const processLabel = (isSource: boolean) => {
+          const stagger = staggers.get(`${i}-${isSource}`) || 0;
+          const side = isSource ? 1 : -1;
+          const perp = (basePerp + stagger * 14) * side;
 
-        if (target.y > source.y + yThreshold) {
-          el.select('text.target-label')
-            .attr('transform', `translate(${target.x}, ${target.y - 65})`)
-            .attr('text-anchor', 'middle');
-        } else {
-          const perpOffset = dx >= 0 ? offset : -offset;
-          const targetLabelX = target.x - nodeRadius * Math.cos(angle) + perpOffset * Math.sin(angle);
-          const targetLabelY = target.y - nodeRadius * Math.sin(angle) - perpOffset * Math.cos(angle);
-          el.select('text.target-label')
-            .attr('transform', `translate(${targetLabelX}, ${targetLabelY})`)
-            .attr('text-anchor', dx >= 0 ? 'end' : 'start');
-        }
+          const lx = isSource
+            ? source.x! + (dx / len) * alongSource + perpX * perp
+            : target.x! - (dx / len) * alongTarget + perpX * perp;
+          const ly = isSource
+            ? source.y! + (dy / len) * alongSource + perpY * perp
+            : target.y! - (dy / len) * alongTarget + perpY * perp;
+
+          const lAngle = isSource ? angle : angle + Math.PI;
+          const cos = Math.cos(lAngle);
+          let anchor: string = 'middle';
+          if (cos > 0.35) anchor = 'start';
+          else if (cos < -0.35) anchor = 'end';
+
+          el.select(isSource ? '.source-label' : '.target-label')
+            .attr('transform', `translate(${lx}, ${ly})`)
+            .attr('text-anchor', anchor);
+        };
+
+        processLabel(true);
+        processLabel(false);
       });
 
       node.attr('transform', d => `translate(${d.x},${d.y})`);
