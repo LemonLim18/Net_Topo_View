@@ -1,9 +1,45 @@
-import React, { useRef, useEffect, useCallback } from 'react';
+import React, { useRef, useEffect, useCallback, useState } from 'react';
 import * as d3 from 'd3';
 import type { D3Node, D3Link } from '../types';
 import RouterIcon from './icons/RouterIcon';
 import ServerIcon from './icons/ServerIcon';
 import { CONTROLLER_NODE_ID } from '../constants';
+
+const POSITIONS_STORAGE_KEY = 'nettopo_node_positions';
+const TRANSFORM_STORAGE_KEY = 'nettopo_zoom_transform';
+
+type SavedPosition = { x: number; y: number; fx: number | null; fy: number | null };
+type SavedPositions = Record<string, SavedPosition>;
+
+function loadSavedPositions(): SavedPositions {
+  try {
+    const raw = localStorage.getItem(POSITIONS_STORAGE_KEY);
+    return raw ? JSON.parse(raw) : {};
+  } catch { return {}; }
+}
+
+function savePosToStorage(positions: Map<string, { x?: number; y?: number; vx?: number; vy?: number; fx?: number | null; fy?: number | null }>) {
+  const obj: SavedPositions = {};
+  positions.forEach((v, k) => {
+    if (typeof v.x === 'number' && typeof v.y === 'number') {
+      obj[k] = { x: v.x, y: v.y, fx: v.fx ?? null, fy: v.fy ?? null };
+    }
+  });
+  try { localStorage.setItem(POSITIONS_STORAGE_KEY, JSON.stringify(obj)); } catch { /* quota */ }
+}
+
+function loadSavedTransform(): d3.ZoomTransform | null {
+  try {
+    const raw = localStorage.getItem(TRANSFORM_STORAGE_KEY);
+    if (!raw) return null;
+    const { k, x, y } = JSON.parse(raw);
+    return d3.zoomIdentity.translate(x, y).scale(k);
+  } catch { return null; }
+}
+
+function saveTransformToStorage(t: d3.ZoomTransform) {
+  try { localStorage.setItem(TRANSFORM_STORAGE_KEY, JSON.stringify({ k: t.k, x: t.x, y: t.y })); } catch { /* quota */ }
+}
 
 interface NetworkGraphProps {
   nodes: D3Node[];
@@ -14,7 +50,6 @@ interface NetworkGraphProps {
   isGridVisible: boolean;
   setIsGridVisible: (visible: boolean) => void;
   theme: string;
-  // topologyView controls whether diff highlighting is applied
   topologyView?: 'actual' | 'planned' | 'diff';
 }
 
@@ -23,26 +58,33 @@ const NetworkGraph: React.FC<NetworkGraphProps> = ({ nodes, links, onNodeClick, 
   const containerRef = useRef<HTMLDivElement>(null);
   const simulationRef = useRef<d3.Simulation<D3Node, D3Link> | null>(null);
   const zoomRef = useRef<d3.ZoomBehavior<SVGSVGElement, unknown> | null>(null);
-  // Preserve node positions between updates so switching views doesn't
-  // cause the layout to jump. Map node.id -> position/velocity/fixed state.
   const positionsRef = useRef<Map<string, { x?: number; y?: number; vx?: number; vy?: number; fx?: number | null; fy?: number | null }>>(new Map());
   const graphSignatureRef = useRef<string>('');
   const hasInitializedLayoutRef = useRef(false);
+  const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [, forceRender] = useState(0);
   
   useEffect(() => {
     if (!containerRef.current || !svgRef.current) return;
     const container = containerRef.current;
     const svg = d3.select(svgRef.current);
 
+    // Seed positionsRef from localStorage on first mount
+    if (positionsRef.current.size === 0) {
+      const saved = loadSavedPositions();
+      for (const [id, pos] of Object.entries(saved)) {
+        positionsRef.current.set(id, { x: pos.x, y: pos.y, vx: 0, vy: 0, fx: pos.fx, fy: pos.fy });
+      }
+    }
+
     const observer = new ResizeObserver(([entry]) => {
       window.requestAnimationFrame(() => {
         if (!entry) return;
         const { width, height } = entry.contentRect;
         svg.attr('width', width).attr('height', height);
-        
         if (simulationRef.current) {
           simulationRef.current.force("center", d3.forceCenter(width / 2, height / 2));
-          simulationRef.current.alpha(0.3).restart();
+          simulationRef.current.stop();
         }
       });
     });
@@ -65,10 +107,17 @@ const NetworkGraph: React.FC<NetworkGraphProps> = ({ nodes, links, onNodeClick, 
         .wheelDelta(event => -event.deltaY * (event.deltaMode === 1 ? 0.05 : event.deltaMode ? 1 : 0.002) * 0.4)
         .on('zoom', (event) => {
           g.attr('transform', event.transform);
+          saveTransformToStorage(event.transform);
         });
       
       svg.call(zoom).on("dblclick.zoom", null);
       zoomRef.current = zoom;
+
+      // Restore saved zoom/pan transform
+      const savedTransform = loadSavedTransform();
+      if (savedTransform) {
+        svg.call(zoom.transform, savedTransform);
+      }
     }
 
     if (!simulationRef.current) {
@@ -96,8 +145,12 @@ const NetworkGraph: React.FC<NetworkGraphProps> = ({ nodes, links, onNodeClick, 
     const topologyShapeChanged = graphSignatureRef.current !== graphSignature;
     graphSignatureRef.current = graphSignature;
 
-    // Before applying nodes to the simulation, reapply any previously
-    // remembered positions so existing layout is preserved across view changes.
+    const unsavedNodes = nodes.filter(n => !positionsRef.current.has(n.id));
+    const unsavedIndex = new Map(unsavedNodes.map((n, i) => [n.id, i]));
+    const unsavedCount = Math.max(unsavedNodes.length, 1);
+
+    // Reapply saved positions first. For brand-new nodes, place them in a
+    // deterministic ring so they do not trigger a force-layout reshuffle.
     nodes.forEach(n => {
       const prev = positionsRef.current.get(n.id);
       if (prev) {
@@ -108,15 +161,17 @@ const NetworkGraph: React.FC<NetworkGraphProps> = ({ nodes, links, onNodeClick, 
         if (prev.fx !== undefined) n.fx = prev.fx as any;
         if (prev.fy !== undefined) n.fy = prev.fy as any;
       } else if (n.x === undefined || n.y === undefined) {
-        // Initial scatter to avoid center clumping for new nodes
-        const scatterRadius = Math.min(width, height) * 0.3;
-        const angle = Math.random() * 2 * Math.PI;
-        const r = Math.sqrt(Math.random()) * scatterRadius;
-        n.x = (width / 2) + r * Math.cos(angle);
-        n.y = (height / 2) + r * Math.sin(angle);
+        const index = unsavedIndex.get(n.id) ?? 0;
+        const radius = Math.max(140, Math.min(width, height) * 0.34);
+        const angle = (-Math.PI / 2) + ((2 * Math.PI * index) / unsavedCount);
+        n.x = (width / 2) + radius * Math.cos(angle);
+        n.y = (height / 2) + radius * Math.sin(angle);
+        n.fx = n.x;
+        n.fy = n.y;
       }
     });
 
+    const nodeById = new Map(nodes.map(n => [n.id, n] as const));
     const liveNodeIds = new Set(nodes.map(n => n.id));
     Array.from(positionsRef.current.keys()).forEach(id => {
       if (!liveNodeIds.has(id)) {
@@ -197,6 +252,12 @@ const NetworkGraph: React.FC<NetworkGraphProps> = ({ nodes, links, onNodeClick, 
     gridResizeObserver.observe(container);
     // -------------------------------------------------------------------------------------------
 
+    // Debounced save of node positions to localStorage
+    const scheduleSave = () => {
+      if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+      saveTimerRef.current = setTimeout(() => savePosToStorage(positionsRef.current), 300);
+    };
+
     const linkGroup = g.selectAll<SVGGElement, unknown>('g.links').data([null]).join('g').attr('class', 'links');
     const nodeGroup = g.selectAll<SVGGElement, unknown>('g.nodes').data([null]).join('g').attr('class', 'nodes');
 
@@ -261,19 +322,7 @@ const NetworkGraph: React.FC<NetworkGraphProps> = ({ nodes, links, onNodeClick, 
               if (onNodeContextMenu) {
                 onNodeContextMenu(d.id, event.clientX, event.clientY);
               }
-            })
-            .call(d3.drag<SVGGElement, D3Node>()
-              .on('start', (event, d) => {
-                if (!event.active) simulation.alphaTarget(0.1).restart(); // Moderate pulse for snappy response
-                d.fx = d.x;
-                d.fy = d.y;
-              })
-              .on('drag', (event, d) => { d.fx = event.x; d.fy = event.y; })
-              .on('end', (event, d) => {
-                if (!event.active) simulation.alphaTarget(0);
-                d.fx = null;
-                d.fy = null;
-              }));
+            });
 
           // node circle: change stroke color based on diffStatus, but only in Diff view
           g.append('circle')
@@ -301,6 +350,31 @@ const NetworkGraph: React.FC<NetworkGraphProps> = ({ nodes, links, onNodeClick, 
         }
       );
 
+    const dragBehavior = d3.drag<SVGGElement, D3Node>()
+      .on('start', (_event, d) => {
+        d.fx = d.x;
+        d.fy = d.y;
+      })
+      .on('drag', (event, d) => {
+        d.x = event.x;
+        d.y = event.y;
+        d.fx = event.x;
+        d.fy = event.y;
+        positionsRef.current.set(d.id, { x: d.x, y: d.y, vx: 0, vy: 0, fx: d.fx, fy: d.fy });
+        renderPositions();
+      })
+      .on('end', (event, d) => {
+        d.x = event.x;
+        d.y = event.y;
+        d.fx = event.x;
+        d.fy = event.y;
+        positionsRef.current.set(d.id, { x: d.x!, y: d.y!, vx: 0, vy: 0, fx: d.fx, fy: d.fy });
+        renderPositions();
+        scheduleSave();
+      });
+
+    node.call(dragBehavior);
+
     // Ensure existing node circles update their stroke classes when topologyView
     // or diffStatus changes (not only on enter). This makes the ring around
     // nodes reflect added/removed colors in Diff view.
@@ -315,9 +389,14 @@ const NetworkGraph: React.FC<NetworkGraphProps> = ({ nodes, links, onNodeClick, 
 
     const renderPositions = () => {
       linkG.each(function(d) {
-        const source = d.source as D3Node;
-        const target = d.target as D3Node;
-        if (!source.x || !source.y || !target.x || !target.y) return;
+        const sourceRef = d.source as D3Node | string;
+        const targetRef = d.target as D3Node | string;
+        const source = typeof sourceRef === 'string' ? nodeById.get(sourceRef) : sourceRef;
+        const target = typeof targetRef === 'string' ? nodeById.get(targetRef) : targetRef;
+        if (!source || !target) return;
+        if (typeof source.x !== 'number' || typeof source.y !== 'number' || typeof target.x !== 'number' || typeof target.y !== 'number') {
+          return;
+        }
 
         const el = d3.select(this);
         el.select('line').attr('x1', source.x).attr('y1', source.y).attr('x2', target.x).attr('y2', target.y);
@@ -363,7 +442,6 @@ const NetworkGraph: React.FC<NetworkGraphProps> = ({ nodes, links, onNodeClick, 
     simulation.on('tick', () => {
       renderPositions();
 
-      // Remember positions after each tick so we can restore them on next update
       const simNodes = simulation.nodes();
       simNodes.forEach(n => {
         positionsRef.current.set(n.id, { x: n.x, y: n.y, vx: n.vx, vy: n.vy, fx: (n as any).fx ?? null, fy: (n as any).fy ?? null });
@@ -374,9 +452,25 @@ const NetworkGraph: React.FC<NetworkGraphProps> = ({ nodes, links, onNodeClick, 
 
     if (!hasInitializedLayoutRef.current) {
       hasInitializedLayoutRef.current = true;
-      simulation.alpha(0.9).restart();
+      nodes.forEach(n => {
+        if (typeof n.x === 'number' && typeof n.y === 'number') {
+          if (n.fx == null) n.fx = n.x;
+          if (n.fy == null) n.fy = n.y;
+          positionsRef.current.set(n.id, { x: n.x, y: n.y, vx: 0, vy: 0, fx: n.fx, fy: n.fy });
+        }
+      });
+      simulation.alpha(0).stop();
+      savePosToStorage(positionsRef.current);
     } else if (topologyShapeChanged) {
-      simulation.alpha(0.22).restart();
+      nodes.forEach(n => {
+        if (typeof n.x === 'number' && typeof n.y === 'number') {
+          if (n.fx == null) n.fx = n.x;
+          if (n.fy == null) n.fy = n.y;
+          positionsRef.current.set(n.id, { x: n.x, y: n.y, vx: 0, vy: 0, fx: n.fx, fy: n.fy });
+        }
+      });
+      simulation.alpha(0).stop();
+      savePosToStorage(positionsRef.current);
     } else {
       simulation.alpha(0);
       simulation.stop();
@@ -450,6 +544,25 @@ const NetworkGraph: React.FC<NetworkGraphProps> = ({ nodes, links, onNodeClick, 
       .call(zoomRef.current.scaleBy, 0.8);
   }, []);
 
+  const handleResetLayout = useCallback(() => {
+    localStorage.removeItem(POSITIONS_STORAGE_KEY);
+    localStorage.removeItem(TRANSFORM_STORAGE_KEY);
+    positionsRef.current.clear();
+    hasInitializedLayoutRef.current = false;
+    graphSignatureRef.current = '';
+
+    if (simulationRef.current) {
+      simulationRef.current.nodes().forEach(n => { n.fx = null; n.fy = null; (n as any).x = undefined; (n as any).y = undefined; });
+    }
+
+    // Reset zoom to identity
+    if (svgRef.current && zoomRef.current) {
+      d3.select(svgRef.current).call(zoomRef.current.transform, d3.zoomIdentity);
+    }
+
+    forceRender(c => c + 1);
+  }, []);
+
   return (
     <div 
       ref={containerRef} 
@@ -474,6 +587,16 @@ const NetworkGraph: React.FC<NetworkGraphProps> = ({ nodes, links, onNodeClick, 
                 <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16" />
                 <path strokeLinecap="round" strokeLinejoin="round" d="M4 12h16" />
            </svg>
+        </button>
+        <button
+          onClick={handleResetLayout}
+          className="btn btn-sm"
+          aria-label="Reset layout"
+          title="Reset Layout (re-run auto-layout)"
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
+            <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+          </svg>
         </button>
       </div>
     </div>
