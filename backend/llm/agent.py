@@ -395,7 +395,7 @@ class NetworkAgent:
 
         return None
 
-    async def chat_streaming(self, user_message: str) -> AsyncIterator[Dict[str, Any]]:
+    async def chat_streaming(self, user_message: str, grounding: bool = True) -> AsyncIterator[Dict[str, Any]]:
         """
         Streaming version of chat() that yields progress events.
 
@@ -407,6 +407,14 @@ class NetworkAgent:
 
         def _elapsed() -> int:
             return int((time.monotonic() - t0) * 1000)
+
+        if not grounding:
+            # Short-circuit for playground / raw model mode
+            yield {"event": "progress", "phase": "reasoning", "label": "Analyzing and composing response…", "elapsed_ms": _elapsed()}
+            result = await self._chat_unfiltered(user_message)
+            result["elapsed_ms"] = _elapsed()
+            yield {"event": "complete", **result}
+            return
 
         # Phase 1: Classify
         yield {"event": "progress", "phase": "classifying", "label": "Understanding your request…", "elapsed_ms": _elapsed()}
@@ -447,7 +455,7 @@ class NetworkAgent:
         result["elapsed_ms"] = _elapsed()
         yield {"event": "complete", **result}
 
-    async def chat(self, user_message: str) -> Dict[str, Any]:
+    async def chat(self, user_message: str, grounding: bool = True) -> Dict[str, Any]:
         """
         Process a user message and return the agent's response.
 
@@ -462,6 +470,9 @@ class NetworkAgent:
             {"role": "assistant", "content": "...", "type": "text"} or
             {"role": "assistant", "content": "...", "type": "proposal", "proposal": {...}}
         """
+        if not grounding:
+            return await self._chat_unfiltered(user_message)
+
         turn_state = self._prepare_turn_state(user_message)
         return await self._chat_with_prepared_turn(user_message, turn_state)
 
@@ -728,6 +739,44 @@ class NetworkAgent:
             "type": "text",
             "grounding_meta": grounding_meta,
         }
+
+    async def _chat_unfiltered(self, user_message: str) -> Dict[str, Any]:
+        """
+        Direct, ungrounded chat for playground mode. Bypass all system prompts,
+        tools, and network-specific routing.
+        """
+        self._history.append(LLMMessage(role="user", content=user_message))
+        
+        # Simple generic system prompt for ungrounded mode
+        system_content = "You are a helpful and harmless AI assistant. You answer questions directly and clearly."
+        
+        messages = [
+            LLMMessage(role="system", content=system_content),
+            *self._history,
+        ]
+        
+        try:
+            response = await self._provider.generate(
+                messages=messages,
+                tools=None, # No tools in raw mode
+                temperature=0.7
+            )
+            content = response.content or "No response from model."
+            self._history.append(LLMMessage(role="assistant", content=content))
+            
+            return {
+                "role": "assistant",
+                "content": content,
+                "model": self.model_name,
+                "type": "text"
+            }
+        except Exception as e:
+            logger.error("Unfiltered chat error: %s", e)
+            return {
+                "role": "system",
+                "content": f"Encountered an error during raw model generation: {e}",
+                "type": "text"
+            }
 
     # ------------------------------------------------------------------
     # M19: Proposal Detection

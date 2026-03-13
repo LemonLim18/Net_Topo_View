@@ -155,18 +155,38 @@ const FloatingInventoryOverlay: React.FC<{ onClose: () => void }> = ({ onClose }
   const fetchModels = async () => {
     setModelFetchError(null);
     try {
+      // Fetch Ollama local models (if available)
       const resp = await fetch('/api/v1/llm/chat/ollama/models');
+      let localModels: string[] = [];
       if (resp.ok) {
         const data = await resp.json();
         if (data.models && data.models.length > 0) {
-          setAvailableModels(data.models);
-          setSelectedModel(data.models[0]);
-        } else {
-          setModelFetchError('No models found on Ollama server.');
+          localModels = data.models.map((m: string) => `ollama::${m}`);
         }
+      }
+
+      // Fetch runtime providers (includes Gemini cloud models)
+      const runtimeResp = await fetch('/api/v1/llm/chat/runtime');
+      let combined: string[] = [];
+      if (runtimeResp.ok) {
+        const runtime = await runtimeResp.json();
+        const gemini = runtime.providers?.find((p: any) => p.name === 'gemini');
+        if (gemini && Array.isArray(gemini.models) && gemini.models.length > 0) {
+          const g = gemini.models.map((m: string) => `gemini::${m}`);
+          combined = [...g];
+        }
+        // Append local Ollama models after cloud options
+        combined = [...combined, ...localModels];
       } else {
-        const err = await resp.json();
-        setModelFetchError(err.detail || 'Ollama server unreachable.');
+        // Fallback: show only local models (prefixed)
+        combined = localModels;
+      }
+
+      if (combined.length === 0) {
+        setModelFetchError('No models found (cloud or local).');
+      } else {
+        setAvailableModels(combined);
+        setSelectedModel(combined[0]);
       }
     } catch (err) {
       console.error('Failed to fetch Ollama models:', err);
@@ -202,18 +222,32 @@ const FloatingInventoryOverlay: React.FC<{ onClose: () => void }> = ({ onClose }
     }
 
     try {
-      const endpoint = mode === 'playground' 
-        ? '/api/v1/llm/chat/ollama/playground' 
-        : '/api/v1/llm/chat/ollama/context_query';
+      // Determine provider/model routing from selectedModel prefix
+      let resp;
+      if (selectedModel.startsWith('gemini::')) {
+        // Cloud Gemini provider — use unified chat endpoint
+        resp = await fetch('/api/v1/llm/chat', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ 
+            message: userMsg.content, 
+            model: selectedModel.split('::', 2)[1],
+            grounding: mode !== 'playground'
+          }),
+        });
+      } else {
+        // Default: Ollama local playground/context query
+        const modelName = selectedModel.startsWith('ollama::') ? selectedModel.split('::', 2)[1] : selectedModel;
+        const endpoint = mode === 'playground' 
+          ? '/api/v1/llm/chat/ollama/playground' 
+          : '/api/v1/llm/chat/ollama/context_query';
+        resp = await fetch(endpoint, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ prompt: userMsg.content, model: modelName }),
+        });
+      }
 
-      const resp = await fetch(endpoint, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
-          prompt: userMsg.content,
-          model: selectedModel || undefined
-        })
-      });
       const data = await resp.json();
       
       const assistantMsg: Message = {
@@ -499,7 +533,9 @@ const FloatingInventoryOverlay: React.FC<{ onClose: () => void }> = ({ onClose }
                 >
                   {availableModels.length > 0 ? (
                     availableModels.map(m => (
-                      <option key={m} value={m}>{m}</option>
+                      <option key={m} value={m}>
+                        {m.startsWith('gemini::') ? `Gemini • ${m.split('::',2)[1]}` : (m.startsWith('ollama::') ? `${m.split('::',2)[1]} • Local` : m)}
+                      </option>
                     ))
                   ) : (
                     <option disabled>No local models found</option>

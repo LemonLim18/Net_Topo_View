@@ -68,6 +68,7 @@ router = APIRouter(prefix="/llm/chat", tags=["Chat (M5)"])
 class ChatRequest(BaseModel):
     """User chat message."""
     message: str = Field(..., description="The user's message", min_length=1)
+    grounding: bool = Field(default=True, description="Enable grounding and network context injection")
 
 
 class ChatRuntimeUpdateRequest(BaseModel):
@@ -476,7 +477,7 @@ async def chat(request: ChatRequest):
     agent = _get_agent()
 
     try:
-        result = await agent.chat(request.message)
+        result = await agent.chat(request.message, grounding=request.grounding)
         record_controller_chat_snapshot(request.message, result, model=agent.model_name)
         return ChatResponse(
             role=result.get("role", "assistant"),
@@ -507,7 +508,7 @@ async def chat_stream(request: ChatRequest):
 
     async def _sse_generator():
         try:
-            async for event in agent.chat_streaming(request.message):
+            async for event in agent.chat_streaming(request.message, grounding=request.grounding):
                 event_type = event.pop("event", "progress")
                 yield f"event: {event_type}\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
                 # Allow event loop to flush
