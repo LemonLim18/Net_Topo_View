@@ -7,28 +7,29 @@
     vlan_name: TEST
   tasks:
     - name: Ensure VLAN exists
-      cisco.ios.vlan:
-        vlan_id: '{{ vlan_id }}'
-        name: '{{ vlan_name }}'
-        state: present
+      cisco.ios.ios_vlans:
+        config:
+          - vlan_id: '{{ vlan_id }}'
+            name: '{{ vlan_name }}'
+            state: active
+        state: merged
     - name: Verify VLAN exists
-      cisco.ios.vlan:
-        vlan_id: '{{ vlan_id }}'
-        name: '{{ vlan_name }}'
-        state: query
+      cisco.ios.ios_vlans:
+        state: gathered
       register: vlan_info
     - name: Ensure VLAN is configured on interfaces
-      cisco.ios.vlan_interfaces:
-        vlan_id: '{{ vlan_id }}'
-        interfaces:
-          - name: 'GigabitEthernet0/1'
-          - name: 'GigabitEthernet0/2'
-        state: present
+      cisco.ios.ios_l2_interfaces:
+        config:
+          - name: GigabitEthernet0/1
+            mode: access
+            access:
+              vlan: '{{ vlan_id }}'
+          - name: GigabitEthernet0/2
+            mode: access
+            access:
+              vlan: '{{ vlan_id }}'
+        state: merged
     - name: Verify VLAN interfaces are configured
-      cisco.ios.vlan_interfaces:
-        vlan_id: '{{ vlan_id }}'
-        interfaces:
-          - name: 'GigabitEthernet0/1'
-          - name: 'GigabitEthernet0/2'
-        state: query
+      cisco.ios.ios_l2_interfaces:
+        state: gathered
       register: vlan_interfaces_info

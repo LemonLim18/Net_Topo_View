@@ -1,12 +1,16 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
-import { CheckCircle2, Circle, Loader2, AlertCircle, History, ScrollText, Server } from 'lucide-react';
+import { CheckCircle2, Circle, Loader2, AlertCircle, History, ScrollText, Server, Terminal, Play, ChevronDown } from 'lucide-react';
 import { deployApi, ansibleApi } from '../../src/services/api';
-import type { AnsibleJob } from '../../typesLLM';
+import type { AnsibleJob, AnsibleOutputSession } from '../../typesLLM';
 
 interface JobStatusBarProps {
   job: AnsibleJob | null;
   sseLines: string[];
   isStreaming: boolean;
+  outputSessions?: AnsibleOutputSession[];
+  activeOutputId?: string | null;
+  onSelectOutputSession?: (id: string | null) => void;
+  streamingSessionId?: string | null;
 }
 
 type BottomTab = 'output' | 'history' | 'audit' | 'inventory';
@@ -27,14 +31,23 @@ const STATUS_COLOUR: Record<string, string> = {
   pending:     'text-base-content opacity-50',
 };
 
-const JobStatusBar: React.FC<JobStatusBarProps> = ({ job, sseLines, isStreaming }) => {
+const JobStatusBar: React.FC<JobStatusBarProps> = ({
+  job,
+  sseLines,
+  isStreaming,
+  outputSessions = [],
+  activeOutputId = null,
+  onSelectOutputSession,
+  streamingSessionId = null,
+}) => {
   const logRef = useRef<HTMLDivElement>(null);
   const [tab, setTab] = useState<BottomTab>('output');
+  const [outputPanelCollapsed, setOutputPanelCollapsed] = useState(false);
   const [jobs, setJobs] = useState<any[]>([]);
   const [audit, setAudit] = useState<any[]>([]);
   const [loadingJobs, setLoadingJobs] = useState(false);
   const [loadingAudit, setLoadingAudit] = useState(false);
-  const [inventory, setInventory] = useState<{
+  type InventoryData = {
     hosts: {
       hostname: string;
       ansible_host: string;
@@ -45,14 +58,17 @@ const JobStatusBar: React.FC<JobStatusBarProps> = ({ job, sseLines, isStreaming 
       ssh_password?: string;
     }[];
     credentials_note: string;
-  } | null>(null);
+  };
+  const [inventoryCache, setInventoryCache] = useState<Record<number, InventoryData>>({});
   const [loadingInventory, setLoadingInventory] = useState(false);
+  const inventory = job?.jobId != null ? inventoryCache[job.jobId] ?? null : null;
 
+  const activeSession = outputSessions.find(s => s.id === activeOutputId) ?? outputSessions[0];
   useEffect(() => {
     if (logRef.current) {
       logRef.current.scrollTop = logRef.current.scrollHeight;
     }
-  }, [sseLines]);
+  }, [sseLines, activeSession?.lines.length]);
 
   const fetchJobs = useCallback(async () => {
     setLoadingJobs(true);
@@ -74,20 +90,27 @@ const JobStatusBar: React.FC<JobStatusBarProps> = ({ job, sseLines, isStreaming 
 
   const fetchInventory = useCallback(async (jobId: number) => {
     setLoadingInventory(true);
-    setInventory(null);
     try {
       const res = await ansibleApi.getJobInventory(jobId);
-      setInventory({ hosts: res.hosts ?? [], credentials_note: res.credentials_note ?? '' });
-    } catch { setInventory(null); }
+      setInventoryCache(prev => ({ ...prev, [jobId]: { hosts: res.hosts ?? [], credentials_note: res.credentials_note ?? '' } }));
+    } catch {
+      setInventoryCache(prev => ({ ...prev, [jobId]: { hosts: [], credentials_note: 'Failed to load.' } }));
+    }
     finally { setLoadingInventory(false); }
   }, []);
 
-  // Load data when switching to a tab
+  // Prefetch inventory as soon as we have a job (so Inventory tab is instant when clicked)
+  useEffect(() => {
+    if (job?.jobId == null) return;
+    if (inventoryCache[job.jobId]) return;
+    fetchInventory(job.jobId);
+  }, [job?.jobId, inventoryCache, fetchInventory]);
+
+  // Load data when switching to a tab (history/audit only; inventory is prefetched above)
   useEffect(() => {
     if (tab === 'history') fetchJobs();
     if (tab === 'audit') fetchAudit();
-    if (tab === 'inventory' && job?.jobId) fetchInventory(job.jobId);
-  }, [tab, fetchJobs, fetchAudit, fetchInventory, job?.jobId]);
+  }, [tab, fetchJobs, fetchAudit]);
 
   if (!job) return null;
 
@@ -107,7 +130,7 @@ const JobStatusBar: React.FC<JobStatusBarProps> = ({ job, sseLines, isStreaming 
   );
 
   return (
-    <div className="border-t border-base-300 bg-base-100 flex-shrink-0">
+    <div className="h-full min-h-0 flex flex-col border-t border-base-300 bg-base-100">
       {/* Pipeline step indicator */}
       <div className="flex items-center gap-0 px-4 py-2 border-b border-base-200">
         {STAGES.map((s, idx) => {
@@ -149,26 +172,104 @@ const JobStatusBar: React.FC<JobStatusBarProps> = ({ job, sseLines, isStreaming 
         {tabBtn('audit', <ScrollText className="h-3 w-3" />, 'Audit')}
       </div>
 
-      {/* Tab content */}
-      {tab === 'output' && (isStreaming || sseLines.length > 0) && (
-        <div
-          ref={logRef}
-          className="max-h-28 overflow-y-auto px-4 py-2 font-mono text-xs leading-5 bg-base-200"
-        >
-          {sseLines.slice(-50).map((line, i) => (
-            <div key={i} className="opacity-80 whitespace-pre-wrap break-all">{line}</div>
-          ))}
-          {isStreaming && (
-            <div className="flex items-center gap-1 opacity-50 mt-1">
-              <Loader2 className="h-3 w-3 animate-spin" />
-              <span>Running…</span>
+      {/* Tab content — Output: log content (left) + session list side panel (right) */}
+      {tab === 'output' && (
+        <div className="flex flex-1 min-h-0 bg-base-200">
+          {/* Main output content (left) */}
+          <div className="flex-1 min-w-0 flex flex-col">
+            {outputSessions.length === 0 ? (
+              <div className="flex items-center gap-2 px-4 py-4 text-xs opacity-50">
+                <Terminal className="h-4 w-4 shrink-0" />
+                <span>No output yet. Run <strong>Check</strong> or <strong>Deploy</strong> to see logs here.</span>
+              </div>
+            ) : (
+              <>
+                <div
+                  ref={logRef}
+                  className="flex-1 overflow-y-auto overflow-x-auto px-4 py-2 font-mono text-xs leading-5 min-h-0 select-text"
+                  style={{ userSelect: 'text' }}
+                >
+                  {(() => {
+                    const session = outputSessions.find(s => s.id === activeOutputId) ?? outputSessions[0];
+                    if (!session) return null;
+                    return (
+                      <>
+                        {session.lines.map((line, i) => (
+                          <div key={i} className="whitespace-pre-wrap break-all opacity-90">{line || '\u00A0'}</div>
+                        ))}
+                        {streamingSessionId === session.id && isStreaming && (
+                          <div className="flex items-center gap-1 opacity-60 mt-1">
+                            <Loader2 className="h-3 w-3 animate-spin shrink-0" />
+                            <span>Running…</span>
+                          </div>
+                        )}
+                      </>
+                    );
+                  })()}
+                </div>
+              </>
+            )}
+          </div>
+          {/* Side panel (right): output session list */}
+          {outputSessions.length > 0 && (
+            <div
+              className={`shrink-0 border-l border-base-300 bg-base-100 flex flex-col ${outputPanelCollapsed ? 'w-8' : 'w-40'}`}
+              title={outputPanelCollapsed ? 'Show output list' : 'Hide output list'}
+            >
+              {!outputPanelCollapsed && (
+                <>
+                  <div className="flex items-center justify-between px-2 py-1 border-b border-base-300 text-[10px] font-semibold uppercase tracking-wider opacity-70">
+                    <span>Logs</span>
+                    <button
+                      type="button"
+                      className="btn btn-ghost btn-xs p-0 min-h-0 h-5"
+                      onClick={() => setOutputPanelCollapsed(true)}
+                      aria-label="Collapse"
+                    >
+                      <ChevronDown className="h-3 w-3 rotate-90" />
+                    </button>
+                  </div>
+                  <div className="overflow-y-auto flex-1 min-h-0 py-0.5">
+                    {outputSessions.map((s) => (
+                      <button
+                        key={s.id}
+                        type="button"
+                        className={`w-full text-left px-2 py-1.5 text-[11px] font-mono truncate flex items-center gap-1 border-r-2 transition-colors ${
+                          activeOutputId === s.id
+                            ? 'border-primary bg-primary/10 text-primary'
+                            : 'border-transparent hover:bg-base-200 opacity-80'
+                        }`}
+                        onClick={() => onSelectOutputSession?.(s.id)}
+                      >
+                        {streamingSessionId === s.id && (
+                          <Loader2 className="h-3 w-3 shrink-0 animate-spin" />
+                        )}
+                        {s.type === 'check' && <Terminal className="h-3 w-3 shrink-0 opacity-60" />}
+                        {s.type === 'deploy' && <Play className="h-3 w-3 shrink-0 opacity-60" />}
+                        <span className="truncate">{s.label}</span>
+                      </button>
+                    ))}
+                  </div>
+                </>
+              )}
+              {outputPanelCollapsed && (
+                <button
+                  type="button"
+                  className="flex flex-col items-center justify-center py-2 w-full hover:bg-base-200"
+                  onClick={() => setOutputPanelCollapsed(false)}
+                  aria-label="Expand output list"
+                >
+                  <Terminal className="h-4 w-4 opacity-60" />
+                  <span className="text-[9px] mt-0.5">Logs</span>
+                </button>
+              )}
             </div>
           )}
         </div>
       )}
 
       {tab === 'history' && (
-        <div className="max-h-36 overflow-y-auto bg-base-200">
+        <div className="flex-1 min-h-0 overflow-y-auto bg-base-200">
           {loadingJobs ? (
             <div className="flex items-center justify-center py-4 opacity-50 text-xs"><Loader2 className="h-3 w-3 animate-spin mr-1" /> Loading…</div>
           ) : jobs.length === 0 ? (
@@ -197,7 +298,7 @@ const JobStatusBar: React.FC<JobStatusBarProps> = ({ job, sseLines, isStreaming 
       )}
 
       {tab === 'inventory' && (
-        <div className="max-h-48 overflow-y-auto bg-base-200">
+        <div className="flex-1 min-h-0 overflow-y-auto bg-base-200">
           {loadingInventory ? (
             <div className="flex items-center justify-center py-4 opacity-50 text-xs"><Loader2 className="h-3 w-3 animate-spin mr-1" /> Loading…</div>
           ) : !inventory ? (
@@ -256,7 +357,7 @@ const JobStatusBar: React.FC<JobStatusBarProps> = ({ job, sseLines, isStreaming 
       )}
 
       {tab === 'audit' && (
-        <div className="max-h-36 overflow-y-auto bg-base-200">
+        <div className="flex-1 min-h-0 overflow-y-auto bg-base-200">
           {loadingAudit ? (
             <div className="flex items-center justify-center py-4 opacity-50 text-xs"><Loader2 className="h-3 w-3 animate-spin mr-1" /> Loading…</div>
           ) : audit.length === 0 ? (
@@ -265,13 +366,13 @@ const JobStatusBar: React.FC<JobStatusBarProps> = ({ job, sseLines, isStreaming 
             <div className="space-y-0">
               {audit.slice(0, 25).map((e: any, i: number) => (
                 <div key={e.id ?? i} className="flex items-start gap-2 px-4 py-1.5 text-xs hover:bg-base-300 border-b border-base-300/50">
-                  <ScrollText className="h-3 w-3 mt-0.5 opacity-40 flex-shrink-0" />
+                  <ScrollText className="h-3 w-3 mt-0.5 opacity-40 shrink-0" />
                   <div className="min-w-0 flex-1">
                     <span className="font-medium">{e.action ?? e.event ?? '—'}</span>
                     {e.target && <span className="opacity-60 ml-1">→ {e.target}</span>}
                     {e.details && <p className="opacity-50 truncate">{e.details}</p>}
                   </div>
-                  <span className="opacity-40 flex-shrink-0 text-[10px]">{e.created_at ?? e.timestamp ?? ''}</span>
+                  <span className="opacity-40 shrink-0 text-[10px]">{e.created_at ?? e.timestamp ?? ''}</span>
                 </div>
               ))}
             </div>

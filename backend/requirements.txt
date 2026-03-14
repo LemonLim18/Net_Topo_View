@@ -27,6 +27,7 @@ google-genai
 
 # M22 — Ansible-First Automation Layer
 ansible-runner>=2.3
+ansible-core>=2.14   # required for Windows (ansible-runner uses pexpect, so we run ansible-playbook via subprocess)
 netmiko>=4.3
 ansible-lint>=6.22         # optional: playbook linting in builder.py
 

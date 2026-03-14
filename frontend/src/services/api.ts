@@ -895,7 +895,7 @@ export const ansibleApi = {
 
   /** Dry-run the stored playbook (--check --diff). */
   checkPlaybook: (jobId: number) =>
-    request<{ rc: number; changed: boolean; diff: string; summary: string }>(
+    request<{ rc: number; changed: boolean; diff: string; summary: string; stderr?: string }>(
       `/ansible/jobs/${jobId}/check`,
       { method: 'POST' }
     ),
