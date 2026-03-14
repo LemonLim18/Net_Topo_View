@@ -106,6 +106,16 @@ class NetBoxClient:
             logger.error(f"Error fetching device '{name}': {e}")
             return []
 
+    def get_device_by_id(self, device_id: int):
+        """Fetch a single device by ID (detail endpoint). Use this to get custom_fields (ssh_user, ssh_password, os_version)."""
+        if not self.api or device_id is None:
+            return None
+        try:
+            return self.api.dcim.devices.get(device_id)
+        except Exception as e:
+            logger.debug("Error fetching device id %s: %s", device_id, e)
+            return None
+
     def get_cables(self):
         """Fetch all cables (connections)"""
         if not self.api: return []

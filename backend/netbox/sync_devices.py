@@ -62,10 +62,14 @@ class DeviceSyncer:
         
         for nb_dev in nb_devices:
             try:
+                # Fetch full device by ID so we get custom_fields (list endpoint often omits them)
+                full_dev = self.nb_client.get_device_by_id(nb_dev.id) if getattr(nb_dev, "id", None) else None
+                nb_dev = full_dev if full_dev is not None else nb_dev
+
                 hostname = nb_dev.name
                 mgmt_ip = str(nb_dev.primary_ip4).split('/')[0] if nb_dev.primary_ip4 else None
                 platform = str(nb_dev.platform.slug) if nb_dev.platform else "unknown"
-                
+
                 # Map platform slug to our internal vendor strings
                 vendor = self._map_platform_to_vendor(platform)
 
