@@ -42,3 +42,5 @@ backend/chroma_db/
 backend/chroma_db/chroma.sqlite3
 
 backend/chroma_db/**
+
+backend/db/netauto.db
