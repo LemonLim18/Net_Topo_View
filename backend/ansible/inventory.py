@@ -88,15 +88,27 @@ def build_inventory(
         neighbor_names = list(node.get("connectedNode") or [])
         interface_records = list(node.get("interfaces") or [])
 
+        # Per-vendor credentials: vault_cisco_ios_user, vault_juniper_junos_pass, etc.
+        # Fall back to shared vault_net_user / vault_net_pass if not defined in vault.
+        vendor_key = (vendor or "").replace("-", "_").strip()
+        if vendor_key:
+            user_var = f"{{{{ vault_{vendor_key}_user | default(vault_net_user) }}}}"
+            pass_var = f"{{{{ vault_{vendor_key}_pass | default(vault_net_pass) }}}}"
+            enable_var = f"{{{{ vault_{vendor_key}_enable_pass | default(vault_enable_pass) }}}}"
+        else:
+            user_var = "{{ vault_net_user }}"
+            pass_var = "{{ vault_net_pass }}"
+            enable_var = "{{ vault_enable_pass }}"
+
         hosts[hostname] = {
             "ansible_host":         mgmt_ip,
             "ansible_network_os":   os_name,
             "ansible_connection":   connection,
-            "ansible_user":         "{{ vault_net_user }}",
-            "ansible_password":     "{{ vault_net_pass }}",
+            "ansible_user":         user_var,
+            "ansible_password":     pass_var,
             "ansible_become":       True,
             "ansible_become_method": "enable",
-            "ansible_become_pass":  "{{ vault_enable_pass }}",
+            "ansible_become_pass":  enable_var,
             # Metadata for routing decisions
             "nettopo_vendor":       vendor,
             "nettopo_role":         role,

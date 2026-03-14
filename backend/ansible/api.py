@@ -348,7 +348,35 @@ def _build_inventory_for_hosts(
         topology_override = topology_override_from_planning_context(planning_context)
     if topology_override is None or not (topology_override.get("nodes") or {}):
         topology_override = _build_topo_from_db(target_hosts)
-    return build_inventory(target_hosts=target_hosts or None, topology_override=topology_override)
+    inventory = build_inventory(target_hosts=target_hosts or None, topology_override=topology_override)
+    _inject_device_credentials_into_inventory(inventory)
+    return inventory
+
+
+def _inject_device_credentials_into_inventory(inventory: dict[str, Any]) -> None:
+    """
+    Override ansible_user and ansible_password for each host with values from the
+    local devices table (ssh_user, ssh_password) when set. This makes Ansible
+    check/execute use device credentials from the NetBox controller registration.
+    """
+    if _db is None:
+        return
+    all_group = inventory.get("all") or {}
+    hosts = all_group.get("hosts") or {}
+    if not isinstance(hosts, dict):
+        return
+    for hostname, host_vars in hosts.items():
+        if not isinstance(host_vars, dict):
+            continue
+        try:
+            dev = _db.get_device_by_hostname(hostname)
+            if dev and (dev.ssh_user or dev.ssh_password):
+                if dev.ssh_user:
+                    host_vars["ansible_user"] = (dev.ssh_user or "").strip()
+                if dev.ssh_password:
+                    host_vars["ansible_password"] = (dev.ssh_password or "").strip()
+        except Exception:
+            pass
 
 
 def _minimal_planning_context(
@@ -944,7 +972,7 @@ async def get_result(
     if not row:
         raise HTTPException(404, f"Job {job_id} not found")
 
-    return {
+    out = {
         "job_id":  job_id,
         "status":  row["status"],
         "stage":   row["stage"],
@@ -954,6 +982,98 @@ async def get_result(
         "artifact_type": "bundle" if row["ansible_artifact_manifest"] else "playbook",
         "steps":   [dict(r) for r in logs],
     }
+    # Include bundle file list so chat/file UI can show all generated files
+    if row["ansible_artifact_manifest"]:
+        try:
+            bundle = json.loads(row["ansible_artifact_manifest"])
+            out["files"] = [{"path": f.get("path", "")} for f in (bundle.get("files") or []) if f.get("path")]
+        except Exception:
+            out["files"] = []
+    else:
+        out["files"] = []
+    return out
+
+
+@router.get("/jobs/{job_id}/inventory", summary="Get effective inventory for a job (hosts, IPs, credential source)")
+async def get_job_inventory(
+    job_id: int,
+    user: dict = Depends(get_current_user),
+):
+    """
+    Returns the list of hosts that will be targeted by this job, with management IP
+    and credential source. No secrets are returned.
+    """
+    if _db is None:
+        raise HTTPException(503, "Database not initialized")
+
+    artifact = _load_job_artifact(job_id)
+    target_hosts = artifact.get("target_hosts") or []
+    if not target_hosts:
+        return {
+            "job_id": job_id,
+            "hosts": [],
+            "credentials_note": "No target hosts in this job.",
+        }
+
+    planning_context = None
+    if _db is not None:
+        planning_context = await run_in_threadpool(
+            build_scoped_planning_context,
+            _db,
+            target_hosts,
+        )
+    if not planning_context or not (planning_context.get("devices")):
+        planning_context = _minimal_planning_context(target_hosts, vendor="")
+    inventory = _build_inventory_for_hosts(target_hosts, planning_context)
+    all_hosts = (inventory.get("all") or {}).get("hosts") or {}
+    if isinstance(all_hosts, dict):
+        host_list = []
+        for hostname, vars in all_hosts.items():
+            if not isinstance(vars, dict):
+                vars = {}
+            host_list.append({
+                "hostname": hostname,
+                "ansible_host": vars.get("ansible_host") or hostname,
+                "vendor": vars.get("nettopo_vendor") or "",
+                "role": vars.get("nettopo_role") or "",
+                "credentials_source": _inventory_credentials_source(vars),
+            })
+        host_list.sort(key=lambda h: (h["hostname"],))
+    else:
+        host_list = []
+
+    # Admin-only: show SSH username/password from local DB (devices.ssh_user, devices.ssh_password).
+    # Blank values mean: device not in DB, or device row has NULL/empty ssh_user/ssh_password (e.g.
+    # device was synced from NetBox, or credentials were never set in the NetBox controller form).
+    if host_list and _db is not None and (user.get("role") == "admin"):
+        for h in host_list:
+            h["ssh_user"] = ""
+            h["ssh_password"] = ""
+            try:
+                dev = _db.get_device_by_hostname(h["hostname"])
+                if dev:
+                    h["ssh_user"] = (dev.ssh_user or "").strip()
+                    h["ssh_password"] = (dev.ssh_password or "").strip()
+            except Exception:
+                pass
+
+    credentials_note = (
+        "SSH username/password shown here (admin only) are from the local device inventory (devices table). "
+        "Playbooks use Ansible Vault (vault/net_creds.yml) at run time."
+    )
+    return {
+        "job_id": job_id,
+        "hosts": host_list,
+        "credentials_note": credentials_note,
+    }
+
+
+def _inventory_credentials_source(host_vars: dict) -> str:
+    """Return a short, non-secret description of which vault vars this host uses."""
+    vendor = (host_vars.get("nettopo_vendor") or "").replace(".", "_")
+    if vendor:
+        return f"vault (vendor: {vendor})"
+    return "vault (shared)"
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────

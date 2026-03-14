@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
-import { CheckCircle2, Circle, Loader2, AlertCircle, History, ScrollText } from 'lucide-react';
-import { deployApi } from '../../src/services/api';
+import { CheckCircle2, Circle, Loader2, AlertCircle, History, ScrollText, Server } from 'lucide-react';
+import { deployApi, ansibleApi } from '../../src/services/api';
 import type { AnsibleJob } from '../../typesLLM';
 
 interface JobStatusBarProps {
@@ -9,7 +9,7 @@ interface JobStatusBarProps {
   isStreaming: boolean;
 }
 
-type BottomTab = 'output' | 'history' | 'audit';
+type BottomTab = 'output' | 'history' | 'audit' | 'inventory';
 
 const STAGES = [
   { key: 'plan',     label: 'Plan' },
@@ -34,6 +34,19 @@ const JobStatusBar: React.FC<JobStatusBarProps> = ({ job, sseLines, isStreaming 
   const [audit, setAudit] = useState<any[]>([]);
   const [loadingJobs, setLoadingJobs] = useState(false);
   const [loadingAudit, setLoadingAudit] = useState(false);
+  const [inventory, setInventory] = useState<{
+    hosts: {
+      hostname: string;
+      ansible_host: string;
+      vendor: string;
+      role: string;
+      credentials_source: string;
+      ssh_user?: string;
+      ssh_password?: string;
+    }[];
+    credentials_note: string;
+  } | null>(null);
+  const [loadingInventory, setLoadingInventory] = useState(false);
 
   useEffect(() => {
     if (logRef.current) {
@@ -59,11 +72,22 @@ const JobStatusBar: React.FC<JobStatusBarProps> = ({ job, sseLines, isStreaming 
     finally { setLoadingAudit(false); }
   }, []);
 
+  const fetchInventory = useCallback(async (jobId: number) => {
+    setLoadingInventory(true);
+    setInventory(null);
+    try {
+      const res = await ansibleApi.getJobInventory(jobId);
+      setInventory({ hosts: res.hosts ?? [], credentials_note: res.credentials_note ?? '' });
+    } catch { setInventory(null); }
+    finally { setLoadingInventory(false); }
+  }, []);
+
   // Load data when switching to a tab
   useEffect(() => {
     if (tab === 'history') fetchJobs();
     if (tab === 'audit') fetchAudit();
-  }, [tab, fetchJobs, fetchAudit]);
+    if (tab === 'inventory' && job?.jobId) fetchInventory(job.jobId);
+  }, [tab, fetchJobs, fetchAudit, fetchInventory, job?.jobId]);
 
   if (!job) return null;
 
@@ -120,6 +144,7 @@ const JobStatusBar: React.FC<JobStatusBarProps> = ({ job, sseLines, isStreaming 
       {/* Bottom tabs */}
       <div className="flex border-b border-base-200 bg-base-100">
         {tabBtn('output', <Loader2 className="h-3 w-3" />, 'Output')}
+        {tabBtn('inventory', <Server className="h-3 w-3" />, 'Inventory')}
         {tabBtn('history', <History className="h-3 w-3" />, 'History')}
         {tabBtn('audit', <ScrollText className="h-3 w-3" />, 'Audit')}
       </div>
@@ -167,6 +192,65 @@ const JobStatusBar: React.FC<JobStatusBarProps> = ({ job, sseLines, isStreaming 
                 ))}
               </tbody>
             </table>
+          )}
+        </div>
+      )}
+
+      {tab === 'inventory' && (
+        <div className="max-h-48 overflow-y-auto bg-base-200">
+          {loadingInventory ? (
+            <div className="flex items-center justify-center py-4 opacity-50 text-xs"><Loader2 className="h-3 w-3 animate-spin mr-1" /> Loading…</div>
+          ) : !inventory ? (
+            <div className="text-xs text-center py-4 opacity-40">No inventory data</div>
+          ) : (
+            <div className="p-3 space-y-2 select-text" style={{ userSelect: 'text' }}>
+              {/* Credentials info hidden temporarily
+              <div className="rounded border border-base-300 bg-base-100/80 px-3 py-2 space-y-1">
+                <div className="flex items-center gap-1.5 text-xs font-medium opacity-90">
+                  <Key className="h-3.5 w-3.5" />
+                  Credentials
+                </div>
+                <p className="text-[11px] opacity-85 leading-relaxed">{inventory.credentials_note}</p>
+                <p className="text-[11px] opacity-75 leading-relaxed mt-1">
+                  To view or edit SSH username/password: use <code className="px-1 py-0.5 rounded bg-base-300 text-[10px]">ansible-vault edit backend/ansible/vault/net_creds.yml</code> (vault password required). Per-vendor vars: <code className="px-1 py-0.5 rounded bg-base-300 text-[10px]">vault_cisco_ios_user</code>, <code className="px-1 py-0.5 rounded bg-base-300 text-[10px]">vault_juniper_junos_user</code>, etc.
+                </p>
+              </div>
+              */}
+              {inventory.hosts.length === 0 ? (
+                <div className="text-xs opacity-40">No hosts in this job</div>
+              ) : (
+                <table className="table table-xs w-full">
+                  <thead>
+                    <tr>
+                      <th>Host</th><th>IP</th><th>Vendor</th><th>Role</th>
+                      {/* Credentials column hidden temporarily <th>Credentials</th> */}
+                      {inventory.hosts.some((h) => h.ssh_user != null || h.ssh_password != null || h.ssh_user === '' || h.ssh_password === '') && (
+                        <>
+                          <th>SSH User</th><th>SSH Password</th>
+                        </>
+                      )}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {inventory.hosts.map((h) => (
+                      <tr key={h.hostname} className="hover">
+                        <td className="font-mono text-[11px]">{h.hostname}</td>
+                        <td className="font-mono text-[11px]">{h.ansible_host}</td>
+                        <td className="text-[11px] opacity-80">{h.vendor || '—'}</td>
+                        <td className="text-[11px] opacity-80">{h.role || '—'}</td>
+                        {/* <td className="text-[11px] opacity-60">{h.credentials_source}</td> */}
+                        {inventory.hosts.some((x) => x.ssh_user != null || x.ssh_password != null || x.ssh_user === '' || x.ssh_password === '') && (
+                          <>
+                            <td className="font-mono text-[11px]">{h.ssh_user ?? '—'}</td>
+                            <td className="font-mono text-[11px]">{h.ssh_password ?? '—'}</td>
+                          </>
+                        )}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </div>
           )}
         </div>
       )}

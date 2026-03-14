@@ -14,6 +14,17 @@ Plaintext template (DO NOT COMMIT UNENCRYPTED):
     vault_net_user:   "netautomation"
     vault_net_pass:   "ChangeMe123!"
     vault_enable_pass: "EnableMe!"
+
+Optional per-vendor overrides (different SSH credentials per vendor):
+    vault_cisco_ios_user:   "cisco_admin"
+    vault_cisco_ios_pass:   "CiscoPass!"
+    vault_cisco_ios_enable_pass: "CiscoEnable!"
+    vault_juniper_junos_user: "junos_ops"
+    vault_juniper_junos_pass: "JunosPass!"
+    vault_huawei_vrp_user:  "vrp_admin"
+    vault_huawei_vrp_pass:  "HuaweiPass!"
+
+If per-vendor vars are set, inventory uses them; otherwise vault_net_* apply.
 """
 
 import logging
@@ -87,3 +98,40 @@ def vault_password_file_path() -> str | None:
 
 def vault_file_exists() -> bool:
     return VAULT_FILE.exists()
+
+
+def get_decrypted_vault_vars() -> dict:
+    """
+    Decrypt vault/net_creds.yml and return a dict of variable names to values.
+    Returns {} if vault password is not configured, file is missing, or decryption fails.
+    Used only for admin inventory view; do not log or cache the result.
+    """
+    import subprocess
+
+    try:
+        import yaml
+    except ImportError:
+        return {}
+
+    pw_file = vault_password_file_path()
+    if not pw_file or not VAULT_FILE.exists():
+        return {}
+    try:
+        result = subprocess.run(
+            [
+                "ansible-vault",
+                "view",
+                "--vault-password-file",
+                pw_file,
+                str(VAULT_FILE),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode != 0:
+            return {}
+        data = yaml.safe_load(result.stdout) or {}
+        return dict(data) if isinstance(data, dict) else {}
+    except Exception:
+        return {}

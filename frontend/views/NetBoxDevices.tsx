@@ -479,6 +479,9 @@ const NetBoxDevices: React.FC = () => {
           ssh_port: form.ssh_port ? Number(form.ssh_port) : undefined,
         });
         Toast.success(`Device "${updated.hostname}" updated`);
+        if (updated.netbox_synced === false) {
+          Toast.warning('Saved locally', updated.netbox_error || 'NetBox sync failed. Check NETBOX_URL and NETBOX_TOKEN.');
+        }
         setSelected(updated);
       } else {
         const created = await netboxApi.createDevice({
@@ -496,6 +499,9 @@ const NetBoxDevices: React.FC = () => {
           ssh_port: form.ssh_port ? Number(form.ssh_port) : undefined,
         });
         Toast.success(`Device "${created.hostname}" added`, `ID ${created.id}`);
+        if (created.netbox_synced === false) {
+          Toast.warning('Saved locally', created.netbox_error || 'NetBox sync failed. Check NETBOX_URL and NETBOX_TOKEN.');
+        }
       }
       setShowModal(false);
       fetchDevices(true); // Mutation (Create/Edit) -> Update cache

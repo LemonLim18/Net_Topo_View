@@ -500,7 +500,7 @@ export const netboxApi = {
     ssh_password?: string;
     ssh_port?: number;
   }) =>
-    request<DeviceRecord>('/netbox/devices', {
+    request<DeviceRecord & { netbox_synced?: boolean; netbox_error?: string }>('/netbox/devices', {
       method: 'POST',
       body: JSON.stringify(device),
     }),
@@ -519,7 +519,7 @@ export const netboxApi = {
     ssh_password?: string;
     ssh_port?: number;
   }) =>
-    request<DeviceRecord>(`/netbox/devices/${id}`, {
+    request<DeviceRecord & { netbox_synced?: boolean; netbox_error?: string }>(`/netbox/devices/${id}`, {
       method: 'PUT',
       body: JSON.stringify(device),
     }),
@@ -917,8 +917,25 @@ export const ansibleApi = {
       has_playbook: boolean;
       artifact_type?: 'playbook' | 'bundle';
       entrypoint_path?: string | null;
+      files?: { path: string }[];
       steps: { stage: string; status: string; details: string; created_at: string }[];
     }>(`/ansible/jobs/${jobId}/result`),
+
+  /** Get effective inventory for a job (hosts, IPs, credential source). Admin only: includes ssh_user, ssh_password from vault. */
+  getJobInventory: (jobId: number) =>
+    request<{
+      job_id: number;
+      hosts: {
+        hostname: string;
+        ansible_host: string;
+        vendor: string;
+        role: string;
+        credentials_source: string;
+        ssh_user?: string;
+        ssh_password?: string;
+      }[];
+      credentials_note: string;
+    }>(`/ansible/jobs/${jobId}/inventory`),
 
   /** List the ansible file tree (playbooks/, roles/, inventory/, awx/). */
   listFiles: () =>

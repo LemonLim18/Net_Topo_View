@@ -164,6 +164,8 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
   const fileInputRef   = useRef<HTMLInputElement>(null);
   const dragCounterRef = useRef(0);
   const modelDropdownRef = useRef<HTMLDivElement>(null);
+  /** Hydrated file paths for messages that only had playbookPath (e.g. from before multi-file links). */
+  const [hydratedFilePaths, setHydratedFilePaths] = useState<Record<string, string[]>>({});
 
   // Load LLM runtime (Gemini + Ollama models) and restore Ansible model selection
   useEffect(() => {
@@ -250,6 +252,24 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
     document.addEventListener('mousedown', onOutside);
     return () => document.removeEventListener('mousedown', onOutside);
   }, [modelDropdownOpen]);
+
+  // Hydrate file list from job for messages that show "X generated files" but only had playbookPath (e.g. old responses)
+  useEffect(() => {
+    const toHydrate = messages.filter(
+      (m) => m.role === 'assistant' && m.jobId && !m.isLoading && !m.isError &&
+        (!m.generatedPaths?.length || m.generatedPaths.length <= 1) &&
+        hydratedFilePaths[m.id] === undefined
+    );
+    toHydrate.forEach((m) => {
+      const msgId = m.id;
+      ansibleApi.getResult(m.jobId!).then((r) => {
+        const paths = (r.files ?? []).map((f) => f.path).filter(Boolean);
+        if (paths.length > 0) {
+          setHydratedFilePaths((prev) => ({ ...prev, [msgId]: paths }));
+        }
+      }).catch(() => { /* ignore */ });
+    });
+  }, [messages, hydratedFilePaths]);
 
   // ── File helpers ────────────────────────────────────────────────────────
   const langFor = (name: string) =>
@@ -633,17 +653,22 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
                     <VscodeMarkdown content={msg.content} onOpenFile={onOpenFile} />
                   )}
 
-                  {/* Playbook file chip */}
-                  {msg.playbookPath && (
-                    <button onClick={() => onOpenFile(msg.playbookPath!)}
+                  {/* Generated files: from message, hydrated from job for old messages, or single playbook chip */}
+                  {((msg.generatedPaths?.length ? msg.generatedPaths : null) ??
+                   (msg.jobId && hydratedFilePaths[msg.id]?.length ? hydratedFilePaths[msg.id] : null) ??
+                   (msg.playbookPath ? [msg.playbookPath] : [])
+                  ).map((filePath) => (
+                    <button
+                      key={filePath}
+                      onClick={() => onOpenFile(filePath)}
                       style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 8, padding: '4px 8px', borderRadius: 4, background: '#1e3a5f', border: '1px solid #264f78', color: '#4fc3f7', fontSize: 11, fontFamily: 'monospace', cursor: 'pointer' }}
                       className="hover:bg-[#1e4a7f] transition-colors w-full text-left"
                     >
                       <FileCode style={{ width: 12, height: 12, flexShrink: 0 }} />
-                      <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{msg.playbookPath}</span>
+                      <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{filePath}</span>
                       <ChevronRight style={{ width: 10, height: 10, marginLeft: 'auto', opacity: 0.6, flexShrink: 0 }} />
                     </button>
-                  )}
+                  ))}
                 </div>
               </div>
             )}

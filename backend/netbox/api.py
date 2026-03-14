@@ -157,10 +157,11 @@ async def get_device(device_id: int):
 
 @router.post("/devices")
 async def create_device(body: DeviceCreate):
-    """Create a new device in the local inventory.
+    """Create a new device in the local inventory and sync to NetBox.
 
-    If status is 'registered', auto-pushes to NetBox (creates all
-    prerequisite objects like Site, Manufacturer, DeviceType, etc.).
+    Device metadata (name, mgmt IP, vendor, role, etc.) is pushed to NetBox.
+    SSH username/password are stored only in the local DB (NetBox has no
+    standard credential fields).
     """
     db = _db()
 
@@ -172,6 +173,8 @@ async def create_device(body: DeviceCreate):
     # Auto-push to NetBox (all manual entries sync immediately)
     status = body.status or "planned"
     nb_id = None
+    netbox_synced = False
+    netbox_error = None
     try:
         nb = NetBoxClient.get_client()
         if nb and nb.api:
@@ -182,12 +185,18 @@ async def create_device(body: DeviceCreate):
                 vendor=body.vendor or "cisco_ios",
                 model=body.model,
                 role=body.role,
+                ssh_user=body.ssh_user,
+                ssh_password=body.ssh_password,
             )
             if nb_dev:
-                nb_id = nb_dev.id
+                nb_id = getattr(nb_dev, "id", None)
+                netbox_synced = True
                 logger.info("Auto-pushed device '%s' to NetBox on registration (ID: %s)", body.hostname, nb_id)
+        else:
+            netbox_error = "NetBox not configured or unavailable"
     except Exception as e:
         logger.warning("Auto-push for '%s' failed: %s — still registering locally", body.hostname, e)
+        netbox_error = str(e)
 
     device = Device(
         hostname=body.hostname,
@@ -212,14 +221,19 @@ async def create_device(body: DeviceCreate):
         summary=f"device created: {body.hostname}",
         metadata={"hostname": body.hostname, "operation": "create"},
     )
-    return _device_dict(created)
+    out = _device_dict(created)
+    out["netbox_synced"] = netbox_synced
+    if netbox_error:
+        out["netbox_error"] = netbox_error
+    return out
 
 
 @router.put("/devices/{device_id}")
 async def update_device(device_id: int, body: DeviceUpdate):
-    """Update an existing device.
+    """Update an existing device in the local DB and sync changes to NetBox.
 
-    If the status transitions to 'registered', auto-pushes to NetBox.
+    Device metadata (name, mgmt IP, vendor, role, etc.) is synced to NetBox.
+    SSH username/password are stored only in the local DB.
     """
     db = _db()
     existing = db.get_device_by_id(device_id)
@@ -235,6 +249,8 @@ async def update_device(device_id: int, body: DeviceUpdate):
 
     # Auto-push or Sync to NetBox
     nb_id = existing.netbox_id
+    netbox_synced = False
+    netbox_error = None
     try:
         nb = NetBoxClient.get_client()
         if nb and nb.api:
@@ -248,12 +264,18 @@ async def update_device(device_id: int, body: DeviceUpdate):
                 model=model,
                 role=role,
                 original_name=existing.hostname,
+                ssh_user=body.ssh_user if body.ssh_user is not None else existing.ssh_user,
+                ssh_password=body.ssh_password if body.ssh_password is not None else existing.ssh_password,
             )
             if nb_dev:
-                nb_id = nb_dev.id
+                nb_id = getattr(nb_dev, "id", None) or nb_id
+                netbox_synced = True
                 logger.info("Synced updates for device '%s' (orig: '%s', ID: %s) to NetBox", hostname, existing.hostname, nb_id)
+        else:
+            netbox_error = "NetBox not configured or unavailable"
     except Exception as e:
         logger.warning("Auto-sync for '%s' failed: %s — still updating locally", hostname, e)
+        netbox_error = str(e)
 
     device = Device(
         id=device_id,
@@ -280,7 +302,11 @@ async def update_device(device_id: int, body: DeviceUpdate):
         summary=f"device updated: {hostname}",
         metadata={"hostname": hostname, "operation": "update"},
     )
-    return _device_dict(updated)
+    out = _device_dict(updated)
+    out["netbox_synced"] = netbox_synced
+    if netbox_error:
+        out["netbox_error"] = netbox_error
+    return out
 
 
 @router.delete("/devices/{device_id}")

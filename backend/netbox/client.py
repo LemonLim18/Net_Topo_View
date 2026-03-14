@@ -20,6 +20,13 @@ class _TimeoutSession(requests.Session):
         kwargs.setdefault("timeout", self._timeout_seconds)
         return super().request(*args, **kwargs)
 
+# Custom field slugs for SSH credentials in NetBox (must match Customization → Custom Fields in NetBox)
+def _ssh_custom_field_slugs():
+    return {
+        "username": os.environ.get("NETBOX_CUSTOM_FIELD_SSH_USERNAME", "ssh_user"),
+        "password": os.environ.get("NETBOX_CUSTOM_FIELD_SSH_PASSWORD", "ssh_password"),
+    }
+
 # M11: UI Role Key -> NetBox Role Name/Slug mapping
 ROLE_MAPPING = {
     "core": "Core Switch / Router",
@@ -301,25 +308,50 @@ class NetBoxClient:
     #  Write helpers — best-effort push to NetBox
     # ------------------------------------------------------------------
 
+    def _set_device_ssh_custom_fields(self, device, ssh_user: str = None, ssh_password: str = None):
+        """Write SSH username/password to NetBox device custom fields (if your NetBox has them)."""
+        if not device:
+            return
+        slugs = _ssh_custom_field_slugs()
+        cf = {}
+        if ssh_user is not None:
+            cf[slugs["username"]] = ssh_user
+        if ssh_password is not None:
+            cf[slugs["password"]] = ssh_password
+        if not cf:
+            return
+        try:
+            device.update({"custom_fields": cf})
+            device.save()
+            logger.info(f"Updated SSH custom fields on device '{getattr(device, 'name', device)}'")
+        except Exception as e:
+            logger.warning(f"Could not set SSH custom fields on device (field names may differ): {e}")
+
     def create_device(self, name: str, mgmt_ip: str = None,
                       mgmt_mask: str = None,
                       vendor: str = "cisco_ios",
                       model: str = None,
                       site: str = "default",
-                      role: str = "network-device"):
+                      role: str = "network-device",
+                      ssh_user: str = None,
+                      ssh_password: str = None):
         """Create a device in NetBox.
 
         Auto-creates all prerequisite objects (Site, Manufacturer,
         DeviceType, DeviceRole, Platform) if they don't exist yet.
+        Optionally syncs SSH username/password to device custom fields if defined in NetBox.
         """
         if not self.api:
             logger.warning("NetBox API not connected — skipping create_device")
             return None
         try:
-            # Check if device already exists
+            # Check if device already exists — still update management IP so GUI changes reflect
             existing = self.api.dcim.devices.get(name=name)
             if existing:
                 logger.info(f"Device '{name}' already exists in NetBox (id={existing.id})")
+                if mgmt_ip:
+                    self._assign_management_ip(existing, mgmt_ip, mgmt_mask)
+                self._set_device_ssh_custom_fields(existing, ssh_user, ssh_password)
                 return existing
 
             # Auto-create all prerequisites
@@ -349,7 +381,7 @@ class NetBoxClient:
             # Optionally assign management IP
             if mgmt_ip and result:
                 self._assign_management_ip(result, mgmt_ip, mgmt_mask)
-
+            self._set_device_ssh_custom_fields(result, ssh_user, ssh_password)
             return result
         except Exception as e:
             logger.error(f"Error creating device in NetBox: {e}")
@@ -361,8 +393,10 @@ class NetBoxClient:
                       model: str = None,
                       site: str = None,
                       role: str = None,
-                      original_name: str = None):
-        """Update an existing device in NetBox."""
+                      original_name: str = None,
+                      ssh_user: str = None,
+                      ssh_password: str = None):
+        """Update an existing device in NetBox. Optionally sync SSH credentials to custom fields."""
         if not self.api: return None
         try:
             device = self.api.dcim.devices.get(name=original_name or name)
@@ -373,7 +407,7 @@ class NetBoxClient:
             if site:
                 s_id = self._ensure_site(slug=site)
                 if s_id: updates["site"] = s_id
-            if vendor and model:
+            if vendor:
                 dt_id = self._ensure_device_type(vendor, model)
                 if dt_id: updates["device_type"] = dt_id
             if role:
@@ -392,7 +426,7 @@ class NetBoxClient:
 
             if mgmt_ip:
                 self._assign_management_ip(device, mgmt_ip, mgmt_mask)
-
+            self._set_device_ssh_custom_fields(device, ssh_user, ssh_password)
             return device
         except Exception as e:
             logger.error(f"Error updating device in NetBox: {e}")

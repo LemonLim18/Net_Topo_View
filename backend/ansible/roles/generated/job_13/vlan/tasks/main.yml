@@ -1,0 +1,27 @@
+---
+- name: Ensure VLAN exists
+  cisco.ios.vlan:
+    vlan_id: '{{ vlan_id }}'
+    name: '{{ vlan_name }}'
+    state: present
+- name: Verify VLAN exists
+  cisco.ios.vlan:
+    vlan_id: '{{ vlan_id }}'
+    name: '{{ vlan_name }}'
+    state: query
+  register: vlan_info
+- name: Ensure VLAN is configured on interfaces
+  cisco.ios.vlan_interfaces:
+    vlan_id: '{{ vlan_id }}'
+    interfaces:
+      - name: 'GigabitEthernet0/1'
+      - name: 'GigabitEthernet0/2'
+    state: present
+- name: Verify VLAN interfaces are configured
+  cisco.ios.vlan_interfaces:
+    vlan_id: '{{ vlan_id }}'
+    interfaces:
+      - name: 'GigabitEthernet0/1'
+      - name: 'GigabitEthernet0/2'
+    state: query
+  register: vlan_interfaces_info

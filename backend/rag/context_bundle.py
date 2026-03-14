@@ -665,8 +665,8 @@ class ContextBundleBuilder:
             # Fetch devices
             filters: Dict[str, Any] = {}
             if hostnames:
-                # pynetbox supports name__in for multiple values
-                filters["name"] = hostnames
+                # pynetbox/NetBox API: use name__in for multiple names
+                filters["name__in"] = hostnames
             devices = list(nb.dcim.devices.filter(**filters) if filters else nb.dcim.devices.all())
 
             for dev in devices:

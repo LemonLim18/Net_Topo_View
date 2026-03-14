@@ -15,9 +15,73 @@ const ANSIBLE_TABS_KEY = 'ansible.tabs';
 const ANSIBLE_ACTIVE_TAB_KEY = 'ansible.activeTabId';
 const ANSIBLE_TERMINAL_HEIGHT_KEY = 'ansible.terminalHeight';
 const ANSIBLE_TERMINAL_MIN_KEY = 'ansible.terminalMinimized';
+const ANSIBLE_FILE_TREE_WIDTH_KEY = 'ansible.fileTreeWidth';
+const ANSIBLE_CHAT_PANEL_WIDTH_KEY = 'ansible.chatPanelWidth';
+const FILE_TREE_MIN = 160;
+const FILE_TREE_MAX = 480;
+const FILE_TREE_DEFAULT = 200;
+const CHAT_PANEL_MIN = 280;
+const CHAT_PANEL_MAX = 560;
+const CHAT_PANEL_DEFAULT = 320;
 
 interface AnsibleStudioViewProps {
   user: User | null;
+}
+
+/** Vertical resize handle between panels; drag to change the width of the panel on the left of the handle. */
+function ResizeHandle({
+  onResize,
+  onDragStart,
+  onDragEnd,
+}: {
+  onResize: (deltaX: number) => void;
+  onDragStart?: () => void;
+  onDragEnd?: () => void;
+}) {
+  const startRef = useRef<{ x: number } | null>(null);
+
+  const onMouseDown = useCallback(
+    (e: React.MouseEvent) => {
+      e.preventDefault();
+      startRef.current = { x: e.clientX };
+      onDragStart?.();
+      const onMouseMove = (move: MouseEvent) => {
+        if (startRef.current === null) return;
+        const deltaX = move.clientX - startRef.current.x;
+        startRef.current.x = move.clientX;
+        onResize(deltaX);
+      };
+      const onMouseUp = () => {
+        startRef.current = null;
+        onDragEnd?.();
+        document.removeEventListener('mousemove', onMouseMove);
+        document.removeEventListener('mouseup', onMouseUp);
+        document.body.style.cursor = '';
+        document.body.style.userSelect = '';
+      };
+      document.body.style.cursor = 'col-resize';
+      document.body.style.userSelect = 'none';
+      document.addEventListener('mousemove', onMouseMove);
+      document.addEventListener('mouseup', onMouseUp);
+    },
+    [onResize, onDragStart, onDragEnd]
+  );
+
+  return (
+    <div
+      role="separator"
+      aria-orientation="vertical"
+      onMouseDown={onMouseDown}
+      style={{
+        width: 6,
+        minWidth: 6,
+        flexShrink: 0,
+        cursor: 'col-resize',
+        background: 'transparent',
+      }}
+      className="hover:bg-base-300/30 transition-colors"
+    />
+  );
 }
 
 const AnsibleStudioView: React.FC<AnsibleStudioViewProps> = ({ user }) => {
@@ -63,6 +127,16 @@ const AnsibleStudioView: React.FC<AnsibleStudioViewProps> = ({ user }) => {
 
   // ── File tree ────────────────────────────────────────────────────────────
   const [fileTreeRefresh, setFileTreeRefresh] = useState(0);
+
+  // ── Slidable panel widths (file tree left, AI chat right) ───────────────
+  const [fileTreeWidth, setFileTreeWidth] = useState(() => {
+    const raw = Number(localStorage.getItem(ANSIBLE_FILE_TREE_WIDTH_KEY));
+    return Number.isFinite(raw) && raw >= FILE_TREE_MIN && raw <= FILE_TREE_MAX ? raw : FILE_TREE_DEFAULT;
+  });
+  const [chatPanelWidth, setChatPanelWidth] = useState(() => {
+    const raw = Number(localStorage.getItem(ANSIBLE_CHAT_PANEL_WIDTH_KEY));
+    return Number.isFinite(raw) && raw >= CHAT_PANEL_MIN && raw <= CHAT_PANEL_MAX ? raw : CHAT_PANEL_DEFAULT;
+  });
 
   // ── SSH terminal drawer ──────────────────────────────────────────────────
   const [sshTabs, setSshTabs]             = useState<SSHTab[]>([]);
@@ -118,6 +192,14 @@ const AnsibleStudioView: React.FC<AnsibleStudioViewProps> = ({ user }) => {
   }, [terminalMinimized]);
 
   useEffect(() => {
+    localStorage.setItem(ANSIBLE_FILE_TREE_WIDTH_KEY, String(fileTreeWidth));
+  }, [fileTreeWidth]);
+
+  useEffect(() => {
+    localStorage.setItem(ANSIBLE_CHAT_PANEL_WIDTH_KEY, String(chatPanelWidth));
+  }, [chatPanelWidth]);
+
+  useEffect(() => {
     if (!tabs.length) {
       if (activeTabId !== null) setActiveTabId(null);
       return;
@@ -127,6 +209,26 @@ const AnsibleStudioView: React.FC<AnsibleStudioViewProps> = ({ user }) => {
     }
   }, [tabs, activeTabId]);
 
+  // When the active tab is a generated playbook (by jobId or path), set active job so the status bar and Inventory tab appear
+  useEffect(() => {
+    if (!activeTabId || !tabs.length) return;
+    const activeTab = tabs.find(t => t.id === activeTabId);
+    if (!activeTab) return;
+    if (activeTab.jobId != null) {
+      setActiveJobId(activeTab.jobId);
+      return;
+    }
+    const pathNorm = (activeTab.path || activeTab.id || '').replace(/\\/g, '/');
+    const jobMatch = pathNorm.match(/job_(\d+)/);
+    const jobIdFromPath = jobMatch && Number.isFinite(Number(jobMatch[1])) ? parseInt(jobMatch[1], 10) : null;
+    if (jobIdFromPath != null) {
+      setActiveJobId(jobIdFromPath);
+      setTabs(prev => prev.map(t => t.id === activeTabId ? { ...t, jobId: jobIdFromPath } : t));
+    } else {
+      setActiveJobId(null);
+    }
+  }, [activeTabId, tabs]);
+
   // ── Tab management ───────────────────────────────────────────────────────
   const openTab = useCallback((id: string, name: string, content: string, isDirty = false, isReadOnly = false, jobId?: number) => {
     setTabs(prev => {
@@ -135,7 +237,23 @@ const AnsibleStudioView: React.FC<AnsibleStudioViewProps> = ({ user }) => {
       return [...prev, { id, path: id, name, content, isDirty, isReadOnly, jobId }];
     });
     setActiveTabId(id);
+    setActiveJobId(jobId ?? null);
   }, []);
+
+  const handleTabSelect = useCallback((id: string) => {
+    setActiveTabId(id);
+    const tab = tabs.find(t => t.id === id);
+    let jobId: number | null = tab?.jobId ?? null;
+    if (jobId == null && tab) {
+      const pathNorm = (tab.path || tab.id || '').replace(/\\/g, '/');
+      const jobMatch = pathNorm.match(/job_(\d+)/);
+      if (jobMatch && Number.isFinite(Number(jobMatch[1]))) {
+        jobId = parseInt(jobMatch[1], 10);
+        setTabs(prev => prev.map(t => t.id === id ? { ...t, jobId: jobId! } : t));
+      }
+    }
+    setActiveJobId(jobId);
+  }, [tabs]);
 
   const updateTabContent = useCallback((id: string, content: string) => {
     setTabs(prev => prev.map(t => t.id === id ? { ...t, content, isDirty: true } : t));
@@ -194,7 +312,10 @@ const AnsibleStudioView: React.FC<AnsibleStudioViewProps> = ({ user }) => {
 
     try {
       const r = await ansibleApi.readFile(node.path);
-      openTab(node.path, node.name, r.content, false, false);
+      const pathNorm = (node.path || '').replace(/\\/g, '/');
+      const jobMatch = pathNorm.match(/(?:^|\/)generated\/job_(\d+)(?:\/|$)/);
+      const jobIdFromPath = jobMatch && Number.isFinite(Number(jobMatch[1])) ? parseInt(jobMatch[1], 10) : undefined;
+      openTab(node.path, node.name, r.content, false, false, jobIdFromPath);
     } catch { /* ignore */ }
   }, [tabs, openTab]);
 
@@ -297,10 +418,10 @@ const AnsibleStudioView: React.FC<AnsibleStudioViewProps> = ({ user }) => {
       {/* ── Main three-column area ── */}
       <div className="flex grow min-h-0 overflow-hidden">
 
-        {/* Left: File tree */}
+        {/* Left: File tree (slidable width) */}
         <div
           className="shrink-0 overflow-y-auto border-r border-base-300 bg-base-100"
-          style={{ width: '200px' }}
+          style={{ width: fileTreeWidth, minWidth: FILE_TREE_MIN, maxWidth: FILE_TREE_MAX }}
         >
           <AnsibleFileTree
             onFileOpen={handleFileOpen}
@@ -309,13 +430,19 @@ const AnsibleStudioView: React.FC<AnsibleStudioViewProps> = ({ user }) => {
           />
         </div>
 
+        <ResizeHandle
+          onResize={(deltaX) =>
+            setFileTreeWidth((w) => Math.min(FILE_TREE_MAX, Math.max(FILE_TREE_MIN, w + deltaX)))
+          }
+        />
+
         {/* Centre: Editor + job status + terminal (terminal scoped here, not behind chat) */}
         <div className="flex flex-col grow min-w-0 overflow-hidden">
           <div className="grow min-h-0 overflow-hidden">
             <PlaybookEditor
               tabs={tabs}
               activeTabId={activeTabId}
-              onTabSelect={setActiveTabId}
+              onTabSelect={handleTabSelect}
               onTabClose={closeTab}
               onChange={updateTabContent}
               onSave={() => handleSave()}
@@ -360,10 +487,18 @@ const AnsibleStudioView: React.FC<AnsibleStudioViewProps> = ({ user }) => {
           />
         </div>
 
-        {/* Right: AI chat — VS Code Copilot style */}
+        <ResizeHandle
+          onResize={(deltaX) =>
+            setChatPanelWidth((w) =>
+              Math.min(CHAT_PANEL_MAX, Math.max(CHAT_PANEL_MIN, w - deltaX))
+            )
+          }
+        />
+
+        {/* Right: AI chat — VS Code Copilot style (slidable width) */}
         <div
           className="shrink-0 overflow-hidden"
-          style={{ width: '320px' }}
+          style={{ width: chatPanelWidth, minWidth: CHAT_PANEL_MIN, maxWidth: CHAT_PANEL_MAX }}
         >
           <AnsibleChatPanel
             onPlaybookReady={handlePlaybookReady}

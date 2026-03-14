@@ -227,7 +227,8 @@ def planning_context_readiness(context: Dict[str, Any]) -> Dict[str, Any]:
     inventory_source = str(inventory_meta.get("source") or "")
     feature = str(context.get("feature") or "").strip().lower()
 
-    if inventory_source != "netbox":
+    # Prefer NetBox; allow local_db if all target devices have required fields (e.g. after sync with name mismatch)
+    if inventory_source != "netbox" and (not devices or missing_hosts):
         issues.append(f"Planned inventory source is '{inventory_source or 'unknown'}' instead of NetBox")
     if inventory_freshness in {FreshnessClass.MISSING.value, FreshnessClass.STALE.value}:
         issues.append(f"Planned inventory freshness is {inventory_freshness or 'unknown'}")
