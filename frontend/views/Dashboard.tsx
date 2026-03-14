@@ -842,19 +842,10 @@ const Dashboard: React.FC = () => {
         }
     }, [sshTabs]);
 
-    // --- SSH connect with user-provided credentials ---
-    const handleSSHConnect = useCallback(async (username: string, password: string, port: number, saveToVault: boolean) => {
-        if (!sshConnectTarget) return;
-
+    // --- SSH connect with user-provided credentials (Custom SSH form) ---
+    const handleSSHConnect = useCallback(async (hostname: string, _host: string, username: string, password: string, port: number, saveToVault: boolean) => {
         try {
-            const result = await sshApi.connectWithCreds(
-                sshConnectTarget.hostname,
-                username,
-                password,
-                port,
-                saveToVault,
-            );
-
+            const result = await sshApi.connectWithCreds(hostname, username, password, port, saveToVault);
             const wsUrl = sshApi.getWsUrl(result.session_id);
             const newTab: SSHTab = {
                 sessionId: result.session_id,
@@ -867,9 +858,9 @@ const Dashboard: React.FC = () => {
             setSshMinimized(false);
             setSshConnectTarget(null);
             if (result.saved_to_vault) {
-                Toast.success('SSH Connected', `Connected to ${sshConnectTarget.hostname} — credentials saved to vault`);
+                Toast.success('SSH Connected', `Connected to ${hostname} — credentials saved to vault`);
             } else {
-                Toast.success('SSH Connected', `Connected to ${sshConnectTarget.hostname}`);
+                Toast.success('SSH Connected', `Connected to ${hostname}`);
             }
         } catch (err: any) {
             const msg = err.message || 'Failed to connect';
@@ -880,8 +871,10 @@ const Dashboard: React.FC = () => {
                     ? 'The SSH backend is unreachable (502 Bad Gateway). Ensure the server is running.'
                     : msg,
             );
+            throw err;
         }
-    }, [sshConnectTarget]);
+    }, []);
+
 
     // --- Close SSH tab ---
     const handleCloseSSHTab = useCallback((sessionId: string) => {

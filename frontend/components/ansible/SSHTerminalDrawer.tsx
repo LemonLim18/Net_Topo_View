@@ -55,16 +55,17 @@ const SSHTerminalDrawer: React.FC<SSHTerminalDrawerProps> = ({
   }, [height, onHeightChange]);
 
   const handleConnect = useCallback(async (
-    username: string, password: string, port: number, saveToVault: boolean,
+    hostname: string, _host: string, username: string, password: string, port: number, saveToVault: boolean,
   ) => {
     try {
-      const { session_id } = await sshApi.connectWithCreds(
-        pendingHostname, username, password, port, saveToVault,
+      const { session_id, host } = await sshApi.connectWithCreds(
+        hostname, username, password, port, saveToVault,
       );
       const wsUrl = sshApi.getWsUrl(session_id);
-      onTabAdded({ sessionId: session_id, hostname: pendingHostname, host: pendingHost, wsUrl });
+      onTabAdded({ sessionId: session_id, hostname, host, wsUrl });
       onCloseModal();
       if (minimized) onToggleMinimize();
+      Toast.success('SSH Connected', `Connected to ${hostname}`);
     } catch (err: any) {
       const msg = err.message || 'Failed to connect';
       const isGateway = msg.includes('502') || msg.toLowerCase().includes('bad gateway');
@@ -74,8 +75,10 @@ const SSHTerminalDrawer: React.FC<SSHTerminalDrawerProps> = ({
           ? 'The SSH backend is unreachable (502 Bad Gateway). Ensure the server is running.'
           : msg,
       );
+      throw err;
     }
-  }, [pendingHostname, pendingHost, onTabAdded, onCloseModal, minimized, onToggleMinimize]);
+  }, [onTabAdded, onCloseModal, minimized, onToggleMinimize]);
+
 
   return (
     <>

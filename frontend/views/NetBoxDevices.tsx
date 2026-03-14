@@ -113,9 +113,9 @@ const sourceBadge = (source: string) => {
 };
 
 const roleBadge = (role: string | null) => {
-  if (!role) return <span className="badge badge-xs badge-ghost">Unknown</span>;
+  if (!role) return <span className="badge badge-xs badge-ghost whitespace-nowrap">Unknown</span>;
   const label = ROLE_OPTIONS.find((o) => o.value === role)?.label || role;
-  
+
   let colorClass = 'badge-ghost';
   switch (role) {
     case 'core':
@@ -131,9 +131,9 @@ const roleBadge = (role: string | null) => {
       colorClass = 'badge-error';
       break;
   }
-  
+
   return (
-    <span className={`badge ${colorClass} badge-xs badge-outline opacity-80`}>
+    <span className={`badge ${colorClass} badge-sm badge-outline opacity-90 whitespace-nowrap py-1 px-2`}>
       {label}
     </span>
   );
@@ -799,7 +799,7 @@ const NetBoxDevices: React.FC = () => {
                       onClick={() => setSelected(d)}
                     >
                       <td className="font-mono font-semibold">{d.hostname}</td>
-                      <td className="text-xs">
+                      <td className="text-xs align-middle whitespace-nowrap">
                         {roleBadge(d.role)}
                       </td>
                       <td className="font-mono text-xs">{d.management_ip || '—'}</td>

@@ -59,6 +59,12 @@ class ConnectSessionRequest(BaseModel):
     save_to_vault: bool = False
 
 
+class ConnectByDeviceRequest(BaseModel):
+    """Connect using credentials stored on the device in the local DB."""
+    hostname: str
+    port: int = 22
+
+
 # ---------- Helpers ----------
 
 def _resolve_target(hostname: str):
@@ -165,6 +171,47 @@ async def connect_ssh_session_with_creds(
         "host": target_host,
         "hostname": req.hostname,
         "saved_to_vault": saved,
+    }
+
+
+@router.post("/ssh/sessions/connect-by-device")
+async def connect_ssh_session_by_device(
+    req: ConnectByDeviceRequest,
+    current_user: dict = Depends(get_current_user),
+):
+    """
+    Create and connect a session using credentials stored on the device in the local DB.
+    Use this for one-click SSH from the device list when the device has ssh_user/ssh_password set.
+    """
+    device, target_host = _resolve_target(req.hostname)
+    if not device:
+        raise HTTPException(status_code=404, detail=f"Device '{req.hostname}' not found in inventory")
+    if not (getattr(device, "ssh_user", None) and getattr(device, "ssh_password", None)):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Device '{req.hostname}' has no stored SSH credentials. Use Custom SSH or set credentials in Device Inventory.",
+        )
+    owner = current_user["username"]
+    _check_limits(owner, target_host)
+
+    port = req.port or 22
+    if getattr(device, "ssh_port", None) is not None:
+        port = device.ssh_port or 22
+
+    session = create_session(host=target_host, port=port, owner_username=owner)
+    try:
+        session.connect(username=device.ssh_user, password=device.ssh_password)
+    except Exception as exc:
+        remove_session(session.session_id)
+        logger.warning("Device-cred SSH failed for %s: %s", target_host, exc)
+        raise HTTPException(status_code=502, detail=f"SSH connection failed: {exc}")
+
+    return {
+        "status": "connected",
+        "session_id": session.session_id,
+        "host": target_host,
+        "hostname": req.hostname,
+        "saved_to_vault": False,
     }
 
 

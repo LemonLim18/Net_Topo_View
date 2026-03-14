@@ -98,6 +98,7 @@ class LinkCreate(BaseModel):
 # ---------------------------------------------------------------------------
 
 def _device_dict(d: Device) -> dict:
+    """Device dict for list responses; excludes ssh_password."""
     return {
         "id": d.id,
         "hostname": d.hostname,
@@ -116,6 +117,13 @@ def _device_dict(d: Device) -> dict:
         "created_at": d.created_at,
         "updated_at": d.updated_at,
     }
+
+
+def _device_dict_with_credentials(d: Device) -> dict:
+    """Device dict including ssh_password for single-device fetch (e.g. SSH form pre-fill)."""
+    out = _device_dict(d)
+    out["ssh_password"] = d.ssh_password
+    return out
 
 
 def _parse_cidr(ip_str: Optional[str], current_mask: Optional[str]) -> tuple[Optional[str], Optional[str]]:
@@ -139,20 +147,23 @@ def _parse_cidr(ip_str: Optional[str], current_mask: Optional[str]) -> tuple[Opt
 
 @router.get("/devices")
 async def list_devices():
-    """Return all devices from the local inventory."""
+    """Return all devices from the local inventory. Filters out 'crawler' source devices."""
     db = _db()
     devices = db.get_all_devices()
-    return {"devices": [_device_dict(d) for d in devices]}
+    # M14: Filter out devices that purely came from the crawler discovery (live topology)
+    # The inventory should only show authoritative records (manual or NetBox).
+    filtered = [d for d in devices if d.source != 'crawler']
+    return {"devices": [_device_dict(d) for d in filtered]}
 
 
 @router.get("/devices/{device_id}")
 async def get_device(device_id: int):
-    """Get a single device by ID."""
+    """Get a single device by ID. Includes ssh_password for SSH form pre-fill (authenticated users only)."""
     db = _db()
     d = db.get_device_by_id(device_id)
     if not d:
         raise HTTPException(404, "Device not found")
-    return _device_dict(d)
+    return _device_dict_with_credentials(d)
 
 
 @router.post("/devices")
@@ -182,11 +193,13 @@ async def create_device(body: DeviceCreate):
                 name=body.hostname,
                 mgmt_ip=body.management_ip,
                 mgmt_mask=body.management_subnet_mask,
-                vendor=body.vendor or "cisco_ios",
+                vendor=body.vendor or "unknown",
                 model=body.model,
                 role=body.role,
                 ssh_user=body.ssh_user,
                 ssh_password=body.ssh_password,
+                serial=body.serial_number,
+                os_version=body.os_version,
             )
             if nb_dev:
                 nb_id = getattr(nb_dev, "id", None)
@@ -260,12 +273,14 @@ async def update_device(device_id: int, body: DeviceUpdate):
                 name=hostname,
                 mgmt_ip=mgmt_ip,
                 mgmt_mask=body.management_subnet_mask if body.management_subnet_mask is not None else existing.management_subnet_mask,
-                vendor=vendor or "cisco_ios",
+                vendor=vendor or "unknown",
                 model=model,
                 role=role,
                 original_name=existing.hostname,
                 ssh_user=body.ssh_user if body.ssh_user is not None else existing.ssh_user,
                 ssh_password=body.ssh_password if body.ssh_password is not None else existing.ssh_password,
+                serial=body.serial_number if body.serial_number is not None else existing.serial_number,
+                os_version=body.os_version if body.os_version is not None else existing.os_version,
             )
             if nb_dev:
                 nb_id = getattr(nb_dev, "id", None) or nb_id

@@ -827,6 +827,13 @@ export const sshApi = {
       body: JSON.stringify({ hostname, port, username, password, save_to_vault: saveToVault }),
     }),
 
+  /** Connect using device's stored SSH credentials (one-click from inventory list). */
+  connectByDevice: (hostname: string, port: number = 22) =>
+    request<{ status: string; session_id: string; host: string; hostname: string }>('/ssh/sessions/connect-by-device', {
+      method: 'POST',
+      body: JSON.stringify({ hostname, port }),
+    }),
+
   listSessions: () =>
     request<{ session_id: string; host: string; port: number; connected: boolean }[]>('/ssh/sessions'),
 

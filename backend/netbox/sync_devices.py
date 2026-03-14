@@ -5,7 +5,7 @@ from db.models import Device, Interface
 from llm.context_contract import CONTEXT_DOMAIN_INVENTORY, CONTEXT_DOMAIN_PLANNED_TOPOLOGY
 from llm.refresh_fabric import publish_context_refresh_event
 from llm.refresh_state import get_refresh_state_manager
-from netbox.client import NetBoxClient
+from netbox.client import NetBoxClient, get_ssh_custom_field_slugs, get_os_version_custom_field_slug
 
 logger = logging.getLogger("netbox.sync_devices")
 
@@ -99,16 +99,57 @@ class DeviceSyncer:
                 source = existing.source if existing else "netbox"
                 device_id_existing = existing.id if existing else None
 
+                # Extract serial number from standard field
+                serial = str(nb_dev.serial) if getattr(nb_dev, "serial", None) else None
+                
+                # OS Version is often not in a standard DCIM field, but may be in 'platform' or custom fields
+                # We'll check platforms first
+                os_version = None
+                if nb_dev.platform and hasattr(nb_dev.platform, "name"):
+                    # Sometimes the version is in the platform name or custom field
+                    pass
+                
+                # Check for custom field os_version (slug from env or default "os_version")
+                if hasattr(nb_dev, "custom_fields") and nb_dev.custom_fields:
+                    os_version_slug = get_os_version_custom_field_slug()
+                    os_version = nb_dev.custom_fields.get(os_version_slug) or os_version
+
+                # Smart Merging: Only overwrite local fields if NetBox has a value
+                # This prevents "clearing" manually entered data when NetBox is incomplete.
+                final_vendor = vendor if vendor != "unknown" else (existing.vendor if existing else "unknown")
+                final_model = model if model else (existing.model if existing else None)
+                final_role = role if role != "network-device" else (existing.role if existing else "network-device")
+                final_serial = serial if serial else (existing.serial_number if existing else None)
+                final_os_version = os_version if os_version else (existing.os_version if existing else None)
+                final_mgmt_ip = mgmt_ip if mgmt_ip else (existing.management_ip if existing else None)
+
+                # Preserving local credentials or syncing from NetBox custom fields
+                nb_ssh_user = None
+                nb_ssh_password = None
+                if hasattr(nb_dev, "custom_fields") and nb_dev.custom_fields:
+                    slugs = get_ssh_custom_field_slugs()
+                    nb_ssh_user = nb_dev.custom_fields.get(slugs["username"])
+                    nb_ssh_password = nb_dev.custom_fields.get(slugs["password"])
+
+                ssh_user = nb_ssh_user if nb_ssh_user else (existing.ssh_user if existing else None)
+                ssh_password = nb_ssh_password if nb_ssh_password else (existing.ssh_password if existing else None)
+                ssh_port = existing.ssh_port if existing else 22
+
                 device = Device(
                     hostname=hostname,
-                    management_ip=mgmt_ip,
-                    vendor=vendor,
-                    model=model,
+                    management_ip=final_mgmt_ip,
+                    vendor=final_vendor,
+                    model=final_model,
                     status=status,
-                    role=role,
+                    role=final_role,
                     source=source,
                     netbox_id=nb_dev.id,
                     id=device_id_existing,
+                    ssh_user=ssh_user,
+                    ssh_password=ssh_password,
+                    ssh_port=ssh_port,
+                    serial_number=final_serial,
+                    os_version=final_os_version,
                 )
                 
                 device_id = self.db.upsert_device(device)
