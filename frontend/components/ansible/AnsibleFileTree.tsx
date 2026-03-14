@@ -23,6 +23,8 @@ interface AnsibleFileTreeProps {
   onFileOpen: (node: AnsibleFileNode) => void;
   selectedPath: string | null;
   refreshTrigger?: number;
+  /** Called after the file list is reloaded (e.g. to reload active editor tab from disk) */
+  onAfterRefresh?: () => void;
 }
 
 interface TreeNodeProps {
@@ -127,7 +129,7 @@ const TreeNode: React.FC<TreeNodeProps> = ({
   );
 };
 
-const AnsibleFileTree: React.FC<AnsibleFileTreeProps> = ({ onFileOpen, selectedPath, refreshTrigger }) => {
+const AnsibleFileTree: React.FC<AnsibleFileTreeProps> = ({ onFileOpen, selectedPath, refreshTrigger, onAfterRefresh }) => {
   const [tree, setTree] = useState<AnsibleFileNode[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -137,7 +139,7 @@ const AnsibleFileTree: React.FC<AnsibleFileTreeProps> = ({ onFileOpen, selectedP
   const uploadInputRef = useRef<HTMLInputElement>(null);
   const uploadTargetDirRef = useRef<string>('playbooks');
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (runAfterRefresh?: boolean) => {
     setLoading(true);
     setError(null);
     try {
@@ -201,12 +203,13 @@ const AnsibleFileTree: React.FC<AnsibleFileTreeProps> = ({ onFileOpen, selectedP
       }
 
       setTree(ansibleTree);
+      if (runAfterRefresh) onAfterRefresh?.();
     } catch (e: any) {
       setError(e.message || 'Failed to load files');
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [onAfterRefresh]);
 
   useEffect(() => { load(); }, [load, refreshTrigger]);
 
@@ -428,9 +431,9 @@ const AnsibleFileTree: React.FC<AnsibleFileTreeProps> = ({ onFileOpen, selectedP
           </div>
           <button
             className="btn btn-ghost btn-xs"
-            onClick={load}
+            onClick={() => load(true)}
             disabled={loading}
-            title="Refresh"
+            title="Refresh file list and reload open file from disk"
           >
             <RefreshCw className={`h-3 w-3 ${loading ? 'animate-spin' : ''}`} />
           </button>

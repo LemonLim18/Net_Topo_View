@@ -3,15 +3,13 @@ import Editor from '@monaco-editor/react';
 import {
   X, Save, Download, Play, ShieldCheck, RefreshCw, FlaskConical, Lock
 } from 'lucide-react';
-import type { AnsibleTab, AnsibleJob, AnsibleCheckResult } from '../../typesLLM';
-import CheckDiffPanel from './CheckDiffPanel';
+import type { AnsibleTab, AnsibleJob } from '../../typesLLM';
 
 interface PlaybookEditorProps {
   tabs:            AnsibleTab[];
   activeTabId:     string | null;
   job:             AnsibleJob | null;
-  checkResult:     AnsibleCheckResult | null;
-  isChecking:      boolean;
+  isChecking?:     boolean;
   userRole:        string;
   onTabSelect:     (id: string) => void;
   onTabClose:      (id: string) => void;
@@ -24,8 +22,8 @@ interface PlaybookEditorProps {
 }
 
 const PlaybookEditor: React.FC<PlaybookEditorProps> = ({
-  tabs, activeTabId, job, checkResult, isChecking,
-  userRole, onTabSelect, onTabClose, onChange, onSave,
+  tabs, activeTabId, job, isChecking = false,
+  userRole,   onTabSelect, onTabClose, onChange, onSave,
   onCheck, onApprove, onDeploy, onRegenerate,
 }) => {
   const activeTab = tabs.find(t => t.id === activeTabId) ?? null;
@@ -106,7 +104,7 @@ const PlaybookEditor: React.FC<PlaybookEditorProps> = ({
           className="btn btn-xs btn-info gap-1"
           onClick={onCheck}
           disabled={!hasPlaybook || isChecking || isDeploying}
-          title="Dry-run (--check --diff) — no changes applied"
+          title="Dry-run (--check --diff) — results appear in Output tab"
         >
           <FlaskConical className="h-3 w-3" />
           {isChecking ? 'Checking…' : 'Check'}
@@ -189,9 +187,6 @@ const PlaybookEditor: React.FC<PlaybookEditorProps> = ({
           </div>
         )}
       </div>
-
-      {/* ── Dry-run diff panel ──────────────────────────────────────── */}
-      <CheckDiffPanel result={checkResult} isLoading={isChecking} />
     </div>
   );
 };

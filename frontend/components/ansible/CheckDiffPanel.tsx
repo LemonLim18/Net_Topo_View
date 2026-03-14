@@ -38,13 +38,15 @@ const CheckDiffPanel: React.FC<CheckDiffPanelProps> = ({ result, isLoading }) =>
 
   if (!result) return null;
 
-  const lines = result.diff.split('\n');
-  const parsed = extractBeforeAfter(result.diff);
+  const hasStderr = result.rc !== 0 && result.stderr && result.stderr.trim().length > 0;
+  const diffContent = result.diff || '';
+  const lines = diffContent.split('\n');
+  const parsed = extractBeforeAfter(diffContent);
 
   return (
     <div className="flex flex-col border-t border-base-300 bg-base-200">
       {/* Summary bar */}
-      <div className="flex items-center gap-3 px-4 py-2 text-xs border-b border-base-300 flex-shrink-0">
+      <div className="flex items-center gap-3 px-4 py-2 text-xs border-b border-base-300 shrink-0">
         <TerminalSquare className="h-4 w-4 opacity-60" />
         <span className="font-semibold">Dry-Run Result</span>
         <span className={`badge badge-sm ${result.rc === 0 ? 'badge-success' : 'badge-error'}`}>
@@ -70,6 +72,16 @@ const CheckDiffPanel: React.FC<CheckDiffPanelProps> = ({ result, isLoading }) =>
           </button>
         )}
       </div>
+
+      {/* When failed: show stderr first so user sees connection/auth/task errors */}
+      {hasStderr && (
+        <div className="px-4 py-2 border-b border-base-300 bg-error/10">
+          <div className="text-xs font-semibold text-error mb-1">Why it failed</div>
+          <pre className="font-mono text-xs leading-5 whitespace-pre-wrap break-all text-error-content/90 max-h-48 overflow-auto">
+            {result.stderr!.trim()}
+          </pre>
+        </div>
+      )}
 
       {/* Diff output — unified or side-by-side */}
       {sideBySide && parsed ? (

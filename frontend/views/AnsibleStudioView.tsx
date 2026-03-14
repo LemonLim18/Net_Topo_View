@@ -6,7 +6,8 @@ import AnsibleChatPanel                             from '../components/ansible/
 import SSHTerminalDrawer, { type SSHTab }           from '../components/ansible/SSHTerminalDrawer';
 import { ansibleApi, configApi }                    from '../src/services/api';
 import type {
-  AnsibleTab, AnsibleJob, AnsibleCheckResult, AnsibleGeneratedArtifactFile,
+  AnsibleTab, AnsibleJob, AnsibleGeneratedArtifactFile,
+  AnsibleOutputSession,
 } from '../typesLLM';
 import type { SSHConnectionState } from '../components/SSHTerminal';
 import type { User }               from '../types';
@@ -15,6 +16,10 @@ const ANSIBLE_TABS_KEY = 'ansible.tabs';
 const ANSIBLE_ACTIVE_TAB_KEY = 'ansible.activeTabId';
 const ANSIBLE_TERMINAL_HEIGHT_KEY = 'ansible.terminalHeight';
 const ANSIBLE_TERMINAL_MIN_KEY = 'ansible.terminalMinimized';
+const ANSIBLE_STATUS_BAR_HEIGHT_KEY = 'ansible.statusBarHeight';
+const STATUS_BAR_HEIGHT_MIN = 100;
+const STATUS_BAR_HEIGHT_MAX = 600;
+const STATUS_BAR_HEIGHT_DEFAULT = 220;
 const ANSIBLE_FILE_TREE_WIDTH_KEY = 'ansible.fileTreeWidth';
 const ANSIBLE_CHAT_PANEL_WIDTH_KEY = 'ansible.chatPanelWidth';
 const FILE_TREE_MIN = 160;
@@ -84,6 +89,48 @@ function ResizeHandle({
   );
 }
 
+/** Horizontal resize handle; drag to change the height of the panel below the handle. */
+function VerticalResizeHandle({ onResize }: { onResize: (deltaY: number) => void }) {
+  const startRef = useRef<{ y: number } | null>(null);
+
+  const onMouseDown = useCallback(
+    (e: React.MouseEvent) => {
+      e.preventDefault();
+      startRef.current = { y: e.clientY };
+      const onMouseMove = (move: MouseEvent) => {
+        if (startRef.current === null) return;
+        const deltaY = move.clientY - startRef.current.y;
+        startRef.current.y = move.clientY;
+        onResize(deltaY);
+      };
+      const onMouseUp = () => {
+        startRef.current = null;
+        document.removeEventListener('mousemove', onMouseMove);
+        document.removeEventListener('mouseup', onMouseUp);
+        document.body.style.cursor = '';
+        document.body.style.userSelect = '';
+      };
+      document.body.style.cursor = 'row-resize';
+      document.body.style.userSelect = 'none';
+      document.addEventListener('mousemove', onMouseMove);
+      document.addEventListener('mouseup', onMouseUp);
+    },
+    [onResize]
+  );
+
+  return (
+    <div
+      role="separator"
+      aria-orientation="horizontal"
+      onMouseDown={onMouseDown}
+      className="h-1.5 shrink-0 cursor-row-resize hover:bg-primary/30 transition-colors flex items-center justify-center"
+      title="Drag to resize output panel"
+    >
+      <div className="w-12 h-0.5 rounded-full bg-base-300 opacity-60" />
+    </div>
+  );
+}
+
 const AnsibleStudioView: React.FC<AnsibleStudioViewProps> = ({ user }) => {
   const userRole = (user as any)?.role ?? 'viewer';
 
@@ -117,13 +164,18 @@ const AnsibleStudioView: React.FC<AnsibleStudioViewProps> = ({ user }) => {
   const [activeTabId, setActiveTabId] = useState<string | null>(() => localStorage.getItem(ANSIBLE_ACTIVE_TAB_KEY));
   const [activeJobId, setActiveJobId] = useState<number | null>(null);
   const [job, setJob]                 = useState<AnsibleJob | null>(null);
-  const [checkResult, setCheckResult] = useState<AnsibleCheckResult | null>(null);
   const [isChecking, setIsChecking]   = useState(false);
 
   // ── SSE state ────────────────────────────────────────────────────────────
   const [sseLines, setSseLines]       = useState<string[]>([]);
   const [isStreaming, setIsStreaming] = useState(false);
   const esRef = useRef<EventSource | null>(null);
+
+  // ── Output tab (IDE-style): sessions for Check / Deploy / Plan logs ──────
+  const [outputSessions, setOutputSessions]   = useState<AnsibleOutputSession[]>([]);
+  const [activeOutputId, setActiveOutputId]   = useState<string | null>(null);
+  const deploySessionIdRef = useRef<string | null>(null);
+  const [streamingSessionId, setStreamingSessionId] = useState<string | null>(null);
 
   // ── File tree ────────────────────────────────────────────────────────────
   const [fileTreeRefresh, setFileTreeRefresh] = useState(0);
@@ -147,9 +199,21 @@ const AnsibleStudioView: React.FC<AnsibleStudioViewProps> = ({ user }) => {
     return Number.isFinite(raw) && raw >= 140 ? raw : 220;
   });
   const [terminalMinimized, setTerminalMinimized] = useState(() => localStorage.getItem(ANSIBLE_TERMINAL_MIN_KEY) !== 'false');
+  const [statusBarHeight, setStatusBarHeight] = useState(() => {
+    const raw = Number(localStorage.getItem(ANSIBLE_STATUS_BAR_HEIGHT_KEY));
+    return Number.isFinite(raw) && raw >= STATUS_BAR_HEIGHT_MIN && raw <= STATUS_BAR_HEIGHT_MAX
+      ? raw
+      : STATUS_BAR_HEIGHT_DEFAULT;
+  });
   const [pendingHostname, setPendingHostname] = useState('');
   const [pendingHost, setPendingHost]         = useState('');
   const [modalOpen, setModalOpen]             = useState(false);
+
+  const handleStatusBarResize = useCallback((deltaY: number) => {
+    setStatusBarHeight((h) =>
+      Math.min(STATUS_BAR_HEIGHT_MAX, Math.max(STATUS_BAR_HEIGHT_MIN, h - deltaY))
+    );
+  }, []);
 
   // ── Helpers ──────────────────────────────────────────────────────────────
   const activeTab = tabs.find(t => t.id === activeTabId) ?? null;
@@ -190,6 +254,10 @@ const AnsibleStudioView: React.FC<AnsibleStudioViewProps> = ({ user }) => {
   useEffect(() => {
     localStorage.setItem(ANSIBLE_TERMINAL_MIN_KEY, String(terminalMinimized));
   }, [terminalMinimized]);
+
+  useEffect(() => {
+    localStorage.setItem(ANSIBLE_STATUS_BAR_HEIGHT_KEY, String(statusBarHeight));
+  }, [statusBarHeight]);
 
   useEffect(() => {
     localStorage.setItem(ANSIBLE_FILE_TREE_WIDTH_KEY, String(fileTreeWidth));
@@ -276,7 +344,6 @@ const AnsibleStudioView: React.FC<AnsibleStudioViewProps> = ({ user }) => {
     files?: AnsibleGeneratedArtifactFile[];
   }) => {
     setActiveJobId(payload.jobId);
-    setCheckResult(null);
     setSseLines([]);
     if (payload.entrypointPath) {
       openTab(payload.entrypointPath, payload.name, payload.content, false, false, payload.jobId);
@@ -344,14 +411,52 @@ const AnsibleStudioView: React.FC<AnsibleStudioViewProps> = ({ user }) => {
     setFileTreeRefresh(n => n + 1);
   }, [activeTab]);
 
+  // Reload active tab content from disk (so edits made outside the UI or accepted file updates are shown)
+  const handleReload = useCallback(async () => {
+    if (!activeTab) return;
+    let path = (activeTab.path || activeTab.id || '').replace(/\\/g, '/');
+    if (/^templates\//.test(path) || /^schemas\//.test(path)) return;
+    // Tab opened from chat may have id "job_13" with no path; backend expects playbooks/generated/job_13/playbook.yml
+    if (/^job_\d+$/.test(path)) {
+      const jobNum = path.replace('job_', '');
+      path = `playbooks/generated/job_${jobNum}/playbook.yml`;
+    }
+    try {
+      const r = await ansibleApi.readFile(path);
+      updateTabContent(activeTab.id, r.content);
+    } catch { /* ignore */ }
+  }, [activeTab, updateTabContent]);
+
   // ── Check (dry-run) ──────────────────────────────────────────────────────
   const handleCheck = useCallback(async () => {
     if (!activeJobId) return;
     setIsChecking(true);
-    setCheckResult(null);
     try {
       const r = await ansibleApi.checkPlaybook(activeJobId);
-      setCheckResult({ rc: r.rc, diff: r.diff, changed: r.changed, summary: r.summary ?? '' });
+      // Append to Output tab (IDE-style)
+      const ts = new Date().toLocaleTimeString();
+      const lines: string[] = [
+        `[${ts}] Check (dry-run) — Job ${activeJobId}`,
+        `Dry-Run Result  rc=${r.rc}  changed=${r.changed}  ${r.summary ?? ''}  ${r.rc !== 0 ? 'FAILED' : 'OK'}`,
+        '',
+      ];
+      if (r.rc !== 0 && r.stderr?.trim()) {
+        lines.push('Why it failed:', r.stderr.trim(), '');
+      } else if (r.stderr?.trim()) {
+        lines.push('--- stderr ---', r.stderr.trim(), '');
+      }
+      if (r.diff?.trim()) {
+        lines.push('--- output ---', r.diff.trim());
+      }
+      const session: AnsibleOutputSession = {
+        id: `check-${activeJobId}-${Date.now()}`,
+        label: `Check — Job ${activeJobId}`,
+        type: 'check',
+        createdAt: Date.now(),
+        lines,
+      };
+      setOutputSessions(prev => [session, ...prev].slice(0, 50));
+      setActiveOutputId(session.id);
       await refreshJob(activeJobId);
     } finally {
       setIsChecking(false);
@@ -371,6 +476,19 @@ const AnsibleStudioView: React.FC<AnsibleStudioViewProps> = ({ user }) => {
     setSseLines([]);
     setIsStreaming(true);
 
+    const sessionId = `deploy-${activeJobId}-${Date.now()}`;
+    const deploySession: AnsibleOutputSession = {
+      id: sessionId,
+      label: `Deploy — Job ${activeJobId}`,
+      type: 'deploy',
+      createdAt: Date.now(),
+      lines: [],
+    };
+    deploySessionIdRef.current = sessionId;
+    setStreamingSessionId(sessionId);
+    setOutputSessions(prev => [deploySession, ...prev].slice(0, 50));
+    setActiveOutputId(sessionId);
+
     const es = ansibleApi.streamJobOutput(activeJobId);
     esRef.current = es;
 
@@ -380,19 +498,31 @@ const AnsibleStudioView: React.FC<AnsibleStudioViewProps> = ({ user }) => {
         if (data.done) {
           es.close();
           setIsStreaming(false);
+          deploySessionIdRef.current = null;
+          setStreamingSessionId(null);
           refreshJob(activeJobId);
           return;
         }
-        setSseLines(prev => [...prev, `[${data.stage}] ${data.details ?? data.line ?? ''}`].slice(-200));
+        const line = `[${data.stage}] ${data.details ?? data.line ?? ''}`;
+        setSseLines(prev => [...prev, line].slice(-200));
+        setOutputSessions(prev =>
+          prev.map(s =>
+            s.id === deploySessionIdRef.current
+              ? { ...s, lines: [...s.lines, line].slice(-500) }
+              : s
+          )
+        );
       } catch { /* ignore */ }
     };
-    es.onerror = () => { es.close(); setIsStreaming(false); };
+    es.onerror = () => { es.close(); setIsStreaming(false); deploySessionIdRef.current = null; setStreamingSessionId(null); };
 
     try {
       await ansibleApi.executeJob(activeJobId);
     } catch (err) {
       es.close();
       setIsStreaming(false);
+      deploySessionIdRef.current = null;
+      setStreamingSessionId(null);
     }
   }, [activeJobId, refreshJob]);
 
@@ -402,8 +532,9 @@ const AnsibleStudioView: React.FC<AnsibleStudioViewProps> = ({ user }) => {
     if (activeTab) closeTab(activeTab.id);
     setActiveJobId(null);
     setJob(null);
-    setCheckResult(null);
     setSseLines([]);
+    setOutputSessions([]);
+    setActiveOutputId(null);
   }, [activeTab, closeTab]);
 
   // ── SSH helpers ──────────────────────────────────────────────────────────
@@ -427,6 +558,7 @@ const AnsibleStudioView: React.FC<AnsibleStudioViewProps> = ({ user }) => {
             onFileOpen={handleFileOpen}
             selectedPath={activeTab?.id ?? null}
             refreshTrigger={fileTreeRefresh}
+            onAfterRefresh={handleReload}
           />
         </div>
 
@@ -451,16 +583,25 @@ const AnsibleStudioView: React.FC<AnsibleStudioViewProps> = ({ user }) => {
               onDeploy={handleDeploy}
               onRegenerate={handleRegenerate}
               job={job}
-              checkResult={checkResult}
               isChecking={isChecking}
               userRole={userRole}
             />
           </div>
-          <JobStatusBar
+          <VerticalResizeHandle onResize={handleStatusBarResize} />
+          <div
+            className="shrink-0 overflow-hidden flex flex-col border-t border-base-300 bg-base-100"
+            style={{ height: statusBarHeight, minHeight: STATUS_BAR_HEIGHT_MIN, maxHeight: STATUS_BAR_HEIGHT_MAX }}
+          >
+            <JobStatusBar
             job={job}
             sseLines={sseLines}
             isStreaming={isStreaming}
+            outputSessions={outputSessions}
+            activeOutputId={activeOutputId}
+            onSelectOutputSession={setActiveOutputId}
+            streamingSessionId={streamingSessionId}
           />
+          </div>
           {/* SSH terminal — bottom of editor column only */}
           <SSHTerminalDrawer
         tabs={sshTabs}

@@ -49,7 +49,7 @@ You MUST generate a multi-file Ansible bundle with:
 6. Vendor-specific logic must live in the role task files, not in the entry playbook.
 7. `tasks/main.yml` must dispatch to the correct vendor task file based on `ansible_network_os` or a normalized vendor variable.
 8. Vendor task files must use the correct collection/module family:
-   - Cisco IOS: `cisco.ios`
+   - Cisco IOS: `cisco.ios`. For VLANs use `cisco.ios.ios_vlans` (config list, state: merged). For interface access VLAN use `cisco.ios.ios_l2_interfaces` (config list with name, mode: access, access.vlan). Do NOT use deprecated `cisco.ios.vlan` or `cisco.ios.vlan_interfaces` (removed from the collection).
    - Huawei VRP/CloudEngine: `community.network`
    - Juniper: `junipernetworks.junos`
 9. Output only supported files for the feature; all listed task files must be present, but files for non-applicable vendors may contain a safe explanatory debug task.

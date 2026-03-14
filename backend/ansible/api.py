@@ -475,6 +475,7 @@ class CheckResult(BaseModel):
     changed: bool
     diff:    str
     summary: str
+    stderr:  str = ""  # When rc != 0, often contains connection/auth/task errors
 
 
 class ExecuteResult(BaseModel):
@@ -812,8 +813,9 @@ async def check_playbook(
     return CheckResult(
         rc=result.rc,
         changed=result.changed,
-        diff=result.stdout[-10000:],
+        diff=result.stdout[-10000:] if result.stdout else "",
         summary=result.summary,
+        stderr=(result.stderr or "")[-8000:],  # So UI can show why dry-run failed
     )
 
 
@@ -1540,6 +1542,28 @@ def _entrypoint_content(bundle: dict[str, Any]) -> str:
     return ""
 
 
+def _entrypoint_content_from_disk(entrypoint_path: str) -> str | None:
+    """
+    If the entrypoint file exists on disk under the Ansible project, return its content.
+    This allows manual edits (or accepted diffs) to the playbook file to be used
+    by the UI and by Check/Deploy instead of the stored DB version.
+    Returns None if path is empty, invalid, or file does not exist.
+    """
+    path_str = str(entrypoint_path or "").replace("\\", "/").strip("/")
+    if not path_str:
+        return None
+    try:
+        disk_path = _safe_path(path_str)
+    except HTTPException:
+        return None
+    if not disk_path.is_file():
+        return None
+    try:
+        return disk_path.read_text(encoding="utf-8")
+    except Exception:
+        return None
+
+
 def _persist_bundle_to_workspace(bundle: dict[str, Any]) -> None:
     for item in bundle.get("files") or []:
         rel_path = str(item.get("path") or "").replace("\\", "/").strip("/")
@@ -1616,23 +1640,41 @@ def _load_job_artifact(job_id: int) -> dict[str, Any]:
             bundle = bundle_from_dict(json.loads(bundle_raw)).to_dict()
         except Exception as exc:
             raise HTTPException(500, f"Stored Ansible bundle is invalid: {exc}")
+        entrypoint_path = str(bundle.get("entrypoint_path") or "").replace("\\", "/").strip("/")
+        playbook_yaml = _entrypoint_content(bundle)
+        # Prefer disk content so manual/editor edits are used by UI and Check/Deploy
+        disk_yaml = _entrypoint_content_from_disk(entrypoint_path)
+        if disk_yaml is not None:
+            playbook_yaml = disk_yaml
+            # Update bundle's entrypoint file content so project_files (and runner) use disk version
+            for item in bundle.get("files") or []:
+                if str(item.get("path") or "").replace("\\", "/").strip("/") == entrypoint_path:
+                    item["content"] = disk_yaml
+                    break
         return {
             "mode": "bundle",
             "bundle": bundle,
-            "playbook_yaml": _entrypoint_content(bundle),
-            "entrypoint_path": str(bundle.get("entrypoint_path") or ""),
+            "playbook_yaml": playbook_yaml,
+            "entrypoint_path": entrypoint_path or str(bundle.get("entrypoint_path") or ""),
             "target_hosts": _bundle_target_hosts(bundle),
             "project_files": list(bundle.get("files") or []),
         }
 
     playbook_yaml = row["ansible_playbook"]
-    if not playbook_yaml:
+    entrypoint_path = str(row["ansible_entrypoint_path"] or "").replace("\\", "/").strip("/")
+    if not playbook_yaml and not entrypoint_path:
+        raise HTTPException(422, "No Ansible playbook stored. Run /plan-ansible first.")
+    # Prefer disk content when entrypoint path exists on disk
+    disk_yaml = _entrypoint_content_from_disk(entrypoint_path) if entrypoint_path else None
+    if disk_yaml is not None:
+        playbook_yaml = disk_yaml
+    elif not playbook_yaml:
         raise HTTPException(422, "No Ansible playbook stored. Run /plan-ansible first.")
     return {
         "mode": "playbook",
         "bundle": None,
         "playbook_yaml": playbook_yaml,
-        "entrypoint_path": str(row["ansible_entrypoint_path"] or ""),
+        "entrypoint_path": entrypoint_path or str(row["ansible_entrypoint_path"] or ""),
         "target_hosts": _bundle_target_hosts({}, playbook_yaml),
         "project_files": None,
     }

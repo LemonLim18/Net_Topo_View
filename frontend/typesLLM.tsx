@@ -146,6 +146,17 @@ export interface AnsibleCheckResult {
   changed: boolean;
   diff: string;
   summary: string;
+  /** When rc !== 0, backend may return stderr (connection/auth/task errors). */
+  stderr?: string;
+}
+
+/** One log stream in the Ansible Studio Output tab (Check, Deploy, Plan). */
+export interface AnsibleOutputSession {
+  id: string;
+  label: string;
+  type: 'check' | 'deploy' | 'plan';
+  createdAt: number;
+  lines: string[];
 }
 
 export interface AnsibleExecuteResult {
