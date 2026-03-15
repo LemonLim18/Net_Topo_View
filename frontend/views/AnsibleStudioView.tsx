@@ -174,6 +174,7 @@ const AnsibleStudioView: React.FC<AnsibleStudioViewProps> = ({ user }) => {
   // ── Output tab (IDE-style): sessions for Check / Deploy / Plan logs ──────
   const [outputSessions, setOutputSessions]   = useState<AnsibleOutputSession[]>([]);
   const [activeOutputId, setActiveOutputId]   = useState<string | null>(null);
+  const [splitOutputId, setSplitOutputId]     = useState<string | null>(null);
   const deploySessionIdRef = useRef<string | null>(null);
   const [streamingSessionId, setStreamingSessionId] = useState<string | null>(null);
 
@@ -526,6 +527,12 @@ const AnsibleStudioView: React.FC<AnsibleStudioViewProps> = ({ user }) => {
     }
   }, [activeJobId, refreshJob]);
 
+  const handleDeleteOutputSession = useCallback((id: string) => {
+    setOutputSessions(prev => prev.filter(s => s.id !== id));
+    setActiveOutputId(prev => (prev === id ? null : prev));
+    setSplitOutputId(prev => (prev === id ? null : prev));
+  }, []);
+
   // ── Re-generate ──────────────────────────────────────────────────────────
   const handleRegenerate = useCallback(() => {
     // Close current job tab and let chat panel create a new one
@@ -535,6 +542,7 @@ const AnsibleStudioView: React.FC<AnsibleStudioViewProps> = ({ user }) => {
     setSseLines([]);
     setOutputSessions([]);
     setActiveOutputId(null);
+    setSplitOutputId(null);
   }, [activeTab, closeTab]);
 
   // ── SSH helpers ──────────────────────────────────────────────────────────
@@ -599,6 +607,9 @@ const AnsibleStudioView: React.FC<AnsibleStudioViewProps> = ({ user }) => {
             outputSessions={outputSessions}
             activeOutputId={activeOutputId}
             onSelectOutputSession={setActiveOutputId}
+            onDeleteOutputSession={handleDeleteOutputSession}
+            splitOutputId={splitOutputId}
+            onSetSplitOutputId={setSplitOutputId}
             streamingSessionId={streamingSessionId}
           />
           </div>

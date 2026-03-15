@@ -521,15 +521,30 @@ async def plan_ansible(
         except Exception as exc:
             logger.warning("Could not fetch RAG context: %s", exc)
 
-        # Vector-RAG (M21) snippets if available
+        # Vector-RAG: retrieve by intent + feature/vendor so LLM gets right reference playbooks
         try:
             if hasattr(_agent, "_retriever") and _agent._retriever:
+                query = req.intent_description
+                if req.feature:
+                    query = f"{query} Ansible playbook reference feature {req.feature}"
+                if effective_vendor:
+                    query = f"{query} vendor {effective_vendor}"
                 kb_snippets = [
                     r["text"]
                     for r in _agent._retriever.retrieve(
-                        req.intent_description, k=3
+                        query,
+                        k=5,
+                        vendor_filter=effective_vendor or None,
+                        doc_type_filter="ansible_reference",
                     )
                 ]
+                # If no ansible_reference docs found, fall back to unfiltered retrieval
+                if not kb_snippets:
+                    kb_snippets = [
+                        r["text"]
+                        for r in _agent._retriever.retrieve(query, k=3)
+                    ]
+                kb_snippets = kb_snippets[:3]
         except Exception as exc:
             logger.debug("Vector-RAG retrieval skipped: %s", exc)
     intent = {
@@ -1056,6 +1071,8 @@ async def get_job_inventory(
                 if dev:
                     h["ssh_user"] = (dev.ssh_user or "").strip()
                     h["ssh_password"] = (dev.ssh_password or "").strip()
+                    if dev.ssh_user or dev.ssh_password:
+                        h["credentials_source"] = "device_inventory (overrides vault)"
             except Exception:
                 pass
 
@@ -1460,8 +1477,11 @@ async def _build_bundle_with_refinement(
 # =============================================================================
 
 ANSIBLE_BASE = Path(__file__).parent
-_ALLOWED_ROOTS = ("playbooks", "roles", "inventory", "awx")
-_WRITABLE_ROOTS = ("playbooks", "inventory")   # roles/awx are read-only from UI
+# Two main sections: Reference (templates) and Generated (AI output). Then project dirs.
+_ALLOWED_ROOTS = ("reference", "generated", "playbooks", "roles", "inventory", "awx")
+# reference/ and generated/ are read-only from UI; generated/* maps to playbooks/generated and roles/generated
+_READONLY_ROOTS = frozenset({"reference", "roles", "awx", "generated"})
+_WRITABLE_ROOTS = ("playbooks", "inventory")
 _GENERATED_ROLE_ROOT = "roles/generated"
 _GENERATED_PLAYBOOK_ROOT = "playbooks/generated"
 
@@ -1486,8 +1506,8 @@ def _safe_path(relative: str) -> Path:
     return resolved
 
 
-def _build_tree(root: Path, base: Path) -> list:
-    """Recursively build a file-node tree dict."""
+def _build_tree(root: Path, base: Path, exclude_dir_names: tuple[str, ...] = ()) -> list:
+    """Recursively build a file-node tree dict. exclude_dir_names: skip these dir names (e.g. 'generated')."""
     result = []
     try:
         entries = sorted(root.iterdir(), key=lambda p: (p.is_file(), p.name.lower()))
@@ -1497,12 +1517,14 @@ def _build_tree(root: Path, base: Path) -> list:
         rel = str(entry.relative_to(base)).replace("\\", "/")
         if entry.name.startswith(".") or entry.name == "__pycache__":
             continue
+        if entry.name in exclude_dir_names and entry.is_dir():
+            continue
         if entry.is_dir():
             result.append({
                 "type": "dir",
                 "name": entry.name,
                 "path": rel,
-                "children": _build_tree(entry, base),
+                "children": _build_tree(entry, base, exclude_dir_names),
             })
         else:
             st = entry.stat()
@@ -1514,6 +1536,100 @@ def _build_tree(root: Path, base: Path) -> list:
                 "modified_at": datetime.fromtimestamp(st.st_mtime).isoformat(),
             })
     return result
+
+
+def _build_tree_with_path_prefix(root: Path, prefix: str) -> dict:
+    """Build a single dir node with path prefix for virtual 'generated' tree."""
+    children = []
+    try:
+        entries = sorted(root.iterdir(), key=lambda p: (p.is_file(), p.name.lower()))
+    except PermissionError:
+        entries = []
+    for entry in entries:
+        if entry.name.startswith(".") or entry.name == "__pycache__":
+            continue
+        child_path = f"{prefix}/{entry.name}".replace("//", "/")
+        if entry.is_dir():
+            children.append(_build_tree_with_path_prefix(entry, child_path))
+        else:
+            st = entry.stat()
+            children.append({
+                "type": "file",
+                "name": entry.name,
+                "path": child_path,
+                "size": st.st_size,
+                "modified_at": datetime.fromtimestamp(st.st_mtime).isoformat(),
+            })
+    return {
+        "type": "dir",
+        "name": root.name,
+        "path": prefix,
+        "children": children,
+    }
+
+
+def _build_generated_tree() -> list:
+    """Build virtual tree for 'generated' root: merges playbooks/generated/job_* and roles/generated/job_* by job id."""
+    playbooks_root = ANSIBLE_BASE / "playbooks" / "generated"
+    roles_root = ANSIBLE_BASE / "roles" / "generated"
+    job_ids = set()
+    if playbooks_root.exists():
+        for d in playbooks_root.iterdir():
+            if d.is_dir() and d.name.startswith("job_"):
+                job_ids.add(d.name)
+    if roles_root.exists():
+        for d in roles_root.iterdir():
+            if d.is_dir() and d.name.startswith("job_"):
+                job_ids.add(d.name)
+    result = []
+    for jid in sorted(job_ids, key=lambda x: (len(x), x)):
+        children = []
+        pb_dir = playbooks_root / jid
+        if pb_dir.exists():
+            for entry in sorted(pb_dir.iterdir(), key=lambda p: (p.is_file(), p.name.lower())):
+                if entry.is_file() and not entry.name.startswith("."):
+                    st = entry.stat()
+                    children.append({
+                        "type": "file",
+                        "name": entry.name,
+                        "path": f"generated/{jid}/{entry.name}",
+                        "size": st.st_size,
+                        "modified_at": datetime.fromtimestamp(st.st_mtime).isoformat(),
+                    })
+        role_dir = roles_root / jid
+        if role_dir.exists():
+            for entry in sorted(role_dir.iterdir(), key=lambda p: (p.is_file(), p.name.lower())):
+                if entry.is_dir() and not entry.name.startswith("."):
+                    children.append(_build_tree_with_path_prefix(entry, f"generated/{jid}/{entry.name}"))
+        result.append({
+            "type": "dir",
+            "name": jid,
+            "path": f"generated/{jid}",
+            "children": sorted(children, key=lambda n: (n["type"] != "dir", n["name"].lower())),
+        })
+    return result
+
+
+def _generated_virtual_to_real(virtual_path: str) -> str | None:
+    """
+    Map virtual path under generated/ to real path.
+    generated/job_X/playbook.yml -> playbooks/generated/job_X/playbook.yml
+    generated/job_X/vlan/... -> roles/generated/job_X/vlan/...
+    """
+    parts = virtual_path.replace("\\", "/").strip("/").split("/")
+    if len(parts) < 3 or parts[0] != "generated" or not parts[1].startswith("job_"):
+        return None
+    jid = parts[1]
+    rest = "/".join(parts[2:])
+    pb_dir = ANSIBLE_BASE / "playbooks" / "generated" / jid
+    roles_dir = ANSIBLE_BASE / "roles" / "generated" / jid
+    if rest and "/" not in rest and (pb_dir / rest).exists() and (pb_dir / rest).is_file():
+        return f"playbooks/generated/{jid}/{rest}"
+    if rest and "/" in rest:
+        return f"roles/generated/{jid}/{rest}"
+    if rest and (roles_dir / rest).exists():
+        return f"roles/generated/{jid}/{rest}"
+    return f"roles/generated/{jid}/{rest}"
 
 
 def _safe_writable_path(relative: str) -> tuple[Path, tuple[str, ...]]:
@@ -1927,24 +2043,39 @@ async def create_from_template(
 
 # ── M23: file-server endpoints ────────────────────────────────────────────
 
-@router.get("/files", summary="List ansible file tree (playbooks, roles, inventory, awx)")
+@router.get("/files", summary="List ansible file tree (reference, generated, playbooks, roles, inventory, awx)")
 async def list_files(user: dict = Depends(get_current_user)):
     tree = []
     for root_name in _ALLOWED_ROOTS:
-        root_dir = ANSIBLE_BASE / root_name
-        if root_dir.exists():
+        if root_name == "generated":
             tree.append({
                 "type": "dir",
                 "name": root_name,
                 "path": root_name,
-                "children": _build_tree(root_dir, ANSIBLE_BASE),
+                "children": _build_generated_tree(),
+            })
+            continue
+        root_dir = ANSIBLE_BASE / root_name
+        if root_dir.exists():
+            # Hide playbooks/generated and roles/generated here; they appear under AI Output
+            exclude = ("generated",) if root_name in ("playbooks", "roles") else ()
+            tree.append({
+                "type": "dir",
+                "name": root_name,
+                "path": root_name,
+                "children": _build_tree(root_dir, ANSIBLE_BASE, exclude_dir_names=exclude),
             })
     return {"tree": tree}
 
 
 @router.get("/files/{file_path:path}", summary="Read a single ansible file")
 async def read_file(file_path: str, user: dict = Depends(get_current_user)):
-    path = _safe_path(file_path)
+    path_to_read = file_path.replace("\\", "/").strip("/")
+    if path_to_read.startswith("generated/"):
+        real = _generated_virtual_to_real(path_to_read)
+        if real:
+            path_to_read = real
+    path = _safe_path(path_to_read)
     if not path.exists():
         raise HTTPException(404, f"File not found: {file_path}")
     if path.is_dir():
@@ -1967,20 +2098,34 @@ class CreateFileRequest(BaseModel):
     content: str = ""
 
 
+def _is_writable_relative_path(relative_path: str) -> bool:
+    """True if path is under playbooks/, inventory/, or roles/generated/."""
+    parts = Path(relative_path.replace("\\", "/").strip("/")).parts
+    if not parts:
+        return False
+    if parts[0] in _WRITABLE_ROOTS:
+        return True
+    if parts[0] == "roles" and len(parts) >= 2 and parts[1] == "generated":
+        return True
+    return False
+
+
 @router.put("/files/{file_path:path}", summary="Save edited ansible file content")
 async def write_file(
     file_path: str,
     body:       WriteFileRequest,
     user:       dict = Depends(require_role("operator", "admin")),
 ):
-    path = _safe_path(file_path)
-    # Only playbooks/, inventory/, and generated roles/ are writable from the UI
-    rel_parts = Path(file_path).parts
-    if not rel_parts or rel_parts[0] not in _WRITABLE_ROOTS:
+    path_to_write = file_path.replace("\\", "/").strip("/")
+    if path_to_write.startswith("generated/"):
+        real = _generated_virtual_to_real(path_to_write)
+        if real:
+            path_to_write = real
+    path = _safe_path(path_to_write)
+    if not _is_writable_relative_path(path_to_write):
         raise HTTPException(
             403,
-            f"Only {_WRITABLE_ROOTS} directories are writable. "
-            "roles/ and awx/ are read-only.",
+            "Only playbooks/, inventory/, and roles/generated/ (or generated/ in tree) are writable.",
         )
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(body.content, encoding="utf-8")
@@ -2025,7 +2170,12 @@ async def delete_path(
     target_path: str,
     user:        dict = Depends(require_role("operator", "admin")),
 ):
-    path, rel_parts = _safe_writable_path(target_path)
+    path_to_delete = target_path.replace("\\", "/").strip("/")
+    if path_to_delete.startswith("generated/"):
+        real = _generated_virtual_to_real(path_to_delete)
+        if real:
+            path_to_delete = real
+    path, rel_parts = _safe_writable_path(path_to_delete)
     if len(rel_parts) == 1 and rel_parts[0] in _WRITABLE_ROOTS:
         raise HTTPException(403, f"Cannot delete writable root directory: {rel_parts[0]}")
     if not path.exists():

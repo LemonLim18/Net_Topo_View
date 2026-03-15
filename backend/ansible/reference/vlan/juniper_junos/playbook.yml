@@ -1,0 +1,20 @@
+---
+# Reference: VLAN on Juniper Junos (NETCONF) — unverified; use with caution.
+- name: Configure VLANs on Juniper Junos access switches
+  hosts: access_switches:&vendor_juniper_junos
+  gather_facts: no
+  ignore_unreachable: true
+  vars:
+    vlan_id: 200
+    vlan_name: TEST
+  tasks:
+    - name: Ensure VLAN exists
+      juniper.device.junos_vlans:
+        config:
+          - name: "{{ vlan_name }}"
+            vlan_id: '{{ vlan_id }}'
+        state: merged
+    - name: Verify VLAN exists
+      juniper.device.junos_vlans:
+        state: gathered
+      register: vlan_info

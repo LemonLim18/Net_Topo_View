@@ -1,7 +1,11 @@
 ---
-- name: Configure VLANs on access switches
-  hosts: access_switches
+# Smart-apply: one play per vendor so the right modules run on the right devices.
+
+# Cisco IOS (ignore_unreachable so shutdown hosts 5/6 don't fail the run)
+- name: Configure VLANs on Cisco IOS access switches
+  hosts: access_switches:&vendor_cisco_ios
   gather_facts: no
+  ignore_unreachable: true
   vars:
     vlan_id: 200
     vlan_name: TEST
@@ -13,6 +17,7 @@
             name: '{{ vlan_name }}'
             state: active
         state: merged
+      ignore_errors: true  # connection failures (e.g. No route to host) on down hosts
     - name: Verify VLAN exists
       cisco.ios.ios_vlans:
         state: gathered
@@ -33,3 +38,55 @@
       cisco.ios.ios_l2_interfaces:
         state: gathered
       register: vlan_interfaces_info
+
+# Huawei CloudEngine/VRP via CLI (network_cli + ce_config; works without NETCONF)
+- name: Configure VLANs on Huawei access switches
+  hosts: access_switches:&vendor_huawei_vrp
+  gather_facts: no
+  ignore_unreachable: true
+  connection: ansible.netcommon.network_cli
+  vars:
+    vlan_id: 200
+    vlan_name: TEST
+    ansible_network_os: community.network.ce
+  tasks:
+    - name: Ensure VLAN exists (vlan batch + name)
+      community.network.ce_config:
+        lines:
+          - vlan batch {{ vlan_id }}
+          - vlan {{ vlan_id }}
+          - name {{ vlan_name }}
+      ignore_errors: true  # connection failures on down hosts
+    - name: Ensure VLAN on interface GigabitEthernet1/0/1 (access)
+      community.network.ce_config:
+        lines:
+          - port link-type access
+          - port default vlan {{ vlan_id }}
+        parents: interface GigabitEthernet1/0/1
+    - name: Ensure VLAN on interface GigabitEthernet1/0/2 (access)
+      community.network.ce_config:
+        lines:
+          - port link-type access
+          - port default vlan {{ vlan_id }}
+        parents: interface GigabitEthernet1/0/2
+
+# Juniper Junos (NETCONF port 830; use juniper.device collection)
+- name: Configure VLANs on Juniper Junos access switches
+  hosts: access_switches:&vendor_juniper_junos
+  gather_facts: no
+  ignore_unreachable: true
+  vars:
+    vlan_id: 200
+    vlan_name: TEST
+  tasks:
+    - name: Ensure VLAN exists
+      juniper.device.junos_vlans:
+        config:
+          - name: "{{ vlan_name }}"
+            vlan_id: '{{ vlan_id }}'
+        state: merged
+      ignore_errors: true  # connection failures (e.g. socket to :830) on down hosts
+    - name: Verify VLAN exists
+      juniper.device.junos_vlans:
+        state: gathered
+      register: vlan_info

@@ -1,0 +1,62 @@
+---
+# Test NETCONF connection to a Huawei device (port 830).
+# Run from the Ansible project root (or backend/ansible) on the runner VM.
+#
+# With inline inventory (single host):
+#   ansible-playbook playbooks/test_netconf_huawei.yml \
+#     -i "192.168.1.48," \
+#     -e "ansible_user=cognishield" \
+#     -e "ansible_password=Admin@Lab2026" \
+#     -e "ansible_port=830"
+#
+# With vault vars (load from net_creds.yml or -e):
+#   ansible-playbook playbooks/test_netconf_huawei.yml \
+#     -i "192.168.1.48," \
+#     -e "ansible_user={{ vault_huawei_vrp_user }}" \
+#     -e "ansible_password={{ vault_huawei_vrp_pass }}" \
+#     -e "ansible_port=830" \
+#     -e @vault/net_creds.yml
+#
+# With existing inventory that has the Huawei host:
+#   ansible-playbook playbooks/test_netconf_huawei.yml -i inventory/hosts.yml -l Acc_Huawei_3
+#
+# If you use your own playbook (e.g. test2.yml) and still get "timeout 30 secs", either add
+# to the play vars: ansible_connect_timeout: 60, ansible_command_timeout: 90
+# or run: export ANSIBLE_PERSISTENT_CONNECT_TIMEOUT=60 ANSIBLE_PERSISTENT_COMMAND_TIMEOUT=90
+
+- name: Test NETCONF connection to Huawei device
+  hosts: all
+  gather_facts: false
+  vars:
+    ansible_connection: netconf
+    ansible_port: "{{ ansible_port | default(830) }}"
+    ansible_network_os: vrp
+    # Huawei can be very slow to build full running config; use a small filter so response is fast
+    ansible_connect_timeout: 60
+    ansible_command_timeout: 120
+  tasks:
+    # Request only system info (small subtree) — full running config often times out on Huawei
+    - name: NETCONF get (system subtree) — tests connection and auth
+      ansible.netcommon.netconf_get:
+        source: running
+        filter: |
+          <system xmlns="urn:ietf:params:xml:ns:yang:ietf-system">
+            <system/>
+          </system>
+      register: netconf_result
+      ignore_errors: true
+
+    - name: NETCONF connection OK
+      ansible.builtin.debug:
+        msg: "NETCONF connection OK. Response length {{ (netconf_result.output | default('') | string | length) }} chars"
+      when: netconf_result is not failed
+
+    - name: Show first 800 chars of response
+      ansible.builtin.debug:
+        msg: "{{ (netconf_result.output | default('') | string)[:800] }}"
+      when: netconf_result is not failed
+
+    - name: Fail with error if NETCONF failed
+      ansible.builtin.fail:
+        msg: "NETCONF test failed: {{ netconf_result.msg | default(netconf_result) }}"
+      when: netconf_result is failed

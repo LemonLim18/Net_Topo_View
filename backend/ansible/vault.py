@@ -102,9 +102,11 @@ def vault_file_exists() -> bool:
 
 def get_decrypted_vault_vars() -> dict:
     """
-    Decrypt vault/net_creds.yml and return a dict of variable names to values.
-    Returns {} if vault password is not configured, file is missing, or decryption fails.
-    Used only for admin inventory view; do not log or cache the result.
+    Load vault/net_creds.yml and return a dict of variable names to values.
+    - If the file is plain YAML (does not start with $ANSIBLE_VAULT), load it directly.
+      Use this on Windows where ansible-vault CLI may not run (os.get_blocking etc.).
+    - If the file is vault-encrypted, decrypt via ansible-vault view.
+    Returns {} if file is missing or decryption fails.
     """
     import subprocess
 
@@ -113,8 +115,23 @@ def get_decrypted_vault_vars() -> dict:
     except ImportError:
         return {}
 
+    if not VAULT_FILE.exists():
+        return {}
+
+    raw = VAULT_FILE.read_text(encoding="utf-8", errors="replace").strip()
+    # Plain YAML (no encryption) — e.g. Windows where ansible-vault encrypt fails
+    if not raw.startswith("$ANSIBLE_VAULT"):
+        try:
+            data = yaml.safe_load(raw) or {}
+            out = dict(data) if isinstance(data, dict) else {}
+            if out:
+                logger.debug("Loaded plain net_creds.yml (not encrypted). Keep file gitignored.")
+            return out
+        except Exception:
+            return {}
+
     pw_file = vault_password_file_path()
-    if not pw_file or not VAULT_FILE.exists():
+    if not pw_file:
         return {}
     try:
         result = subprocess.run(

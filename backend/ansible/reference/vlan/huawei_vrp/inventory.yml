@@ -1,0 +1,19 @@
+---
+# Minimal inventory pattern for Huawei VRP VLAN play (CLI, not NETCONF).
+all:
+  children:
+    vendor_huawei_vrp:
+      vars:
+        ansible_network_os: community.network.ce
+        ansible_connection: network_cli
+        ansible_user: "{{ vault_net_user }}"
+        ansible_password: "{{ vault_net_pass }}"
+        ansible_become: true
+        ansible_become_method: enable
+        ansible_become_pass: "{{ vault_enable_pass }}"
+      hosts:
+        acc-huawei-01:
+          ansible_host: 192.168.1.48
+    access_switches:
+      children:
+        vendor_huawei_vrp: {}

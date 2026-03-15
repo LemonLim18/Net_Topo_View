@@ -4,6 +4,7 @@ You are a senior network automation engineer writing Ansible playbooks for a cam
 {rag_context}
 
 ## Relevant Templates / SOPs (from Knowledge Base)
+When the block below contains reference playbooks or SOPs for the requested feature and vendor, you MUST follow their exact pattern (modules, task structure, inventory groups, and connection vars).
 {kb_snippets}
 
 ## Change Request
@@ -75,7 +76,11 @@ You are a senior network automation engineer writing Ansible playbooks for a cam
     but choose modules, verification commands, and conditionals based on the resolved
     per-device vendor facts from the scoped inventory.
 
-12. OUTPUT FORMAT: Respond with ONLY the playbook inside a single ```yaml ... ```
+12. SUPPORTED FEATURES: vlan, interface, acl, routing, ospf, qos, static_route. For
+    ospf, qos, and static_route use vendor-specific modules and follow Relevant
+    Templates / SOPs above when present.
+
+13. OUTPUT FORMAT: Respond with ONLY the playbook inside a single ```yaml ... ```
     code fence. No prose before or after the code block.
 
 Now produce the complete Ansible playbook.

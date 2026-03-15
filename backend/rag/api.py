@@ -53,6 +53,8 @@ _vector_store = None
 _KNOWLEDGE_BASE_DIR = os.path.join(
     os.path.dirname(__file__), "..", "knowledge_base"
 )
+# Ansible reference library (confirmed operational playbooks per feature/vendor)
+_ANSIBLE_REFERENCE_DIR = Path(__file__).resolve().parent.parent / "ansible" / "reference"
 
 
 def setup_rag(ingester, vector_store) -> None:
@@ -374,18 +376,16 @@ async def rebuild_knowledge_base(
     _check_rag_ready()
 
     def _run():
-        kb_dir = Path(_KNOWLEDGE_BASE_DIR)
-        if not kb_dir.exists():
-            return
-        supported = {".pdf", ".txt", ".md", ".docx", ".html", ".htm"}
-        files = [f for f in kb_dir.iterdir() if f.is_file() and f.suffix.lower() in supported]
-        if not files:
-            return
         from llm.vector_store import PARTITION_STATIC_KNOWLEDGE
 
         _vector_store.clear_partition(PARTITION_STATIC_KNOWLEDGE)
         total_chunks = 0
         errors = []
+        kb_dir = Path(_KNOWLEDGE_BASE_DIR)
+        supported = {".pdf", ".txt", ".md", ".docx", ".html", ".htm"}
+        files = []
+        if kb_dir.exists():
+            files = [f for f in kb_dir.iterdir() if f.is_file() and f.suffix.lower() in supported]
         for f in files:
             metadata = load_document_metadata(f, kb_dir)
             doc_type = metadata.doc_type
@@ -401,7 +401,32 @@ async def rebuild_knowledge_base(
                 total_chunks += r.get("chunks_stored", 0)
             except Exception as exc:
                 errors.append(f"{f.name}: {exc}")
-        logger.info("Rebuild complete: %d files, %d chunks, %d errors", len(files), total_chunks, len(errors))
+
+        # Ingest Ansible reference library (reference/{feature}/{vendor}/reference.md)
+        ansible_ref_dir = Path(_ANSIBLE_REFERENCE_DIR)
+        if ansible_ref_dir.exists():
+            for ref_md in ansible_ref_dir.rglob("reference.md"):
+                try:
+                    # Path like .../reference/vlan/cisco_ios/reference.md -> feature=vlan, vendor=cisco_ios
+                    vendor = ref_md.parent.name
+                    feature = ref_md.parent.parent.name
+                    meta = KnowledgeDocumentMetadata(
+                        doc_type="ansible_reference",
+                        vendor=vendor,
+                        applicable_feature=feature,
+                        title=f"Ansible reference {feature} {vendor}",
+                    )
+                    r = _ingester.ingest_file(
+                        file_path=str(ref_md),
+                        doc_type=meta.doc_type,
+                        vendor=meta.vendor,
+                        doc_name=ref_md.name,
+                        metadata_overrides=asdict(meta),
+                    )
+                    total_chunks += r.get("chunks_stored", 0)
+                except Exception as exc:
+                    errors.append(f"{ref_md!s}: {exc}")
+        logger.info("Rebuild complete: %d chunks, %d errors", total_chunks, len(errors))
 
     background_tasks.add_task(_run)
     return {"status": "accepted", "message": "Knowledge base rebuild started in background"}

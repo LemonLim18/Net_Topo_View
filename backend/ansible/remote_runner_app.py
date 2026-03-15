@@ -71,6 +71,21 @@ def _run_playbook(
 
         (inv_dir / "hosts.yml").write_text(yaml.dump(inventory, default_flow_style=False), encoding="utf-8")
 
+        # Host key checking off + legacy SSH algorithms so old network devices can negotiate
+        ansible_cfg = project / "ansible.cfg"
+        ansible_cfg.write_text(
+            "[defaults]\n"
+            "host_key_checking = False\n"
+            "gathering = explicit\n"
+            "[ssh_connection]\n"
+            "ssh_args = -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "
+            "-o KexAlgorithms=+diffie-hellman-group-exchange-sha1,diffie-hellman-group14-sha1,diffie-hellman-group1-sha1 "
+            "-o HostKeyAlgorithms=+ssh-rsa "
+            "-o Ciphers=+aes128-cbc,3des-cbc,aes192-cbc,aes256-cbc "
+            "-o MACs=+hmac-sha1,hmac-sha1-96,hmac-md5,hmac-md5-96\n",
+            encoding="utf-8",
+        )
+
         cmd = ["ansible-playbook", runtime_playbook, "-i", str(inv_dir / "hosts.yml")]
         if check_mode:
             cmd += ["--check", "--diff"]
@@ -88,6 +103,11 @@ def _run_playbook(
             vault_file.chmod(0o600)
             cmd += ["--vault-password-file", str(vault_file)]
 
+        env = os.environ.copy()
+        env["ANSIBLE_HOST_KEY_CHECKING"] = "False"
+        # NETCONF/SSH persistent connection defaults are 30s; Huawei is often slower
+        env.setdefault("ANSIBLE_PERSISTENT_CONNECT_TIMEOUT", "60")
+        env.setdefault("ANSIBLE_PERSISTENT_COMMAND_TIMEOUT", "90")
         try:
             result = subprocess.run(
                 cmd,
@@ -95,6 +115,7 @@ def _run_playbook(
                 capture_output=True,
                 text=True,
                 timeout=timeout,
+                env=env,
             )
             rc = result.returncode
             stdout = result.stdout or ""

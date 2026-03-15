@@ -6,6 +6,7 @@ Generate a production-ready Ansible project bundle for the user's network intent
 {rag_context}
 
 ## Relevant Templates / SOPs (from Knowledge Base)
+When the block below contains reference playbooks or SOPs for the requested feature and vendor, you MUST follow their exact pattern (modules, task structure, inventory groups, and connection vars). Use them as the primary source for correct playbook and task format.
 {kb_snippets}
 
 ## Change Request
@@ -60,10 +61,13 @@ You MUST generate a multi-file Ansible bundle with:
 
 ## Supported Feature Guidance
 
-- `vlan`: create or merge VLAN state and verify it exists
-- `interface`: apply interface config safely and verify interface state
-- `acl`: configure ACL resources safely and verify presence
-- `routing`: configure simple routing resources safely and verify neighbor or route visibility
+- `vlan`: create or merge VLAN state and verify it exists; follow Relevant Templates above when present for the target vendor.
+- `interface`: apply interface config safely and verify interface state.
+- `acl`: configure ACL resources safely and verify presence.
+- `routing`: configure simple routing resources safely and verify neighbor or route visibility.
+- `ospf`: configure OSPF (areas, router-id, interfaces); use vendor-specific modules and follow Relevant Templates when present.
+- `qos`: configure QoS (queues, policies, interface attachment); use vendor-specific modules and follow Relevant Templates when present.
+- `static_route`: configure static routes; use vendor-specific modules and follow Relevant Templates when present.
 
 ## Output Format
 

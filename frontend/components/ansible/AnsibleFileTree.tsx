@@ -14,7 +14,7 @@ import {
   Trash2,
 } from 'lucide-react';
 import Swal from 'sweetalert2';
-import { ansibleApi, configApi } from '../../src/services/api';
+import { ansibleApi } from '../../src/services/api';
 import type { AnsibleFileNode } from '../../typesLLM';
 import ContextMenu, { type ContextMenuAction } from '../ContextMenu';
 import { Confirm, Toast } from '../../src/utils/swal';
@@ -37,18 +37,24 @@ interface TreeNodeProps {
 }
 
 const WRITABLE_ROOTS = new Set(['playbooks', 'inventory']);
-const READONLY_ROOTS = new Set(['roles', 'awx']);
-const VIRTUAL_ROOTS = new Set(['templates', 'schemas']);
+const READONLY_ROOTS = new Set(['roles', 'awx', 'reference']);
+// generated/ is virtual (AI output); files under it are writable (backend maps to playbooks|roles/generated)
+const VIRTUAL_ROOTS = new Set([] as string[]);
+/** Roots grouped under "Project" (playbooks, roles, inventory); awx excluded — not used unless you run AWX/Tower */
+const PROJECT_ROOT_NAMES = new Set(['playbooks', 'roles', 'inventory']);
 
 const getRoot = (path: string) => path.split('/')[0] ?? '';
 const getParentDir = (path: string) => {
   const idx = path.lastIndexOf('/');
   return idx > 0 ? path.slice(0, idx) : '';
 };
-const isWritablePath = (path: string) => WRITABLE_ROOTS.has(getRoot(path)) || path.startsWith('roles/generated/');
+const isWritablePath = (path: string) =>
+  WRITABLE_ROOTS.has(getRoot(path)) || path.startsWith('roles/generated/') || path.startsWith('generated/');
 const isVirtualPath = (path: string) => VIRTUAL_ROOTS.has(getRoot(path));
 const isReadOnlyRootPath = (path: string) => READONLY_ROOTS.has(getRoot(path));
 const canMutatePath = (path: string) => isWritablePath(path) && !isVirtualPath(path) && !isReadOnlyRootPath(path);
+/** Create file/folder only under playbooks, inventory, or roles/generated (not under virtual generated/) */
+const canCreateUnder = (path: string) => canMutatePath(path) && !path.startsWith('generated');
 
 const TreeNode: React.FC<TreeNodeProps> = ({
   node,
@@ -143,65 +149,33 @@ const AnsibleFileTree: React.FC<AnsibleFileTreeProps> = ({ onFileOpen, selectedP
     setLoading(true);
     setError(null);
     try {
-      const [filesRes, templates] = await Promise.all([
-        ansibleApi.listFiles(),
-        configApi.listTemplates().catch(() => [] as { vendor: string; feature: string; has_undo: boolean; schema_exists: boolean }[]),
-      ]);
-
-      const ansibleTree: AnsibleFileNode[] = filesRes.tree || [];
-
-      // Build virtual "templates/" and "schemas/" nodes from Config Engine data
-      if (templates.length > 0) {
-        const byVendor: Record<string, AnsibleFileNode[]> = {};
-        const schemaChildren: AnsibleFileNode[] = [];
-        const seenSchemas = new Set<string>();
-
-        for (const t of templates) {
-          // templates/{vendor}/{feature}.j2
-          if (!byVendor[t.vendor]) byVendor[t.vendor] = [];
-          byVendor[t.vendor].push({
-            type: 'file',
-            name: `${t.feature}.j2`,
-            path: `templates/${t.vendor}/${t.feature}.j2`,
-          });
-
-          // schemas/{feature}.json  (deduplicated)
-          if (t.schema_exists && !seenSchemas.has(t.feature)) {
-            seenSchemas.add(t.feature);
-            schemaChildren.push({
-              type: 'file',
-              name: `${t.feature}.json`,
-              path: `schemas/${t.feature}.json`,
-            });
-          }
-        }
-
-        const vendorDirs: AnsibleFileNode[] = Object.entries(byVendor)
-          .sort(([a], [b]) => a.localeCompare(b))
-          .map(([vendor, files]) => ({
-            type: 'dir' as const,
-            name: vendor,
-            path: `templates/${vendor}`,
-            children: files.sort((a, b) => a.name.localeCompare(b.name)),
-          }));
-
-        ansibleTree.push({
-          type: 'dir',
-          name: 'templates',
-          path: 'templates',
-          children: vendorDirs,
-        });
-
-        if (schemaChildren.length > 0) {
-          ansibleTree.push({
-            type: 'dir',
-            name: 'schemas',
-            path: 'schemas',
-            children: schemaChildren.sort((a, b) => a.name.localeCompare(b.name)),
-          });
-        }
-      }
-
+      const filesRes = await ansibleApi.listFiles();
+      const rawTree: AnsibleFileNode[] = filesRes.tree || [];
+      // Friendly names for main sections; group playbooks/roles/inventory/awx under "Project"
+      const withNames = rawTree.map((root) => ({
+        ...root,
+        name:
+          root.path === 'reference'
+            ? 'Reference'
+            : root.path === 'generated'
+              ? 'AI Output'
+              : root.name,
+      }));
+      const referenceNode = withNames.find((r) => r.path === 'reference');
+      const generatedNode = withNames.find((r) => r.path === 'generated');
+      const projectChildren = withNames.filter((r) => PROJECT_ROOT_NAMES.has(r.path));
+      const projectNode: AnsibleFileNode | null =
+        projectChildren.length > 0
+          ? {
+              type: 'dir',
+              name: 'Project',
+              path: 'project',
+              children: projectChildren,
+            }
+          : null;
+      const ansibleTree: AnsibleFileNode[] = [referenceNode, generatedNode, projectNode].filter(
+        Boolean,
+      ) as AnsibleFileNode[];
       setTree(ansibleTree);
       if (runAfterRefresh) onAfterRefresh?.();
     } catch (e: any) {
@@ -353,7 +327,7 @@ const AnsibleFileTree: React.FC<AnsibleFileTreeProps> = ({ onFileOpen, selectedP
     event.preventDefault();
 
     const baseDir = node.type === 'dir' ? node.path : (getParentDir(node.path) || getRoot(node.path));
-    const editable = canMutatePath(baseDir);
+    const canCreate = canCreateUnder(baseDir);
     const nodeEditable = canMutatePath(node.path);
 
     const actions: ContextMenuAction[] = [
@@ -361,19 +335,19 @@ const AnsibleFileTree: React.FC<AnsibleFileTreeProps> = ({ onFileOpen, selectedP
         label: 'New File',
         icon: <FilePlus2 className="h-4 w-4" />,
         onClick: () => createFileAt(baseDir),
-        disabled: !editable,
+        disabled: !canCreate,
       },
       {
         label: 'New Folder',
         icon: <FolderPlus className="h-4 w-4" />,
         onClick: () => createFolderAt(baseDir),
-        disabled: !editable,
+        disabled: !canCreate,
       },
       {
         label: 'Upload File',
         icon: <Upload className="h-4 w-4" />,
         onClick: () => triggerUploadTo(baseDir),
-        disabled: !editable,
+        disabled: !canCreate,
       },
     ];
 
@@ -412,17 +386,26 @@ const AnsibleFileTree: React.FC<AnsibleFileTreeProps> = ({ onFileOpen, selectedP
             {showCreateMenu && (
               <ul className="menu menu-xs absolute right-0 mt-1 bg-base-200 border border-base-300 rounded-box shadow-xl z-40 w-36">
                 <li>
-                  <button onClick={() => { setShowCreateMenu(false); createFileAt(preferredDir()); }}>
+                  <button
+                    disabled={!canCreateUnder(preferredDir())}
+                    onClick={() => { setShowCreateMenu(false); createFileAt(preferredDir()); }}
+                  >
                     <FilePlus2 className="h-3.5 w-3.5" /> New File
                   </button>
                 </li>
                 <li>
-                  <button onClick={() => { setShowCreateMenu(false); createFolderAt(preferredDir()); }}>
+                  <button
+                    disabled={!canCreateUnder(preferredDir())}
+                    onClick={() => { setShowCreateMenu(false); createFolderAt(preferredDir()); }}
+                  >
                     <FolderPlus className="h-3.5 w-3.5" /> New Folder
                   </button>
                 </li>
                 <li>
-                  <button onClick={() => { setShowCreateMenu(false); triggerUploadTo(preferredDir()); }}>
+                  <button
+                    disabled={!canCreateUnder(preferredDir())}
+                    onClick={() => { setShowCreateMenu(false); triggerUploadTo(preferredDir()); }}
+                  >
                     <Upload className="h-3.5 w-3.5" /> Upload File
                   </button>
                 </li>

@@ -20,11 +20,12 @@ logger = logging.getLogger("ansible.inventory")
 TOPO_FILE = Path(__file__).parent.parent / "topology_store" / "current_topo.json"
 
 # Mapping from our vendor strings → ansible_network_os values
+# Huawei uses "ce" (community.network.ce) for CLI; NETCONF not required
 _VENDOR_OS_MAP = {
     "cisco_ios":     "ios",
     "cisco_nxos":    "nxos",
     "cisco_xr":      "iosxr",
-    "huawei_vrp":    "vrp",
+    "huawei_vrp":    "ce",
     "juniper_junos": "junos",
     "aruba":         "aos",
 }

@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
-import { CheckCircle2, Circle, Loader2, AlertCircle, History, ScrollText, Server, Terminal, Play, ChevronDown } from 'lucide-react';
+import { CheckCircle2, Circle, Loader2, AlertCircle, History, ScrollText, Server, Terminal, Play, ChevronDown, Trash2, PanelRightOpen, X } from 'lucide-react';
 import { deployApi, ansibleApi } from '../../src/services/api';
 import type { AnsibleJob, AnsibleOutputSession } from '../../typesLLM';
 
@@ -10,6 +10,9 @@ interface JobStatusBarProps {
   outputSessions?: AnsibleOutputSession[];
   activeOutputId?: string | null;
   onSelectOutputSession?: (id: string | null) => void;
+  onDeleteOutputSession?: (id: string) => void;
+  splitOutputId?: string | null;
+  onSetSplitOutputId?: (id: string | null) => void;
   streamingSessionId?: string | null;
 }
 
@@ -38,6 +41,9 @@ const JobStatusBar: React.FC<JobStatusBarProps> = ({
   outputSessions = [],
   activeOutputId = null,
   onSelectOutputSession,
+  onDeleteOutputSession,
+  splitOutputId = null,
+  onSetSplitOutputId,
   streamingSessionId = null,
 }) => {
   const logRef = useRef<HTMLDivElement>(null);
@@ -175,8 +181,8 @@ const JobStatusBar: React.FC<JobStatusBarProps> = ({
       {/* Tab content — Output: log content (left) + session list side panel (right) */}
       {tab === 'output' && (
         <div className="flex flex-1 min-h-0 bg-base-200">
-          {/* Main output content (left) */}
-          <div className="flex-1 min-w-0 flex flex-col">
+          {/* Output content: single pane or split (left + right) */}
+          <div className={`flex flex-1 min-w-0 ${splitOutputId ? 'flex gap-0 border-r border-base-300' : 'flex flex-col'}`}>
             {outputSessions.length === 0 ? (
               <div className="flex items-center gap-2 px-4 py-4 text-xs opacity-50">
                 <Terminal className="h-4 w-4 shrink-0" />
@@ -184,29 +190,67 @@ const JobStatusBar: React.FC<JobStatusBarProps> = ({
               </div>
             ) : (
               <>
-                <div
-                  ref={logRef}
-                  className="flex-1 overflow-y-auto overflow-x-auto px-4 py-2 font-mono text-xs leading-5 min-h-0 select-text"
-                  style={{ userSelect: 'text' }}
-                >
-                  {(() => {
-                    const session = outputSessions.find(s => s.id === activeOutputId) ?? outputSessions[0];
-                    if (!session) return null;
-                    return (
-                      <>
-                        {session.lines.map((line, i) => (
+                {/* Left pane (primary) */}
+                <div className={`flex flex-col min-h-0 ${splitOutputId ? 'flex-1 min-w-0' : 'flex-1'}`}>
+                  <div
+                    ref={logRef}
+                    className="flex-1 overflow-y-auto overflow-x-auto px-4 py-2 font-mono text-xs leading-5 min-h-0 select-text"
+                    style={{ userSelect: 'text' }}
+                  >
+                    {(() => {
+                      const session = outputSessions.find(s => s.id === activeOutputId) ?? outputSessions[0];
+                      if (!session) return null;
+                      return (
+                        <>
+                          {session.lines.map((line, i) => (
+                            <div key={i} className="whitespace-pre-wrap break-all opacity-90">{line || '\u00A0'}</div>
+                          ))}
+                          {streamingSessionId === session.id && isStreaming && (
+                            <div className="flex items-center gap-1 opacity-60 mt-1">
+                              <Loader2 className="h-3 w-3 animate-spin shrink-0" />
+                              <span>Running…</span>
+                            </div>
+                          )}
+                        </>
+                      );
+                    })()}
+                  </div>
+                </div>
+                {/* Right pane (split) */}
+                {splitOutputId && (() => {
+                  const splitSession = outputSessions.find(s => s.id === splitOutputId);
+                  if (!splitSession) return null;
+                  return (
+                    <div className="flex-1 min-w-0 flex flex-col border-l border-base-300">
+                      <div className="flex items-center justify-between px-2 py-1 border-b border-base-300 bg-base-100 text-[10px] font-semibold">
+                        <span className="truncate opacity-80">{splitSession.label}</span>
+                        <button
+                          type="button"
+                          className="btn btn-ghost btn-xs p-0 min-h-0 h-5"
+                          onClick={() => onSetSplitOutputId?.(null)}
+                          title="Close split"
+                          aria-label="Close split"
+                        >
+                          <X className="h-3 w-3" />
+                        </button>
+                      </div>
+                      <div
+                        className="flex-1 overflow-y-auto overflow-x-auto px-4 py-2 font-mono text-xs leading-5 min-h-0 select-text"
+                        style={{ userSelect: 'text' }}
+                      >
+                        {splitSession.lines.map((line, i) => (
                           <div key={i} className="whitespace-pre-wrap break-all opacity-90">{line || '\u00A0'}</div>
                         ))}
-                        {streamingSessionId === session.id && isStreaming && (
+                        {streamingSessionId === splitSession.id && isStreaming && (
                           <div className="flex items-center gap-1 opacity-60 mt-1">
                             <Loader2 className="h-3 w-3 animate-spin shrink-0" />
                             <span>Running…</span>
                           </div>
                         )}
-                      </>
-                    );
-                  })()}
-                </div>
+                      </div>
+                    </div>
+                  );
+                })()}
               </>
             )}
           </div>
@@ -231,23 +275,49 @@ const JobStatusBar: React.FC<JobStatusBarProps> = ({
                   </div>
                   <div className="overflow-y-auto flex-1 min-h-0 py-0.5">
                     {outputSessions.map((s) => (
-                      <button
+                      <div
                         key={s.id}
-                        type="button"
-                        className={`w-full text-left px-2 py-1.5 text-[11px] font-mono truncate flex items-center gap-1 border-r-2 transition-colors ${
+                        className={`group flex items-center gap-0.5 w-full text-left px-2 py-1.5 text-[11px] font-mono border-r-2 transition-colors ${
                           activeOutputId === s.id
                             ? 'border-primary bg-primary/10 text-primary'
-                            : 'border-transparent hover:bg-base-200 opacity-80'
+                            : splitOutputId === s.id
+                              ? 'border-info bg-info/10 text-info'
+                              : 'border-transparent hover:bg-base-200 opacity-80'
                         }`}
-                        onClick={() => onSelectOutputSession?.(s.id)}
                       >
-                        {streamingSessionId === s.id && (
-                          <Loader2 className="h-3 w-3 shrink-0 animate-spin" />
-                        )}
-                        {s.type === 'check' && <Terminal className="h-3 w-3 shrink-0 opacity-60" />}
-                        {s.type === 'deploy' && <Play className="h-3 w-3 shrink-0 opacity-60" />}
-                        <span className="truncate">{s.label}</span>
-                      </button>
+                        <button
+                          type="button"
+                          className="flex-1 min-w-0 flex items-center gap-1 truncate"
+                          onClick={() => onSelectOutputSession?.(s.id)}
+                        >
+                          {streamingSessionId === s.id && (
+                            <Loader2 className="h-3 w-3 shrink-0 animate-spin" />
+                          )}
+                          {s.type === 'check' && <Terminal className="h-3 w-3 shrink-0 opacity-60" />}
+                          {s.type === 'deploy' && <Play className="h-3 w-3 shrink-0 opacity-60" />}
+                          <span className="truncate">{s.label}</span>
+                        </button>
+                        <div className="flex items-center shrink-0 opacity-50 group-hover:opacity-100">
+                          <button
+                            type="button"
+                            className="p-0.5 hover:bg-base-300 rounded"
+                            onClick={(e) => { e.stopPropagation(); onSetSplitOutputId?.(splitOutputId === s.id ? null : s.id); }}
+                            title={splitOutputId === s.id ? 'Close split' : 'Split (show in second pane)'}
+                            aria-label={splitOutputId === s.id ? 'Close split' : 'Split'}
+                          >
+                            <PanelRightOpen className="h-3 w-3" />
+                          </button>
+                          <button
+                            type="button"
+                            className="p-0.5 hover:bg-error/20 hover:text-error rounded"
+                            onClick={(e) => { e.stopPropagation(); onDeleteOutputSession?.(s.id); }}
+                            title="Delete log"
+                            aria-label="Delete"
+                          >
+                            <Trash2 className="h-3 w-3" />
+                          </button>
+                        </div>
+                      </div>
                     ))}
                   </div>
                 </>

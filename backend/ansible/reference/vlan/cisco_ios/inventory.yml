@@ -1,0 +1,23 @@
+---
+# Minimal inventory pattern for Cisco IOS VLAN play.
+# Credentials come from vault (vault_net_user, vault_net_pass, vault_enable_pass).
+all:
+  children:
+    vendor_cisco_ios:
+      vars:
+        ansible_network_os: ios
+        ansible_connection: network_cli
+        ansible_user: "{{ vault_net_user }}"
+        ansible_password: "{{ vault_net_pass }}"
+        ansible_become: true
+        ansible_become_method: enable
+        ansible_become_pass: "{{ vault_enable_pass }}"
+      hosts:
+        # Add hosts from NetBox/device inventory; ansible_host from device mgmt IP
+        access-sw-01:
+          ansible_host: 192.168.1.1
+        access-sw-02:
+          ansible_host: 192.168.1.2
+    access_switches:
+      children:
+        vendor_cisco_ios: {}

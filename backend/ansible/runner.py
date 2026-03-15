@@ -21,7 +21,7 @@ from typing import Optional
 
 import yaml
 
-from ansible.vault import vault_file_exists, vault_password_file_path, get_vault_password
+from ansible.vault import vault_file_exists, vault_password_file_path, get_vault_password, get_decrypted_vault_vars
 
 logger = logging.getLogger("ansible.runner")
 
@@ -103,6 +103,10 @@ def _run_playbook_remote(
     ev = dict(extra_vars or {})
     if job_id is not None:
         ev["run_id"] = str(job_id)
+    # Remote runner has no access to vault file; inject decrypted vault vars so inventory can resolve vault_net_user etc.
+    vault_vars = get_decrypted_vault_vars()
+    if vault_vars:
+        ev.update(vault_vars)
 
     payload = {
         "playbook_yaml": playbook_content,

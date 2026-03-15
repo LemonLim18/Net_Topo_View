@@ -1,0 +1,31 @@
+---
+# Reference: VLAN on Huawei CloudEngine/VRP via CLI (confirmed operational)
+# Use network_cli + community.network.ce_config (no NETCONF).
+- name: Configure VLANs on Huawei access switches
+  hosts: access_switches:&vendor_huawei_vrp
+  gather_facts: no
+  ignore_unreachable: true
+  connection: ansible.netcommon.network_cli
+  vars:
+    vlan_id: 200
+    vlan_name: TEST
+    ansible_network_os: community.network.ce
+  tasks:
+    - name: Ensure VLAN exists (vlan batch + name)
+      community.network.ce_config:
+        lines:
+          - vlan batch {{ vlan_id }}
+          - vlan {{ vlan_id }}
+          - name {{ vlan_name }}
+    - name: Ensure VLAN on interface GigabitEthernet1/0/1 (access)
+      community.network.ce_config:
+        lines:
+          - port link-type access
+          - port default vlan {{ vlan_id }}
+        parents: interface GigabitEthernet1/0/1
+    - name: Ensure VLAN on interface GigabitEthernet1/0/2 (access)
+      community.network.ce_config:
+        lines:
+          - port link-type access
+          - port default vlan {{ vlan_id }}
+        parents: interface GigabitEthernet1/0/2
