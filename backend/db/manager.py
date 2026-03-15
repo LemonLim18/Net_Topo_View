@@ -646,6 +646,22 @@ class DatabaseManager:
         )
         return snapshot_id
 
+    def get_config_snapshot(self, snapshot_id: int) -> Optional[ConfigSnapshot]:
+        """Return a single config snapshot by id, or None if not found."""
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM config_snapshots WHERE id = ?", (snapshot_id,)
+            ).fetchone()
+        if not row:
+            return None
+        return ConfigSnapshot(
+            id=row["id"],
+            device_id=row["device_id"],
+            config_text=row["config_text"],
+            config_hash=row["config_hash"],
+            captured_at=row["captured_at"],
+        )
+
     def get_config_history(self, device_id: int, limit: int = 10) -> List[ConfigSnapshot]:
         with self._connect() as conn:
             rows = conn.execute(

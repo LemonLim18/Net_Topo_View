@@ -55,14 +55,16 @@ class SnapshotManager:
         -------
         snapshot_id (int) or None on failure.
         """
-        device = self.db.get_device(device_id)
+        device = self.db.get_device_by_id(device_id)
         if device is None:
             logger.error("Device #%d not found", device_id)
             return None
 
         if fetched_config is None:
+            driver = None
             try:
                 driver = DriverFactory.get_driver(device)
+                driver.connect()
                 fetched_config = driver.get_running_config()
             except Exception as exc:
                 logger.error(
@@ -70,13 +72,17 @@ class SnapshotManager:
                     device.hostname, label, exc,
                 )
                 return None
+            finally:
+                if driver is not None:
+                    try:
+                        driver.disconnect()
+                    except Exception as disc_exc:
+                        logger.warning("Disconnect after capture failed: %s", disc_exc)
 
         snapshot = ConfigSnapshot(
             device_id=device_id,
             config_text=fetched_config,
-            source=f"deploy_{label}",
-            hostname=device.hostname,
-            timestamp=datetime.utcnow().isoformat(),
+            captured_at=datetime.utcnow().isoformat(),
         )
         snapshot_id = self.db.save_config_snapshot(snapshot)
         logger.info(

@@ -30,6 +30,7 @@ from deploy.api import router as deploy_router, setup_pipeline
 from llm.api import router as llm_router, setup_agent
 from monitor.api import router as monitor_router
 from netbox.api import router as netbox_api_router
+from network.api import router as network_router, set_db_manager as set_network_db
 from netbox.sync_devices import DeviceSyncer
 from netbox.sync_topology import TopologySyncer
 from netbox.webhook import router as netbox_webhook_router
@@ -457,6 +458,9 @@ async def lifespan(app: FastAPI):
     setup_validator(db)
     logger.info("Unified validator initialized")
 
+    # Config Backup — sharing the DB manager (for live topology status)
+    set_network_db(db)
+
     # M25 — Incident Response Orchestrator (closed-loop pipeline)
     from incidents.orchestrator import IncidentOrchestrator
     _orchestrator = IncidentOrchestrator(
@@ -572,6 +576,7 @@ app.include_router(llm_router, prefix="/api/v1")
 app.include_router(monitor_router, prefix="/api/v1")
 app.include_router(netbox_api_router, prefix="/api/v1/netbox", tags=["NetBox"])
 app.include_router(netbox_webhook_router, prefix="/api/v1/netbox", tags=["NetBox"])
+app.include_router(network_router, prefix="/api/v1", tags=["Network"])
 app.include_router(drift_router, prefix="/api/v1", tags=["Drift"])
 app.include_router(config_router, prefix="/api/v1", tags=["Config Engine"])
 app.include_router(security_router, prefix="/api/v1", tags=["Security"])

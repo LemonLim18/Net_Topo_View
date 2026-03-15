@@ -1,0 +1,8 @@
+---
+- name: Configure QoS (Cisco IOS)
+  hosts: vendor_cisco_ios
+  gather_facts: no
+  tasks:
+    - name: Placeholder — use Cisco QoS modules
+      ansible.builtin.debug:
+        msg: "Replace with real QoS tasks"

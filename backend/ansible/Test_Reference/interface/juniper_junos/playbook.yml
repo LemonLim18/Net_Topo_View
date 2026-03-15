@@ -1,0 +1,9 @@
+---
+# Placeholder: interface config Juniper Junos
+- name: Configure interfaces (Junos)
+  hosts: vendor_juniper_junos
+  gather_facts: no
+  tasks:
+    - name: Placeholder — replace with Junos interface tasks
+      ansible.builtin.debug:
+        msg: "Use juniper.device junos_interfaces or equivalent"

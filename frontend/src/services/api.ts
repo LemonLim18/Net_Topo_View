@@ -479,6 +479,62 @@ export interface LinkRecord {
   dst_interface_name: string | null;
 }
 
+// --- Network: Config Backup & Restore ---
+export interface ConfigBackupDevice {
+  id: number;
+  hostname: string;
+  management_ip?: string;
+  vendor?: string;
+  status?: string;
+  role?: string;
+  /** Read-only: true if device is in current live topology (from crawler cache; not stored). */
+  live_in_topology?: boolean;
+}
+export interface ConfigBackupSnapshot {
+  id: number;
+  device_id: number;
+  captured_at?: string;
+  config_preview: string;
+  config_size: number;
+}
+export interface ConfigBackupCaptureResponse {
+  snapshot_id: number;
+  device_id: number;
+  hostname: string;
+  captured_at: string;
+  message: string;
+}
+export const networkConfigBackupApi = {
+  listDevices: () =>
+    request<ConfigBackupDevice[]>('/network/config-backup/devices'),
+  listSnapshots: (deviceId: number, limit = 20) =>
+    request<ConfigBackupSnapshot[]>(`/network/config-backup/snapshots?device_id=${deviceId}&limit=${limit}`),
+  captureSnapshot: (deviceId: number) =>
+    request<ConfigBackupCaptureResponse>('/network/config-backup/capture', {
+      method: 'POST',
+      body: JSON.stringify({ device_id: deviceId }),
+    }),
+  /** Get full config text for display in modal. */
+  getSnapshotContent: (snapshotId: number) =>
+    request<{ id: number; config_text: string }>(`/network/config-backup/snapshots/${snapshotId}/content`),
+  /** Download snapshot as text file (triggers browser save). */
+  async downloadSnapshot(snapshotId: number, filename?: string): Promise<void> {
+    const url = `${API_CONFIG.API_URL}/api/v1/network/config-backup/snapshots/${snapshotId}/download`;
+    const token = localStorage.getItem('auth_token');
+    const res = await fetch(url, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
+    if (!res.ok) throw new Error(res.statusText || 'Download failed');
+    const blob = await res.blob();
+    const name = filename || res.headers.get('Content-Disposition')?.match(/filename="?([^";]+)"?/)?.[1] || `config_snapshot_${snapshotId}.txt`;
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = name;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  },
+};
+
 export const netboxApi = {
   listDevices: () =>
     request<{ devices: DeviceRecord[] }>('/netbox/devices'),
@@ -981,6 +1037,13 @@ export const ansibleApi = {
       `/ansible/files/${encodeURIComponent(path)}`,
       { method: 'DELETE' }
     ),
+
+  /** Rename (or move) a file/folder. Returns new path. */
+  renamePath: (fromPath: string, toPath: string) =>
+    request<{ from_path: string; to_path: string; status: string }>('/ansible/files/rename', {
+      method: 'POST',
+      body: JSON.stringify({ from_path: fromPath, to_path: toPath }),
+    }),
 
   /**
    * Open an SSE stream for live ansible job output.

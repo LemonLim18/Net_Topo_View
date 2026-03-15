@@ -147,8 +147,8 @@ const KnowledgeBase: React.FC = () => {
     try {
       const result = await ragApi.rebuild();
       setRebuildResult(result);
-      Toast.success('Rebuild Complete', `${result.files_processed} files · ${result.total_chunks} chunks`);
-      loadAll();
+      Toast.success('Rebuild Started', 'Re-ingestion runs in the background. Refresh status below for chunk counts.');
+      await loadAll();
     } catch (err: any) {
       Toast.error('Rebuild Failed', err.message);
     } finally {
@@ -431,9 +431,9 @@ const KnowledgeBase: React.FC = () => {
                   Rebuild Knowledge Base
                 </h2>
                 <p className="text-xs text-base-content/50 mt-1">
-                  Re-ingests all files stored in <code className="text-xs bg-base-200 px-1 rounded">backend/knowledge_base/</code>.
-                  Useful after upgrading the embedding model or adjusting chunk parameters.
-                  Existing chunks for each file are replaced.
+                  Re-ingests files in <code className="text-xs bg-base-200 px-1 rounded">backend/knowledge_base/</code> and
+                  all <code className="text-xs bg-base-200 px-1 rounded">backend/ansible/reference/**/reference.md</code> (Ansible reference library).
+                  Run after adding or changing docs so the vector store is up to date. Vector DB: ChromaDB (<code className="text-xs">backend/rag/README.md</code>).
                 </p>
               </div>
               <button

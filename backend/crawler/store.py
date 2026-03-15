@@ -2,24 +2,20 @@
 Bridge between the Crawler (M2) and the Database Layer (M14).
 
 After a crawl completes, this module:
-1.  Updates the in-memory topology cache in ``DatabaseManager``
-2.  Syncs discovered devices to the persistent ``devices`` table
-3.  Syncs discovered links to the persistent ``links`` table
-4.  Logs the crawl action in the ``audit_log``
+1.  Updates the in-memory topology cache in ``DatabaseManager`` (live map only).
+2.  Does **not** sync discovered devices or links to the persistent DB — Device
+    Inventory is manually registered (and/or NetBox sync) only; the crawler
+    must not create or update devices in the devices table.
+3.  Logs the crawl action in the ``audit_log``.
 """
 
 import logging
-from datetime import datetime, timedelta, timezone
-from typing import Dict, Optional
+from typing import Dict
 
 from db.manager import DatabaseManager
-from db.models import Device, AuditLogEntry
-from db.repositories.device_repo import DeviceRepository
-from db.repositories.topology_repo import TopologyRepository
+from db.models import AuditLogEntry
 
 logger = logging.getLogger("crawler.store")
-
-TZ_UTC8 = timezone(timedelta(hours=8))
 
 
 def save_crawl_result(
@@ -28,97 +24,32 @@ def save_crawl_result(
     triggered_by: str = "system",
 ) -> None:
     """
-    Persist a crawl result to **both** the in-memory cache and SQL.
+    Persist a crawl result to the in-memory topology cache only.
+
+    Device Inventory is not modified: devices and links are not written to the
+    persistent DB. Only the live topology cache is updated so the topology map
+    can show current reachable nodes. Inventory remains manually registered
+    (and/or NetBox sync) only.
 
     Args:
         db_manager:    The shared ``DatabaseManager`` instance.
         topo_dict:     The topology dict produced by ``crawl_topology()``.
         triggered_by:  Who/what triggered this crawl (for audit log).
     """
-    # ----- 1. Update live cache (fastest path for frontend) -----
+    # ----- 1. Update live cache only (frontend topology map) -----
     db_manager.update_topology(topo_dict)
-    logger.info("Live topology cache updated (%d nodes)",
-                len(topo_dict.get("nodes", {})))
-
-    # ----- 2. Sync devices to persistent SQL -----
-    device_repo = DeviceRepository(db_manager)
     nodes = topo_dict.get("nodes", {})
+    logger.info(
+        "Live topology cache updated (%d nodes). Device Inventory unchanged (manual/NetBox only).",
+        len(nodes),
+    )
 
-    crawl_devices = []
-    for hostname, node_data in nodes.items():
-        if not isinstance(node_data, dict):
-            continue
-        status = "down" if node_data.get("down") else "active"
+    # ----- 2. Do not sync devices to persistent SQL -----
+    # Device Inventory is manually registered (and NetBox sync) only;
+    # the live topology crawler must not create or update the devices table.
 
-        # Check if device already exists (preserve manual/netbox source)
-        existing = device_repo.find_by_hostname(hostname)
-        source = existing.source if existing else "crawler"
-
-        crawl_devices.append(Device(
-            hostname=hostname,
-            management_ip=node_data.get("mgmt_ip"),
-            vendor=node_data.get("vendor", "cisco_ios"),
-            model=node_data.get("model"),
-            os_version=node_data.get("os_version"),
-            serial_number=node_data.get("serial"),
-            status=status,
-            source=source,
-            last_polled=datetime.now(tz=TZ_UTC8).isoformat(timespec="seconds"),
-        ))
-
-    if crawl_devices:
-        for dev in crawl_devices:
-            device_repo.save(dev)
-
-            # --- Rogue device detection ---
-            # If this device was NOT in the inventory before, flag it
-            if dev.source == "crawler":
-                # source only equals "crawler" for brand-new devices
-                # (existing devices preserve their original source)
-                try:
-                    db_manager.insert_security_event(
-                        event_type="rogue_device",
-                        severity="high",
-                        source_ip=dev.management_ip,
-                        description=(
-                            f'Unregistered device "{dev.hostname}" '
-                            f"discovered at {dev.management_ip or 'unknown IP'} "
-                            f"during network crawl"
-                        ),
-                    )
-                    logger.warning(
-                        "ROGUE DEVICE detected: %s (%s)",
-                        dev.hostname, dev.management_ip,
-                    )
-                except Exception as e:
-                    logger.warning("Failed to log rogue device event: %s", e)
-
-        logger.info("Synced %d devices to persistent DB", len(crawl_devices))
-
-    # ----- 3. Sync links to persistent SQL -----
-    topo_repo = TopologyRepository(db_manager)
-    crawl_links = []
-    for hostname, node_data in nodes.items():
-        if not isinstance(node_data, dict):
-            continue
-        edge_links = node_data.get("edgeLink", {})
-        if not isinstance(edge_links, dict):
-            continue
-        for local_if, link_info in edge_links.items():
-            if not isinstance(link_info, dict):
-                continue
-            remote_node = link_info.get("remote_node")
-            if remote_node:
-                crawl_links.append({
-                    "src": hostname,
-                    "src_interface": local_if,
-                    "dst": remote_node,
-                    "dst_interface": link_info.get("remote_interface"),
-                })
-
-    if crawl_links:
-        topo_repo.sync_links_from_crawl(crawl_links)
-        logger.info("Synced %d links to persistent DB", len(crawl_links))
+    # ----- 3. Do not sync links to persistent SQL -----
+    # Links in the DB represent planned/manual topology; crawler data stays in cache only.
 
     # ----- 4. Audit log -----
     try:
@@ -126,7 +57,7 @@ def save_crawl_result(
             user_id=triggered_by,
             action="topology_crawl",
             target="network",
-            details=f"Crawled {len(nodes)} nodes, {len(crawl_links)} links",
+            details=f"Crawled {len(nodes)} nodes (live cache only; inventory unchanged)",
         ))
     except Exception as e:
         logger.warning("Failed to write audit log: %s", e)

@@ -1,9 +1,10 @@
 import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import ReactMarkdown from 'react-markdown';
-import { Send, Loader2, Bot, Sparkles, AlertCircle, FileCode, RotateCcw, ChevronRight, Paperclip, X, TriangleAlert, ChevronDown } from 'lucide-react';
+import { DiffEditor } from '@monaco-editor/react';
+import { Send, Loader2, Bot, Sparkles, AlertCircle, FileCode, RotateCcw, ChevronRight, Paperclip, X, TriangleAlert, ChevronDown, Check, Undo2 } from 'lucide-react';
 import { ansibleApi, llmApi } from '../../src/services/api';
 import type { LlmRuntimeState } from '../../src/services/api';
-import type { AnsibleGeneratedArtifactFile, AnsibleMessage, AnsibleJob } from '../../typesLLM';
+import type { AnsibleGeneratedArtifactFile, AnsibleMessage, AnsibleJob, AnsibleProposedEdit } from '../../typesLLM';
 
 const ANSIBLE_MODEL_STORAGE_KEY = 'ansibleStudio.selectedModel';
 const OLLAMA_BASE_URL_STORAGE_KEY = 'llmRuntimeSelector.ollamaBaseUrl';
@@ -492,11 +493,99 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
     content: '**Ansible AI** is ready. Describe your configuration intent.',
   }]);
 
-  /* ── VS Code Copilot-style shell ──────────────────────────────────────── */
+  /* ── Proposed edits block (diff + Keep/Undo per file, Keep All/Undo All) ── */
+  function ProposedEditsBlock({
+    edits,
+    onKeepFile,
+    onUndoFile,
+    onKeepAll,
+    onUndoAll,
+    onOpenFile,
+  }: {
+    edits: AnsibleProposedEdit[];
+    onKeepFile: (path: string, suggested: string) => void;
+    onUndoFile: (path: string) => void;
+    onKeepAll: () => void;
+    onUndoAll: () => void;
+    onOpenFile: (path: string) => void;
+  }) {
+    const language = (path: string) =>
+      /\.(ya?ml|json)$/i.test(path) ? 'yaml' : /\.(md|markdown)$/i.test(path) ? 'markdown' : 'plaintext';
+    return (
+      <div className="mt-4 rounded-lg border border-base-300 bg-base-300 overflow-hidden">
+        <div className="px-3 py-2 border-b border-base-300 flex items-center justify-between flex-wrap gap-2">
+          <span className="text-xs font-semibold text-base-content/90">Proposed edits</span>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              className="btn btn-xs btn-success gap-1"
+              onClick={onKeepAll}
+            >
+              <Check className="h-3 w-3" /> Keep All
+            </button>
+            <button
+              type="button"
+              className="btn btn-xs btn-ghost gap-1"
+              onClick={onUndoAll}
+            >
+              <Undo2 className="h-3 w-3" /> Undo All
+            </button>
+          </div>
+        </div>
+        <div className="divide-y divide-base-300">
+          {edits.map((edit) => (
+            <div key={edit.path} className="bg-base-200">
+              <div className="flex items-center justify-between px-3 py-1.5 border-b border-base-300">
+                <button
+                  type="button"
+                  className="text-left text-xs font-mono text-primary hover:underline truncate flex-1"
+                  onClick={() => onOpenFile(edit.path)}
+                >
+                  {edit.path}
+                </button>
+                <div className="flex items-center gap-1 shrink-0">
+                  <button
+                    type="button"
+                    className="btn btn-xs btn-success gap-0.5"
+                    onClick={() => onKeepFile(edit.path, edit.suggested)}
+                  >
+                    <Check className="h-3 w-3" /> Keep
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-xs btn-ghost gap-0.5"
+                    onClick={() => onUndoFile(edit.path)}
+                  >
+                    <Undo2 className="h-3 w-3" /> Undo
+                  </button>
+                </div>
+              </div>
+              <div className="h-48 min-h-[120px]">
+                <DiffEditor
+                  original={edit.original}
+                  modified={edit.suggested}
+                  language={language(edit.path)}
+                  theme="vs-dark"
+                  options={{
+                    readOnly: true,
+                    renderSideBySide: true,
+                    enableSplitViewResizing: true,
+                    fontSize: 12,
+                    minimap: { enabled: false },
+                  }}
+                />
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  /* ── Panel aligned with app theme (dark) ───────────────────────────────── */
   return (
     <div
-      className="flex flex-col h-full"
-      style={{ background: '#1e1e1e', fontFamily: "'Menlo','Monaco','Consolas','Courier New',monospace", position: 'relative', userSelect: 'text' }}
+      className="flex flex-col h-full bg-base-200 text-base-content relative select-text font-sans"
       onDragEnter={handlePanelDragEnter}
       onDragLeave={handlePanelDragLeave}
       onDragOver={e => e.preventDefault()}
@@ -504,28 +593,20 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
     >
       {/* Full-panel drag-over overlay */}
       {isDragOver && (
-        <div style={{
-          position: 'absolute', inset: 0, zIndex: 50,
-          background: 'rgba(14,99,156,0.12)',
-          border: '2px dashed #0e639c',
-          borderRadius: 4,
-          display: 'flex', alignItems: 'center', justifyContent: 'center',
-          pointerEvents: 'none',
-        }}>
-          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8, color: '#4fc3f7' }}>
-            <Paperclip style={{ width: 28, height: 28, opacity: 0.85 }} />
-            <span style={{ fontSize: 13, fontWeight: 600 }}>Drop files to attach as context</span>
-            <span style={{ fontSize: 11, color: '#7ab3d4' }}>.yml .yaml .json .j2 .conf .py .ini .log .csv .md</span>
+        <div className="absolute inset-0 z-50 flex items-center justify-center pointer-events-none rounded border-2 border-dashed border-primary/60 bg-primary/10">
+          <div className="flex flex-col items-center gap-2 text-primary">
+            <Paperclip className="w-7 h-7 opacity-85" />
+            <span className="text-sm font-semibold">Drop files to attach as context</span>
+            <span className="text-xs opacity-80">.yml .yaml .json .j2 .conf .py .ini .log .csv .md</span>
           </div>
         </div>
       )}
 
-      {/* Title bar — matches VS Code secondary sidebar */}
-      <div className="flex items-center justify-between px-3 shrink-0"
-        style={{ background: '#252526', borderBottom: '1px solid #3c3c3c', height: 35 }}>
+      {/* Title bar */}
+      <div className="flex items-center justify-between px-3 shrink-0 h-9 bg-base-300 border-b border-base-300">
         <div className="flex items-center gap-2">
-          <Sparkles style={{ width: 13, height: 13, color: '#c586c0' }} />
-          <span style={{ fontSize: 11, fontWeight: 600, letterSpacing: '0.06em', color: '#bbbbbb', textTransform: 'uppercase' }}>ANSIBLE AI</span>
+          <Sparkles className="w-3.5 h-3.5 text-primary shrink-0" />
+          <span className="text-[11px] font-semibold tracking-wider uppercase text-base-content/90">Ansible AI</span>
           {/* VSCode-style model selector */}
           <div ref={modelDropdownRef} style={{ position: 'relative' }}>
             <button
@@ -614,43 +695,85 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
       <div className="grow overflow-y-auto" style={{ padding: '6px 0' }}>
         {messages.map((msg, idx) => (
           <div key={msg.id}>
-            {idx > 0 && <div style={{ height: 1, background: '#2a2a2a', margin: '2px 0' }} />}
+            {idx > 0 && <div className="h-px bg-base-300 my-0.5" />}
 
             {msg.role === 'user' ? (
               /* User message */
-              <div style={{ padding: '8px 14px 6px', background: '#252526' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 7, marginBottom: 4 }}>
-                  <div style={{ width: 16, height: 16, borderRadius: '50%', background: '#0e639c', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 9, color: '#fff', fontWeight: 700, flexShrink: 0 }}>U</div>
-                  <span style={{ fontSize: 11, fontWeight: 600, color: '#cccccc' }}>You</span>
-                  <span style={{ fontSize: 10, color: '#444' }}>{new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+              <div className="px-3 py-2 bg-base-300">
+                <div className="flex items-center gap-2 mb-1">
+                  <div className="w-4 h-4 rounded-full bg-primary flex items-center justify-center text-[9px] text-primary-content font-bold shrink-0">U</div>
+                  <span className="text-[11px] font-semibold text-base-content">You</span>
+                  <span className="text-[10px] text-base-content/50">{new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
                 </div>
-                <div style={{ paddingLeft: 23, fontSize: 13, color: '#cccccc', lineHeight: 1.5, fontFamily: 'system-ui,-apple-system,sans-serif', userSelect: 'text' }}>
+                <div className="pl-6 text-sm text-base-content/90 leading-relaxed font-sans select-text">
                   {msg.content}
                 </div>
               </div>
             ) : (
               /* Assistant message */
-              <div style={{ padding: '8px 14px 6px', background: '#1e1e1e' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 7, marginBottom: 6 }}>
-                  <div style={{ width: 16, height: 16, borderRadius: 3, background: '#c586c0', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-                    <Bot style={{ width: 10, height: 10, color: '#1e1e1e' }} />
+              <div className="px-3 py-2 bg-base-200">
+                <div className="flex items-center gap-2 mb-1.5">
+                  <div className="w-4 h-4 rounded-sm bg-primary flex items-center justify-center shrink-0">
+                    <Bot className="w-2.5 h-2.5 text-primary-content" />
                   </div>
-                  <span style={{ fontSize: 11, fontWeight: 600, color: '#c586c0' }}>Ansible AI</span>
+                  <span className="text-[11px] font-semibold text-primary">Ansible AI</span>
                 </div>
 
-                <div style={{ paddingLeft: 23, fontFamily: 'system-ui,-apple-system,sans-serif', userSelect: 'text' }}>
+                <div className="pl-6 font-sans select-text">
                   {msg.isLoading ? (
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: '#858585', fontSize: 13 }}>
-                      <Loader2 style={{ width: 14, height: 14, color: '#569cd6' }} className="animate-spin" />
+                    <div className="flex items-center gap-2 text-base-content/60 text-sm">
+                      <Loader2 className="w-3.5 h-3.5 text-primary animate-spin shrink-0" />
                       Generating playbook…
                     </div>
                   ) : msg.isError ? (
-                    <div style={{ display: 'flex', alignItems: 'flex-start', gap: 7, color: '#f48771', fontSize: 13 }}>
-                      <AlertCircle style={{ width: 14, height: 14, flexShrink: 0, marginTop: 2 }} />
+                    <div className="flex items-start gap-2 text-error text-sm">
+                      <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
                       {msg.content}
                     </div>
                   ) : (
                     <VscodeMarkdown content={msg.content} onOpenFile={onOpenFile} />
+                  )}
+
+                  {/* Proposed edits: diff view with Keep / Undo per file and Keep All / Undo All */}
+                  {msg.proposedEdits && msg.proposedEdits.length > 0 && (
+                    <ProposedEditsBlock
+                      edits={msg.proposedEdits}
+                      onKeepFile={(path, suggested) => {
+                        ansibleApi.writeFile(path, suggested).then(() => {
+                          setMessages((prev) =>
+                            prev.map((m) =>
+                              m.id === msg.id
+                                ? { ...m, proposedEdits: m.proposedEdits!.filter((e) => e.path !== path) }
+                                : m
+                            )
+                          );
+                        });
+                      }}
+                      onUndoFile={(path) =>
+                        setMessages((prev) =>
+                          prev.map((m) =>
+                            m.id === msg.id
+                              ? { ...m, proposedEdits: m.proposedEdits!.filter((e) => e.path !== path) }
+                              : m
+                          )
+                        )
+                      }
+                      onKeepAll={() => {
+                        Promise.all(
+                          msg.proposedEdits!.map((e) => ansibleApi.writeFile(e.path, e.suggested))
+                        ).then(() =>
+                          setMessages((prev) =>
+                            prev.map((m) => (m.id === msg.id ? { ...m, proposedEdits: [] } : m))
+                          )
+                        );
+                      }}
+                      onUndoAll={() =>
+                        setMessages((prev) =>
+                          prev.map((m) => (m.id === msg.id ? { ...m, proposedEdits: [] } : m))
+                        )
+                      }
+                      onOpenFile={onOpenFile}
+                    />
                   )}
 
                   {/* Generated files: from message, hydrated from job for old messages, or single playbook chip */}
@@ -678,7 +801,7 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
       </div>
 
       {/* Input area */}
-      <div className="shrink-0" style={{ borderTop: '1px solid #3c3c3c', background: '#1e1e1e', padding: '8px 10px' }}>
+      <div className="shrink-0 border-t border-base-300 bg-base-200 p-2">
 
         {/* Hidden native file picker */}
         <input
@@ -694,15 +817,7 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
         />
 
         {/* Input box wrapper */}
-        <div
-          style={{
-            borderRadius: 6,
-            border: '1px solid #3c3c3c',
-            background: '#2d2d2d',
-            position: 'relative',
-          }}
-          className="focus-within:border-[#0e639c]! transition-colors"
-        >
+        <div className="rounded-md border border-base-300 bg-base-300 relative focus-within:border-primary/70 transition-colors">
 
           {/* Attached file chips */}
           {attachedFiles.length > 0 && (
@@ -738,47 +853,46 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
           )}
 
           {/* Textarea + buttons row */}
-          <div style={{ display: 'flex', gap: 6, alignItems: 'flex-end', padding: '6px 8px' }}>
+          <div className="flex gap-2 items-end p-2">
             <textarea
               ref={textareaRef}
-              style={{ flex: 1, background: 'transparent', border: 'none', outline: 'none', resize: 'none', fontSize: 13, fontFamily: 'system-ui,-apple-system,sans-serif', color: '#cccccc', minHeight: 52, maxHeight: 120, lineHeight: 1.5 }}
               placeholder={attachedFiles.length ? 'Add a message or send file as-is…' : 'Ask Ansible AI or drop a file…'}
               value={input}
               onChange={e => setInput(e.target.value)}
               onKeyDown={handleKeyDown}
               disabled={isGenerating}
               rows={2}
+              className="flex-1 bg-transparent border-none outline-none resize-none text-sm text-base-content placeholder-base-content/50 min-h-[52px] max-h-[120px] leading-relaxed"
             />
             {/* Attach File as Context button */}
             <button
+              type="button"
               onClick={() => fileInputRef.current?.click()}
               title="Attach File as Context"
               aria-label="Attach File as Context"
-              style={{ padding: 6, borderRadius: 4, border: 'none', cursor: 'pointer', background: 'transparent', color: '#666', flexShrink: 0, alignSelf: 'flex-end', transition: 'color 0.15s' }}
-              className="hover:text-[#4fc3f7]!"
+              className="p-1.5 rounded border-none cursor-pointer bg-transparent text-base-content/50 shrink-0 self-end transition-colors hover:text-primary"
             >
-              <Paperclip style={{ width: 15, height: 15 }} />
+              <Paperclip className="w-4 h-4" />
             </button>
             {/* Send button */}
             <button
+              type="button"
               onClick={handleSend}
               disabled={(!input.trim() && attachedFiles.length === 0) || isGenerating}
               title="Send (Enter)"
-              style={{ padding: 6, borderRadius: 4, border: 'none', flexShrink: 0, alignSelf: 'flex-end', transition: 'background 0.15s',
-                cursor: (input.trim() || attachedFiles.length > 0) && !isGenerating ? 'pointer' : 'not-allowed',
-                background: (input.trim() || attachedFiles.length > 0) && !isGenerating ? '#0e639c' : '#333',
-                color:      (input.trim() || attachedFiles.length > 0) && !isGenerating ? '#ffffff' : '#555',
-              }}
+              className={`p-1.5 rounded border-none shrink-0 self-end transition-colors btn btn-sm ${
+                (input.trim() || attachedFiles.length > 0) && !isGenerating ? 'btn-primary' : 'btn-ghost opacity-50 cursor-not-allowed'
+              }`}
             >
               {isGenerating
-                ? <Loader2 style={{ width: 15, height: 15 }} className="animate-spin" />
-                : <Send style={{ width: 15, height: 15 }} />
+                ? <Loader2 className="w-4 h-4 animate-spin" />
+                : <Send className="w-4 h-4" />
               }
             </button>
           </div>
         </div>
 
-        <p style={{ fontSize: 10, color: '#444', textAlign: 'center', marginTop: 4 }}>Enter to send · Shift+Enter for newline · 📎 attach or drag from file tree</p>
+        <p className="text-[10px] text-base-content/40 text-center mt-1">Enter to send · Shift+Enter for newline · 📎 attach or drag from file tree</p>
       </div>
     </div>
   );

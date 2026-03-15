@@ -1478,9 +1478,9 @@ async def _build_bundle_with_refinement(
 
 ANSIBLE_BASE = Path(__file__).parent
 # Two main sections: Reference (templates) and Generated (AI output). Then project dirs.
-_ALLOWED_ROOTS = ("reference", "generated", "playbooks", "roles", "inventory", "awx")
+_ALLOWED_ROOTS = ("reference", "generated", "Test_Reference", "playbooks", "roles", "inventory", "awx")
 # reference/ and generated/ are read-only from UI; generated/* maps to playbooks/generated and roles/generated
-_READONLY_ROOTS = frozenset({"reference", "roles", "awx", "generated"})
+_READONLY_ROOTS = frozenset({"reference", "roles", "awx", "generated", "Test_Reference"})
 _WRITABLE_ROOTS = ("playbooks", "inventory")
 _GENERATED_ROLE_ROOT = "roles/generated"
 _GENERATED_PLAYBOOK_ROOT = "playbooks/generated"
@@ -2098,6 +2098,11 @@ class CreateFileRequest(BaseModel):
     content: str = ""
 
 
+class RenameRequest(BaseModel):
+    from_path: str
+    to_path: str
+
+
 def _is_writable_relative_path(relative_path: str) -> bool:
     """True if path is under playbooks/, inventory/, or roles/generated/."""
     parts = Path(relative_path.replace("\\", "/").strip("/")).parts
@@ -2188,6 +2193,38 @@ async def delete_path(
 
     logger.info("Path deleted: %s by %s", target_path, user.get("username"))
     return {"path": target_path, "status": "deleted"}
+
+
+@router.post("/files/rename", summary="Rename or move a file or folder")
+async def rename_path(
+    body: RenameRequest,
+    user: dict = Depends(require_role("operator", "admin")),
+):
+    from_raw = body.from_path.replace("\\", "/").strip("/")
+    to_raw = body.to_path.replace("\\", "/").strip("/")
+    if not from_raw or not to_raw:
+        raise HTTPException(400, "from_path and to_path are required")
+    if from_raw == to_raw:
+        return {"from_path": from_raw, "to_path": to_raw, "status": "unchanged"}
+    # Resolve virtual generated/ path for source
+    if from_raw.startswith("generated/"):
+        real = _generated_virtual_to_real(from_raw)
+        if real:
+            from_raw = real
+    from_path = _safe_path(from_raw)
+    to_path = _safe_path(to_raw)
+    if not _is_writable_relative_path(from_raw):
+        raise HTTPException(403, "Source path is not writable")
+    if not _is_writable_relative_path(to_raw):
+        raise HTTPException(403, "Destination path is not writable")
+    if not from_path.exists():
+        raise HTTPException(404, f"Path not found: {body.from_path}")
+    if to_path.exists():
+        raise HTTPException(409, f"Destination already exists: {body.to_path}")
+    to_path.parent.mkdir(parents=True, exist_ok=True)
+    from_path.rename(to_path)
+    logger.info("Path renamed: %s -> %s by %s", body.from_path, body.to_path, user.get("username"))
+    return {"from_path": body.from_path, "to_path": body.to_path, "status": "renamed"}
 
 
 # ── M23: SSE job-output stream ──────────────────────────────────────────────

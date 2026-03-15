@@ -12,6 +12,7 @@ import {
   FolderPlus,
   Upload,
   Trash2,
+  Pencil,
 } from 'lucide-react';
 import Swal from 'sweetalert2';
 import { ansibleApi } from '../../src/services/api';
@@ -34,10 +35,15 @@ interface TreeNodeProps {
   selectedPath: string | null;
   defaultOpen?: boolean;
   onNodeContextMenu: (event: React.MouseEvent, node: AnsibleFileNode) => void;
+  /** When set, this node shows an inline input for renaming */
+  renamingPath?: string | null;
+  renamingName?: string;
+  onRenameCommit?: (path: string, newName: string) => void;
+  onRenameCancel?: () => void;
 }
 
 const WRITABLE_ROOTS = new Set(['playbooks', 'inventory']);
-const READONLY_ROOTS = new Set(['roles', 'awx', 'reference']);
+const READONLY_ROOTS = new Set(['roles', 'awx', 'reference', 'Test_Reference']);
 // generated/ is virtual (AI output); files under it are writable (backend maps to playbooks|roles/generated)
 const VIRTUAL_ROOTS = new Set([] as string[]);
 /** Roots grouped under "Project" (playbooks, roles, inventory); awx excluded — not used unless you run AWX/Tower */
@@ -63,22 +69,80 @@ const TreeNode: React.FC<TreeNodeProps> = ({
   selectedPath,
   defaultOpen = false,
   onNodeContextMenu,
+  renamingPath = null,
+  renamingName = '',
+  onRenameCommit,
+  onRenameCancel,
 }) => {
   const [open, setOpen] = useState(defaultOpen);
+  const [editValue, setEditValue] = useState(node.name);
+  const inputRef = React.useRef<HTMLInputElement>(null);
+  const isRenaming = renamingPath === node.path;
+
+  React.useEffect(() => {
+    if (isRenaming) setEditValue(renamingName || node.name);
+  }, [isRenaming, renamingName, node.name]);
+  React.useEffect(() => {
+    if (isRenaming && inputRef.current) {
+      inputRef.current.focus();
+      inputRef.current.select();
+    }
+  }, [isRenaming]);
+
+  const paddingLeft = `${8 + depth * 14}px`;
+  const handleRenameKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      const v = (e.currentTarget.value || '').trim();
+      if (v && v !== node.name && onRenameCommit) onRenameCommit(node.path, v);
+      else if (onRenameCancel) onRenameCancel();
+    } else if (e.key === 'Escape') {
+      setEditValue(node.name);
+      onRenameCancel?.();
+    }
+  };
+  const handleRenameBlur = () => {
+    const v = editValue.trim();
+    if (v && v !== node.name && !v.includes('/') && !v.includes('\\') && onRenameCommit)
+      onRenameCommit(node.path, v);
+    else
+      onRenameCancel?.();
+  };
 
   if (node.type === 'dir') {
     return (
       <li>
-        <button
-          className="flex items-center gap-1.5 w-full text-left px-2 py-0.5 rounded hover:bg-base-300 text-sm"
-          style={{ paddingLeft: `${8 + depth * 14}px` }}
-          onClick={() => setOpen(o => !o)}
-          onContextMenu={(e) => onNodeContextMenu(e, node)}
-        >
-          {open ? <ChevronDown className="h-3 w-3 opacity-50 shrink-0" /> : <ChevronRight className="h-3 w-3 opacity-50 shrink-0" />}
-          {open ? <FolderOpen className="h-3.5 w-3.5 text-yellow-400 shrink-0" /> : <Folder className="h-3.5 w-3.5 text-yellow-400 shrink-0" />}
-          <span className="truncate font-medium opacity-80">{node.name}</span>
-        </button>
+        {isRenaming ? (
+          <div
+            className="flex items-center gap-1.5 w-full px-2 py-0.5 rounded text-sm bg-base-300 border border-primary"
+            style={{ paddingLeft }}
+          >
+            {open ? <ChevronDown className="h-3 w-3 opacity-50 shrink-0" /> : <ChevronRight className="h-3 w-3 opacity-50 shrink-0" />}
+            {open ? <FolderOpen className="h-3.5 w-3.5 text-yellow-400 shrink-0" /> : <Folder className="h-3.5 w-3.5 text-yellow-400 shrink-0" />}
+            <input
+              ref={inputRef}
+              type="text"
+              value={editValue}
+              onChange={(e) => setEditValue(e.target.value)}
+              onKeyDown={handleRenameKeyDown}
+              onBlur={handleRenameBlur}
+              onClick={(e) => e.stopPropagation()}
+              className="flex-1 min-w-0 bg-transparent border-none outline-none text-sm font-medium opacity-80 py-0"
+              aria-label="Rename"
+            />
+          </div>
+        ) : (
+          <button
+            className="flex items-center gap-1.5 w-full text-left px-2 py-0.5 rounded hover:bg-base-300 text-sm"
+            style={{ paddingLeft }}
+            onClick={() => setOpen(o => !o)}
+            onContextMenu={(e) => onNodeContextMenu(e, node)}
+          >
+            {open ? <ChevronDown className="h-3 w-3 opacity-50 shrink-0" /> : <ChevronRight className="h-3 w-3 opacity-50 shrink-0" />}
+            {open ? <FolderOpen className="h-3.5 w-3.5 text-yellow-400 shrink-0" /> : <Folder className="h-3.5 w-3.5 text-yellow-400 shrink-0" />}
+            <span className="truncate font-medium opacity-80">{node.name}</span>
+          </button>
+        )}
         {open && node.children && (
           <ul>
             {node.children.map(child => (
@@ -89,6 +153,10 @@ const TreeNode: React.FC<TreeNodeProps> = ({
                 onFileOpen={onFileOpen}
                 selectedPath={selectedPath}
                 onNodeContextMenu={onNodeContextMenu}
+                renamingPath={renamingPath}
+                renamingName={renamingName}
+                onRenameCommit={onRenameCommit}
+                onRenameCancel={onRenameCancel}
               />
             ))}
           </ul>
@@ -110,6 +178,30 @@ const TreeNode: React.FC<TreeNodeProps> = ({
     : 'text-base-content opacity-50';
 
   const Icon = isJson ? FileJson : FileCode2;
+
+  if (isRenaming) {
+    return (
+      <li>
+        <div
+          className="flex items-center gap-1.5 w-full px-2 py-0.5 rounded text-sm bg-base-300 border border-primary"
+          style={{ paddingLeft }}
+        >
+          <Icon className={`h-3.5 w-3.5 shrink-0 ${iconColor}`} />
+          <input
+            ref={inputRef}
+            type="text"
+            value={editValue}
+            onChange={(e) => setEditValue(e.target.value)}
+            onKeyDown={handleRenameKeyDown}
+            onBlur={handleRenameBlur}
+            onClick={(e) => e.stopPropagation()}
+            className="flex-1 min-w-0 bg-transparent border-none outline-none text-sm py-0 truncate"
+            aria-label="Rename"
+          />
+        </div>
+      </li>
+    );
+  }
 
   return (
     <li>
@@ -159,10 +251,13 @@ const AnsibleFileTree: React.FC<AnsibleFileTreeProps> = ({ onFileOpen, selectedP
             ? 'Reference'
             : root.path === 'generated'
               ? 'AI Output'
-              : root.name,
+              : root.path === 'Test_Reference'
+                ? 'Test Reference'
+                : root.name,
       }));
       const referenceNode = withNames.find((r) => r.path === 'reference');
       const generatedNode = withNames.find((r) => r.path === 'generated');
+      const testRefNode = withNames.find((r) => r.path === 'Test_Reference');
       const projectChildren = withNames.filter((r) => PROJECT_ROOT_NAMES.has(r.path));
       const projectNode: AnsibleFileNode | null =
         projectChildren.length > 0
@@ -173,9 +268,12 @@ const AnsibleFileTree: React.FC<AnsibleFileTreeProps> = ({ onFileOpen, selectedP
               children: projectChildren,
             }
           : null;
-      const ansibleTree: AnsibleFileNode[] = [referenceNode, generatedNode, projectNode].filter(
-        Boolean,
-      ) as AnsibleFileNode[];
+      const ansibleTree: AnsibleFileNode[] = [
+        referenceNode,
+        generatedNode,
+        testRefNode,
+        projectNode,
+      ].filter(Boolean) as AnsibleFileNode[];
       setTree(ansibleTree);
       if (runAfterRefresh) onAfterRefresh?.();
     } catch (e: any) {
@@ -323,6 +421,40 @@ const AnsibleFileTree: React.FC<AnsibleFileTreeProps> = ({ onFileOpen, selectedP
     }
   }, [handleApiError, load]);
 
+  const [renamingNode, setRenamingNode] = useState<{ path: string; name: string } | null>(null);
+
+  const startRename = useCallback((node: AnsibleFileNode) => {
+    setContextMenu(null);
+    setRenamingNode({ path: node.path, name: node.name });
+  }, []);
+
+  const commitRename = useCallback(
+    async (path: string, newName: string) => {
+      const trimmed = newName.trim();
+      if (!trimmed || trimmed.includes('/') || trimmed.includes('\\')) {
+        setRenamingNode(null);
+        return;
+      }
+      const parent = getParentDir(path) || getRoot(path);
+      const currentName = renamingNode?.name ?? path.split('/').pop() ?? '';
+      if (trimmed === currentName) {
+        setRenamingNode(null);
+        return;
+      }
+      const toPath = `${parent}/${trimmed}`.replace(/\/+/g, '/');
+      try {
+        await ansibleApi.renamePath(path, toPath);
+        setRenamingNode(null);
+        await load();
+      } catch (e: any) {
+        handleApiError(e);
+      }
+    },
+    [renamingNode, load, handleApiError]
+  );
+
+  const cancelRename = useCallback(() => setRenamingNode(null), []);
+
   const openContextMenu = useCallback((event: React.MouseEvent, node: AnsibleFileNode) => {
     event.preventDefault();
 
@@ -355,6 +487,17 @@ const AnsibleFileTree: React.FC<AnsibleFileTreeProps> = ({ onFileOpen, selectedP
       ? nodeEditable
       : nodeEditable && node.path.includes('/');
 
+    const canRename = nodeEditable && node.path.includes('/');
+
+    if (canRename) {
+      actions.push({
+        label: 'Rename',
+        icon: <Pencil className="h-4 w-4" />,
+        onClick: () => startRename(node),
+        disabled: false,
+      });
+    }
+
     actions.push({
       label: node.type === 'dir' ? 'Delete Folder' : 'Delete File',
       icon: <Trash2 className="h-4 w-4" />,
@@ -367,7 +510,7 @@ const AnsibleFileTree: React.FC<AnsibleFileTreeProps> = ({ onFileOpen, selectedP
       y: event.clientY,
       actions,
     });
-  }, [createFileAt, createFolderAt, deletePath, triggerUploadTo]);
+  }, [createFileAt, createFolderAt, deletePath, triggerUploadTo, startRename]);
 
   return (
     <div className="flex flex-col h-full bg-base-100 border-r border-base-300">
@@ -441,6 +584,10 @@ const AnsibleFileTree: React.FC<AnsibleFileTreeProps> = ({ onFileOpen, selectedP
               selectedPath={selectedPath}
               defaultOpen={true}
               onNodeContextMenu={openContextMenu}
+              renamingPath={renamingNode?.path ?? null}
+              renamingName={renamingNode?.name ?? ''}
+              onRenameCommit={commitRename}
+              onRenameCancel={cancelRename}
             />
           ))}
         </ul>

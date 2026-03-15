@@ -24,9 +24,12 @@ Usage:
 """
 
 import logging
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, TYPE_CHECKING
 
 from drivers.base import BaseDriver
+
+if TYPE_CHECKING:
+    from db.models import Device
 from drivers.cisco_ios import CiscoIOSDriver
 from drivers.huawei_vrp import HuaweiVRPDriver
 from drivers.juniper_junos import JuniperJunosDriver
@@ -150,6 +153,50 @@ class DriverFactory:
     def is_sdn_driver(driver_type: str) -> bool:
         """Check if a driver type is SDN controller-based."""
         return driver_type.lower() in DriverFactory.get_sdn_drivers()
+
+    @staticmethod
+    def get_driver(device: "Device") -> BaseDriver:
+        """
+        Create an SSH driver for a Device from the inventory.
+        Uses device.ssh_user / device.ssh_password; if missing, tries CredentialVault for device.id.
+        Caller must call driver.connect() before use and driver.disconnect() when done.
+        """
+        host = (device.management_ip or device.hostname or "").strip()
+        if not host:
+            raise ValueError(f"Device {getattr(device, 'hostname', '?')} has no management_ip or hostname")
+
+        username = (device.ssh_user or "").strip() if getattr(device, "ssh_user", None) else ""
+        password = (device.ssh_password or "") if getattr(device, "ssh_password", None) else ""
+        device_id = getattr(device, "id", None)
+
+        if not username or not password:
+            try:
+                from auth.credentials import CredentialVault
+                vault = CredentialVault()
+                cred = vault.get(device_id, "SSH") if device_id else None
+                if cred:
+                    username = username or (cred.get("username") or "").strip()
+                    password = password or (cred.get("password") or "")
+            except Exception as e:
+                logger.debug("CredentialVault not available or failed: %s", e)
+
+        if not username or not password:
+            raise ValueError(
+                "SSH credentials not set. Set ssh_user and ssh_password in Device Inventory, "
+                "or store credentials in the credential vault for this device."
+            )
+
+        driver_type = (device.vendor or "cisco_ios").strip().lower()
+        if driver_type not in _DRIVER_REGISTRY:
+            driver_type = "cisco_ios"
+        port = getattr(device, "ssh_port", None) or 22
+        return DriverFactory.create(
+            driver_type,
+            host=host,
+            username=username,
+            password=password,
+            port=port,
+        )
 
     @staticmethod
     def register_driver(name: str, driver_class: type) -> None:

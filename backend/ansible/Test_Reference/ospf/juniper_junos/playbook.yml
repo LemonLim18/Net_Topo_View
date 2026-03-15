@@ -1,0 +1,8 @@
+---
+- name: Configure OSPF (Junos)
+  hosts: vendor_juniper_junos
+  gather_facts: no
+  tasks:
+    - name: Placeholder — use Junos OSPF modules
+      ansible.builtin.debug:
+        msg: "Replace with real OSPF tasks"

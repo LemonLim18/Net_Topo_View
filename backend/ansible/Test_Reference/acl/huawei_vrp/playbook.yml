@@ -1,0 +1,8 @@
+---
+- name: Configure ACL (Huawei)
+  hosts: vendor_huawei_vrp
+  gather_facts: no
+  tasks:
+    - name: Placeholder — use ce_config for ACL
+      ansible.builtin.debug:
+        msg: "Replace with real ACL tasks"

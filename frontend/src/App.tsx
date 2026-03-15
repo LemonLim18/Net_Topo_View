@@ -9,6 +9,7 @@ import NetBoxDevices from '../views/NetBoxDevices';
 import KnowledgeBase from '../views/KnowledgeBase';
 import AnsibleStudioView from '../views/AnsibleStudioView';
 import TemplateStudioView from '../views/TemplateStudioView';
+import ConfigBackupView from '../views/ConfigBackupView';
 import DriftView from '../views/DriftView';
 import IncidentDashboard from '../views/IncidentDashboard';
 import OnboardingView from '../views/OnboardingView';
@@ -56,6 +57,7 @@ const isViewId = (value: string | null): value is ViewId => {
     'playbook_comparison',
     'approval_queue',
     'template_studio',
+    'config_backup',
   ].includes(value);
 };
 
@@ -235,6 +237,9 @@ const App: React.FC = () => {
       // Template Studio — Jinja2 template editor
       case 'template_studio':
         return <TemplateStudioView />;
+
+      case 'config_backup':
+        return <ConfigBackupView />;
 
       default:
         return <OverviewDashboard setView={setView} setSelectedDeviceId={setSelectedDeviceId} />;

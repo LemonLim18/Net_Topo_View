@@ -1,0 +1,8 @@
+---
+- name: Configure OSPF (Huawei)
+  hosts: vendor_huawei_vrp
+  gather_facts: no
+  tasks:
+    - name: Placeholder — use ce_config for OSPF
+      ansible.builtin.debug:
+        msg: "Replace with real OSPF tasks"

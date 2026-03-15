@@ -66,7 +66,7 @@ class RouteMonitor:
 
         Returns the snapshot row id, or None on failure.
         """
-        device = self.db.get_device(device_id)
+        device = self.db.get_device_by_id(device_id)
         if device is None:
             logger.error("Device #%d not found", device_id)
             return None
@@ -90,7 +90,7 @@ class RouteMonitor:
 
         Returns SecurityEvent objects for any deviation detected.
         """
-        device = self.db.get_device(device_id)
+        device = self.db.get_device_by_id(device_id)
         if device is None:
             logger.error("Device #%d not found", device_id)
             return []

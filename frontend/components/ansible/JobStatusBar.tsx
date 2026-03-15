@@ -118,9 +118,9 @@ const JobStatusBar: React.FC<JobStatusBarProps> = ({
     if (tab === 'audit') fetchAudit();
   }, [tab, fetchJobs, fetchAudit]);
 
-  if (!job) return null;
-
-  const currentStageIdx = STAGES.findIndex(s => s.key === job.stage) ?? -1;
+  // No early return for !job - we want to show the 'inactive' pipeline
+  const currentStageIdx = job ? STAGES.findIndex(s => s.key === job.stage) : -1;
+  const jobStatus = job?.status;
 
   const tabBtn = (id: BottomTab, icon: React.ReactNode, label: string) => (
     <button
@@ -140,15 +140,18 @@ const JobStatusBar: React.FC<JobStatusBarProps> = ({
       {/* Pipeline step indicator */}
       <div className="flex items-center gap-0 px-4 py-2 border-b border-base-200">
         {STAGES.map((s, idx) => {
-          const done    = idx < currentStageIdx || job.status === 'success';
-          const current = idx === currentStageIdx && job.status !== 'success';
-          const failed  = job.status === 'failed' && idx === currentStageIdx;
+          const done    = job && (idx < currentStageIdx || jobStatus === 'success');
+          const current = job && (idx === currentStageIdx && jobStatus !== 'success');
+          const failed  = job && (jobStatus === 'failed' && idx === currentStageIdx);
+          const inactive = !job;
+          
           return (
             <React.Fragment key={s.key}>
-              <div className={`flex items-center gap-1 text-xs font-medium px-2 py-1 rounded ${
-                failed  ? 'text-error' :
-                current ? 'text-primary' :
-                done    ? 'text-success' :
+              <div className={`flex items-center gap-1 text-xs font-medium px-2 py-1 rounded transition-all duration-300 ${
+                failed   ? 'text-error' :
+                current  ? 'text-primary' :
+                done     ? 'text-success' :
+                inactive ? 'opacity-20' :
                 'opacity-30'
               }`}>
                 {failed  ? <AlertCircle className="h-3.5 w-3.5" /> :
@@ -158,14 +161,18 @@ const JobStatusBar: React.FC<JobStatusBarProps> = ({
                 {s.label}
               </div>
               {idx < STAGES.length - 1 && (
-                <div className={`h-px w-5 ${done ? 'bg-success' : 'bg-base-300'}`} />
+                <div className={`h-px w-5 transition-colors duration-500 ${done ? 'bg-success' : 'bg-base-300'} ${inactive ? 'opacity-20' : ''}`} />
               )}
             </React.Fragment>
           );
         })}
-        {job.status && (
-          <span className={`ml-auto text-xs font-bold ${STATUS_COLOUR[job.status] ?? ''}`}>
-            {job.status.toUpperCase()}
+        {jobStatus ? (
+          <span className={`ml-auto text-xs font-bold ${STATUS_COLOUR[jobStatus] ?? ''}`}>
+            {jobStatus.toUpperCase()}
+          </span>
+        ) : (
+          <span className="ml-auto text-xs font-medium opacity-20 italic">
+            IDLE
           </span>
         )}
       </div>

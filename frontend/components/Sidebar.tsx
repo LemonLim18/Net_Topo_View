@@ -21,6 +21,7 @@ import {
   ChevronLeft,
   ChevronRight,
   FileCode2,
+  HardDrive,
 } from 'lucide-react';
 import type { ViewId, User } from '../types';
 import { Confirm } from '../src/utils/swal';
@@ -145,6 +146,7 @@ const Sidebar: React.FC<SidebarProps> = ({ currentView, setView, user, onLogout,
           <MenuItem id="onboarding" label="Onboard Device" icon={PackagePlus} />
           <MenuItem id="net_perf" label="Performance" icon={Activity} />
           <MenuItem id="template_studio" label="Template Studio" icon={FileCode2} />
+          <MenuItem id="config_backup" label="Config Backup" icon={HardDrive} />
           <MenuItem id="topology" label="Topology Map" icon={Network} />
         </SectionHeader>
 

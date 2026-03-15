@@ -84,7 +84,8 @@ export type ViewId =
   | 'sdn_dashboard'
   | 'playbook_comparison'
   | 'approval_queue'
-  | 'template_studio';
+  | 'template_studio'
+  | 'config_backup';
 
 // Notification Types
 export type NotificationType = 'info' | 'success' | 'warning' | 'error';

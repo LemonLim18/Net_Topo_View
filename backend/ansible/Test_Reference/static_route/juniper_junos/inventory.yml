@@ -1,0 +1,9 @@
+---
+all:
+  children:
+    vendor_juniper_junos:
+      vars:
+        ansible_network_os: junos
+        ansible_connection: netconf
+        ansible_port: 830
+      hosts: {}

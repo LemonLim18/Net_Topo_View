@@ -166,6 +166,13 @@ export interface AnsibleExecuteResult {
   summary: string;
 }
 
+/** One proposed edit for a single file (AI suggests changes; user can Keep or Undo per file or Keep All / Undo All). */
+export interface AnsibleProposedEdit {
+  path: string;
+  original: string;
+  suggested: string;
+}
+
 export interface AnsibleMessage {
   id: string;
   role: 'user' | 'assistant' | 'system';
@@ -176,6 +183,8 @@ export interface AnsibleMessage {
   jobId?: number;
   playbookPath?: string;   // path opened in editor when playbook is ready
   generatedPaths?: string[];
+  /** AI-proposed edits to existing files; user can apply section-by-section or Keep All / Undo All */
+  proposedEdits?: AnsibleProposedEdit[];
 }
 
 export interface CreateAndPlanRequest {

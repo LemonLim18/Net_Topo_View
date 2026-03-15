@@ -1,0 +1,8 @@
+---
+- name: Configure ACL (Junos)
+  hosts: vendor_juniper_junos
+  gather_facts: no
+  tasks:
+    - name: Placeholder — use Junos ACL modules
+      ansible.builtin.debug:
+        msg: "Replace with real ACL tasks"
