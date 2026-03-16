@@ -382,6 +382,59 @@ async def _ensure_planning_context(
     }
 
 
+def _playbook_hosts_to_db_only(playbook_yaml: str, allowed_hosts: List[str]) -> str:
+    """Rewrite the first play's hosts: line to only include hostnames in allowed_hosts
+    (e.g. only DB-registered devices), so non-DB names like Acc_Huawei_1 never appear in the run."""
+    if not playbook_yaml or not allowed_hosts:
+        return playbook_yaml
+    allowed = set(h.strip() for h in allowed_hosts if str(h).strip())
+    if not allowed:
+        return playbook_yaml
+    # Match first play's hosts: value (e.g. "host1,host2" or host1,host2)
+    def _repl(m: re.Match) -> str:
+        prefix = m.group(1)  # indentation and "hosts:"
+        raw = m.group(2).strip().strip('"\'')
+        if not raw or raw.lower() in ("all",):
+            return m.group(0)
+        parts = [p.strip() for p in re.split(r"[,]+", raw) if p.strip()]
+        kept = [p for p in parts if p in allowed]
+        if not kept:
+            return m.group(0)
+        return prefix + ",".join(kept) + "\n"
+    return re.sub(r"^(\s*hosts:\s*)(.+)$", _repl, playbook_yaml, count=1, flags=re.MULTILINE)
+
+
+def _filter_inventory_to_db_hosts(inventory: dict[str, Any]) -> None:
+    """
+    Remove any host that is not in the device DB. Ensures only registered devices
+    (e.g. Acc_Huawei_3) appear; crawler-only names (e.g. Acc_Huawei_1) are dropped.
+    """
+    if _db is None:
+        return
+    all_group = inventory.get("all") or {}
+    hosts = (all_group.get("hosts") or {}) if isinstance(all_group, dict) else {}
+    if not hosts:
+        return
+    to_remove: set[str] = set()
+    for hostname in hosts:
+        try:
+            if not _db.get_device_by_hostname(hostname):
+                to_remove.add(hostname)
+        except Exception:
+            to_remove.add(hostname)
+    if not to_remove:
+        return
+    for hostname in to_remove:
+        hosts.pop(hostname, None)
+    children = (all_group.get("children") or {}) if isinstance(all_group, dict) else {}
+    for group_data in children.values():
+        if isinstance(group_data, dict):
+            group_hosts = group_data.get("hosts")
+            if isinstance(group_hosts, dict):
+                for hostname in to_remove:
+                    group_hosts.pop(hostname, None)
+
+
 def _deduplicate_inventory_by_ip(inventory: dict[str, Any]) -> None:
     """
     Keep one host per management IP; prefer the hostname registered for that IP
@@ -440,6 +493,7 @@ def _build_inventory_for_hosts(
     inventory = build_inventory(target_hosts=target_hosts or None, topology_override=topology_override)
     _inject_device_credentials_into_inventory(inventory)
     _deduplicate_inventory_by_ip(inventory)
+    _filter_inventory_to_db_hosts(inventory)
     return inventory
 
 
@@ -1007,13 +1061,15 @@ async def check_playbook(
             feature="",
         )
     inventory = _build_inventory_for_hosts(artifact["target_hosts"], planning_context)
+    inv_hosts = list((inventory.get("all") or {}).get("hosts") or {})
+    playbook_content = _playbook_hosts_to_db_only(artifact["playbook_yaml"], inv_hosts)
     result = await run_in_threadpool(
         run_playbook,
         inventory=inventory,
         extra_vars={},
         check_mode=True,
         job_id=job_id,
-        playbook_content=artifact["playbook_yaml"],
+        playbook_content=playbook_content,
         playbook_path=artifact["entrypoint_path"] or None,
         project_files=artifact["project_files"],
     )
@@ -1121,6 +1177,8 @@ async def execute_playbook(
             feature="",
         )
     inventory = _build_inventory_for_hosts(artifact["target_hosts"] or [], planning_context)
+    inv_hosts = list((inventory.get("all") or {}).get("hosts") or {})
+    playbook_content = _playbook_hosts_to_db_only(artifact["playbook_yaml"], inv_hosts)
 
     # Mark running
     with _db._connect() as conn:
@@ -1135,7 +1193,7 @@ async def execute_playbook(
         extra_vars={},
         check_mode=False,
         job_id=job_id,
-        playbook_content=artifact["playbook_yaml"],
+        playbook_content=playbook_content,
         playbook_path=artifact["entrypoint_path"] or None,
         project_files=artifact["project_files"],
     )

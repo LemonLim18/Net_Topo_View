@@ -356,9 +356,23 @@ class DatabaseManager:
                       len(topo_dict.get("nodes", {})))
 
     def get_topology(self) -> Dict[str, Any]:
-        """Return the current topology snapshot (thread-safe copy)."""
+        """Return the current topology snapshot (thread-safe copy). Nodes whose
+        hostname is not in the device DB are excluded so only registered devices appear."""
         with self._topo_lock:
-            return json.loads(json.dumps(self._topo_cache))
+            out = json.loads(json.dumps(self._topo_cache))
+        nodes = out.get("nodes") or {}
+        if not isinstance(nodes, dict):
+            return out
+        to_drop = []
+        for hostname in nodes:
+            try:
+                if not self.get_device_by_hostname(hostname):
+                    to_drop.append(hostname)
+            except Exception:
+                to_drop.append(hostname)
+        for hostname in to_drop:
+            nodes.pop(hostname, None)
+        return out
 
     # =============================================================
     # CONTEXT EVENT LOG  (persistent)
