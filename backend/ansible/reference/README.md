@@ -1,66 +1,61 @@
-# Ansible reference library (confirmed operational)
+# Ansible reference library (official — consumed by RAG)
 
-This folder holds **confirmed operational** Ansible playbook and inventory snippets per **feature** and **vendor**. The LLM uses them (via RAG) to generate playbooks that match your device inventory and intent.
+This folder holds the **official** Ansible reference per **feature** and **vendor**. Every `reference/{feature}/{vendor}/reference.md` is ingested by RAG on **RAG Rebuild** and used by the LLM to generate playbooks. Test each feature by running plan-ansible with a matching intent and checking the generated playbook against the reference.
 
 ## Layout
 
 ```
 reference/
-  {feature}/           # e.g. vlan, acl, interface, ospf, qos, static_route
-    {vendor}/          # e.g. cisco_ios, huawei_vrp, juniper_junos
-      playbook.yml     # Reference play(s) for this feature + vendor
-      inventory.yml    # Minimal inventory pattern (groups, vars)
-      reference.md     # Notes for LLM: modules, connection, caveats, status
+  vlan/                   # Only VLAN is in official reference (RAG-ingested)
+    cisco_ios/
+    huawei_vrp/
+    juniper_junos/
+    multi_vendor/         # Single-play template with when: per vendor
+  (interface, acl, ospf, qos, static_route are in Test_Reference/ — not ingested by RAG)
 ```
 
----
-
-## Current reference scenarios (as of now)
-
-| Feature | Cisco IOS | Huawei VRP | Juniper Junos |
-|---------|-----------|------------|----------------|
-| **vlan** | ✅ Confirmed | ✅ Confirmed (CLI) | ⚠️ Unverified |
-
-**What’s ingested for RAG:** Each `reference/{feature}/{vendor}/reference.md` is auto-ingested on **RAG Rebuild** with `doc_type=ansible_reference`, `vendor`, and `applicable_feature` from the path. Plan-ansible uses **feature** and **vendor** (from intent and device inventory) to retrieve the right reference.
-
-**Scenarios covered today:** “Configure VLAN on access switches” with targets resolved from NetBox → Cisco or Huawei get the correct module pattern (e.g. `ios_vlans` / `ios_l2_interfaces`, or `ce_config`). Juniper has a reference but is marked unverified.
+Each `{feature}/{vendor}/` has `reference.md`, `playbook.yml`, `inventory.yml`.
 
 ---
 
-## Gaps: what else for a full-rounded reference library
+## Reference scenarios (ingested by RAG)
 
-- **More features (prompt already mentions them, no reference yet):**
-  - **interface** – L2/L3 interface config per vendor (e.g. `ios_interfaces`, `ce_config`, Junos).
-  - **acl** – ACL create/bind (Cisco, Huawei, Juniper).
-  - **ospf** – OSPF areas, router-id, interface enable (vendor modules).
-  - **qos** – Queues, policies, interface attachment.
-  - **static_route** – Static routes (vendor-specific modules).
-- **Richer RAG content:** Ingest **playbook.yml** (and optionally **inventory.yml**) per feature/vendor with the same metadata, or add a short “reference play snippet” block into each `reference.md`, so the LLM sees concrete task structure, not only prose.
-- **Juniper VLAN:** Run and confirm the existing `reference/vlan/juniper_junos/` playbook; then set status to Confirmed in `reference.md`.
-- **Mixed-vendor runs:** Ensure retrieval and prompts handle one playbook targeting multiple vendors (e.g. access_switches with both Cisco and Huawei) using the right snippet per host.
+| Feature  | Cisco IOS | Huawei VRP | Juniper Junos | Multi-vendor template |
+|----------|-----------|------------|---------------|------------------------|
+| **vlan** | ✅        | ✅         | ✅            | ✅ `vlan/multi_vendor/` |
 
-When you confirm a playbook works for a vendor, update the corresponding `reference.md` (set status to “Confirmed”) and sync the working playbook into `playbook.yml`. Add new feature/vendor folders as you validate them.
+**Other features (interface, acl, ospf, qos, static_route)** live in `Test_Reference/`; copy into `reference/` when you want them ingested by RAG.
+
+**RAG ingestion:** On **RAG Rebuild**, each `reference/**/reference.md` is ingested with `doc_type=ansible_reference`, `applicable_feature`, and `vendor` from the path. Plan-ansible retrieves by intent feature and device vendor so the LLM gets the right reference.
+
+**VLAN multi-vendor template:** `vlan/multi_vendor/` provides a single-play pattern (hosts: access_switches, when: per vendor, ignore_unreachable: true) and correct module usage for Cisco, Huawei, and Juniper. Use for “configure VLAN on all access switches” with mixed vendors.
 
 ---
 
-## How to test LLM–RAG accuracy after consuming references
+## Testing each folder (validate RAG → LLM output)
 
-1. **Ingest references**
-   - Run **RAG Rebuild** (e.g. from the RAG admin UI or `POST /api/v1/rag/documents/rebuild`) so all `reference/**/reference.md` (and any other ingested refs) are in the vector store.
+1. **Run RAG Rebuild**  
+   So all `reference/**/reference.md` are in the vector store (e.g. RAG admin UI or `POST /api/v1/rag/documents/rebuild`).
 
-2. **Smoke test retrieval**
-   - Create a job with intent that matches a reference (e.g. “Configure VLAN 200 on access switches”, devices = Cisco or Huawei).
-   - Call **plan-ansible** and inspect the request: the backend builds a query like `"{intent} Ansible playbook reference feature vlan vendor cisco_ios"` and retrieves with `doc_type_filter=ansible_reference`. Check logs or add a temporary debug response to see that `kb_snippets` contain the expected reference text (e.g. “ios_vlans”, “ios_l2_interfaces”, “Do NOT use deprecated…”).
+2. **Test the LLM output**  
+   - Create a job with an intent that matches the reference (e.g. VLAN: “Configure VLAN 200 named TEST on all access switches; put it on Gi0/1 and Gi0/2 (Cisco) or Gi1/0/1 and 1/0/2 (Huawei).”).  
+   - Run **create-and-plan** or **plan-ansible** and open the generated playbook.
 
-3. **Output accuracy**
-   - **Correct modules:** Generated playbook uses the reference pattern (e.g. Cisco: `cisco.ios.ios_vlans` / `ios_l2_interfaces`; Huawei: `community.network.ce_config` with the right `lines`/`parents`).
-   - **No deprecated modules:** No `cisco.ios.vlan` or `vlan_interfaces` for Cisco.
-   - **Inventory/vars:** Groups and connection vars align with reference (e.g. `ansible_network_os`, `network_cli`, vault vars).
-   - **Idempotency:** Uses `state: merged` or equivalent; no append-only or destructive commands unless intended.
+3. **Check the generated playbook**  
+   - **Modules:** Match the reference (e.g. Cisco VLAN → `cisco.ios.ios_vlans` with `config` list; Huawei → `community.network.ce_config` with `lines`/`parents`; no `community.network.network_config`).  
+   - **Parameters:** Resource modules use `config:` list and `state: merged` where applicable.  
+   - **Vendor scope:** Correct `when:` or separate plays so only the right vendor runs each block.  
+   - **Deprecated:** No deprecated FQCNs (e.g. use `juniper.device`, not `junipernetworks.junos`).
 
-4. **Structured regression (optional)**
-   - Add a pytest that: (a) mocks or uses a test vector store with known ansible_reference chunks, (b) calls the plan-ansible builder with a fixed intent (e.g. VLAN + cisco_ios), (c) parses the generated YAML and asserts presence of expected task modules and absence of deprecated ones. Run after RAG rebuild or with seeded test data to validate “after consuming references” behavior.
-   - Alternatively, maintain a small **golden set**: 2–3 intents (e.g. “VLAN on Cisco”, “VLAN on Huawei”), run plan-ansible, and diff or assert key lines (module names, play hosts) against expected snippets.
+4. **Optional: Check (dry-run)**  
+   Run **Check** on the job; fix any module or connection errors and update the reference or prompt if the LLM keeps diverging.
 
-5. **End-to-end**
-   - Run **Check** (dry-run) on a real or lab device after plan-ansible; confirm no module or connection errors and that the diff matches intent. That validates both RAG retrieval and LLM output in a real scenario.
+When a generated playbook is wrong for a feature/vendor, improve the corresponding `reference.md` (or playbook snippet in it), run RAG Rebuild, and re-test.
+
+---
+
+## Maintaining references
+
+- When you confirm a playbook for a vendor, set **Status:** in `reference.md` to “Confirmed” and sync the working play into `playbook.yml`.  
+- For Huawei, always document: use `community.network.ce_config`; do **not** use `community.network.network_config` (module does not exist).  
+- For Juniper, use `juniper.device` (e.g. `junos_vlans`, `junos_l2_interfaces`); avoid deprecated `junipernetworks.junos`.

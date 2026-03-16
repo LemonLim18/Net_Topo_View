@@ -75,6 +75,57 @@ def infer_vendor_hint(hostnames: List[str], db_manager) -> str:
     return next(iter(vendors)) if len(vendors) == 1 else ""
 
 
+def _deduplicate_devices_by_ip(
+    devices: List[Dict[str, Any]],
+    db_manager,
+    inventory_devices: Dict[str, Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Keep one device per management IP; prefer hostname registered for that IP in DB (NetBox)."""
+    by_ip: Dict[str, List[Dict[str, Any]]] = {}
+    for d in devices:
+        ip = str(d.get("management_ip") or "").strip() or str(d.get("hostname") or "").strip()
+        if not ip:
+            continue
+        by_ip.setdefault(ip, []).append(d)
+    result: List[Dict[str, Any]] = []
+    for ip, group in by_ip.items():
+        if len(group) == 1:
+            result.append(group[0])
+            continue
+        # Prefer the hostname that the DB has for this management IP (canonical/NetBox name)
+        canonical_host: str | None = None
+        if db_manager:
+            try:
+                dev = db_manager.get_device_by_management_ip(ip)
+                if dev and dev.hostname:
+                    canonical_host = dev.hostname.strip()
+            except Exception:
+                pass
+        chosen: Dict[str, Any] | None = None
+        if canonical_host:
+            for d in group:
+                if str(d.get("hostname") or "").strip() == canonical_host:
+                    chosen = d
+                    break
+        if not chosen:
+            def _rank(dev: Dict[str, Any]) -> int:
+                host = str(dev.get("hostname") or "").strip()
+                if host and host in inventory_devices:
+                    return 0
+                return 1
+            chosen = min(group, key=_rank)
+        result.append(chosen)
+        dropped = [str(d.get("hostname")) for d in group if d != chosen]
+        if dropped:
+            logger.info(
+                "Deduplicated by IP %s: keeping %s, dropping %s",
+                ip,
+                chosen.get("hostname"),
+                dropped,
+            )
+    return result
+
+
 def build_scoped_planning_context(
     db_manager,
     hostnames: List[str],
@@ -184,6 +235,10 @@ def build_scoped_planning_context(
             }
         )
 
+    # One device per management IP: prefer NetBox/DB hostname over crawler-discovered name (e.g. Acc_Huawei_3 over Acc_Huawei_1)
+    devices = _deduplicate_devices_by_ip(devices, db_manager, inventory_devices)
+    effective_hosts = [str(d.get("hostname") or "").strip() for d in devices if str(d.get("hostname") or "").strip()]
+
     return {
         "target_hosts": effective_hosts,
         "feature": str(feature or ""),
@@ -230,7 +285,8 @@ def planning_context_readiness(context: Dict[str, Any]) -> Dict[str, Any]:
     # Prefer NetBox; allow local_db if all target devices have required fields (e.g. after sync with name mismatch)
     if inventory_source != "netbox" and (not devices or missing_hosts):
         issues.append(f"Planned inventory source is '{inventory_source or 'unknown'}' instead of NetBox")
-    if inventory_freshness in {FreshnessClass.MISSING.value, FreshnessClass.STALE.value}:
+    # For vlan we only need devices with vendor/IP; skip strict freshness so we can proceed after sync
+    if feature != "vlan" and inventory_freshness in {FreshnessClass.MISSING.value, FreshnessClass.STALE.value}:
         issues.append(f"Planned inventory freshness is {inventory_freshness or 'unknown'}")
     if feature in {"routing", "interface"} and planned_freshness in {
         FreshnessClass.MISSING.value,

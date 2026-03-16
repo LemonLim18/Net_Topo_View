@@ -240,6 +240,78 @@ class DatabaseManager:
     # =============================================================
     # REAL-TIME TOPOLOGY CACHE  (in-memory, not persisted)
     # =============================================================
+    def _normalize_topology_nodes_by_ip(self, topo_dict: Dict[str, Any]) -> None:
+        """
+        In-place: one node per management IP; prefer hostname from device DB
+        (e.g. NetBox Acc_Huawei_3 over crawler-discovered Acc_Huawei_1).
+        Renames or drops duplicate nodes and updates references in connectedNode/edgeLink.
+        """
+        nodes = topo_dict.get("nodes") or {}
+        if not isinstance(nodes, dict):
+            return
+        by_ip: Dict[str, List[str]] = {}
+        for hostname, data in nodes.items():
+            if not isinstance(data, dict):
+                continue
+            ip = str(data.get("mgmt_ip") or data.get("ip") or hostname).strip()
+            if not ip:
+                continue
+            by_ip.setdefault(ip, []).append(hostname)
+        # For each IP, choose canonical hostname (DB preferred)
+        canonical_by_ip: Dict[str, str] = {}
+        for ip, hostnames in by_ip.items():
+            dev = self.get_device_by_management_ip(ip)
+            if dev and dev.hostname:
+                canonical_by_ip[ip] = dev.hostname.strip()
+            else:
+                canonical_by_ip[ip] = hostnames[0]
+        # Build rename map: old_key -> canonical (when old_key != canonical)
+        rename: Dict[str, str] = {}
+        to_drop: List[str] = []
+        for ip, hostnames in by_ip.items():
+            canonical = canonical_by_ip.get(ip) or hostnames[0]
+            for h in hostnames:
+                if h == canonical:
+                    continue
+                if canonical in nodes:
+                    to_drop.append(h)
+                else:
+                    rename[h] = canonical
+        # Apply renames: node under new key, then delete old key
+        for old_key, new_key in rename.items():
+            if old_key not in nodes or new_key in nodes:
+                continue
+            nodes[new_key] = dict(nodes[old_key])
+            nodes[new_key]["id"] = new_key
+            nodes[new_key]["hostname"] = new_key
+            nodes[new_key]["name"] = new_key
+            del nodes[old_key]
+            to_drop.append(old_key)
+        # Map dropped hostnames to canonical (for reference updates)
+        refs_replace: Dict[str, str] = dict(rename)
+        for h in to_drop:
+            ip = next((ip for ip, hostnames in by_ip.items() if h in hostnames), None)
+            if ip:
+                refs_replace[h] = canonical_by_ip.get(ip) or h
+        # Drop duplicates (same IP, canonical already present)
+        for h in to_drop:
+            nodes.pop(h, None)
+        # Update references in all nodes: connectedNode, edgeLink
+        for node_data in nodes.values():
+            if not isinstance(node_data, dict):
+                continue
+            for old_key, new_key in refs_replace.items():
+                if old_key == new_key:
+                    continue
+                conn = node_data.get("connectedNode") or []
+                if isinstance(conn, list) and old_key in conn:
+                    node_data["connectedNode"] = [new_key if x == old_key else x for x in conn]
+                edge = node_data.get("edgeLink") or {}
+                if isinstance(edge, dict):
+                    for iface, link in list(edge.items()):
+                        if isinstance(link, dict) and link.get("remote_node") == old_key:
+                            link["remote_node"] = new_key
+
     def update_topology(self, topo_dict: Dict[str, Any]) -> None:
         """
         Replace the live topology cache with a fresh crawl result.
@@ -253,6 +325,7 @@ class DatabaseManager:
               "nodes": { "<hostname>": { ... }, ... }
             }
         """
+        self._normalize_topology_nodes_by_ip(topo_dict)
         with self._topo_lock:
             previous_topology = json.loads(json.dumps(self._topo_cache))
             self._topo_cache = topo_dict
@@ -437,13 +510,14 @@ class DatabaseManager:
         return self._row_to_device(row) if row else None
 
     def get_device_by_management_ip(self, management_ip: str) -> Optional[Device]:
-        """Return the first device with this management IP, if any. Used to match
-        the same device after a hostname change (e.g. NetBox rename)."""
+        """Return the device with this management IP, if any. When multiple rows
+        share the same IP, returns the one with smallest id (first registered)."""
         if not management_ip or not str(management_ip).strip():
             return None
         with self._connect() as conn:
             row = conn.execute(
-                "SELECT * FROM devices WHERE management_ip = ?", (management_ip.strip(),)
+                "SELECT * FROM devices WHERE management_ip = ? ORDER BY id ASC LIMIT 1",
+                (management_ip.strip(),),
             ).fetchone()
         return self._row_to_device(row) if row else None
 

@@ -76,11 +76,21 @@ When the block below contains reference playbooks or SOPs for the requested feat
     but choose modules, verification commands, and conditionals based on the resolved
     per-device vendor facts from the scoped inventory.
 
-12. SUPPORTED FEATURES: vlan, interface, acl, routing, ospf, qos, static_route. For
+12. IGNORE UNREACHABLE: At the play level you MUST add `ignore_unreachable: true` so
+    that when some hosts are unreachable (e.g. no route, NETCONF/SSH down), the run
+    continues on reachable hosts instead of failing the entire play. This matches the
+    reference VLAN templates and is required for mixed reachability.
+
+12b. GATHER FACTS: For playbooks targeting network devices (VLAN, interface, multi-vendor),
+    use `gather_facts: no`. Do NOT use `gather_facts: yes`; fact gathering on all hosts
+    can fail on unreachable or NETCONF hosts and fail the whole run. Follow the
+    reference/vlan/multi_vendor pattern (single play, when: per vendor, gather_facts: no).
+
+13. SUPPORTED FEATURES: vlan, interface, acl, routing, ospf, qos, static_route. For
     ospf, qos, and static_route use vendor-specific modules and follow Relevant
     Templates / SOPs above when present.
 
-13. OUTPUT FORMAT: Respond with ONLY the playbook inside a single ```yaml ... ```
+14. OUTPUT FORMAT: Respond with ONLY the playbook inside a single ```yaml ... ```
     code fence. No prose before or after the code block.
 
 Now produce the complete Ansible playbook.

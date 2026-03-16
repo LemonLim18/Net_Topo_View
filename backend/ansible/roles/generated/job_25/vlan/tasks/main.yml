@@ -1,0 +1,23 @@
+---
+- name: Ensure VLAN exists
+  cisco.ios.ios_vlans:
+    vlans:
+      '{{ vlan_id }}':
+        name: '{{ vlan_name }}'
+    state: merged
+- name: Apply VLAN to interfaces
+  cisco.ios.ios_l2_interfaces:
+    config:
+      - name: '{{ item }}'
+        mode: access
+        access.vlan: '{{ vlan_id }}'
+    state: merged
+  loop: '{{ interfaces[ansible_network_os] }}'
+- name: Verify VLAN and interfaces
+  cisco.ios.ios_l2_interfaces:
+    config:
+      - name: '{{ item }}'
+        mode: access
+        access.vlan: '{{ vlan_id }}'
+    state: merged
+  loop: '{{ interfaces[ansible_network_os] }}'

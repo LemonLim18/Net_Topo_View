@@ -1,0 +1,76 @@
+---
+# VLAN on access switches (multi-vendor) — aligned with reference/vlan/multi_vendor
+- name: Configure VLANs on access switches
+  hosts: access_switches
+  gather_facts: no
+  ignore_unreachable: true
+  vars:
+    vlan_id: '200'
+    vlan_name: TEST
+  tasks:
+    - name: Ensure VLAN exists (Cisco IOS)
+      cisco.ios.ios_vlans:
+        config:
+          - vlan_id: '{{ vlan_id }}'
+            name: '{{ vlan_name }}'
+            state: active
+        state: merged
+      when: inventory_hostname in groups.get('vendor_cisco_ios', [])
+
+    - name: Configure access VLAN on Gi0/1 and Gi0/2 (Cisco IOS)
+      cisco.ios.ios_l2_interfaces:
+        config:
+          - name: GigabitEthernet0/1
+            mode: access
+            access:
+              vlan: '{{ vlan_id }}'
+          - name: GigabitEthernet0/2
+            mode: access
+            access:
+              vlan: '{{ vlan_id }}'
+        state: merged
+      when: inventory_hostname in groups.get('vendor_cisco_ios', [])
+
+    - name: Ensure VLAN exists (Huawei VRP)
+      community.network.ce_config:
+        lines:
+          - vlan batch {{ vlan_id }}
+          - vlan {{ vlan_id }}
+          - name {{ vlan_name }}
+      when: inventory_hostname in groups.get('vendor_huawei_vrp', [])
+
+    - name: Configure access VLAN on Gi1/0/1 (Huawei VRP)
+      community.network.ce_config:
+        lines:
+          - port link-type access
+          - port default vlan {{ vlan_id }}
+        parents: interface GigabitEthernet1/0/1
+      when: inventory_hostname in groups.get('vendor_huawei_vrp', [])
+
+    - name: Configure access VLAN on Gi1/0/2 (Huawei VRP)
+      community.network.ce_config:
+        lines:
+          - port link-type access
+          - port default vlan {{ vlan_id }}
+        parents: interface GigabitEthernet1/0/2
+      when: inventory_hostname in groups.get('vendor_huawei_vrp', [])
+
+    - name: Ensure VLAN exists (Juniper Junos)
+      juniper.device.junos_vlans:
+        config:
+          - name: '{{ vlan_name }}'
+            vlan_id: '{{ vlan_id }}'
+        state: merged
+      when: inventory_hostname in groups.get('vendor_juniper_junos', [])
+
+    - name: Configure access VLAN on ge-0/0/0 and ge-0/0/1 (Juniper Junos)
+      juniper.device.junos_l2_interfaces:
+        config:
+          - name: ge-0/0/0
+            access:
+              vlan: '{{ vlan_id }}'
+          - name: ge-0/0/1
+            access:
+              vlan: '{{ vlan_id }}'
+        state: merged
+      when: inventory_hostname in groups.get('vendor_juniper_junos', [])

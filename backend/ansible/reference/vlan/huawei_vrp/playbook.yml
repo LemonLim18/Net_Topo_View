@@ -1,31 +1,30 @@
 ---
-# Reference: VLAN on Huawei CloudEngine/VRP via CLI (confirmed operational)
-# Use network_cli + community.network.ce_config (no NETCONF).
-- name: Configure VLANs on Huawei access switches
-  hosts: access_switches:&vendor_huawei_vrp
+# Same structure as job_15 — Huawei VRP section only. Only values (vlan_id, vlan_name, target_hosts) are substituted.
+- name: Configure VLANs on access switches
+  hosts: "{{ target_hosts }}"
   gather_facts: no
   ignore_unreachable: true
-  connection: ansible.netcommon.network_cli
-  vars:
-    vlan_id: 200
-    vlan_name: TEST
-    ansible_network_os: community.network.ce
   tasks:
-    - name: Ensure VLAN exists (vlan batch + name)
+    - name: Ensure VLAN {{ vlan_id }} exists (Huawei VRP)
       community.network.ce_config:
         lines:
           - vlan batch {{ vlan_id }}
           - vlan {{ vlan_id }}
           - name {{ vlan_name }}
-    - name: Ensure VLAN on interface GigabitEthernet1/0/1 (access)
+      when: inventory_hostname in groups.get('vendor_huawei_vrp', [])
+
+    - name: Configure access VLAN on Gi1/0/1 (Huawei VRP)
       community.network.ce_config:
         lines:
           - port link-type access
           - port default vlan {{ vlan_id }}
         parents: interface GigabitEthernet1/0/1
-    - name: Ensure VLAN on interface GigabitEthernet1/0/2 (access)
+      when: inventory_hostname in groups.get('vendor_huawei_vrp', [])
+
+    - name: Configure access VLAN on Gi1/0/2 (Huawei VRP)
       community.network.ce_config:
         lines:
           - port link-type access
           - port default vlan {{ vlan_id }}
         parents: interface GigabitEthernet1/0/2
+      when: inventory_hostname in groups.get('vendor_huawei_vrp', [])

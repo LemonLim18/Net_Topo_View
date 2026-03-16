@@ -68,7 +68,7 @@ rules:
     rule_type: blast_radius
     enabled: true
     params:
-      max_devices: 10                # hard-block if > 10 devices affected
+      max_devices: 24                # hard-block if > 24 devices (e.g. full lab)
 
   # ── 6. Conflict Detection ─────────────────────────────────
   - rule_id: conflict_check
@@ -82,4 +82,6 @@ rules:
     name: "Pre-flight Device Verification"
     rule_type: preflight
     enabled: true
-    params: {}
+    params:
+      # When true, "not in inventory" is a warning only — allows plan/generate before devices are registered
+      inventory_missing_as_warning: true

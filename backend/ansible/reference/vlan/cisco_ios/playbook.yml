@@ -1,26 +1,20 @@
 ---
-# Reference: VLAN on Cisco IOS (confirmed operational)
-# Use cisco.ios.ios_vlans and cisco.ios.ios_l2_interfaces.
-- name: Configure VLANs on Cisco IOS access switches
-  hosts: access_switches:&vendor_cisco_ios
+# Same structure as job_15 — Cisco IOS section only. Only values (vlan_id, vlan_name, target_hosts) are substituted.
+- name: Configure VLANs on access switches
+  hosts: "{{ target_hosts }}"
   gather_facts: no
   ignore_unreachable: true
-  vars:
-    vlan_id: 200
-    vlan_name: TEST
   tasks:
-    - name: Ensure VLAN exists
+    - name: Ensure VLAN {{ vlan_id }} exists (Cisco IOS)
       cisco.ios.ios_vlans:
         config:
           - vlan_id: '{{ vlan_id }}'
             name: '{{ vlan_name }}'
             state: active
         state: merged
-    - name: Verify VLAN exists
-      cisco.ios.ios_vlans:
-        state: gathered
-      register: vlan_info
-    - name: Ensure VLAN is configured on interfaces
+      when: inventory_hostname in groups.get('vendor_cisco_ios', [])
+
+    - name: Configure access VLAN on Gi0/1 and Gi0/2 (Cisco IOS)
       cisco.ios.ios_l2_interfaces:
         config:
           - name: GigabitEthernet0/1
@@ -32,7 +26,4 @@
             access:
               vlan: '{{ vlan_id }}'
         state: merged
-    - name: Verify VLAN interfaces are configured
-      cisco.ios.ios_l2_interfaces:
-        state: gathered
-      register: vlan_interfaces_info
+      when: inventory_hostname in groups.get('vendor_cisco_ios', [])

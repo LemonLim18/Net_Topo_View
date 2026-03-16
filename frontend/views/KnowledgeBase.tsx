@@ -451,17 +451,17 @@ const KnowledgeBase: React.FC = () => {
                 <div className="flex gap-4">
                   <span><span className="font-medium">Files processed:</span> {rebuildResult.files_processed}</span>
                   <span><span className="font-medium">Chunks stored:</span> {rebuildResult.total_chunks}</span>
-                  {rebuildResult.errors.length > 0 && (
+                  {(rebuildResult.errors || []).length > 0 && (
                     <span className="text-error"><span className="font-medium">Errors:</span> {rebuildResult.errors.length}</span>
                   )}
                 </div>
-                {rebuildResult.errors.length > 0 && (
+                {(rebuildResult.errors || []).length > 0 && (
                   <details className="mt-2">
                     <summary className="cursor-pointer text-error flex items-center gap-1">
                       <ChevronDown className="h-3 w-3" /> Show errors
                     </summary>
                     <ul className="mt-1 space-y-0.5 pl-4">
-                      {rebuildResult.errors.map((e, i) => (
+                      {(rebuildResult.errors || []).map((e, i) => (
                         <li key={i} className="text-error font-mono">{e}</li>
                       ))}
                     </ul>

@@ -1,20 +1,26 @@
 ---
-# Reference: VLAN on Juniper Junos (NETCONF) — unverified; use with caution.
-- name: Configure VLANs on Juniper Junos access switches
-  hosts: access_switches:&vendor_juniper_junos
+# Same structure as job_15 — Juniper Junos section only. Only values (vlan_id, vlan_name, target_hosts) are substituted.
+- name: Configure VLANs on access switches
+  hosts: "{{ target_hosts }}"
   gather_facts: no
   ignore_unreachable: true
-  vars:
-    vlan_id: 200
-    vlan_name: TEST
   tasks:
-    - name: Ensure VLAN exists
+    - name: Ensure VLAN {{ vlan_id }} exists (Juniper Junos)
       juniper.device.junos_vlans:
         config:
-          - name: "{{ vlan_name }}"
+          - name: '{{ vlan_name }}'
             vlan_id: '{{ vlan_id }}'
         state: merged
-    - name: Verify VLAN exists
-      juniper.device.junos_vlans:
-        state: gathered
-      register: vlan_info
+      when: inventory_hostname in groups.get('vendor_juniper_junos', [])
+
+    - name: Configure access VLAN on ge-0/0/0 and ge-0/0/1 (Juniper Junos)
+      juniper.device.junos_l2_interfaces:
+        config:
+          - name: ge-0/0/0
+            access:
+              vlan: '{{ vlan_id }}'
+          - name: ge-0/0/1
+            access:
+              vlan: '{{ vlan_id }}'
+        state: merged
+      when: inventory_hostname in groups.get('vendor_juniper_junos', [])

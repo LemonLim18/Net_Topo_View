@@ -1,0 +1,30 @@
+---
+- name: Ensure VLAN exists on Cisco switches
+  cisco.ios.ios_vlans:
+    vlans:
+      - id: '{{ vlan_id }}'
+        name: '{{ vlan_name }}'
+    state: merged
+
+- name: Ensure VLAN is applied to interfaces on Cisco switches
+  cisco.ios.ios_l2_interfaces:
+    config:
+      - name: '{{ interface_cisco }}'
+        mode: access
+        access.vlan: '{{ vlan_id }}'
+    state: merged
+
+- name: Verify VLAN configuration on Cisco switches
+  cisco.ios.ios_vlans:
+    vlans:
+      - id: '{{ vlan_id }}'
+        name: '{{ vlan_name }}'
+    state: merged
+
+- name: Verify interface configuration on Cisco switches
+  cisco.ios.ios_l2_interfaces:
+    config:
+      - name: '{{ interface_cisco }}'
+        mode: access
+        access.vlan: '{{ vlan_id }}'
+    state: merged

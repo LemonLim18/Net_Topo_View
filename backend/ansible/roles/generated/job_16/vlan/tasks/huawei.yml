@@ -1,0 +1,42 @@
+---
+- name: Ensure VLAN exists
+  community.network.ce_config:
+    lines:
+      - vlan {{ vlan_id }}
+      - name {{ vlan_name }}
+    parents:
+      - vlan
+    state: merged
+
+- name: Configure interfaces with access VLAN
+  community.network.ce_config:
+    lines:
+      - interface {{ interface_gi01 }}
+      - port link-type access
+      - port access vlan {{ vlan_id }}
+      - interface {{ interface_gi02 }}
+      - port link-type access
+      - port access vlan {{ vlan_id }}
+      - interface {{ interface_gi101 }}
+      - port link-type access
+      - port access vlan {{ vlan_id }}
+      - interface {{ interface_gi102 }}
+      - port link-type access
+      - port access vlan {{ vlan_id }}
+    parents:
+      - interface
+    state: merged
+
+- name: Verify VLAN and interfaces
+  community.network.ce_config:
+    lines:
+      - display vlan
+      - display interface
+    parents:
+      - display
+    state: gathered
+  register: interfaces
+
+- name: Display VLAN and interface details
+  debug:
+    var: interfaces

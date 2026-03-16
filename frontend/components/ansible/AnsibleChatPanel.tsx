@@ -1,8 +1,9 @@
 import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import ReactMarkdown from 'react-markdown';
 import { DiffEditor } from '@monaco-editor/react';
-import { Send, Loader2, Bot, Sparkles, AlertCircle, FileCode, RotateCcw, ChevronRight, Paperclip, X, TriangleAlert, ChevronDown, Check, Undo2 } from 'lucide-react';
-import { ansibleApi, llmApi } from '../../src/services/api';
+import { Send, Loader2, Bot, Sparkles, AlertCircle, FileCode, RotateCcw, ChevronRight, Paperclip, X, TriangleAlert, ChevronDown, Check, Undo2, RefreshCw } from 'lucide-react';
+import { ansibleApi, llmApi, ragApi } from '../../src/services/api';
+import { Toast } from '../../src/utils/swal';
 import type { LlmRuntimeState } from '../../src/services/api';
 import type { AnsibleGeneratedArtifactFile, AnsibleMessage, AnsibleJob, AnsibleProposedEdit } from '../../typesLLM';
 
@@ -61,10 +62,16 @@ function parseIntent(text: string): {
   // Hosts: words that look like hostnames (contain - or sw, rt, rtr, core, access)
   const hostUnicodePattern = /\b([a-z][a-z0-9\-]{2,}(?:sw|rt|rtr|core|access|edge|leaf|spine|router|switch)[a-z0-9\-]*)\b/gi;
   const matches = [...text.matchAll(hostUnicodePattern)].map(m => m[1]);
-  // Also handle comma-separated or space-separated items after "on"
+  // Items after "on" that look like device names only (exclude interface names, parentheticals)
   const onMatch = text.match(/\bon\s+([^\n.]+)/i);
   const hostStr = onMatch ? onMatch[1] : '';
-  const extraHosts = hostStr.split(/[,\s]+/).filter(h => h.length > 3 && /[a-z]/i.test(h));
+  const isLikelyHostname = (h: string) => {
+    const t = h.replace(/;$/,'').trim();
+    if (t.length < 3 || !/[a-z]/i.test(t)) return false;
+    if (/^\(|\)$/.test(t) || /^(?:Gi|Te|Fa|Eth|Ethernet|GE)\s*\d+\/\d+/i.test(t) || /^\d+\/\d+/.test(t)) return false;
+    return /^[a-z][a-z0-9_\-]*$/i.test(t);
+  };
+  const extraHosts = hostStr.split(/[,\s]+/).map(h => h.replace(/;$/,'').trim()).filter(isLikelyHostname);
   const target_hosts = [...new Set([...matches, ...extraHosts])].slice(0, 10);
 
   // VLAN ID
@@ -160,6 +167,7 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
   const [ansibleModel, setAnsibleModel] = useState<AnsibleModelSelection>({ provider: 'gemini', model: 'gemini-2.5-flash', ollama_base_url: null });
   const [modelSearch, setModelSearch]   = useState('');
   const [modelDropdownOpen, setModelDropdownOpen] = useState(false);
+  const [isRebuildingRag, setIsRebuildingRag] = useState(false);
   const bottomRef      = useRef<HTMLDivElement>(null);
   const textareaRef    = useRef<HTMLTextAreaElement>(null);
   const fileInputRef   = useRef<HTMLInputElement>(null);
@@ -438,6 +446,8 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
         });
 
         const playbookName = result.entrypoint_path || `playbook_${result.job_id}.yml`;
+        const resolvedHosts = 'target_hosts' in result && Array.isArray((result as { target_hosts?: string[] }).target_hosts) ? (result as { target_hosts: string[] }).target_hosts : target_hosts;
+        const displayTargets = resolvedHosts.join(', ');
 
         setMessages(prev => prev.map(m =>
           m.id === loadingId ? {
@@ -447,7 +457,7 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
               `✅ **${result.artifact_type === 'bundle' ? 'Bundle generated' : 'Playbook generated'}** → \`${playbookName}\`\n\n` +
               `- **Job ID:** ${result.job_id}\n` +
               `- **Vendor:** \`${vendor}\`  **Feature:** \`${feature}\`\n` +
-              `- **Targets:** ${target_hosts.join(', ')}\n` +
+              `- **Targets:** ${displayTargets}\n` +
               (result.artifact_type === 'bundle' ? `- **Files:** ${(result.files?.length ?? 0)} generated files\n\n` : `\n`) +
               `Recommend running **Check** to see the dry-run diff before deploying.`,
             jobId: result.job_id,
@@ -492,6 +502,23 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
     id: 'welcome', role: 'assistant', timestamp: Date.now(),
     content: '**Ansible AI** is ready. Describe your configuration intent.',
   }]);
+
+  const handleRebuildRag = useCallback(async () => {
+    setIsRebuildingRag(true);
+    try {
+      const result = await ragApi.rebuild();
+      const errors = result?.errors ?? [];
+      if (errors.length > 0) {
+        Toast.warning('RAG Rebuild finished with errors', `${result?.total_chunks ?? 0} chunks; ${errors.length} error(s). Check Knowledge Base for details.`);
+      } else {
+        Toast.success('RAG Rebuild started', `Re-ingestion runs in the background. ${result?.total_chunks ?? 0} chunks will be updated.`);
+      }
+    } catch (err: any) {
+      Toast.error('RAG Rebuild failed', err?.message ?? 'Could not start rebuild.');
+    } finally {
+      setIsRebuildingRag(false);
+    }
+  }, []);
 
   /* ── Proposed edits block (diff + Keep/Undo per file, Keep All/Undo All) ── */
   function ProposedEditsBlock({
@@ -683,6 +710,15 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
               border:     `1px solid ${activeJob.status === 'success' ? '#2e7d32' : activeJob.status === 'failed' ? '#c62828' : activeJob.status === 'running' ? '#f9a825' : '#3c3c3c'}`,
             }}>#{activeJob.jobId} · {activeJob.status}</span>
           )}
+          <button
+            onClick={handleRebuildRag}
+            disabled={isRebuildingRag}
+            title="Rebuild RAG (re-ingest reference docs so the LLM uses the latest Ansible reference)"
+            style={{ padding: '3px 4px', borderRadius: 3, background: 'transparent', border: 'none', color: '#666', cursor: isRebuildingRag ? 'wait' : 'pointer' }}
+            className="hover:bg-[#2d2d2d] transition-colors disabled:opacity-50"
+          >
+            <RefreshCw style={{ width: 13, height: 13 }} className={isRebuildingRag ? 'animate-spin' : ''} />
+          </button>
           <button onClick={clearMessages} title="Clear"
             style={{ padding: '3px 4px', borderRadius: 3, background: 'transparent', border: 'none', color: '#666', cursor: 'pointer' }}
             className="hover:bg-[#2d2d2d] transition-colors">

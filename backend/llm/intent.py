@@ -157,12 +157,13 @@ strict JSON object.  Output ONLY valid JSON — no commentary, no markdown fence
 ## Rules
 1. If the user mentions a specific device (e.g. "R1", "SW3"), put it in scope.device_hostnames.
 2. If the user says "all switches" or "across building A", use device_role / building / all_devices.
-3. For CONFIGURE intents, you MUST fill in "feature" and "parameters" matching the template schema.
-4. If you cannot determine the target device, set intent_type="query", action="clarify", \
+3. **Scope by layer**: If the user says "access switches", "all access", "access layer only", set scope.device_role to "access_switch" and leave all_devices false. If they say "distribution" or "core" only, set device_role to "distribution" or "core_router" respectively. Use all_devices true only when they clearly mean the entire network (e.g. "all devices", "every switch in the network").
+4. For CONFIGURE intents, you MUST fill in "feature" and "parameters" matching the template schema.
+5. If you cannot determine the target device, set intent_type="query", action="clarify", \
    and put a clarifying question in justification.
-5. risk_level heuristic: bgp/acl/firewall/nat = high; ospf/vlan/stp = medium; ntp/logging/banner = low.
-6. For read-only requests (show topology, list devices, check status), use intent_type="query".
-7. For security scan requests, use intent_type="audit".
+6. risk_level heuristic: bgp/acl/firewall/nat = high; ospf/vlan/stp = medium; ntp/logging/banner = low.
+7. For read-only requests (show topology, list devices, check status), use intent_type="query".
+8. For security scan requests, use intent_type="audit".
 
 ## User Request
 {user_message}
@@ -411,11 +412,10 @@ class IntentParser:
             if str(record.get("hostname") or "")
         }
 
-        # 1. Explicit hostnames — verify they exist
+        # 1. Explicit hostnames — verify they exist; if scope also has device_role, filter to that role
         if intent.scope.device_hostnames:
             resolved = []
             for h in intent.scope.device_hostnames:
-                # Case-insensitive match
                 match = next(
                     (
                         n
@@ -428,6 +428,24 @@ class IntentParser:
                     resolved.append(match)
                 else:
                     logger.warning("Device '%s' not found in topology", h)
+            # When user said "access switches" (etc.), filter to that role
+            requested_role = _normalize_role(intent.scope.device_role)
+            if not requested_role and intent.raw_user_input:
+                requested_role = _infer_role_from_user_input(intent.raw_user_input)
+            # Fallback: list has both Acc_ and Core_/Dist_ → assume "access only" and keep Acc_*
+            if not requested_role and resolved:
+                has_access = any(_role_from_hostname(n) == "access" for n in resolved)
+                has_other = any(_role_from_hostname(n) in ("distribution", "core") for n in resolved)
+                if has_access and has_other:
+                    requested_role = "access"
+            if requested_role and resolved:
+                role_filtered = [
+                    name for name in resolved
+                    if _role_matches(name, requested_role, inventory_by_hostname)
+                ]
+                if role_filtered:
+                    resolved = role_filtered
+                    logger.info("Filtered to %s role: %d devices", requested_role, len(resolved))
             return resolved
 
         # 2. all_devices flag
@@ -438,6 +456,8 @@ class IntentParser:
         try:
             requested_vendor = _normalize_vendor(intent.scope.vendor_filter or intent.vendor)
             requested_role = _normalize_role(intent.scope.device_role)
+            if not requested_role and intent.raw_user_input:
+                requested_role = _infer_role_from_user_input(intent.raw_user_input)
             requested_site = _normalize_site(intent.scope.building)
 
             resolved: List[str] = []
@@ -448,10 +468,16 @@ class IntentParser:
 
                 if requested_vendor and record_vendor != requested_vendor:
                     continue
-                if requested_role and record_role != requested_role:
-                    continue
                 if requested_site and record_site != requested_site:
                     continue
+                # Role: match inventory role, or infer from hostname (Acc_/Dist_/Core_) when DB role is generic/missing
+                if requested_role:
+                    role_match = record_role == requested_role
+                    if not role_match:
+                        inferred = _role_from_hostname(hostname)
+                        role_match = inferred == requested_role
+                    if not role_match:
+                        continue
                 resolved.append(hostname)
 
             return sorted(resolved)
@@ -495,6 +521,47 @@ class IntentParser:
             for device in self._db.get_all_devices()
             if device.hostname
         ]
+
+
+def _role_from_hostname(hostname: str) -> str:
+    """Infer device role from hostname prefix (e.g. Acc_, Dist_, Core_) when DB role is missing or generic."""
+    name = (hostname or "").strip()
+    lower = name.lower()
+    if lower.startswith("acc_"):
+        return "access"
+    if lower.startswith("dist_"):
+        return "distribution"
+    if lower.startswith("core_"):
+        return "core"
+    return ""
+
+
+def _infer_role_from_user_input(raw: str) -> str:
+    """Infer device_role from user text when the LLM did not set scope.device_role (e.g. 'access switches' -> access)."""
+    lower = (raw or "").lower()
+    if "access" in lower and ("switch" in lower or "layer" in lower or "only" in lower):
+        return "access"
+    if "access switch" in lower or "access switches" in lower or "all access" in lower:
+        return "access"
+    if "distribution" in lower or " dist " in lower or "dist switch" in lower:
+        return "distribution"
+    if "core" in lower and ("switch" in lower or "router" in lower or "layer" in lower):
+        return "core"
+    return ""
+
+
+def _role_matches(
+    hostname: str,
+    requested_role: str,
+    inventory_by_hostname: Dict[str, Any],
+) -> bool:
+    """True if device matches requested role (inventory role or hostname prefix)."""
+    record = inventory_by_hostname.get(hostname, {})
+    record_role = _normalize_role(record.get("role"))
+    if record_role == requested_role:
+        return True
+    inferred = _role_from_hostname(hostname)
+    return inferred == requested_role
 
 
 def _normalize_vendor(value: Any) -> str:

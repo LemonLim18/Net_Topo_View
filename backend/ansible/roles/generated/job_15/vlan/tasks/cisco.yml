@@ -1,0 +1,13 @@
+---
+- name: Configure access VLAN on Gi0/1 and Gi0/2 on Cisco
+  cisco.ios.ios_l2_interfaces:
+    config:
+      - name: GigabitEthernet0/1
+        mode: access
+        access:
+          vlan: '200'
+      - name: GigabitEthernet0/2
+        mode: access
+        access:
+          vlan: '200'
+    state: merged

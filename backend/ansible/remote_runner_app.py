@@ -67,16 +67,21 @@ def _run_playbook(
                 target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_text(art.get("content") or "", encoding="utf-8")
         else:
-            (project / runtime_playbook).write_text(playbook_yaml, encoding="utf-8")
+            playbook_file = project / runtime_playbook
+            playbook_file.parent.mkdir(parents=True, exist_ok=True)
+            playbook_file.write_text(playbook_yaml, encoding="utf-8")
 
         (inv_dir / "hosts.yml").write_text(yaml.dump(inventory, default_flow_style=False), encoding="utf-8")
 
-        # Host key checking off + legacy SSH algorithms so old network devices can negotiate
+        # Host key checking off + legacy SSH algorithms so old network devices can negotiate.
+        # Use paramiko for SSH: avoids community.network.ce "unable to decode json" with libssh (Huawei CE).
         ansible_cfg = project / "ansible.cfg"
         ansible_cfg.write_text(
             "[defaults]\n"
             "host_key_checking = False\n"
             "gathering = explicit\n"
+            "[persistent_connection]\n"
+            "ssh_type = paramiko\n"
             "[ssh_connection]\n"
             "ssh_args = -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "
             "-o KexAlgorithms=+diffie-hellman-group-exchange-sha1,diffie-hellman-group14-sha1,diffie-hellman-group1-sha1 "

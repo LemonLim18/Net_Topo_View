@@ -926,6 +926,7 @@ export const ansibleApi = {
       entrypoint_path?: string | null;
       files?: { path: string; content: string; writable?: boolean; kind?: string }[];
       manifest?: Record<string, any>;
+      target_hosts?: string[];
     }>(
       '/ansible/create-and-plan',
       { method: 'POST', body: JSON.stringify(req) }

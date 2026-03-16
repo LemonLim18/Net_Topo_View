@@ -383,15 +383,22 @@ class PolicyEngine:
         if not self._db:
             return violations, warnings
 
+        inventory_missing_as_warning = rule.params.get("inventory_missing_as_warning", False)
+
         for dev in intent.resolved_devices:
             try:
                 device = self._db.get_device_by_hostname(dev)
                 if not device:
-                    violations.append(PolicyViolation(
-                        rule_id=rule.rule_id,
-                        severity="error",
-                        message=f"Device '{dev}' not found in inventory.",
-                    ))
+                    if inventory_missing_as_warning:
+                        warnings.append(
+                            f"Device '{dev}' not in Device Inventory — add it before running the playbook."
+                        )
+                    else:
+                        violations.append(PolicyViolation(
+                            rule_id=rule.rule_id,
+                            severity="error",
+                            message=f"Device '{dev}' not found in inventory.",
+                        ))
                 elif device.status == "down":
                     violations.append(PolicyViolation(
                         rule_id=rule.rule_id,

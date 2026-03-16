@@ -3,7 +3,7 @@
   "properties": {
     "vlans": {
       "type": "array",
-      "description": "List of VLANs to configure",
+      "description": "List of VLANs to create (use first for single-VLAN playbooks)",
       "items": {
         "type": "object",
         "required": ["id"],
@@ -13,6 +13,20 @@
           "description": { "type": "string", "description": "VLAN description" }
         }
       }
+    },
+    "interfaces": {
+      "type": "array",
+      "description": "Interface names to assign the VLAN to (e.g. GigabitEthernet0/1, Gi0/2). Omit for VLAN creation only.",
+      "items": { "type": "string" }
+    },
+    "mode": {
+      "type": "string",
+      "enum": ["access", "trunk"],
+      "description": "Port mode for interface assignment: access (single VLAN) or trunk (allowed VLANs)"
+    },
+    "trunk_vlans": {
+      "type": "string",
+      "description": "When mode=trunk: allowed VLANs (e.g. 1-100, all). Ignored for access."
     }
   }
 }

@@ -646,6 +646,27 @@ class ContextBundleBuilder:
 
         return ctx
 
+    def _netbox_vendor_from_device(self, dev: Any) -> str:
+        """Derive our vendor slug from NetBox device: prefer platform slug, else manufacturer (e.g. Cisco -> cisco_ios)."""
+        platform = getattr(dev, "platform", None)
+        if platform:
+            slug = getattr(platform, "slug", None) or str(platform).strip()
+            if slug and slug in ("cisco_ios", "huawei_vrp", "juniper_junos"):
+                return slug
+        # Fallback: manufacturer (NetBox often has this when Platform is unset on Planned devices)
+        device_type = getattr(dev, "device_type", None)
+        if device_type:
+            mfr = getattr(device_type, "manufacturer", None)
+            if mfr:
+                name = (getattr(mfr, "name", None) or str(mfr)).lower()
+                if "cisco" in name:
+                    return "cisco_ios"
+                if "huawei" in name:
+                    return "huawei_vrp"
+                if "juniper" in name:
+                    return "juniper_junos"
+        return "unknown"
+
     def _fetch_netbox_inventory(
         self,
         hostnames: Optional[List[str]] = None,
@@ -670,8 +691,19 @@ class ContextBundleBuilder:
             devices = list(nb.dcim.devices.filter(**filters) if filters else nb.dcim.devices.all())
 
             for dev in devices:
-                if vendor_filter and vendor_filter.lower() not in str(getattr(dev, 'platform', '')).lower():
-                    continue
+                vendor_slug = self._netbox_vendor_from_device(dev)
+                # Apply vendor_filter using platform, manufacturer, or derived slug (so we don't drop devices when Platform is empty)
+                if vendor_filter:
+                    vf = vendor_filter.lower()
+                    platform_str = str(getattr(dev, "platform", "") or "").lower()
+                    device_type = getattr(dev, "device_type", None)
+                    mfr_str = ""
+                    if device_type:
+                        mfr = getattr(device_type, "manufacturer", None)
+                        if mfr:
+                            mfr_str = (getattr(mfr, "name", None) or str(mfr)).lower()
+                    if vf not in platform_str and vf not in mfr_str and vf not in vendor_slug:
+                        continue
                 last_updated = getattr(dev, "last_updated", None)
                 if last_updated:
                     last_updated_candidates.append(str(last_updated))
@@ -682,7 +714,7 @@ class ContextBundleBuilder:
                 ctx.devices.append({
                     "hostname": str(dev.name),
                     "management_ip": str(primary_ip).split("/")[0] if primary_ip else None,
-                    "vendor": str(getattr(platform, "slug", platform or "unknown")),
+                    "vendor": vendor_slug,
                     "model": str(getattr(device_type, "model", device_type or "")) or None,
                     "role": str(getattr(role, "slug", role or "")) or None,
                     "site": str(dev.site) if dev.site else None,

@@ -18,6 +18,14 @@ logger = logging.getLogger("config_engine.safety")
 
 SAFETY_VALIDATION_VERSION = "phase3_step10_v1"
 
+# Placeholder used when parsing YAML that contains Ansible/Jinja2 {{ ... }} (so PyYAML doesn't choke)
+_J2_PLACEHOLDER = "__J2__"
+
+
+def _mask_jinja2_for_yaml_parse(text: str) -> str:
+    """Replace {{ ... }} with a quoted placeholder so PyYAML can parse playbook YAML that uses Ansible vars."""
+    return re.sub(r"\{\{.*?\}\}", _J2_PLACEHOLDER, text, flags=re.DOTALL)
+
 _UNSAFE_TEMPLATE_PATTERNS: Tuple[Tuple[str, re.Pattern[str], str], ...] = (
     (
         "template_includes_or_imports",
@@ -104,6 +112,15 @@ _CISCO_IOS_COLLECTION_SHORT_NAMES: frozenset = frozenset({
 _CLI_PLAYBOOK_COLLECTIONS: Dict[str, Sequence[str]] = {
     "huawei_vrp": ("community.network.", "ansible.netcommon."),
 }
+
+# Reference playbooks can be multi-vendor (e.g. reference/vlan/multi_vendor); allow all known vendor modules
+_MULTI_VENDOR_PREFIXES: Sequence[str] = (
+    "cisco.ios.",
+    "junipernetworks.junos.",
+    "juniper.device.",
+    "community.network.",
+    "ansible.netcommon.",
+)
 
 _HARD_CODED_SECRET_PATTERNS: Tuple[Tuple[str, re.Pattern[str], str], ...] = (
     (
@@ -362,7 +379,14 @@ def validate_playbook_yaml(
     else:
         add_check("target_hosts_present", True, ", ".join(target_hosts))
 
-    compatible_engines = list(_compatible_execution_engines(vendor, feature, ""))
+    if vendor == "multi_vendor":
+        compatible_engines = [
+            ExecutionAction.ANSIBLE_NATIVE.value,
+            ExecutionAction.ANSIBLE_CLI.value,
+            ExecutionAction.SSH_FALLBACK.value,
+        ]
+    else:
+        compatible_engines = list(_compatible_execution_engines(vendor, feature, ""))
     engine_ok = execution_engine in compatible_engines
     add_check(
         "execution_engine_compatible",
@@ -393,8 +417,10 @@ def validate_playbook_yaml(
         collect_task_keys(play.get("pre_tasks") or [])
         collect_task_keys(play.get("post_tasks") or [])
 
-    expected_prefixes = ()
-    if execution_engine == ExecutionAction.ANSIBLE_NATIVE.value:
+    expected_prefixes: Sequence[str] = ()
+    if vendor == "multi_vendor":
+        expected_prefixes = _MULTI_VENDOR_PREFIXES
+    elif execution_engine == ExecutionAction.ANSIBLE_NATIVE.value:
         expected_prefixes = _NATIVE_PLAYBOOK_COLLECTIONS.get(vendor, ())
     elif execution_engine == ExecutionAction.ANSIBLE_CLI.value:
         expected_prefixes = _CLI_PLAYBOOK_COLLECTIONS.get(vendor, ("ansible.netcommon.",))
@@ -402,7 +428,7 @@ def validate_playbook_yaml(
     def module_matches(m: str) -> bool:
         if any(m.startswith(prefix) for prefix in expected_prefixes):
             return True
-        if vendor == "cisco_ios" and execution_engine == ExecutionAction.ANSIBLE_NATIVE.value:
+        if (vendor == "cisco_ios" or vendor == "multi_vendor") and execution_engine == ExecutionAction.ANSIBLE_NATIVE.value:
             if m in _CISCO_IOS_COLLECTION_SHORT_NAMES:
                 return True
         return False
@@ -494,7 +520,7 @@ def validate_playbook_bundle(
 
     entrypoint_yaml = str(file_map[entrypoint_path].get("content") or "")
     try:
-        plays = yaml.safe_load(entrypoint_yaml)
+        plays = yaml.safe_load(_mask_jinja2_for_yaml_parse(entrypoint_yaml))
         plays_ok = isinstance(plays, list) and len(plays) > 0
         add_check(
             "entrypoint_yaml_structure",
@@ -556,7 +582,8 @@ def validate_playbook_bundle(
 
     for path in task_files:
         try:
-            parsed = yaml.safe_load(str(file_map[path].get("content") or ""))
+            content = str(file_map[path].get("content") or "")
+            parsed = yaml.safe_load(_mask_jinja2_for_yaml_parse(content))
         except yaml.YAMLError as exc:
             add_error(f"Role task file '{path}' has invalid YAML: {exc}")
             continue

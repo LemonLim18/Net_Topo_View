@@ -1,0 +1,78 @@
+---
+- name: Configure VLANs on access switches
+  hosts: access_switches
+  gather_facts: yes
+  ignore_unreachable: true
+  vars:
+    vlan_id: 200
+    vlan_name: TEST
+    interface_cisco: Gi0/1, Gi0/2
+    interface_huawei: Gi1/0/1, Gi1/0/2
+  tasks:
+    - name: Ensure VLAN exists on Cisco switches
+      cisco.ios.ios_vlans:
+        vlans:
+          - id: '{{ vlan_id }}'
+            name: '{{ vlan_name }}'
+        state: merged
+      when: ansible_network_os == 'cisco_ios'
+
+    - name: Ensure VLAN exists on Huawei switches
+      community.network.ce_config:
+        lines:
+          - 'vlan {{ vlan_id }} name {{ vlan_name }}'
+        parents:
+          - 'interface {{ interface_huawei }}'
+      when: ansible_network_os == 'huawei_vrp'
+
+    - name: Ensure VLAN is applied to interfaces on Cisco switches
+      cisco.ios.ios_l2_interfaces:
+        config:
+          - name: '{{ interface_cisco }}'
+            mode: access
+            access.vlan: '{{ vlan_id }}'
+        state: merged
+      when: ansible_network_os == 'cisco_ios'
+
+    - name: Ensure VLAN is applied to interfaces on Huawei switches
+      community.network.ce_config:
+        lines:
+          - 'interface {{ interface_huawei }}
+            switchport access vlan {{ vlan_id }}'
+        parents:
+          - 'interface {{ interface_huawei }}'
+      when: ansible_network_os == 'huawei_vrp'
+
+    - name: Verify VLAN configuration on Cisco switches
+      cisco.ios.ios_vlans:
+        vlans:
+          - id: '{{ vlan_id }}'
+            name: '{{ vlan_name }}'
+        state: merged
+      when: ansible_network_os == 'cisco_ios'
+
+    - name: Verify VLAN configuration on Huawei switches
+      community.network.ce_config:
+        lines:
+          - 'vlan {{ vlan_id }} name {{ vlan_name }}'
+        parents:
+          - 'interface {{ interface_huawei }}'
+      when: ansible_network_os == 'huawei_vrp'
+
+    - name: Verify interface configuration on Cisco switches
+      cisco.ios.ios_l2_interfaces:
+        config:
+          - name: '{{ interface_cisco }}'
+            mode: access
+            access.vlan: '{{ vlan_id }}'
+        state: merged
+      when: ansible_network_os == 'cisco_ios'
+
+    - name: Verify interface configuration on Huawei switches
+      community.network.ce_config:
+        lines:
+          - 'interface {{ interface_huawei }}
+            switchport access vlan {{ vlan_id }}'
+        parents:
+          - 'interface {{ interface_huawei }}'
+      when: ansible_network_os == 'huawei_vrp'

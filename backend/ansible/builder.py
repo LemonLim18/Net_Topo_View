@@ -27,6 +27,31 @@ from config_engine.safety import validate_playbook_bundle
 
 logger = logging.getLogger("ansible.builder")
 
+# Regex for LLM-generated "that: \"...\" in var.stdout[...]" which breaks YAML (value must be one quoted string)
+_RE_THAT_UNQUOTED = re.compile(
+    r"^(\s*that:\s*)\"([^\"]+)\"\s+in\s+(.+)$",
+    re.MULTILINE,
+)
+
+
+def repair_playbook_yaml(yaml_text: str) -> str:
+    """
+    Fix common YAML mistakes from LLM output so parsing succeeds.
+    E.g. that: "vlan 200" in running_config_post.stdout[0] -> that: '"vlan 200" in running_config_post.stdout[0]'
+    """
+    if not yaml_text or not yaml_text.strip():
+        return yaml_text
+
+    def _repl(m: re.Match) -> str:
+        prefix, quoted, rest = m.group(1), m.group(2), m.group(3).strip()
+        return f'{prefix}\'"{quoted}" in {rest}\''
+
+    repaired = _RE_THAT_UNQUOTED.sub(_repl, yaml_text)
+    if repaired != yaml_text:
+        logger.debug("Applied YAML repair for unquoted 'that: \"...\" in ...' pattern")
+    return repaired
+
+
 PROMPT_TEMPLATE = (
     Path(__file__).parent / "prompt_templates" / "llm_to_ansible.txt"
 ).read_text()
@@ -481,7 +506,7 @@ class PlaybookBuilder:
         vendor_key = (vendor or "").lower()
         if vendor_key in {"cisco_ios", "cisco_nxos", "cisco_xr", "juniper_junos"}:
             return "ansible_native"
-        if vendor_key in {"huawei_vrp", "aruba"}:
+        if vendor_key in {"huawei_vrp", "aruba", "multi_vendor"}:
             return "ansible_cli"
         return "ssh_fallback"
 

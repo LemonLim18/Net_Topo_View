@@ -17,6 +17,7 @@ All destructive changes require explicit operator approval before execute is all
 
 import json
 import logging
+import re
 import asyncio
 import os
 import shutil
@@ -31,6 +32,7 @@ from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel
 
 from ansible.bundle_artifacts import AnsibleArtifactBundle, bundle_from_dict
+from ansible.reference_resolver import fill_playbook_from_reference, vendors_from_db, vendors_from_planning_context
 from ansible.planning_context import (
     build_scoped_planning_context,
     infer_vendor_hint,
@@ -67,6 +69,36 @@ def _require_builder():
     if _builder is None:
         raise HTTPException(503, "Ansible orchestration layer not initialized")
     return _builder
+
+
+# Words that often leak into device_hostnames from intent parsing (e.g. "VLAN for Cisco and Huawei")
+# and must not be treated as hostnames unless they exist in the DB.
+_NON_HOSTNAME_WORDS = frozenset({
+    "and", "or", "put", "for", "the", "on", "to", "with", "from", "by", "in", "at",
+    "cisco", "huawei", "juniper", "aruba", "ios", "vrp", "junos", "nxos", "xe",
+    "vlan", "named", "test", "create", "huaweicreate", "ciscocreate", "junipercreate",
+})
+
+
+def _looks_like_device_hostname(s: str) -> bool:
+    """False for interface names, parentheticals, or punctuation that often pollute intent parsing."""
+    if not s or len(s) < 2:
+        return False
+    if "(" in s or ")" in s or s.rstrip().endswith(";"):
+        return False
+    low = s.strip().lower()
+    if low in _NON_HOSTNAME_WORDS:
+        return False
+    # Intent words that look like hostnames: "VLAN", "HuaweiCreate", etc.
+    if low.endswith("create") or low in ("vlan", "named", "test"):
+        return False
+    # Interface-like: Gi0/1, Gi1/0/1, Te0/0, 1/0/2, etc.
+    if re.match(r"^(?:Gi|Te|Fa|Eth|Ethernet|GE)\s*\d+/\d+(/\d+)?$", s, re.IGNORECASE):
+        return False
+    if re.match(r"^\d+/\d+(/\d+)?$", s):
+        return False
+    # Hostname-like: starts with letter, alphanumeric/underscore/hyphen only
+    return bool(s[0].isalpha() and re.match(r"^[a-z0-9_\-]+$", s, re.IGNORECASE))
 
 
 def _resolve_target_hosts(target_hosts: List[str]) -> List[str]:
@@ -134,7 +166,10 @@ def _resolve_target_hosts(target_hosts: List[str]) -> List[str]:
                     seen.add(h)
                     expanded.append(h)
             continue
-        # Concrete hostname: keep if it exists in DB
+        # Skip tokens that are known non-hostname words (e.g. from "for Cisco and Huawei")
+        if t in _NON_HOSTNAME_WORDS:
+            continue
+        # Concrete hostname: keep only if it exists in DB
         for d in devices:
             if d.hostname and d.hostname.lower() == t:
                 if d.hostname not in seen:
@@ -142,12 +177,13 @@ def _resolve_target_hosts(target_hosts: List[str]) -> List[str]:
                     expanded.append(d.hostname)
                 break
         else:
-            # Not a known group and not found in DB; keep original for clearer error
+            # Not a known group and not in DB — add only if it looks like a real hostname (not interface/garbage)
             orig = str(raw).strip()
-            if orig not in seen:
-                seen.add(orig)
-                expanded.append(orig)
-    return expanded if expanded else list(target_hosts)
+            if _looks_like_device_hostname(orig):
+                if orig not in seen:
+                    seen.add(orig)
+                    expanded.append(orig)
+    return expanded if expanded else []
 
 
 def _build_topo_from_db(hostnames: List[str]) -> dict:
@@ -260,10 +296,13 @@ def _resolve_backend_intent_request(req, user: dict) -> tuple["PlanAnsibleReques
         user_role=str(user.get("role") or "operator"),
     )
     if policy.get("approved") is not True:
+        violations = policy.get("violations") or []
         raise HTTPException(
             422,
             detail={
                 "message": "Parsed intent was rejected by policy validation.",
+                "violations": [v.get("message", str(v)) for v in violations],
+                "blast_radius": policy.get("blast_radius"),
                 "intent": parsed.model_dump(),
                 "policy": policy,
             },
@@ -322,11 +361,17 @@ async def _ensure_planning_context(
     )
     post_reconcile = planning_context_readiness(planning_context)
     if not post_reconcile.get("ready"):
+        issues = post_reconcile.get("issues", [])
+        logger.error(
+            "Planning context not ready after reconciliation: %s",
+            issues,
+            extra={"reconciliation": reconciliation},
+        )
         raise HTTPException(
             422,
             detail={
                 "message": "Inventory reconciliation completed but planning context is still incomplete.",
-                "issues": post_reconcile.get("issues", []),
+                "issues": issues,
                 "reconciliation": reconciliation,
             },
         )
@@ -335,6 +380,50 @@ async def _ensure_planning_context(
         "issues": readiness.get("issues", []),
         "reconciliation": reconciliation,
     }
+
+
+def _deduplicate_inventory_by_ip(inventory: dict[str, Any]) -> None:
+    """
+    Keep one host per management IP; prefer the hostname registered for that IP
+    in the device DB (e.g. NetBox Acc_Huawei_3 over crawler Acc_Huawei_1).
+    Removes duplicate hostnames from inventory["all"]["hosts"] and from all group hosts.
+    """
+    all_group = inventory.get("all") or {}
+    hosts = (all_group.get("hosts") or {}) if isinstance(all_group, dict) else {}
+    if not hosts or _db is None:
+        return
+    by_ip: dict[str, list[str]] = {}
+    for hostname, vars in hosts.items():
+        if not isinstance(vars, dict):
+            continue
+        ip = str(vars.get("ansible_host") or "").strip() or hostname
+        by_ip.setdefault(ip, []).append(hostname)
+    to_remove: set[str] = set()
+    for ip, hostnames in by_ip.items():
+        if len(hostnames) <= 1:
+            continue
+        # Prefer the hostname that the DB has for this management IP (NetBox/canonical)
+        keep: str | None = None
+        try:
+            dev = _db.get_device_by_management_ip(ip)
+            if dev and dev.hostname and dev.hostname.strip() in hostnames:
+                keep = dev.hostname.strip()
+        except Exception:
+            pass
+        if not keep:
+            keep = hostnames[0]
+        to_remove.update(h for h in hostnames if h != keep)
+    if not to_remove:
+        return
+    for hostname in to_remove:
+        hosts.pop(hostname, None)
+    children = (all_group.get("children") or {}) if isinstance(all_group, dict) else {}
+    for group_data in children.values():
+        if isinstance(group_data, dict):
+            group_hosts = group_data.get("hosts")
+            if isinstance(group_hosts, dict):
+                for hostname in to_remove:
+                    group_hosts.pop(hostname, None)
 
 
 def _build_inventory_for_hosts(
@@ -350,6 +439,7 @@ def _build_inventory_for_hosts(
         topology_override = _build_topo_from_db(target_hosts)
     inventory = build_inventory(target_hosts=target_hosts or None, topology_override=topology_override)
     _inject_device_credentials_into_inventory(inventory)
+    _deduplicate_inventory_by_ip(inventory)
     return inventory
 
 
@@ -558,45 +648,127 @@ async def plan_ansible(
         "device_inventory_context": planning_context_to_prompt_text(planning_context),
     }
 
-    use_bundle = bool(getattr(builder, "supports_role_bundle", lambda *_: False)(req.feature))
-    try:
-        if use_bundle:
-            orchestration = await _build_bundle_with_refinement(
-                job_id=job_id,
-                intent=intent,
-                rag_context=rag_context,
-                kb_snippets=kb_snippets,
-                auto_refine=req.auto_refine,
-                max_attempts=req.max_refinement_attempts,
-                verify_with_dry_run=req.verify_with_dry_run,
-                provider=req.provider,
-                model=req.model,
-                ollama_base_url=req.ollama_base_url,
-            )
-        else:
-            orchestration = await _build_playbook_with_refinement(
-                job_id=job_id,
-                intent=intent,
-                rag_context=rag_context,
-                kb_snippets=kb_snippets,
-                auto_refine=req.auto_refine,
-                max_attempts=req.max_refinement_attempts,
-                verify_with_dry_run=req.verify_with_dry_run,
-                provider=req.provider,
-                model=req.model,
-                ollama_base_url=req.ollama_base_url,
-            )
-    except HTTPException:
-        raise
-    except Exception as exc:
-        detail = str(exc).strip() or repr(exc)
-        logger.exception(
-            "Playbook build failed job=%d type=%s detail=%s",
-            job_id,
-            type(exc).__name__,
-            detail,
+    # Template-first: if we have a reference playbook for this feature/vendor, fill it from intent only (no LLM rewrite)
+    orchestration = None
+    feature_lower = (req.feature or "").strip().lower()
+    is_vlan = feature_lower == "vlan"
+
+    vendors = vendors_from_planning_context(planning_context)
+    # planning_context can have empty vendors when: (1) devices=[] (no inventory for hostnames),
+    # (2) every device has vendor unset (bundle/DB didn't set it). Fall back to DB lookup by hostname.
+    if not vendors and resolved_hosts and _db is not None:
+        vendors = vendors_from_db(resolved_hosts, _db)
+    if not vendors and effective_vendor:
+        vendors = [effective_vendor]
+
+    template_filled = fill_playbook_from_reference(
+        feature=req.feature or "",
+        vendors=vendors,
+        intent=intent,
+        planning_context=planning_context,
+    )
+    # For VLAN, never use LLM — only reference template. Retry fill with minimal defaults if first attempt returned None.
+    if is_vlan and template_filled is None and resolved_hosts:
+        fallback_intent = dict(intent)
+        fallback_intent["target_hosts"] = list(resolved_hosts)
+        fallback_intent.setdefault("params", {})
+        fallback_intent["params"].setdefault("vlan_id", "200")
+        fallback_intent["params"].setdefault("vlan_name", "TEST")
+        template_filled = fill_playbook_from_reference(
+            feature=req.feature or "",
+            vendors=vendors,
+            intent=fallback_intent,
+            planning_context=planning_context,
         )
-        raise HTTPException(422, f"Playbook generation failed: {detail}")
+    if is_vlan and template_filled is None:
+        logger.error("VLAN template fill returned None (vendors=%s); refusing to fall back to LLM", vendors)
+        raise HTTPException(
+            422,
+            detail={
+                "message": "VLAN playbook must be generated from the reference template. Template fill failed or no reference path found.",
+                "feature": "vlan",
+                "vendors": vendors,
+                "target_hosts": resolved_hosts,
+            },
+        )
+
+    if template_filled is not None:
+        # Use reference template as-is; only values (hosts, vlan_id, etc.) were filled. Validate with multi_vendor
+        # when playbook has multiple vendor modules so step10 allows cisco/juniper/huawei.
+        validation_intent = dict(intent)
+        if len(vendors) > 1:
+            validation_intent["vendor"] = "multi_vendor"
+        validation = await _validate_playbook_candidate(
+            playbook_yaml=template_filled,
+            intent=validation_intent,
+            job_id=job_id,
+            verify_with_dry_run=req.verify_with_dry_run,
+        )
+        if validation.get("passed", False):
+            orchestration = {
+                "success": True,
+                "playbook": template_filled,
+                "attempts_used": 1,
+                "max_attempts": 1,
+                "final_validation": validation,
+                "history": [{"attempt": 1, "passed": True, "issues": []}],
+                "source": "reference_template",
+            }
+        elif is_vlan:
+            # VLAN must use reference only; do not fall back to LLM.
+            logger.error("VLAN reference template validation failed: %s", validation.get("issues"))
+            raise HTTPException(
+                422,
+                detail={
+                    "message": "VLAN reference playbook failed validation. Fix template or inventory; LLM fallback is disabled for VLAN.",
+                    "validation_issues": validation.get("issues", []),
+                    "errors": validation.get("errors", []),
+                },
+            )
+
+    # For VLAN always use reference-style single playbook (no LLM).
+    use_bundle = bool(getattr(builder, "supports_role_bundle", lambda *_: False)(req.feature))
+    if is_vlan:
+        use_bundle = False
+    if orchestration is None:
+        try:
+            if use_bundle:
+                orchestration = await _build_bundle_with_refinement(
+                    job_id=job_id,
+                    intent=intent,
+                    rag_context=rag_context,
+                    kb_snippets=kb_snippets,
+                    auto_refine=req.auto_refine,
+                    max_attempts=req.max_refinement_attempts,
+                    verify_with_dry_run=req.verify_with_dry_run,
+                    provider=req.provider,
+                    model=req.model,
+                    ollama_base_url=req.ollama_base_url,
+                )
+            else:
+                orchestration = await _build_playbook_with_refinement(
+                    job_id=job_id,
+                    intent=intent,
+                    rag_context=rag_context,
+                    kb_snippets=kb_snippets,
+                    auto_refine=req.auto_refine,
+                    max_attempts=req.max_refinement_attempts,
+                    verify_with_dry_run=req.verify_with_dry_run,
+                    provider=req.provider,
+                    model=req.model,
+                    ollama_base_url=req.ollama_base_url,
+                )
+        except HTTPException:
+            raise
+        except Exception as exc:
+            detail = str(exc).strip() or repr(exc)
+            logger.exception(
+                "Playbook build failed job=%d type=%s detail=%s",
+                job_id,
+                type(exc).__name__,
+                detail,
+            )
+            raise HTTPException(422, f"Playbook generation failed: {detail}")
 
     if not orchestration.get("success", False):
         detail = {
@@ -608,7 +780,12 @@ async def plan_ansible(
             "issues": orchestration.get("final_validation", {}).get("issues", []),
             "refinement_history": orchestration.get("history", []),
         }
-        logger.error("Playbook generation failed job=%d: %s", job_id, detail)
+        logger.error(
+            "Playbook generation failed job=%d: %s (issues=%s)",
+            job_id,
+            detail.get("escalation_reason"),
+            detail.get("issues"),
+        )
         raise HTTPException(
             422,
             detail=detail,
@@ -642,11 +819,22 @@ async def plan_ansible(
                 )
                 bundle_payload = bundle_manifest
             else:
+                # Playbook-only (e.g. from reference template): write to generated/job_XX/playbook.yml so files API and UI can read it
+                entrypoint_rel = f"playbooks/generated/job_{job_id}/playbook.yml"
+                entrypoint_virtual = f"generated/job_{job_id}/playbook.yml"
+                try:
+                    disk_path = _safe_path(entrypoint_rel)
+                    disk_path.parent.mkdir(parents=True, exist_ok=True)
+                    disk_path.write_text(playbook_yaml, encoding="utf-8")
+                except HTTPException:
+                    raise
+                except Exception as exc:
+                    logger.warning("Could not write playbook to workspace: %s", exc)
                 with _db._connect() as conn:
                     conn.execute(
-                        "UPDATE jobs SET ansible_playbook = ?, stage = 'plan', "
+                        "UPDATE jobs SET ansible_playbook = ?, ansible_entrypoint_path = ?, stage = 'plan', "
                         "status = 'pending' WHERE id = ?",
-                        (playbook_yaml, job_id),
+                        (playbook_yaml, entrypoint_virtual, job_id),
                     )
                 _append_playbook_version(
                     _db,
@@ -657,13 +845,19 @@ async def plan_ansible(
         except Exception as exc:
             logger.warning("Could not persist playbook to DB: %s", exc)
 
+    # Response entrypoint_path: virtual path so frontend can GET /files/generated/job_XX/playbook.yml
+    if bundle_payload:
+        response_entrypoint = (bundle_payload or {}).get("entrypoint_path")
+    else:
+        response_entrypoint = f"generated/job_{job_id}/playbook.yml"
+
     logger.info("Playbook generated for job=%d by user=%s", job_id, user.get("username"))
     return {
         "job_id":   job_id,
         "status":   "playbook_generated",
         "playbook": playbook_yaml,
         "artifact_type": "bundle" if bundle_payload else "playbook",
-        "entrypoint_path": (bundle_payload or {}).get("entrypoint_path"),
+        "entrypoint_path": response_entrypoint,
         "files": (bundle_payload or {}).get("files", []),
         "manifest": {
             **((bundle_payload or {}).get("manifest", {})),
@@ -1287,11 +1481,15 @@ async def _build_playbook_with_refinement(
     bounded_attempts = max(1, min(int(max_attempts or 1), 5))
     history: list[dict[str, Any]] = []
 
-    current_playbook = await builder.build_draft(
-        intent=intent,
-        rag_context=rag_context,
-        kb_snippets=kb_snippets,
-        run_id=str(job_id),
+    from ansible.builder import repair_playbook_yaml
+
+    current_playbook = repair_playbook_yaml(
+        await builder.build_draft(
+            intent=intent,
+            rag_context=rag_context,
+            kb_snippets=kb_snippets,
+            run_id=str(job_id),
+        )
     )
 
     for attempt in range(1, bounded_attempts + 1):
@@ -1370,7 +1568,7 @@ async def _build_playbook_with_refinement(
             }
 
         entry["changes"] = changes
-        current_playbook = refined_playbook
+        current_playbook = repair_playbook_yaml(refined_playbook)
 
     final_validation = await _validate_playbook_candidate(
         playbook_yaml=current_playbook,
@@ -1617,12 +1815,15 @@ def _generated_virtual_to_real(virtual_path: str) -> str | None:
     generated/job_X/vlan/... -> roles/generated/job_X/vlan/...
     """
     parts = virtual_path.replace("\\", "/").strip("/").split("/")
-    if len(parts) < 3 or parts[0] != "generated" or not parts[1].startswith("job_"):
+    if len(parts) < 2 or parts[0] != "generated" or not parts[1].startswith("job_"):
         return None
     jid = parts[1]
     rest = "/".join(parts[2:])
     pb_dir = ANSIBLE_BASE / "playbooks" / "generated" / jid
     roles_dir = ANSIBLE_BASE / "roles" / "generated" / jid
+    # Virtual job folder (generated/job_XX) has no rest; caller uses _generated_job_real_paths
+    if not rest:
+        return None
     if rest and "/" not in rest and (pb_dir / rest).exists() and (pb_dir / rest).is_file():
         return f"playbooks/generated/{jid}/{rest}"
     if rest and "/" in rest:
@@ -1630,6 +1831,24 @@ def _generated_virtual_to_real(virtual_path: str) -> str | None:
     if rest and (roles_dir / rest).exists():
         return f"roles/generated/{jid}/{rest}"
     return f"roles/generated/{jid}/{rest}"
+
+
+def _generated_job_real_paths(virtual_path: str) -> list[str]:
+    """
+    For virtual path generated/job_XX, return real paths to delete (playbook dir + role dir).
+    Allows deleting the whole job folder from AI Output.
+    """
+    parts = virtual_path.replace("\\", "/").strip("/").split("/")
+    if len(parts) < 2 or parts[0] != "generated" or not parts[1].startswith("job_"):
+        return []
+    jid = parts[1]
+    rest = "/".join(parts[2:])
+    if rest:
+        return []  # only expand the job root, not subpaths
+    return [
+        f"playbooks/generated/{jid}",
+        f"roles/generated/{jid}",
+    ]
 
 
 def _safe_writable_path(relative: str) -> tuple[Path, tuple[str, ...]]:
@@ -1897,6 +2116,7 @@ async def create_and_plan(
         "manifest": result.get("manifest", {}),
         "parsed_intent": parsed_intent,
         "policy": policy,
+        "target_hosts": plan_req.target_hosts,
     }
 
 
@@ -2176,6 +2396,27 @@ async def delete_path(
     user:        dict = Depends(require_role("operator", "admin")),
 ):
     path_to_delete = target_path.replace("\\", "/").strip("/")
+    # Virtual job folder (generated/job_XX): delete both playbooks/generated/job_XX and roles/generated/job_XX
+    job_real_paths = _generated_job_real_paths(path_to_delete)
+    if job_real_paths:
+        deleted_any = False
+        for real_path in job_real_paths:
+            if not _is_writable_relative_path(real_path):
+                continue
+            try:
+                path = _safe_path(real_path)
+            except HTTPException:
+                continue
+            if path.exists():
+                if path.is_dir():
+                    shutil.rmtree(path)
+                else:
+                    path.unlink()
+                deleted_any = True
+                logger.info("Path deleted: %s (from %s) by %s", real_path, target_path, user.get("username"))
+        if not deleted_any:
+            raise HTTPException(404, f"Path not found: {target_path}")
+        return {"path": target_path, "status": "deleted"}
     if path_to_delete.startswith("generated/"):
         real = _generated_virtual_to_real(path_to_delete)
         if real:

@@ -1,0 +1,17 @@
+---
+- name: Ensure VLAN 200 exists on Juniper
+  juniper.device.junos_vlans:
+    config:
+      - name: TEST
+        vlan_id: '200'
+    state: merged
+- name: Configure access VLAN on ge-0/0/0 and ge-0/0/1 on Juniper
+  juniper.device.junos_l2_interfaces:
+    config:
+      - name: ge-0/0/0
+        access:
+          vlan: '200'
+      - name: ge-0/0/1
+        access:
+          vlan: '200'
+    state: merged

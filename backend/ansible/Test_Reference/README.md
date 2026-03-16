@@ -1,26 +1,14 @@
-# Test Reference — candidate playbooks before moving to Reference
+# Test Reference — staging and manual tests
 
-Use this folder to **test** new feature/vendor playbooks and reference notes. When a playbook is confirmed operational, move (or copy) the `{feature}/{vendor}/` set into **Reference** so the LLM-RAG can use it for plan-ansible.
+This folder holds **interface, acl, ospf, qos, static_route** (and their vendor subfolders) for manual testing and staging. Only **vlan** is in `reference/` and consumed by RAG. When you want a feature to be used by the LLM, copy its `{feature}/{vendor}/` folders into `reference/` and run RAG Rebuild.
 
-## Workflow
+## Workflow when adding new scenarios
 
-1. Add or edit playbooks here: `Test_Reference/{feature}/{vendor}/playbook.yml`, `inventory.yml`, `reference.md`.
-2. Run your tests (e.g. Check/Deploy in Ansible Studio, or manual `ansible-playbook` runs).
-3. When satisfied, move the folder to **Reference**:  
-   `Test_Reference/{feature}/{vendor}/` → `reference/{feature}/{vendor}/`
-4. Run **RAG Rebuild** (Knowledge Base → Rebuild) so the new `reference.md` is ingested.
-
-## Current placeholders
-
-| Feature       | Cisco IOS | Huawei VRP | Juniper Junos |
-|---------------|-----------|------------|----------------|
-| interface     | placeholder | placeholder | placeholder |
-| acl           | placeholder | placeholder | placeholder |
-| ospf          | placeholder | placeholder | placeholder |
-| qos           | placeholder | placeholder | placeholder |
-| static_route  | placeholder | placeholder | placeholder |
-
-Replace placeholders with real, tested content before moving to Reference.
+1. Add or edit in Test_Reference or directly in `reference/{feature}/{vendor}/`.
+2. Run tests (Check in Ansible Studio or manual ansible-playbook).
+3. Ensure `reference/{feature}/{vendor}/reference.md` exists and is accurate.
+4. Run **RAG Rebuild** so the new/updated reference is ingested.
+5. Test LLM output (create-and-plan with matching intent) and adjust reference if needed.
 
 ## Check, refine, and verify for RAG
 
