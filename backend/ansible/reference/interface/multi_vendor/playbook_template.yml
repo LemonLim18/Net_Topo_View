@@ -1,0 +1,48 @@
+---
+# Interface shutdown — multi-vendor (reference from job_42)
+# Hosts: use a single host (e.g. Acc_Cisco_1) or a group; vars and tasks stay the same.
+- name: Shutdown interfaces
+  hosts: Acc_Cisco_1
+  gather_facts: no
+  ignore_unreachable: true
+  vars:
+    interfaces_to_shutdown: "{{ nettopo_interfaces | default([]) | map(attribute='name') | list }}"
+  tasks:
+    - name: Shutdown interface (Cisco IOS)
+      cisco.ios.ios_interfaces:
+        config:
+          - name: "{{ item }}"
+            enabled: false
+        state: merged
+      loop: "{{ interfaces_to_shutdown | default([]) }}"
+      loop_control:
+        label: "{{ item }}"
+      when:
+        - inventory_hostname in groups.get('vendor_cisco_ios', [])
+        - (interfaces_to_shutdown | default([])) | length > 0
+
+    - name: Shutdown interface (Huawei VRP)
+      community.network.ce_config:
+        lines:
+          - shutdown
+        parents: "interface {{ item }}"
+        state: merged
+      loop: "{{ interfaces_to_shutdown | default([]) }}"
+      loop_control:
+        label: "{{ item }}"
+      when:
+        - inventory_hostname in groups.get('vendor_huawei_vrp', [])
+        - (interfaces_to_shutdown | default([])) | length > 0
+
+    - name: Shutdown interface (Juniper Junos)
+      juniper.device.junos_interfaces:
+        config:
+          - name: "{{ item }}"
+            enabled: false
+        state: merged
+      loop: "{{ interfaces_to_shutdown | default([]) }}"
+      loop_control:
+        label: "{{ item }}"
+      when:
+        - inventory_hostname in groups.get('vendor_juniper_junos', [])
+        - (interfaces_to_shutdown | default([])) | length > 0

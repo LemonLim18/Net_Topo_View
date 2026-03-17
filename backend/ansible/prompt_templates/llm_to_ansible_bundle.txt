@@ -40,7 +40,8 @@ You MUST generate a multi-file Ansible bundle with:
 1. The entry playbook must be vendor-agnostic.
 2. Do NOT place device IPs, usernames, or passwords in generated files.
 3. Use inventory groups where possible. If the intent clearly targets access switches, use `access_switches`.
-4. The playbook must use variables for parameters such as VLAN IDs, names, interface values, ACL names, router IDs, and areas.
+4. The playbook must use variables for parameters such as VLAN IDs, names, interface values, ACL names, router IDs, and areas. Always use real Ansible/Jinja2 syntax (e.g. {{ interfaces_to_shutdown | default([]) }}, {{ item }}) — never output the literal __J2__ or any placeholder; the playbook will be rejected.
+4b. STRUCTURE VS VALUES: Follow the reference template structure exactly. Do not add, remove, or rename task keys (e.g. name, module names, config, loop, when, loop_control). Only fill in or adjust values (hosts, variable expressions, list items). If the intent is ambiguous (e.g. missing hostnames, VLAN IDs, or interface list), ask the user for clarification before generating.
 5. The playbook must use safe deployment controls:
    - `serial`
    - pre-change backup/snapshot

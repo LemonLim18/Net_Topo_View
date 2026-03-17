@@ -20,11 +20,18 @@ SAFETY_VALIDATION_VERSION = "phase3_step10_v1"
 
 # Placeholder used when parsing YAML that contains Ansible/Jinja2 {{ ... }} (so PyYAML doesn't choke)
 _J2_PLACEHOLDER = "__J2__"
+# Valid YAML scalar used only when the LLM emitted literal __J2__ so we can still parse structure
+_LITERAL_J2_REPLACEMENT_FOR_PARSE = "JINJA_VAR"
 
 
 def _mask_jinja2_for_yaml_parse(text: str) -> str:
     """Replace {{ ... }} with a quoted placeholder so PyYAML can parse playbook YAML that uses Ansible vars."""
     return re.sub(r"\{\{.*?\}\}", _J2_PLACEHOLDER, text, flags=re.DOTALL)
+
+
+def _normalize_literal_j2_for_parse(text: str) -> str:
+    """Replace literal __J2__ (wrong LLM output) with a valid YAML scalar so structure parsing can succeed."""
+    return text.replace(_J2_PLACEHOLDER, _LITERAL_J2_REPLACEMENT_FOR_PARSE)
 
 _UNSAFE_TEMPLATE_PATTERNS: Tuple[Tuple[str, re.Pattern[str], str], ...] = (
     (
@@ -519,8 +526,15 @@ def validate_playbook_bundle(
         return report
 
     entrypoint_yaml = str(file_map[entrypoint_path].get("content") or "")
+    if _J2_PLACEHOLDER in entrypoint_yaml:
+        add_error(
+            "Playbook must use real Ansible/Jinja2 variables (e.g. {{ interfaces_to_shutdown | default([]) }}), "
+            "not the literal __J2__. Fix the generator to output proper variable syntax."
+        )
+    # Normalize literal __J2__ so structure can still be parsed; then mask real Jinja2 for PyYAML
+    yaml_for_parse = _mask_jinja2_for_yaml_parse(_normalize_literal_j2_for_parse(entrypoint_yaml))
     try:
-        plays = yaml.safe_load(_mask_jinja2_for_yaml_parse(entrypoint_yaml))
+        plays = yaml.safe_load(yaml_for_parse)
         plays_ok = isinstance(plays, list) and len(plays) > 0
         add_check(
             "entrypoint_yaml_structure",
@@ -583,7 +597,8 @@ def validate_playbook_bundle(
     for path in task_files:
         try:
             content = str(file_map[path].get("content") or "")
-            parsed = yaml.safe_load(_mask_jinja2_for_yaml_parse(content))
+            content_for_parse = _mask_jinja2_for_yaml_parse(_normalize_literal_j2_for_parse(content))
+            parsed = yaml.safe_load(content_for_parse)
         except yaml.YAMLError as exc:
             add_error(f"Role task file '{path}' has invalid YAML: {exc}")
             continue

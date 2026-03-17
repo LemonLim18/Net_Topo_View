@@ -6,12 +6,17 @@ This folder holds the **official** Ansible reference per **feature** and **vendo
 
 ```
 reference/
-  vlan/                   # Only VLAN is in official reference (RAG-ingested)
+  vlan/                   # VLAN (RAG-ingested)
     cisco_ios/
     huawei_vrp/
     juniper_junos/
     multi_vendor/         # Single-play template with when: per vendor
-  (interface, acl, ospf, qos, static_route are in Test_Reference/ — not ingested by RAG)
+  interface/              # Interface shutdown/enable (RAG-ingested, ref: job_42)
+    cisco_ios/
+    huawei_vrp/
+    juniper_junos/
+    multi_vendor/
+  (acl, ospf, qos, static_route are in Test_Reference/ — not ingested by RAG)
 ```
 
 Each `{feature}/{vendor}/` has `reference.md`, `playbook.yml`, `inventory.yml`.
@@ -20,15 +25,18 @@ Each `{feature}/{vendor}/` has `reference.md`, `playbook.yml`, `inventory.yml`.
 
 ## Reference scenarios (ingested by RAG)
 
-| Feature  | Cisco IOS | Huawei VRP | Juniper Junos | Multi-vendor template |
-|----------|-----------|------------|---------------|------------------------|
-| **vlan** | ✅        | ✅         | ✅            | ✅ `vlan/multi_vendor/` |
+| Feature     | Cisco IOS | Huawei VRP | Juniper Junos | Multi-vendor template        |
+|-------------|-----------|------------|---------------|-----------------------------|
+| **vlan**    | ✅        | ✅         | ✅            | ✅ `vlan/multi_vendor/`     |
+| **interface** | ✅        | ✅         | ✅            | ✅ `interface/multi_vendor/` (shutdown/enable) |
 
-**Other features (interface, acl, ospf, qos, static_route)** live in `Test_Reference/`; copy into `reference/` when you want them ingested by RAG.
+**Other features (acl, ospf, qos, static_route)** live in `Test_Reference/`; copy into `reference/` when you want them ingested by RAG.
 
 **RAG ingestion:** On **RAG Rebuild**, each `reference/**/reference.md` is ingested with `doc_type=ansible_reference`, `applicable_feature`, and `vendor` from the path. Plan-ansible retrieves by intent feature and device vendor so the LLM gets the right reference.
 
 **VLAN multi-vendor template:** `vlan/multi_vendor/` provides a single-play pattern (hosts: access_switches, when: per vendor, ignore_unreachable: true) and correct module usage for Cisco, Huawei, and Juniper. Use for “configure VLAN on all access switches” with mixed vendors.
+
+**Interface multi-vendor template:** `interface/multi_vendor/` (reference: job_42) provides the pattern for shutdown/enable interfaces: single play, all tasks inline, `interfaces_to_shutdown` from `nettopo_interfaces`, correct modules per vendor (`cisco.ios.ios_interfaces`, `community.network.ce_config`, `juniper.device.junos_interfaces`). Use for "shutdown interfaces on [host or group]" with mixed vendors.
 
 ---
 

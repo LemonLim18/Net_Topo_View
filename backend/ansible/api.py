@@ -77,6 +77,8 @@ _NON_HOSTNAME_WORDS = frozenset({
     "and", "or", "put", "for", "the", "on", "to", "with", "from", "by", "in", "at",
     "cisco", "huawei", "juniper", "aruba", "ios", "vrp", "junos", "nxos", "xe",
     "vlan", "named", "test", "create", "huaweicreate", "ciscocreate", "junipercreate",
+    "interface", "interfaces",  # feature names that must not be treated as device hostnames
+    "switch", "switches",  # e.g. from "Access Switch 1, 2, and 3" — not a hostname
 })
 
 
@@ -382,6 +384,22 @@ async def _ensure_planning_context(
     }
 
 
+def _playbook_inject_serial(playbook_yaml: str, serial: int = 1) -> str:
+    """Inject serial: N into the first play so hosts run one-at-a-time. Helps paramiko with Cisco."""
+    if not playbook_yaml or serial < 1:
+        return playbook_yaml
+    if "serial:" in playbook_yaml and re.search(r"^\s*serial:\s*\d+", playbook_yaml, re.MULTILINE):
+        return playbook_yaml
+    # Insert after first play's gather_facts or hosts so first play runs serially
+    return re.sub(
+        r"^(\s*gather_facts:\s*\w+\s*)$",
+        rf"\1\n  serial: {serial}",
+        playbook_yaml,
+        count=1,
+        flags=re.MULTILINE,
+    )
+
+
 def _playbook_hosts_to_db_only(playbook_yaml: str, allowed_hosts: List[str]) -> str:
     """Rewrite the first play's hosts: line to only include hostnames in allowed_hosts
     (e.g. only DB-registered devices), so non-DB names like Acc_Huawei_1 never appear in the run."""
@@ -399,6 +417,9 @@ def _playbook_hosts_to_db_only(playbook_yaml: str, allowed_hosts: List[str]) -> 
         parts = [p.strip() for p in re.split(r"[,]+", raw) if p.strip()]
         kept = [p for p in parts if p in allowed]
         if not kept:
+            return m.group(0)
+        # If playbook targets a single host and it is allowed, keep it (don't expand to full job list)
+        if len(parts) == 1 and parts[0] in allowed:
             return m.group(0)
         return prefix + ",".join(kept) + "\n"
     return re.sub(r"^(\s*hosts:\s*)(.+)$", _repl, playbook_yaml, count=1, flags=re.MULTILINE)
@@ -610,6 +631,17 @@ class PlanAnsibleRequest(BaseModel):
     max_refinement_attempts: int = 3
     verify_with_dry_run: bool = False
     provider:           Optional[str] = None  # "gemini" | "ollama" for playbook LLM
+    model:              Optional[str] = None
+    ollama_base_url:    Optional[str] = None
+
+
+class PreviewIntentRequest(BaseModel):
+    """Request for intent preview (categories + RAG reference templates) before full create-and-plan."""
+    intent_description: str
+    target_hosts:       List[str] = []
+    vendor:             str = ""
+    feature:            str = ""
+    provider:           Optional[str] = None
     model:              Optional[str] = None
     ollama_base_url:    Optional[str] = None
 
@@ -2071,6 +2103,339 @@ def _load_job_artifact(job_id: int) -> dict[str, Any]:
         "target_hosts": _bundle_target_hosts({}, playbook_yaml),
         "project_files": None,
     }
+
+
+# ── M23: preview-intent (categories + RAG templates before create-and-plan) ───
+
+def _get_access_devices_ordered() -> List[str]:
+    """Return access-layer device hostnames in stable order."""
+    if _db is None:
+        return []
+    devices = _db.get_all_devices()
+    access = [
+        d.hostname for d in devices if d.hostname
+        and ((d.role or "").strip().lower() in ("access", "access_switch") or (d.hostname or "").lower().startswith("acc_"))
+    ]
+    return sorted(access)
+
+
+def _number_from_hostname(hostname: str) -> Optional[int]:
+    """Extract the number that best identifies this device (e.g. Acc_Cisco_1 -> 1, Acc_Huawei_3 -> 3)."""
+    if not hostname:
+        return None
+    # Prefer trailing _N or trailing N (e.g. Acc_Cisco_1, Acc_Huawei_3, Switch2)
+    m = re.search(r"_(\d+)$", hostname)
+    if m:
+        return int(m.group(1))
+    m = re.search(r"(\d+)$", hostname)
+    if m:
+        return int(m.group(1))
+    # Any distinct number in the name
+    nums = re.findall(r"\d+", hostname)
+    return int(nums[0]) if nums else None
+
+
+def _extract_requested_numbers(intent_description: str) -> List[int]:
+    """Parse '1, 2, and 3' or 'switch 1, 2, 3' -> [1, 2, 3]. Returns empty if no clear list."""
+    # Match "1, 2, 3" or "1, 2, and 3" or "switch 1, 2, 3" (and similar with more numbers)
+    m = re.search(r"(?:switch\s+)?(\d+)\s*,\s*(\d+)\s*,?\s*(?:and\s+)?(\d+)\b", intent_description, re.IGNORECASE)
+    if m:
+        return [int(m.group(1)), int(m.group(2)), int(m.group(3))]
+    # More flexible: any comma/and-separated list of numbers
+    m = re.search(r"(\d+)\s*(?:,\s*|\s+and\s+)(\d+)\s*(?:,\s*|\s+and\s+)(\d+)", intent_description, re.IGNORECASE)
+    if m:
+        return [int(m.group(1)), int(m.group(2)), int(m.group(3))]
+    return []
+
+
+def _apply_numeric_subset_fallback(intent_description: str, resolved: List[str]) -> tuple[List[str], str]:
+    """
+    When user said e.g. 'access switch 1, 2, and 3' but we got too many devices,
+    pick devices whose names match those numbers (e.g. Acc_Cisco_1, Acc_Cisco_2, Acc_Huawei_3).
+    Order in the prompt does not matter; match by how close the device name is to the number.
+    """
+    if not resolved or _db is None:
+        return resolved, ""
+    requested = _extract_requested_numbers(intent_description)
+    if not requested:
+        return resolved, ""
+    access = _get_access_devices_ordered()
+    if len(access) < len(requested):
+        return resolved, ""
+    if len(resolved) <= len(requested):
+        return resolved, ""
+    # Build: for each requested number N, choose the access device whose name implies N
+    number_to_hostname: Dict[int, str] = {}
+    for h in access:
+        n = _number_from_hostname(h)
+        if n is not None and n not in number_to_hostname:
+            number_to_hostname[n] = h
+    subset = []
+    for n in requested:
+        if n in number_to_hostname:
+            subset.append(number_to_hostname[n])
+    if len(subset) < len(requested):
+        return resolved, ""
+    # Deduplicate preserving order
+    seen: set = set()
+    out = [h for h in subset if h not in seen and not seen.add(h)]
+    nums_str = ", ".join(str(n) for n in requested)
+    return out, f"Your prompt mentioned **\"{nums_str}\"** — matched to devices by number in name: **{', '.join(out)}**."
+
+
+def _devices_mentioned_summary(parsed_dict: dict, intent_description: str) -> str:
+    """One-line summary of what devices the parser thought the user asked for (for reasoning)."""
+    if not parsed_dict:
+        return ""
+    scope = parsed_dict.get("scope") or {}
+    hostnames = scope.get("device_hostnames") or []
+    role = scope.get("device_role") or ""
+    if hostnames:
+        return f"**Devices mentioned in your prompt:** explicit hostnames **{', '.join(hostnames)}**."
+    if role:
+        role_label = role.replace("_", " ").strip()
+        return f"**Devices mentioned in your prompt:** scope by role **{role_label}** (parser resolved to inventory)."
+    return f"**Devices mentioned in your prompt:** (from context) \"{intent_description[:80]}{'…' if len(intent_description) > 80 else ''}\"."
+
+
+def _preview_parse_and_rag(
+    intent_description: str,
+    target_hosts: List[str],
+    vendor: str,
+    feature: str,
+    provider: Optional[str],
+    model: Optional[str],
+    ollama_base_url: Optional[str],
+) -> tuple[list[str], list[dict], dict, bool, list[str], list[str]]:
+    """
+    Parse intent (lightweight: no policy raise) and run RAG for ansible_reference.
+    Returns (categories, references, parsed_intent_dict, policy_approved, reasoning_steps, resolved_hosts).
+    """
+    from llm.intent import IntentParser, IntentType, ParsedIntent
+
+    categories: list[str] = []
+    parsed_dict: dict = {}
+    policy_approved = False
+    reasoning: list[str] = []
+
+    try:
+        parser = IntentParser(
+            provider=_provider_for_request(provider, model, ollama_base_url),
+            db_manager=_db,
+        )
+        parsed = ParsedIntent.model_validate_json(
+            parser.parse(
+                intent_description,
+                topology_context=_build_intent_parse_context(intent_description),
+            )
+        )
+        if feature or parsed.feature:
+            categories = [str(feature or parsed.feature).strip()]
+        if parsed.feature and parsed.feature not in categories:
+            categories.append(parsed.feature)
+        parsed_dict = parsed.model_dump()
+        intent_type = getattr(parsed.intent_type, "value", parsed.intent_type)
+        intent_action = parsed.action or "configure"
+        intent_feature = parsed.feature or "general"
+        reasoning.append(
+            "### 1. Intent\n"
+            f"- **Type:** {intent_type} · **Action:** {intent_action}\n"
+            f"- **Feature:** {intent_feature}\n"
+            f"- **Categories (for templates):** {', '.join(categories) if categories else '—'}. You can add or remove above."
+        )
+        if parsed.intent_type in (IntentType.CONFIGURE, IntentType.DEPLOY):
+            policy = _policy_validate_intent(
+                parsed.model_dump_json(),
+                user_role="operator",
+            )
+            policy_approved = policy.get("approved") is True
+            if not policy_approved:
+                reasoning.append("⚠️ Policy did not approve this intent for execution; you may still generate the playbook for review.")
+    except Exception as exc:
+        logger.debug("Preview parse/policy failed: %s", exc)
+        reasoning.append(f"### 1. Intent\nIntent parsing encountered an issue: {exc}. Using provided feature/vendor if any.")
+        if not categories and feature:
+            categories = [feature]
+
+    # Use backend parser's resolved_devices when available (has "Devices by role" context); else expand request target_hosts
+    resolved: List[str] = list(parsed_dict.get("resolved_devices") or []) if parsed_dict else []
+    if not resolved and target_hosts:
+        resolved = _resolve_target_hosts(target_hosts)
+    # Fallback: when user clearly said "1, 2, and 3" (or "switch 1, 2, 3") but we got all access switches, take first N
+    resolved, subset_reason = _apply_numeric_subset_fallback(intent_description, resolved)
+    scope_summary = _devices_mentioned_summary(parsed_dict, intent_description)
+    # Section 2: Target devices (one block)
+    devices_block = "### 2. Target devices\n"
+    if subset_reason:
+        devices_block += f"- {subset_reason}\n"
+    if scope_summary:
+        devices_block += f"- {scope_summary}\n"
+    devices_block += f"- **Resolved:** {', '.join(resolved) if resolved else '(none — will use \"all\")'}. You can change them in **Target inventory** below."
+    reasoning.append(devices_block)
+
+    effective_vendor = normalize_vendor(vendor or "")
+    if not effective_vendor and resolved and _db:
+        effective_vendor = normalize_vendor(infer_vendor_hint(resolved, _db) or "")
+    vendors_in_targets: set[str] = set()
+    if resolved and _db:
+        for h in resolved:
+            dev = _db.get_device_by_hostname(h)
+            if dev and getattr(dev, "vendor", None):
+                v = normalize_vendor(dev.vendor)
+                if v:
+                    vendors_in_targets.add(v)
+    multi_vendor_targets = len(vendors_in_targets) > 1
+    single_vendor = bool(effective_vendor and len(vendors_in_targets) <= 1)
+    if multi_vendor_targets:
+        vendor_block = f"- **Vendors in scope:** {', '.join(sorted(vendors_in_targets))}\n- **Recommendation:** Use the single multi-vendor template so one playbook covers all vendors. Only multi-vendor reference templates are shown."
+    elif effective_vendor:
+        vendor_block = f"- **Vendor hint:** {effective_vendor}. Only vendor-specific reference templates are shown (multi-vendor hidden)."
+    else:
+        vendor_block = "- No vendor filter; reference templates may include multi-vendor and vendor-specific."
+    reasoning.append("### 3. Vendor & templates\n" + vendor_block)
+
+    references: list[dict] = []
+    if _agent is not None and hasattr(_agent, "_retriever") and _agent._retriever:
+        try:
+            query = intent_description
+            if categories:
+                query = f"{query} Ansible playbook reference feature {' '.join(categories)}"
+            if effective_vendor:
+                query = f"{query} vendor {effective_vendor}"
+            # When single vendor, filter RAG by vendor so multi_vendor docs are not retrieved
+            rag_vendor_filter = effective_vendor if single_vendor else None
+            raw = _agent._retriever.retrieve(
+                query,
+                k=6,
+                vendor_filter=rag_vendor_filter,
+                doc_type_filter="ansible_reference",
+            )
+            if not raw:
+                raw = _agent._retriever.retrieve(query, k=4, vendor_filter=rag_vendor_filter)
+            rag_note = f"- RAG retrieved **{len(raw)}** ansible_reference chunk(s). Matching playbook paths are listed below."
+            seen_paths: set[str] = set()
+            for r in raw:
+                feat = (r.get("applicable_feature") or "").strip().lower()
+                vend = (r.get("vendor") or "").strip().lower().replace("-", "_")
+                if single_vendor and vend == "multi_vendor":
+                    continue
+                if multi_vendor_targets and vend != "multi_vendor":
+                    continue
+                doc_name = (r.get("doc_name") or "reference.md").strip()
+                if not feat:
+                    continue
+                for playbook_name in ("playbook_template.yml", "playbook.yml"):
+                    # Build path from parts so Windows and metadata casing don't break resolution
+                    path = f"reference/{feat}/{vend}/{playbook_name}"
+                    if path in seen_paths:
+                        continue
+                    ref_path = (ANSIBLE_BASE.joinpath(*path.split("/"))).resolve()
+                    if ref_path.is_file():
+                        seen_paths.add(path)
+                        references.append({
+                            "doc_name": doc_name,
+                            "feature": feat,
+                            "vendor": vend,
+                            "path": path,
+                        })
+                        break
+            if not references and (raw or categories):
+                # Fallback: resolve by intent categories + vendor so templates still show when RAG metadata is missing/wrong
+                seen_paths_fb: set[str] = set()
+                fallback_vendors = [effective_vendor] if single_vendor else (["multi_vendor"] if multi_vendor_targets else (["multi_vendor", effective_vendor] if effective_vendor else ["multi_vendor"]))
+                for feat in [c.strip().lower().replace("-", "_") for c in categories if c]:
+                    for vend in fallback_vendors:
+                        vend = (vend or "").strip().lower().replace("-", "_")
+                        if not vend:
+                            continue
+                        for playbook_name in ("playbook_template.yml", "playbook.yml"):
+                            path = f"reference/{feat}/{vend}/{playbook_name}"
+                            if path in seen_paths_fb:
+                                continue
+                            ref_path = (ANSIBLE_BASE.joinpath(*path.split("/"))).resolve()
+                            if ref_path.is_file():
+                                seen_paths_fb.add(path)
+                                references.append({"doc_name": ref_path.name, "feature": feat, "vendor": vend, "path": path})
+                                break
+                if not references and raw:
+                    rag_note += "\n- No reference playbook files were found on disk for the retrieved docs; you can add references manually below."
+                elif references:
+                    rag_note += "\n- Templates were inferred from intent categories and vendor; you can remove or add more below."
+            elif not references and raw:
+                rag_note += "\n- No reference playbook files were found on disk; you can add references manually below."
+            elif references:
+                rag_note += "\n- You can remove or add templates in **Reference templates** before generating."
+            reasoning.append("### 4. Reference templates (RAG)\n" + rag_note)
+        except Exception as exc:
+            logger.debug("Preview RAG retrieval failed: %s", exc)
+            reasoning.append(f"### 4. Reference templates (RAG)\n- RAG retrieval failed: {exc}. You can add reference templates manually below.")
+    else:
+        reasoning.append("### 4. Reference templates (RAG)\n- RAG retriever is not available. Add reference templates manually if needed.")
+
+    return categories, references, parsed_dict, policy_approved, reasoning, resolved
+
+
+@router.post(
+    "/preview-intent",
+    summary="Preview intent categories and RAG reference templates before generate",
+)
+async def preview_intent(
+    req:  PreviewIntentRequest,
+    user: dict = Depends(get_current_user),
+):
+    """
+    Returns intent categories (e.g. VLAN, interface) and which reference templates
+    RAG would use, so the UI can show an overlay and let the user remove irrelevant
+    refs or confirm before calling create-and-plan.
+    """
+    categories, references, parsed_intent, policy_approved, reasoning, resolved_hosts = _preview_parse_and_rag(
+        intent_description=req.intent_description,
+        target_hosts=req.target_hosts,
+        vendor=req.vendor,
+        feature=req.feature,
+        provider=req.provider,
+        model=req.model,
+        ollama_base_url=req.ollama_base_url,
+    )
+    return {
+        "categories": categories,
+        "references": references,
+        "parsed_intent": parsed_intent,
+        "policy_approved": policy_approved,
+        "reasoning": reasoning,
+        "target_hosts": resolved_hosts,
+    }
+
+
+def _list_reference_playbook_paths() -> list[dict]:
+    """Scan reference/ for all playbook.yml and playbook_template.yml; return path, feature, vendor."""
+    out: list[dict] = []
+    ref_dir = ANSIBLE_BASE / "reference"
+    if not ref_dir.exists():
+        return out
+    for feat_dir in ref_dir.iterdir():
+        if not feat_dir.is_dir() or feat_dir.name.startswith("."):
+            continue
+        feature = feat_dir.name
+        for vend_dir in feat_dir.iterdir():
+            if not vend_dir.is_dir() or vend_dir.name.startswith("."):
+                continue
+            vendor = vend_dir.name
+            for name in ("playbook_template.yml", "playbook.yml"):
+                path = vend_dir / name
+                if path.is_file():
+                    rel = str(path.relative_to(ANSIBLE_BASE)).replace(os.sep, "/")
+                    out.append({"path": rel, "feature": feature, "vendor": vendor})
+    return sorted(out, key=lambda x: (x["feature"], x["vendor"]))
+
+
+@router.get(
+    "/reference-paths",
+    summary="List all reference playbook paths (for Playbook Studio add-reference)",
+)
+async def list_reference_paths(user: dict = Depends(get_current_user)):
+    """Return paths to every reference playbook so the UI can offer add/remove in the overlay."""
+    return {"paths": _list_reference_playbook_paths()}
 
 
 # ── M23: create-and-plan ───────────────────────────────────────────────────

@@ -7,10 +7,10 @@
 
 Rebuild does two things:
 
-1. Clears the **static knowledge** partition and re-ingests every file in `backend/knowledge_base/` (uploaded PDFs, TXT, MD, DOCX, etc.).
+1. Clears the **static knowledge** partition and re-ingests **curated** files from `backend/knowledge_base/`: only files listed in `knowledge_base/curation_manifest.json` are ingested. This avoids irrelevant documents (e.g. unrelated PDFs). Uploads via the RAG API are added to the manifest automatically; files dropped in the folder but not in the manifest are skipped. If the manifest is missing or empty, all supported files in the folder are ingested (legacy behavior).
 2. Ingests the **Ansible reference library**: every `backend/ansible/reference/{feature}/{vendor}/reference.md` with metadata `doc_type=ansible_reference`, `vendor`, `applicable_feature`.
 
-So after adding or changing files in `knowledge_base/` or in `ansible/reference/`, run a rebuild so the vector store is up to date.
+So after adding or changing files in `knowledge_base/` (and listing them in `curation_manifest.json` if you use the manifest) or in `ansible/reference/`, run a rebuild so the vector store is up to date.
 
 ## Vector database / RAG tech
 

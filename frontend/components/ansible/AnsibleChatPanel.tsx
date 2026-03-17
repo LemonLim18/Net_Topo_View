@@ -6,6 +6,7 @@ import { ansibleApi, llmApi, ragApi } from '../../src/services/api';
 import { Toast } from '../../src/utils/swal';
 import type { LlmRuntimeState } from '../../src/services/api';
 import type { AnsibleGeneratedArtifactFile, AnsibleMessage, AnsibleJob, AnsibleProposedEdit } from '../../typesLLM';
+import { PlaybookStudioOverlay } from './PlaybookStudioOverlay';
 
 const ANSIBLE_MODEL_STORAGE_KEY = 'ansibleStudio.selectedModel';
 const OLLAMA_BASE_URL_STORAGE_KEY = 'llmRuntimeSelector.ollamaBaseUrl';
@@ -175,6 +176,8 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
   const modelDropdownRef = useRef<HTMLDivElement>(null);
   /** Hydrated file paths for messages that only had playbookPath (e.g. from before multi-file links). */
   const [hydratedFilePaths, setHydratedFilePaths] = useState<Record<string, string[]>>({});
+  const [studioOpen, setStudioOpen] = useState(false);
+  const [studioIntent, setStudioIntent] = useState('');
 
   // Load LLM runtime (Gemini + Ollama models) and restore Ansible model selection
   useEffect(() => {
@@ -380,18 +383,16 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
     setAttachedFiles([]);
     addMsg({ role: 'user', content: text });
 
-    // Loading bubble
-    const loadingId = crypto.randomUUID();
-    setMessages(prev => [...prev, {
-      id: loadingId, role: 'assistant', content: '', isLoading: true, timestamp: Date.now(),
-    }]);
-    setGenerating(true);
+    // ── /template slash-command: generate from Config Engine template ────
+    const templateMatch = baseText.match(/^\/template\s+(\S+)\s+(\S+)(?:\s+(.+))?$/i);
 
-    try {
-      // ── /template slash-command: generate from Config Engine template ────
-      const templateMatch = baseText.match(/^\/template\s+(\S+)\s+(\S+)(?:\s+(.+))?$/i);
-
-      if (templateMatch) {
+    if (templateMatch) {
+      const loadingId = crypto.randomUUID();
+      setMessages(prev => [...prev, {
+        id: loadingId, role: 'assistant', content: '', isLoading: true, timestamp: Date.now(),
+      }]);
+      setGenerating(true);
+      try {
         const [, tplVendor, tplFeature, tplParamsRaw] = templateMatch;
         let tplParams: Record<string, any> = {};
         if (tplParamsRaw) {
@@ -430,67 +431,28 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
           entrypointPath: result.entrypoint_path,
           files: result.files,
         });
-      } else {
-        // ── Standard LLM generation ─────────────────────────────────────────
-        const { vendor, feature, target_hosts, params } = parseIntent(text);
-
-        const result = await ansibleApi.createAndPlan({
-          intent_description: text,
-          target_hosts,
-          vendor,
-          feature,
-          params,
-          provider: ansibleModel.provider,
-          model: ansibleModel.model,
-          ollama_base_url: ansibleModel.ollama_base_url ?? undefined,
-        });
-
-        const playbookName = result.entrypoint_path || `playbook_${result.job_id}.yml`;
-        const resolvedHosts = 'target_hosts' in result && Array.isArray((result as { target_hosts?: string[] }).target_hosts) ? (result as { target_hosts: string[] }).target_hosts : target_hosts;
-        const displayTargets = resolvedHosts.join(', ');
-
+      } catch (err: any) {
+        let errorMsg = err.message || 'Unknown error';
+        if (typeof err.message === 'object') {
+          try {
+            errorMsg = err.message.message || JSON.stringify(err.message, null, 1);
+          } catch {
+            errorMsg = String(err.message);
+          }
+        }
         setMessages(prev => prev.map(m =>
           m.id === loadingId ? {
-            ...m,
-            isLoading: false,
-            content:
-              `✅ **${result.artifact_type === 'bundle' ? 'Bundle generated' : 'Playbook generated'}** → \`${playbookName}\`\n\n` +
-              `- **Job ID:** ${result.job_id}\n` +
-              `- **Vendor:** \`${vendor}\`  **Feature:** \`${feature}\`\n` +
-              `- **Targets:** ${displayTargets}\n` +
-              (result.artifact_type === 'bundle' ? `- **Files:** ${(result.files?.length ?? 0)} generated files\n\n` : `\n`) +
-              `Recommend running **Check** to see the dry-run diff before deploying.`,
-            jobId: result.job_id,
-            playbookPath: playbookName,
-            generatedPaths: result.files?.map((file) => file.path) || [playbookName],
+            ...m, isLoading: false, isError: true,
+            content: `❌ **Failed to generate playbook**\n\n${errorMsg}`,
           } : m
         ));
-
-        onPlaybookReady({
-          jobId: result.job_id,
-          content: result.playbook,
-          name: playbookName.split('/').pop() ?? playbookName,
-          entrypointPath: result.entrypoint_path,
-          files: result.files,
-        });
+      } finally {
+        setGenerating(false);
       }
-    } catch (err: any) {
-      let errorMsg = err.message || 'Unknown error';
-      if (typeof err.message === 'object') {
-        try {
-          errorMsg = err.message.message || JSON.stringify(err.message, null, 1);
-        } catch {
-          errorMsg = String(err.message);
-        }
-      }
-      setMessages(prev => prev.map(m =>
-        m.id === loadingId ? {
-          ...m, isLoading: false, isError: true,
-          content: `❌ **Failed to generate playbook**\n\n${errorMsg}`,
-        } : m
-      ));
-    } finally {
-      setGenerating(false);
+    } else {
+      // ── Standard LLM: open Playbook Studio overlay (categories → RAG refs → confirm → dual editor) ──
+      setStudioIntent(text);
+      setStudioOpen(true);
     }
   }, [input, isGenerating, addMsg, onPlaybookReady, attachedFiles, ansibleModel]);
 
@@ -618,6 +580,30 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
       onDragOver={e => e.preventDefault()}
       onDrop={handlePanelDrop}
     >
+      {/* Playbook Studio overlay: intent categories → RAG templates → confirm → dual editor */}
+      <PlaybookStudioOverlay
+        open={studioOpen}
+        onClose={() => setStudioOpen(false)}
+        intentDescription={studioIntent}
+        onPlaybookReady={(payload) => {
+          onPlaybookReady(payload);
+          addMsg({
+            role: 'assistant',
+            content:
+              `✅ **Playbook generated** → \`${payload.name}\`\n\n` +
+              `- **Job ID:** ${payload.jobId}\n` +
+              (payload.files?.length ? `- **Files:** ${payload.files.length} generated\n\n` : '\n') +
+              `Recommend running **Check** to see the dry-run diff before deploying.`,
+            jobId: payload.jobId,
+            playbookPath: payload.name,
+            generatedPaths: payload.files?.map((f) => f.path) ?? [payload.name],
+          });
+          setStudioOpen(false);
+        }}
+        ansibleModel={ansibleModel}
+        parseIntent={parseIntent}
+      />
+
       {/* Full-panel drag-over overlay */}
       {isDragOver && (
         <div className="absolute inset-0 z-50 flex items-center justify-center pointer-events-none rounded border-2 border-dashed border-primary/60 bg-primary/10">

@@ -1,0 +1,13 @@
+---
+# Minimal inventory pattern for Juniper Junos interface play.
+all:
+  children:
+    vendor_juniper_junos:
+      vars:
+        ansible_network_os: junos
+        ansible_connection: netconf
+      hosts:
+        access-sw-01:
+          ansible_host: 192.168.1.1
+        access-sw-02:
+          ansible_host: 192.168.1.2

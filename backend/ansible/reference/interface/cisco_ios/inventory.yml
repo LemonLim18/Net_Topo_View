@@ -1,0 +1,13 @@
+---
+# Minimal inventory pattern for Cisco IOS interface play.
+all:
+  children:
+    vendor_cisco_ios:
+      vars:
+        ansible_network_os: ios
+        ansible_connection: network_cli
+      hosts:
+        access-sw-01:
+          ansible_host: 192.168.1.1
+        access-sw-02:
+          ansible_host: 192.168.1.2

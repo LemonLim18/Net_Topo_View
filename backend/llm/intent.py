@@ -158,12 +158,13 @@ strict JSON object.  Output ONLY valid JSON — no commentary, no markdown fence
 1. If the user mentions a specific device (e.g. "R1", "SW3"), put it in scope.device_hostnames.
 2. If the user says "all switches" or "across building A", use device_role / building / all_devices.
 3. **Scope by layer**: If the user says "access switches", "all access", "access layer only", set scope.device_role to "access_switch" and leave all_devices false. If they say "distribution" or "core" only, set device_role to "distribution" or "core_router" respectively. Use all_devices true only when they clearly mean the entire network (e.g. "all devices", "every switch in the network").
-4. For CONFIGURE intents, you MUST fill in "feature" and "parameters" matching the template schema.
-5. If you cannot determine the target device, set intent_type="query", action="clarify", \
+4. **Subset by number**: If the user specifies a subset by number (e.g. "access switch 1, 2, and 3" or "on switch 1, 2, 3"), set scope.device_hostnames to the **exact hostnames** from the "Devices by role" list above for those indices (1=first, 2=second, 3=third in that role). Do NOT set only device_role — that would target all devices of that role. Example: for "Access: 1. Acc_Cisco_1, 2. Acc_Cisco_2, 3. Acc_Cisco_5, ...", user saying "access switch 1, 2, and 3" means device_hostnames = ["Acc_Cisco_1", "Acc_Cisco_2", "Acc_Cisco_5"].
+5. For CONFIGURE intents, you MUST fill in "feature" and "parameters" matching the template schema.
+6. If you cannot determine the target device, set intent_type="query", action="clarify", \
    and put a clarifying question in justification.
-6. risk_level heuristic: bgp/acl/firewall/nat = high; ospf/vlan/stp = medium; ntp/logging/banner = low.
-7. For read-only requests (show topology, list devices, check status), use intent_type="query".
-8. For security scan requests, use intent_type="audit".
+7. risk_level heuristic: bgp/acl/firewall/nat = high; ospf/vlan/stp = medium; ntp/logging/banner = low.
+8. For read-only requests (show topology, list devices, check status), use intent_type="query".
+9. For security scan requests, use intent_type="audit".
 
 ## User Request
 {user_message}

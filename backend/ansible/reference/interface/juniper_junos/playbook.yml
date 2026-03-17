@@ -1,0 +1,21 @@
+---
+# Interface shutdown — Juniper Junos only (single-vendor reference)
+- name: Shutdown interfaces (Juniper Junos)
+  hosts: "{{ target_hosts | default('all') }}"
+  gather_facts: no
+  ignore_unreachable: true
+  vars:
+    interfaces_to_shutdown: "{{ nettopo_interfaces | default([]) | map(attribute='name') | list }}"
+  tasks:
+    - name: Shutdown interface (Juniper Junos)
+      juniper.device.junos_interfaces:
+        config:
+          - name: "{{ item }}"
+            enabled: false
+        state: merged
+      loop: "{{ interfaces_to_shutdown | default([]) }}"
+      loop_control:
+        label: "{{ item }}"
+      when:
+        - inventory_hostname in groups.get('vendor_juniper_junos', [])
+        - (interfaces_to_shutdown | default([])) | length > 0

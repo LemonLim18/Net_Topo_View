@@ -17,8 +17,18 @@ async function request<T>(endpoint: string, options?: RequestInit): Promise<T> {
 
   if (!response.ok) {
     const errorBody = await response.json().catch(() => ({}));
-    const err: any = new Error(errorBody.detail || `API Error: ${response.statusText}`);
+    const detail = errorBody.detail;
+    let message = `API Error: ${response.statusText}`;
+    if (detail != null) {
+      if (typeof detail === 'string') message = detail;
+      else if (typeof detail === 'object' && detail.message) {
+        message = detail.message;
+        if (Array.isArray(detail.issues) && detail.issues.length) message += '\n' + detail.issues.join('\n');
+      }
+    }
+    const err: any = new Error(message);
     err.status = response.status;
+    err.detail = detail;
     throw err;
   }
 
@@ -905,6 +915,29 @@ export const sshApi = {
 
 // --- M23: Ansible Workflow Studio API ---
 export const ansibleApi = {
+  /** Preview intent: categories + RAG reference templates + reasoning (for studio overlay). */
+  previewIntent: (req: {
+    intent_description: string;
+    target_hosts?: string[];
+    vendor?: string;
+    feature?: string;
+    provider?: string;
+    model?: string;
+    ollama_base_url?: string;
+  }) =>
+    request<{
+      categories: string[];
+      references: { doc_name: string; feature: string; vendor: string; path: string }[];
+      parsed_intent: Record<string, unknown>;
+      policy_approved: boolean;
+      reasoning: string[];
+      target_hosts?: string[];
+    }>('/ansible/preview-intent', { method: 'POST', body: JSON.stringify(req) }),
+
+  /** List all reference playbook paths (for add-reference in Playbook Studio). */
+  listReferencePaths: () =>
+    request<{ paths: { path: string; feature: string; vendor: string }[] }>('/ansible/reference-paths'),
+
   /** Create a change-request + job and immediately generate a playbook via LLM. */
   createAndPlan: (req: {
     intent_description: string;

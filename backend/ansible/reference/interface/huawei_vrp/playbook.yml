@@ -1,0 +1,21 @@
+---
+# Interface shutdown — Huawei VRP only (single-vendor reference)
+- name: Shutdown interfaces (Huawei VRP)
+  hosts: "{{ target_hosts | default('all') }}"
+  gather_facts: no
+  ignore_unreachable: true
+  vars:
+    interfaces_to_shutdown: "{{ nettopo_interfaces | default([]) | map(attribute='name') | list }}"
+  tasks:
+    - name: Shutdown interface (Huawei VRP)
+      community.network.ce_config:
+        lines:
+          - shutdown
+        parents: "interface {{ item }}"
+        state: merged
+      loop: "{{ interfaces_to_shutdown | default([]) }}"
+      loop_control:
+        label: "{{ item }}"
+      when:
+        - inventory_hostname in groups.get('vendor_huawei_vrp', [])
+        - (interfaces_to_shutdown | default([])) | length > 0

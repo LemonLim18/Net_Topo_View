@@ -37,6 +37,7 @@ from rag.knowledge_curation import (
     KnowledgeDocumentMetadata,
     build_curation_audit,
     load_document_metadata,
+    load_manifest,
     register_manifest_entry,
     save_document_metadata,
 )
@@ -383,9 +384,15 @@ async def rebuild_knowledge_base(
         errors = []
         kb_dir = Path(_KNOWLEDGE_BASE_DIR)
         supported = {".pdf", ".txt", ".md", ".docx", ".html", ".htm"}
-        files = []
-        if kb_dir.exists():
-            files = [f for f in kb_dir.iterdir() if f.is_file() and f.suffix.lower() in supported]
+        manifest = load_manifest(kb_dir)
+        # Only ingest knowledge_base files that are in the curation manifest (avoids irrelevant uploads)
+        use_manifest_filter = len(manifest) > 0
+        if use_manifest_filter:
+            files = [kb_dir / name for name in manifest if (kb_dir / name).is_file()]
+        else:
+            files = []
+            if kb_dir.exists():
+                files = [f for f in kb_dir.iterdir() if f.is_file() and f.suffix.lower() in supported]
         for f in files:
             metadata = load_document_metadata(f, kb_dir)
             doc_type = metadata.doc_type

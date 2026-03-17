@@ -1,0 +1,10 @@
+---
+# Shutdown each interface (Juniper Junos): use junos_interfaces with enabled: false
+- name: Shutdown interface {{ item }} (Juniper Junos)
+  juniper.device.junos_interfaces:
+    config:
+      - name: "{{ item }}"
+        enabled: false
+    state: merged
+  loop: "{{ interfaces_to_shutdown | default([]) }}"
+  when: (interfaces_to_shutdown | default([])) | length > 0

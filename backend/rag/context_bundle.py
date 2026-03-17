@@ -63,6 +63,18 @@ INFLUXDB_BUCKET = os.getenv("INFLUXDB_BUCKET", "telegraf")
 PROMETHEUS_URL = os.getenv("PROMETHEUS_URL", "")
 
 
+def _role_from_hostname(hostname: str) -> str:
+    """Infer device role from hostname prefix (Acc_/Dist_/Core_) when DB role is missing."""
+    lower = (hostname or "").strip().lower()
+    if lower.startswith("acc_"):
+        return "access"
+    if lower.startswith("dist_"):
+        return "distribution"
+    if lower.startswith("core_"):
+        return "core"
+    return ""
+
+
 # ---------------------------------------------------------------------------
 # Data structures
 # ---------------------------------------------------------------------------
@@ -289,6 +301,24 @@ class ContextBundle:
                 )
             if inv.interfaces:
                 lines.append(f"\n  Interfaces included: {len(inv.interfaces)}")
+            # Devices by role with indices so LLM can resolve "access switch 1, 2, and 3" to exact hostnames
+            by_role: Dict[str, List[str]] = {}
+            _role_norm = {"access": "access", "access_switch": "access", "distribution": "distribution", "dist": "distribution", "core": "core", "core_router": "core"}
+            for d in inv.devices[:30]:
+                hostname = d.get("hostname") or "?"
+                if hostname == "?":
+                    continue
+                raw = (d.get("role") or "").strip().lower() or _role_from_hostname(hostname)
+                role = _role_norm.get(raw, raw) or "other"
+                by_role.setdefault(role, []).append(hostname)
+            if by_role:
+                lines.append("\n**Devices by role (use when user says e.g. 'access switch 1, 2, and 3' — 1=first, 2=second, 3=third):**")
+                for role_name in ("access", "distribution", "core", "other"):
+                    if role_name not in by_role:
+                        continue
+                    hosts = by_role[role_name]
+                    numbered = ", ".join(f"{i}. {h}" for i, h in enumerate(hosts, start=1))
+                    lines.append(f"- {role_name.capitalize()}: {numbered}")
             lines.append("")
 
         planned = self.planned_topology

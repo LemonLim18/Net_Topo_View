@@ -36,6 +36,8 @@ When the block below contains reference playbooks or SOPs for the requested feat
     use `raw:` or `command:` modules unless absolutely necessary (and mark those
     tasks `check_mode: false` explicitly with a comment explaining why).
 
+3b. JINJA2: Always use real Ansible/Jinja2 variables (e.g. {{ interfaces_to_shutdown | default([]) }}, {{ item }}) in the playbook. Never output the literal __J2__ or any placeholder; the playbook will be rejected.
+
 3.  PRE-SNAPSHOT: Include a `pre_tasks:` block that captures `show running-config`
     and saves it to `/tmp/nettopo_snapshot_{{ inventory_hostname }}_pre.txt`.
     Use TWO tasks: (a) cisco.ios.ios_command with commands: ["show running-config"]

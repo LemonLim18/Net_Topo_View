@@ -285,14 +285,20 @@ def planning_context_readiness(context: Dict[str, Any]) -> Dict[str, Any]:
     # Prefer NetBox; allow local_db if all target devices have required fields (e.g. after sync with name mismatch)
     if inventory_source != "netbox" and (not devices or missing_hosts):
         issues.append(f"Planned inventory source is '{inventory_source or 'unknown'}' instead of NetBox")
-    # For vlan we only need devices with vendor/IP; skip strict freshness so we can proceed after sync
-    if feature != "vlan" and inventory_freshness in {FreshnessClass.MISSING.value, FreshnessClass.STALE.value}:
+    # For vlan and interface we only need devices with vendor/IP (and interfaces for interface); skip strict freshness so we can proceed after sync
+    if feature not in ("vlan", "interface") and inventory_freshness in {FreshnessClass.MISSING.value, FreshnessClass.STALE.value}:
         issues.append(f"Planned inventory freshness is {inventory_freshness or 'unknown'}")
-    if feature in {"routing", "interface"} and planned_freshness in {
+    if feature == "routing" and planned_freshness in {
         FreshnessClass.MISSING.value,
         FreshnessClass.STALE.value,
     }:
         issues.append(f"Planned topology freshness is {planned_freshness or 'unknown'}")
+    if feature == "interface" and planned_freshness in {
+        FreshnessClass.MISSING.value,
+        FreshnessClass.STALE.value,
+    }:
+        # Allow interface changes (e.g. shutdown) with stale topology; interface inventory from NetBox is enough
+        pass
 
     for device in devices:
         host = str(device.get("hostname") or "unknown")
