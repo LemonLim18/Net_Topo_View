@@ -17,6 +17,8 @@ Key principle: the LLM interprets, the system enforces.
 
 import json
 import logging
+import re
+from difflib import SequenceMatcher
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
@@ -60,6 +62,40 @@ _VENDOR_ALIASES = {
     "huawei_vrp": "huawei_vrp",
     "vrp": "huawei_vrp",
 }
+
+
+def _natural_key(value: str) -> list[Any]:
+    """Sort hostnames like Acc_1, Acc_2, Acc_10 in human order."""
+    parts = re.split(r"(\d+)", str(value or ""))
+    out: list[Any] = []
+    for part in parts:
+        if part.isdigit():
+            out.append(int(part))
+        else:
+            out.append(part.lower())
+    return out
+
+
+def _extract_selector_numbers(raw: str) -> list[int]:
+    """
+    Extract all device selector numbers from phrases like
+    "access switch 1, 2 and 3" or "switch 1, 2, 3" → [1, 2, 3].
+    Only looks at the number list immediately after role/switch keywords.
+    """
+    lower = (raw or "").lower()
+    if not any(w in lower for w in ("switch", "switches", "access", "distribution", "core")):
+        return []
+    # Match "access switch 1, 2 and 3" or "switch 1, 2, 3" — capture the whole number list
+    m = re.search(
+        r"(?:access\s+switch(?:es)?|distribution\s+switch(?:es)?|core\s+switch(?:es)?|switch(?:es)?)\s+(\d+(?:\s*(?:,\s*|and\s+)\s*\d+)*)",
+        lower,
+        re.IGNORECASE,
+    )
+    if not m:
+        return []
+    # Extract all numbers from the captured list (e.g. "1, 2 and 3" → [1, 2, 3])
+    nums = re.findall(r"\d+", m.group(1))
+    return [int(n) for n in nums] if nums else []
 
 
 # -----------------------------------------------------------------------
@@ -156,15 +192,16 @@ strict JSON object.  Output ONLY valid JSON — no commentary, no markdown fence
 
 ## Rules
 1. If the user mentions a specific device (e.g. "R1", "SW3"), put it in scope.device_hostnames.
-2. If the user says "all switches" or "across building A", use device_role / building / all_devices.
-3. **Scope by layer**: If the user says "access switches", "all access", "access layer only", set scope.device_role to "access_switch" and leave all_devices false. If they say "distribution" or "core" only, set device_role to "distribution" or "core_router" respectively. Use all_devices true only when they clearly mean the entire network (e.g. "all devices", "every switch in the network").
-4. **Subset by number**: If the user specifies a subset by number (e.g. "access switch 1, 2, and 3" or "on switch 1, 2, 3"), set scope.device_hostnames to the **exact hostnames** from the "Devices by role" list above for those indices (1=first, 2=second, 3=third in that role). Do NOT set only device_role — that would target all devices of that role. Example: for "Access: 1. Acc_Cisco_1, 2. Acc_Cisco_2, 3. Acc_Cisco_5, ...", user saying "access switch 1, 2, and 3" means device_hostnames = ["Acc_Cisco_1", "Acc_Cisco_2", "Acc_Cisco_5"].
-5. For CONFIGURE intents, you MUST fill in "feature" and "parameters" matching the template schema.
-6. If you cannot determine the target device, set intent_type="query", action="clarify", \
+2. If the user says "switches" by itself, use all_devices=true. If they say "all switches" or "across building A", use device_role / building / all_devices.
+3. **Scope by layer**: If the user says "access switches", "all access", or "access layer only", set scope.device_role to "access" and leave all_devices false. If they say "distribution" or "core" only, set device_role to "distribution" or "core" respectively. Use all_devices true only when they clearly mean the entire network (e.g. "all devices", "every switch in the network").
+4. **Subset by number**: If the user specifies a subset by number, combine the role with the number to choose only those devices from that role group. Example: "access switch 3" means the 3rd access device in the role list, not all access switches. "access switch 1, 2, and 3" means device_hostnames = ["<first access device>", "<second access device>", "<third access device>"]. Do NOT set only device_role — that would target all devices of that role.
+5. **Generic switch words**: If the user says just "switches" without a role, use all_devices=true. Do not assume access-only unless the prompt explicitly says access.
+6. For CONFIGURE intents, you MUST fill in "feature" and "parameters" matching the template schema.
+7. If you cannot determine the target device, set intent_type="query", action="clarify", \
    and put a clarifying question in justification.
-7. risk_level heuristic: bgp/acl/firewall/nat = high; ospf/vlan/stp = medium; ntp/logging/banner = low.
-8. For read-only requests (show topology, list devices, check status), use intent_type="query".
-9. For security scan requests, use intent_type="audit".
+8. risk_level heuristic: bgp/acl/firewall/nat = high; ospf/vlan/stp = medium; ntp/logging/banner = low.
+9. For read-only requests (show topology, list devices, check status), use intent_type="query".
+10. For security scan requests, use intent_type="audit".
 
 ## User Request
 {user_message}
@@ -259,6 +296,20 @@ class IntentParser:
 
         # Resolve device scope against live topology
         intent.resolved_devices = self._resolve_devices(intent)
+        fallback_devices = self._fallback_devices_from_text(user_message)
+        if fallback_devices:
+            lower = (user_message or "").lower()
+            has_role_number = (
+                ("access" in lower or "distribution" in lower or "core" in lower)
+                and bool(re.search(r"\b\d+\b", lower))
+            )
+            # If the prompt clearly names a role + index, prefer the backend fallback
+            # over a broader LLM result such as "all access switches".
+            if has_role_number or not intent.resolved_devices:
+                intent.resolved_devices = fallback_devices
+
+        intent.parameters = dict(intent.parameters or {})
+        intent.parameters["device_deduction"] = self._deduce_device_reason(user_message, intent.resolved_devices)
 
         if intent.is_config_change() and not intent.resolved_devices:
             intent.requires_disambiguation = True
@@ -394,6 +445,113 @@ class IntentParser:
             justification=data.get("justification", ""),
             raw_user_input=user_message,
         )
+
+    def _fallback_devices_from_text(self, raw: str) -> list[str]:
+        """
+        Best-effort backend fallback for role + number phrasing.
+
+        This keeps device selection anchored to the prompt wording when the LLM
+        omits hostnames or over-generalizes a switch group.
+        """
+        if not self._db:
+            return []
+
+        lower = (raw or "").lower()
+        role = ""
+        if "access" in lower:
+            role = "access"
+        elif "distribution" in lower or "dist" in lower:
+            role = "distribution"
+        elif "core" in lower:
+            role = "core"
+
+        selector_numbers = _extract_selector_numbers(raw)
+        if not role and not selector_numbers and "switches" not in lower:
+            return []
+
+        records = self._inventory_records()
+        ordered_hosts: list[str] = []
+        for record in records:
+            host = str(record.get("hostname") or "").strip()
+            if not host:
+                continue
+            record_role = _normalize_role(record.get("role"))
+            if not record_role:
+                record_role = _role_from_hostname(host)
+            if role and record_role != role:
+                continue
+            ordered_hosts.append(host)
+
+        ordered_hosts = sorted(ordered_hosts, key=_natural_key)
+
+        if not ordered_hosts:
+            ordered_hosts = [r.get("hostname") for r in records if r.get("hostname")]
+            ordered_hosts = sorted([str(h).strip() for h in ordered_hosts if str(h).strip()], key=_natural_key)
+
+        if not ordered_hosts:
+            return []
+
+        def score_host(host: str, num: int) -> tuple[float, list[Any]]:
+            host_l = host.lower()
+            score = 0.0
+            if role and role in host_l:
+                score += 2.0
+            if re.search(rf"(?:^|[^0-9]){num}(?:[^0-9]|$)", host_l):
+                score += 4.0
+            score += SequenceMatcher(None, f"{role or 'switch'} {num}", host_l).ratio()
+            return score, _natural_key(host)
+
+        # "switches" with no role means all switches in scope.
+        if "switches" in lower and not role and not selector_numbers:
+            return ordered_hosts
+
+        if role and not selector_numbers:
+            return ordered_hosts
+
+        if selector_numbers:
+            # For a single selector like "access switch 3", return only the best match.
+            if len(selector_numbers) == 1:
+                ranked = sorted(ordered_hosts, key=lambda h: score_host(h, selector_numbers[0]), reverse=True)
+                return ranked[:1] if ranked else []
+            # For multiple selectors, return one host per selector in prompt order.
+            chosen: list[str] = []
+            seen = set()
+            for n in selector_numbers:
+                ranked = sorted(ordered_hosts, key=lambda h: score_host(h, n), reverse=True)
+                if ranked:
+                    host = ranked[0]
+                    if host not in seen:
+                        seen.add(host)
+                        chosen.append(host)
+            if chosen:
+                return chosen
+
+        return []
+
+    def _deduce_device_reason(self, raw: str, resolved_hosts: list[str]) -> dict[str, Any]:
+        """Return a readable explanation of why each resolved host was chosen."""
+        lower = (raw or "").lower()
+        mapping: list[dict[str, Any]] = []
+        for host in resolved_hosts:
+            host_lower = host.lower()
+            reasons: list[str] = []
+            if "access" in lower and ("acc" in host_lower or "access" in host_lower):
+                reasons.append("matched role=access")
+            if "distribution" in lower and ("dist" in host_lower or "distribution" in host_lower):
+                reasons.append("matched role=distribution")
+            if "core" in lower and "core" in host_lower:
+                reasons.append("matched role=core")
+            num = _number_from_hostname(host)
+            if num is not None and str(num) in lower:
+                reasons.append("matched prompt number")
+            if not reasons:
+                reasons.append("matched by inventory/name similarity")
+            mapping.append({"hostname": host, "reason": "; ".join(reasons)})
+        return {
+            "deduced": resolved_hosts,
+            "mapping": mapping,
+            "why": "Backend selected the closest inventory names from the prompt wording.",
+        }
 
     def _resolve_devices(self, intent: ParsedIntent) -> List[str]:
         """
@@ -549,6 +707,20 @@ def _infer_role_from_user_input(raw: str) -> str:
     if "core" in lower and ("switch" in lower or "router" in lower or "layer" in lower):
         return "core"
     return ""
+
+
+def _number_from_hostname(hostname: str) -> Optional[int]:
+    """Extract the most useful numeric suffix from a hostname."""
+    if not hostname:
+        return None
+    m = re.search(r"_(\d+)$", hostname)
+    if m:
+        return int(m.group(1))
+    m = re.search(r"(\d+)$", hostname)
+    if m:
+        return int(m.group(1))
+    nums = re.findall(r"\d+", hostname)
+    return int(nums[0]) if nums else None
 
 
 def _role_matches(

@@ -1,0 +1,82 @@
+---
+# VLAN role: vendor-aware via ansible_network_os (inventory). Receives vlan + interfaces only.
+# Configure interfaces only when interfaces | length > 0 (no invented ports).
+
+# --- Ensure VLAN exists (vendor-specific) ---
+- name: Ensure VLAN exists (Cisco IOS)
+  cisco.ios.ios_vlans:
+    config:
+      - vlan_id: "{{ vlan.id }}"
+        name: "{{ vlan.name | default('') }}"
+        state: active
+    state: merged
+  when: "'cisco' in (ansible_network_os | default('')) or 'ios' in (ansible_network_os | default(''))"
+
+- name: Ensure VLAN exists (Huawei CE/VRP)
+  community.network.ce_config:
+    lines:
+      - vlan batch {{ vlan.id }}
+      - vlan {{ vlan.id }}
+      - name {{ vlan.name | default('') }}
+  when: "'huawei' in (ansible_network_os | default('')) or 'ce' in (ansible_network_os | default(''))"
+
+- name: Ensure VLAN exists (Juniper Junos)
+  juniper.device.junos_vlans:
+    config:
+      - name: "{{ vlan.name | default('') }}"
+        vlan_id: "{{ vlan.id }}"
+    state: merged
+  when: "'junos' in (ansible_network_os | default('')) or 'juniper' in (ansible_network_os | default(''))"
+
+# --- Build L2 config from schema-shaped interfaces (only when user provided interfaces) ---
+- name: Initialize L2 config list
+  set_fact:
+    _l2_config: []
+  when: interfaces | default([]) | length > 0
+
+- name: Build L2 config from intent (access ports)
+  set_fact:
+    _l2_config: "{{ _l2_config + [{'name': item.name, 'mode': 'access', 'access': {'vlan': (item.access_vlan | default(vlan.id)) | string}}] }}"
+  loop: "{{ interfaces | default([]) }}"
+  when:
+    - interfaces | default([]) | length > 0
+    - (item.mode | default('access')) == 'access'
+
+- name: Build L2 config from intent (trunk ports)
+  set_fact:
+    _l2_config: "{{ _l2_config + [{'name': item.name, 'mode': 'trunk', 'trunk': {'trunk_vlans': (item.allowed_vlans | default([]) | map('string') | list | join(',')) if (item.allowed_vlans | default([]) | length) else 'all'}}] }}"
+  loop: "{{ interfaces | default([]) }}"
+  when:
+    - interfaces | default([]) | length > 0
+    - (item.mode | default('access')) == 'trunk'
+
+# --- Apply interface config (vendor-specific, only when interfaces defined) ---
+- name: Configure L2 interfaces (Cisco IOS)
+  cisco.ios.ios_l2_interfaces:
+    config: "{{ _l2_config }}"
+    state: merged
+  when:
+    - interfaces | default([]) | length > 0
+    - _l2_config | default([]) | length > 0
+    - "'cisco' in (ansible_network_os | default('')) or 'ios' in (ansible_network_os | default(''))"
+
+- name: Configure L2 interfaces (Huawei CE/VRP) — per interface
+  community.network.ce_config:
+    lines:
+      - port link-type access
+      - port default vlan {{ (item.access_vlan | default(vlan.id)) | string }}
+    parents: "interface {{ item.name }}"
+  loop: "{{ interfaces | default([]) }}"
+  when:
+    - interfaces | default([]) | length > 0
+    - (item.mode | default('access')) == 'access'
+    - "'huawei' in (ansible_network_os | default('')) or 'ce' in (ansible_network_os | default(''))"
+
+- name: Configure L2 interfaces (Juniper Junos)
+  juniper.device.junos_l2_interfaces:
+    config: "{{ _l2_config }}"
+    state: merged
+  when:
+    - interfaces | default([]) | length > 0
+    - _l2_config | default([]) | length > 0
+    - "'junos' in (ansible_network_os | default('')) or 'juniper' in (ansible_network_os | default(''))"

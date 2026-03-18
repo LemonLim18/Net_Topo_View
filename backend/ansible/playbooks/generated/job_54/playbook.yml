@@ -1,0 +1,16 @@
+---
+# Huawei VRP only. Same behavior as multi_vendor: VLAN-only when no interfaces; data-driven interfaces when intent has them.
+# Variables: vlan_id, vlan_name, target_hosts, interfaces_config_with_vlan (from get_template_vars).
+- name: Configure VLANs on access switches
+  hosts: "Acc_Huawei_3"
+  gather_facts: no
+  ignore_unreachable: true
+  tasks:
+    - name: Ensure VLAN 67 exists (Huawei VRP)
+      community.network.ce_config:
+        lines:
+          - vlan batch 67
+          - vlan 67
+          - name ShuYing
+      when: inventory_hostname in groups.get('vendor_huawei_vrp', [])
+

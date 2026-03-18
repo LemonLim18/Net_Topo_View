@@ -1,0 +1,12 @@
+---
+# generate_and_apply.yml (renderer output) — single reusable playbook that calls the vlan role.
+# Only passes vlan and interfaces; role uses ansible_network_os (inventory) for vendor conditionals.
+- name: Apply intent
+  hosts: "{{ target_hosts }}"
+  gather_facts: no
+  ignore_unreachable: true
+  roles:
+    - role: vlan
+      vars:
+        vlan: "{{ vlan }}"
+        interfaces: "{{ interfaces | default([]) }}"

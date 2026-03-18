@@ -8,16 +8,21 @@ Flow:
   4. Return the filled YAML string.
 
 This keeps the reference template structure intact; only variable values are substituted.
+
+Structured intent shape (LLM / API): vlan: { id, name }, target_hosts, interfaces: [] (optional).
+Validated against reference/vlan/intent_schema.json when feature is vlan.
 """
 
+import json
 import logging
 import yaml
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger("ansible.reference_resolver")
 
 _REFERENCE_DIR = Path(__file__).parent / "reference"
+_VLAN_INTENT_SCHEMA_PATH = _REFERENCE_DIR / "vlan" / "intent_schema.json"
 
 # Known features that have reference playbooks (subdirs under reference/)
 _KNOWN_FEATURES = frozenset({"vlan"})
@@ -28,6 +33,133 @@ _KNOWN_VENDORS = frozenset({"cisco_ios", "huawei_vrp", "juniper_junos"})
 # Multi-vendor template name (under reference/{feature}/multi_vendor/)
 _MULTI_VENDOR_TEMPLATE = "playbook_template.yml"
 _SINGLE_PLAYBOOK = "playbook.yml"
+
+
+def _normalize_intent_to_schema_shape(intent: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Normalize intent to the schema shape: vlan: { id, name }, target_hosts, interfaces.
+    Accepts intent with intent.vlan or intent.params (vlan_id, vlan_name, interfaces).
+    """
+    out: Dict[str, Any] = {}
+    params = dict(intent.get("params") or {})
+    if isinstance(intent.get("vlan"), dict):
+        v = intent["vlan"]
+        vid = v.get("id") or v.get("vlan_id")
+        vname = v.get("name") or v.get("vlan_name")
+    elif isinstance(params.get("vlan"), dict):
+        v = params["vlan"]
+        vid = v.get("id") or v.get("vlan_id")
+        vname = v.get("name") or v.get("vlan_name")
+    else:
+        vid = params.get("vlan_id")
+        vname = params.get("vlan_name")
+        if vid is None and params.get("vlans"):
+            vlans_list = params["vlans"]
+            if isinstance(vlans_list, list) and vlans_list and isinstance(vlans_list[0], dict):
+                first = vlans_list[0]
+                vid = first.get("id") or first.get("vlan_id")
+                vname = first.get("name") or first.get("vlan_name")
+    if vid is not None:
+        try:
+            out["vlan"] = {"id": int(vid), "name": str(vname or "").strip() or "VLAN"}
+        except (TypeError, ValueError):
+            out["vlan"] = {"id": 200, "name": str(vname or "").strip() or "VLAN"}
+    else:
+        out["vlan"] = {"id": 200, "name": str(vname or "").strip() or "VLAN"}
+
+    out["target_hosts"] = list(intent.get("target_hosts") or [])
+    raw_ifaces = intent.get("interfaces")
+    if raw_ifaces is None:
+        raw_ifaces = params.get("interfaces")
+    if isinstance(raw_ifaces, list):
+        interfaces: List[Dict[str, Any]] = []
+        # Top-level mode/trunk_vlans from LLM (config_engine vlan schema: interfaces as strings + mode + trunk_vlans)
+        global_mode = str(params.get("mode") or "access").strip().lower()
+        global_trunk_vlans = params.get("trunk_vlans")
+        allowed_list: List[int] = []
+        if global_trunk_vlans is not None:
+            if isinstance(global_trunk_vlans, list):
+                allowed_list = [int(x) for x in global_trunk_vlans if str(x).strip().isdigit()]
+            elif isinstance(global_trunk_vlans, str) and global_trunk_vlans.strip().lower() != "all":
+                for part in global_trunk_vlans.replace(" ", "").split(","):
+                    if part.isdigit():
+                        allowed_list.append(int(part))
+        for item in raw_ifaces:
+            if isinstance(item, dict):
+                interfaces.append({
+                    "name": str(item.get("name", "")).strip(),
+                    "mode": "trunk" if str(item.get("mode") or "").strip().lower() == "trunk" else "access",
+                    "access_vlan": item.get("access_vlan"),
+                    "allowed_vlans": item.get("allowed_vlans") or [],
+                    "native_vlan": item.get("native_vlan"),
+                })
+            else:
+                # LLM sent interface name as string; use global mode and trunk_vlans
+                name = str(item).strip()
+                if not name:
+                    continue
+                mode = "trunk" if global_mode == "trunk" else "access"
+                if mode == "trunk" and allowed_list:
+                    interfaces.append({"name": name, "mode": "trunk", "allowed_vlans": allowed_list})
+                else:
+                    interfaces.append({"name": name, "mode": "access"})
+        out["interfaces"] = [i for i in interfaces if i.get("name")]
+    else:
+        out["interfaces"] = []
+    return out
+
+
+def get_vlan_interfaces_summary(intent: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """
+    Return a list of { "interface": name, "mode": "access"|"trunk", "vlans": [id, ...] }
+    from intent (for preview/reasoning display). Uses same normalization as template fill.
+    """
+    normalized = _normalize_intent_to_schema_shape(intent)
+    out: List[Dict[str, Any]] = []
+    for i in normalized.get("interfaces") or []:
+        name = (i.get("name") or "").strip()
+        if not name:
+            continue
+        mode = "trunk" if str(i.get("mode") or "").strip().lower() == "trunk" else "access"
+        if mode == "trunk":
+            vlans = i.get("allowed_vlans") or []
+            if isinstance(vlans, str):
+                vlans = [int(x) for x in str(vlans).replace(" ", "").split(",") if str(x).strip().isdigit()]
+        else:
+            av = i.get("access_vlan")
+            vlans = [int(av)] if av is not None else []
+        out.append({"interface": name, "mode": mode, "vlans": vlans if isinstance(vlans, list) else list(vlans)})
+    return out
+
+
+def validate_vlan_intent(intent: Dict[str, Any]) -> Tuple[bool, Optional[List[str]]]:
+    """
+    Validate intent against reference/vlan/intent_schema.json.
+    Intent can be in API shape (params, target_hosts) or schema shape (vlan, target_hosts, interfaces).
+    Returns (True, None) if valid, (False, list of error messages) if invalid.
+    """
+    normalized = _normalize_intent_to_schema_shape(intent)
+    if not _VLAN_INTENT_SCHEMA_PATH.exists():
+        return True, None
+    try:
+        import jsonschema
+    except ImportError:
+        return True, None
+    try:
+        schema = json.loads(_VLAN_INTENT_SCHEMA_PATH.read_text(encoding="utf-8"))
+        jsonschema.validate(instance=normalized, schema=schema)
+        return True, None
+    except json.JSONDecodeError as e:
+        return False, [f"Intent schema file invalid: {e}"]
+    except jsonschema.ValidationError as e:
+        errors = []
+        for err in (getattr(e, "errors", None) or [e]):
+            path = "/".join(str(p) for p in (getattr(err, "path", None) or ()))
+            msg = getattr(err, "message", str(err))
+            errors.append(f"{msg}" + (f" at {path}" if path else ""))
+        return False, errors if errors else [str(e)]
+    except Exception as e:
+        return False, [str(e)]
 
 
 def resolve_playbook_template_path(
@@ -131,52 +263,48 @@ def get_template_vars(intent: Dict[str, Any], _template_content: str) -> Dict[st
     """
     Build the variable dict for template rendering from intent.
 
-    Uses intent.params (e.g. vlan_id, vlan_name, interfaces, mode) and provides
-    defaults so the template renders without missing key errors.
+    Accepts intent in API shape (params.vlan_id, params.vlan_name, params.interfaces)
+    or schema shape (vlan: { id, name }, target_hosts, interfaces).
+    Exposes: vlan_id, vlan_name, vlan (dict), interfaces (schema-shaped list),
+    interfaces_config_with_vlan (module-ready), target_hosts.
     """
-    params = dict(intent.get("params") or {})
-    # vlan_id / vlan_name: from flat params or from vlans[0] (schema shape)
-    vlans_list = params.get("vlans") or []
-    if isinstance(vlans_list, list) and vlans_list and isinstance(vlans_list[0], dict):
-        first = vlans_list[0]
-        params.setdefault("vlan_id", str((first.get("id") or first.get("vlan_id") or "200")).strip())
-        params.setdefault("vlan_name", str((first.get("name") or first.get("vlan_name") or "TEST")).strip())
-    vlan_id = params.get("vlan_id")
-    if vlan_id is not None:
-        params["vlan_id"] = str(vlan_id).strip()
-    else:
-        params.setdefault("vlan_id", "200")
-    vlan_name = params.get("vlan_name")
-    if vlan_name is not None:
-        params["vlan_name"] = str(vlan_name).strip()
-    else:
-        params.setdefault("vlan_name", "TEST")
+    normalized = _normalize_intent_to_schema_shape(intent)
+    vlan_dict = normalized["vlan"]
+    schema_interfaces = normalized["interfaces"]
+    vlan_id_str = str(vlan_dict["id"]).strip()
+    vlan_name_str = str(vlan_dict.get("name") or "VLAN").strip()
 
-    # Scenario-based interfaces: list of { name, mode [, trunk_vlans ] } for ios_l2_interfaces
-    raw_interfaces = params.get("interfaces")
-    if isinstance(raw_interfaces, list) and raw_interfaces:
-        interface_names = [str(x).strip() for x in raw_interfaces if str(x).strip()]
-    else:
-        interface_names = ["GigabitEthernet0/1", "GigabitEthernet0/2"]
+    params: Dict[str, Any] = {
+        "vlan_id": vlan_id_str,
+        "vlan_name": vlan_name_str,
+        "vlan": vlan_dict,
+        "interfaces": schema_interfaces,
+    }
+    params["configure_interfaces"] = bool(schema_interfaces)
 
-    mode = str(params.get("mode") or "access").strip().lower()
-    if mode not in ("access", "trunk"):
-        mode = "access"
-
-    vlan_id_str = str(params.get("vlan_id", "200")).strip()
     interfaces_config: List[Dict[str, Any]] = []
     interfaces_config_with_vlan: List[Dict[str, Any]] = []
-
-    for name in interface_names:
+    for i in schema_interfaces:
+        name = (i.get("name") or "").strip()
+        if not name:
+            continue
+        mode = "trunk" if str(i.get("mode") or "").strip().lower() == "trunk" else "access"
         interfaces_config.append({"name": name, "mode": mode})
         if mode == "access":
+            access_vlan = i.get("access_vlan")
+            vid = str(access_vlan if access_vlan is not None else vlan_dict["id"]).strip()
             interfaces_config_with_vlan.append({
                 "name": name,
                 "mode": "access",
-                "access": {"vlan": vlan_id_str},
+                "access": {"vlan": vid},
             })
         else:
-            trunk_vlans = str(params.get("trunk_vlans") or "all").strip()
+            allowed = i.get("allowed_vlans")
+            trunk_vlans = "all"
+            if isinstance(allowed, list) and allowed:
+                trunk_vlans = ",".join(str(x) for x in allowed)
+            elif isinstance(allowed, str):
+                trunk_vlans = allowed
             interfaces_config_with_vlan.append({
                 "name": name,
                 "mode": "trunk",
@@ -185,11 +313,12 @@ def get_template_vars(intent: Dict[str, Any], _template_content: str) -> Dict[st
 
     params["interfaces_config"] = interfaces_config
     params["interfaces_config_with_vlan"] = interfaces_config_with_vlan
-    # Serialize for injection into playbook YAML (indent 10 spaces to align under config:)
     yaml_str = yaml.dump(interfaces_config_with_vlan, default_flow_style=False, sort_keys=False)
     params["interfaces_config_yaml"] = "\n".join("          " + line for line in yaml_str.strip().splitlines())
-    # Concrete host list so the filled playbook passes hosts alignment (reference format unchanged, only value)
-    target_hosts = intent.get("target_hosts") or []
+    # Indented YAML for config: key — must be indented more than "config:" (8 spaces) so YAML parses as key value
+    indent = "          "  # 10 spaces so value is under config:
+    params["interfaces_config_with_vlan_yaml"] = "\n".join(indent + line for line in yaml_str.strip().splitlines())
+    target_hosts = list(intent.get("target_hosts") or [])
     params["target_hosts"] = ",".join(str(h).strip() for h in target_hosts if str(h).strip())
     return params
 
@@ -244,6 +373,7 @@ def fill_playbook_from_reference(
     try:
         content = load_template(path)
         variables = get_template_vars(intent, content)
+        variables["vendors"] = [normalize_vendor(v) for v in vendors if v]
         return render_template(content, variables)
     except Exception as exc:
         logger.warning("Template fill failed for %s: %s", path, exc)

@@ -70,6 +70,13 @@ export function PlaybookStudioOverlay({
   const [addRefPath, setAddRefPath] = useState('');
   const [targetHosts, setTargetHosts] = useState<string[]>([]);
   const [newTargetHost, setNewTargetHost] = useState('');
+  const [resultPayload, setResultPayload] = useState<{
+    jobId: number;
+    content: string;
+    name: string;
+    entrypointPath?: string | null;
+    files?: AnsibleGeneratedArtifactFile[];
+  } | null>(null);
 
   const runPreview = useCallback(async () => {
     if (!intentDescription.trim()) return;
@@ -175,14 +182,15 @@ export function PlaybookStudioOverlay({
       });
       setGeneratedContent(result.playbook ?? '');
       setGeneratedJobId(result.job_id ?? null);
-      setStep('result');
-      onPlaybookReady({
+      setResultPayload({
         jobId: result.job_id,
-        content: result.playbook,
+        content: result.playbook ?? '',
         name: (result.entrypoint_path || `playbook_${result.job_id}.yml`).split('/').pop() ?? 'playbook.yml',
         entrypointPath: result.entrypoint_path,
         files: result.files,
       });
+      setStep('result');
+      // Stay on modal so user can compare template vs generated; they click Confirm to proceed
     } catch (e: unknown) {
       const err = e as { message?: string; detail?: { message?: string; issues?: string[] } };
       const msg =
@@ -358,46 +366,66 @@ export function PlaybookStudioOverlay({
           )}
 
           {(step === 'result' || (step === 'generating' && referenceContent)) && (
-            <div className="grid grid-cols-2 gap-3 h-[420px]">
-              <div className="flex flex-col rounded-lg border border-base-300 overflow-hidden">
-                <div className="px-2 py-1.5 bg-base-300 text-xs font-semibold text-base-content/80 flex items-center gap-1">
-                  <FileCode className="w-3 h-3" /> Reference template (structure only — red keys unchanged)
-                </div>
-                <div className="flex-1 min-h-0">
-                  <Editor
-                    height="100%"
-                    defaultLanguage="yaml"
-                    value={referenceContent}
-                    theme="vs-dark"
-                    options={{ readOnly: true, wordWrap: 'on', minimap: { enabled: false } }}
-                  />
-                </div>
-              </div>
-              <div className="flex flex-col rounded-lg border border-base-300 overflow-hidden">
-                <div className="px-2 py-1.5 bg-primary/20 text-xs font-semibold text-primary flex items-center gap-1">
-                  <ChevronRight className="w-3 h-3" /> Generated playbook (values filled — green)
-                  {generatedJobId != null && (
-                    <span className="ml-1 opacity-80">(Job #{generatedJobId})</span>
-                  )}
-                </div>
-                <div className="flex-1 min-h-0 flex items-center justify-center bg-base-200">
-                  {step === 'generating' ? (
-                    <div className="flex flex-col items-center gap-2 text-base-content/60">
-                      <Loader2 className="w-8 h-8 text-primary animate-spin" />
-                      <span className="text-sm">Generating…</span>
-                    </div>
-                  ) : (
+            <>
+              <div className="grid grid-cols-2 gap-3 h-[420px]">
+                <div className="flex flex-col rounded-lg border border-base-300 overflow-hidden">
+                  <div className="px-2 py-1.5 bg-base-300 text-xs font-semibold text-base-content/80 flex items-center gap-1">
+                    <FileCode className="w-3 h-3" /> Reference template (structure only — red keys unchanged)
+                  </div>
+                  <div className="flex-1 min-h-0">
                     <Editor
                       height="100%"
                       defaultLanguage="yaml"
-                      value={generatedContent}
+                      value={referenceContent}
                       theme="vs-dark"
                       options={{ readOnly: true, wordWrap: 'on', minimap: { enabled: false } }}
                     />
-                  )}
+                  </div>
+                </div>
+                <div className="flex flex-col rounded-lg border border-base-300 overflow-hidden">
+                  <div className="px-2 py-1.5 bg-primary/20 text-xs font-semibold text-primary flex items-center gap-1">
+                    <ChevronRight className="w-3 h-3" /> Generated playbook (values filled — green)
+                    {generatedJobId != null && (
+                      <span className="ml-1 opacity-80">(Job #{generatedJobId})</span>
+                    )}
+                  </div>
+                  <div className="flex-1 min-h-0 flex items-center justify-center bg-base-200">
+                    {step === 'generating' ? (
+                      <div className="flex flex-col items-center gap-2 text-base-content/60">
+                        <Loader2 className="w-8 h-8 text-primary animate-spin" />
+                        <span className="text-sm">Generating…</span>
+                      </div>
+                    ) : (
+                      <Editor
+                        height="100%"
+                        defaultLanguage="yaml"
+                        value={generatedContent}
+                        theme="vs-dark"
+                        options={{ readOnly: true, wordWrap: 'on', minimap: { enabled: false } }}
+                      />
+                    )}
+                  </div>
                 </div>
               </div>
-            </div>
+              {step === 'result' && resultPayload && (
+                <div className="flex justify-end gap-2 mt-3 pt-3 border-t border-base-300">
+                  <button type="button" className="btn btn-ghost btn-sm" onClick={onClose}>
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-primary btn-sm gap-1"
+                    onClick={() => {
+                      onPlaybookReady(resultPayload);
+                      setResultPayload(null);
+                      onClose();
+                    }}
+                  >
+                    <Check className="w-3.5 h-3.5" /> Confirm & use this playbook
+                  </button>
+                </div>
+              )}
+            </>
           )}
 
           {step === 'error' && (

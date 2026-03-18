@@ -1,0 +1,33 @@
+---
+# VLAN 30 named HR on target hosts.
+# LLM provides intent (vlan id/name, interfaces list). Template does not invent: interfaces empty => no interface config.
+# Only vendors present in target hosts are included (vendors list).
+- name: Configure VLANs on access switches
+  hosts: "Acc_Cisco_1,Acc_Cisco_2,Acc_Huawei_3"
+  gather_facts: no
+  ignore_unreachable: true
+  tasks:
+
+    - name: Ensure VLAN 30 exists (Cisco IOS)
+      cisco.ios.ios_vlans:
+        config:
+          - vlan_id: "30"
+            name: "HR"
+            state: active
+        state: merged
+      when: inventory_hostname in groups.get('vendor_cisco_ios', [])
+
+
+
+
+    - name: Ensure VLAN 30 exists (Huawei VRP)
+      community.network.ce_config:
+        lines:
+          - vlan batch 30
+          - vlan 30
+          - name HR
+      when: inventory_hostname in groups.get('vendor_huawei_vrp', [])
+
+
+
+

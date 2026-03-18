@@ -1,5 +1,6 @@
 ---
-# Same structure as job_15 — Huawei VRP section only. Only values (vlan_id, vlan_name, target_hosts) are substituted.
+# Huawei VRP only. Same behavior as multi_vendor: VLAN-only when no interfaces; data-driven interfaces when intent has them.
+# Variables: vlan_id, vlan_name, target_hosts, interfaces_config_with_vlan (from get_template_vars).
 - name: Configure VLANs on access switches
   hosts: "{{ target_hosts }}"
   gather_facts: no
@@ -13,18 +14,25 @@
           - name {{ vlan_name }}
       when: inventory_hostname in groups.get('vendor_huawei_vrp', [])
 
-    - name: Configure access VLAN on Gi1/0/1 (Huawei VRP)
+{% for iface in interfaces_config_with_vlan %}
+{% if (iface.mode | default('access')) == 'access' %}
+    - name: Configure {{ iface.name }} as access VLAN {{ vlan_id }} (Huawei VRP)
       community.network.ce_config:
         lines:
           - port link-type access
-          - port default vlan {{ vlan_id }}
-        parents: interface GigabitEthernet1/0/1
+          - port default vlan {{ iface.access.vlan }}
+        parents: interface {{ iface.name }}
       when: inventory_hostname in groups.get('vendor_huawei_vrp', [])
-
-    - name: Configure access VLAN on Gi1/0/2 (Huawei VRP)
+{% endif %}
+{% endfor %}
+{% for iface in interfaces_config_with_vlan %}
+{% if (iface.mode | default('access')) == 'trunk' %}
+    - name: Configure {{ iface.name }} as trunk (Huawei VRP)
       community.network.ce_config:
         lines:
-          - port link-type access
-          - port default vlan {{ vlan_id }}
-        parents: interface GigabitEthernet1/0/2
+          - port link-type trunk
+          - port trunk allow-pass vlan {{ iface.trunk.trunk_vlans }}
+        parents: interface {{ iface.name }}
       when: inventory_hostname in groups.get('vendor_huawei_vrp', [])
+{% endif %}
+{% endfor %}

@@ -80,6 +80,7 @@ def _run_playbook(
             "[defaults]\n"
             "host_key_checking = False\n"
             "gathering = explicit\n"
+            "deprecation_warnings = False\n"
             "[ssh_connection]\n"
             "ssh_args = -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "
             "-o KexAlgorithms=+diffie-hellman-group-exchange-sha1,diffie-hellman-group14-sha1,diffie-hellman-group1-sha1 "
@@ -109,6 +110,7 @@ def _run_playbook(
         env = os.environ.copy()
         env["ANSIBLE_HOST_KEY_CHECKING"] = "False"
         env["ANSIBLE_CONFIG"] = str(ansible_cfg.resolve())
+        env["ANSIBLE_DEPRECATION_WARNINGS"] = "False"
         # NETCONF/SSH persistent connection defaults are 30s; Huawei is often slower
         env.setdefault("ANSIBLE_PERSISTENT_CONNECT_TIMEOUT", "60")
         env.setdefault("ANSIBLE_PERSISTENT_COMMAND_TIMEOUT", "90")

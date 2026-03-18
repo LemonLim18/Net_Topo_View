@@ -1,5 +1,6 @@
 ---
-# Same structure as job_15 — Cisco IOS section only. Only values (vlan_id, vlan_name, target_hosts) are substituted.
+# Cisco IOS only. Same behavior as multi_vendor: VLAN-only when no interfaces; data-driven interfaces when intent has them.
+# Variables: vlan_id, vlan_name, target_hosts, interfaces_config_with_vlan (from get_template_vars).
 - name: Configure VLANs on access switches
   hosts: "{{ target_hosts }}"
   gather_facts: no
@@ -8,22 +9,17 @@
     - name: Ensure VLAN {{ vlan_id }} exists (Cisco IOS)
       cisco.ios.ios_vlans:
         config:
-          - vlan_id: '{{ vlan_id }}'
-            name: '{{ vlan_name }}'
+          - vlan_id: "{{ vlan_id }}"
+            name: "{{ vlan_name }}"
             state: active
         state: merged
       when: inventory_hostname in groups.get('vendor_cisco_ios', [])
 
-    - name: Configure access VLAN on Gi0/1 and Gi0/2 (Cisco IOS)
+{% if interfaces_config_with_vlan | length > 0 %}
+    - name: Configure interfaces (Cisco IOS)
       cisco.ios.ios_l2_interfaces:
         config:
-          - name: GigabitEthernet0/1
-            mode: access
-            access:
-              vlan: '{{ vlan_id }}'
-          - name: GigabitEthernet0/2
-            mode: access
-            access:
-              vlan: '{{ vlan_id }}'
+{{ interfaces_config_with_vlan_yaml }}
         state: merged
       when: inventory_hostname in groups.get('vendor_cisco_ios', [])
+{% endif %}

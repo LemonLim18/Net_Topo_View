@@ -2,6 +2,8 @@
 
 **This is the canonical reference for "configure VLAN on access switches" with mixed vendors.** Use this pattern (and the accompanying `playbook_template.yml`) for RAG retrieval and for LLM-generated playbooks so the result matches the job_15-style, confirmed-operational playbook.
 
+**Intent rule:** The LLM outputs structured intent only (vlan id/name, target_hosts, interfaces). The template does **not** invent intent: if the user did not specify interfaces, intent has `interfaces: []` and the playbook only runs "Ensure VLAN exists" tasks. If the user specifies interfaces (e.g. "assign Gi0/1 as access VLAN"), intent has `interfaces: [{ name, mode, access.vlan }]` and the same template runs interface config. One template, data-driven.
+
 Use this pattern when one playbook targets **all access switches** (Cisco, Huawei, Juniper) in a single play. Connection and `ansible_network_os` come from the pipeline inventory per host; do not use `community.network.network_config` (module does not exist).
 
 ## Play structure
@@ -19,6 +21,33 @@ Use this pattern when one playbook targets **all access switches** (Cisco, Huawe
 ## Inventory
 
 Pipeline builds inventory with per-host `ansible_connection`, `ansible_network_os`, and vendor groups (`vendor_cisco_ios`, `vendor_huawei_vrp`, `vendor_juniper_junos`). No need to set `connection:` in the play when using this inventory.
+
+## Intent schema and validation
+
+Structured intent (LLM/API) is validated against `reference/vlan/intent_schema.json`:
+
+- **vlan:** `{ id: 1–4094, name?: string }` (required)
+- **target_hosts:** array of hostnames (required)
+- **interfaces:** array of `{ name, mode: "access"|"trunk", access_vlan?, allowed_vlans?, native_vlan? }` (optional; use `[]` when user did not request specific ports)
+
+On validation failure the API returns 422 with `issues` listing schema errors.
+
+## Role-based playbook (optional)
+
+`playbook_with_role.yml` (generate_and_apply style) is a single play that passes only **vlan** and **interfaces** to `role: vlan`. The role is vendor-aware via **ansible_network_os** (inventory host vars), not via a `vendors` list:
+
+- **When conditions:** `'cisco' in ansible_network_os or ansible_network_os is search('ios')`, same for huawei/ce and junos/juniper.
+- **Interfaces:** Configured only when `interfaces | length > 0`; the role builds module-specific L2 config from the schema-shaped `interfaces` (name, mode, access_vlan, allowed_vlans, native_vlan).
+
+Pipeline inventory must set `ansible_network_os` per host (e.g. `ios`, `ce`, `junos`). Set `ANSIBLE_ROLES_PATH` or copy the role so `role: vlan` is found at run time.
+
+## Guardrails
+
+- **Validation:** Intent validated against JSON schema; invalid intent returns 422 (no playbook generated).
+- **Conservative defaults:** No interface config unless the user provided `interfaces`; template does not invent ports (e.g. no default Gi0/1, Gi0/2).
+- **Dry-run first:** Pipeline should run the playbook with `--check` before apply.
+- **Approval:** Show generated playbook (diff) to operator to accept/reject before apply.
+- **Lint/tests:** Use ansible-lint, yamllint, and role tests (e.g. Molecule) in CI.
 
 ## Status
 

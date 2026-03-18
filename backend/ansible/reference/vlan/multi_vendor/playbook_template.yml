@@ -1,34 +1,32 @@
 ---
-# VLAN {{ vlan_id }} named {{ vlan_name }} on access switches; Cisco Gi0/1, Gi0/2; Huawei Gi1/0/1, Gi1/0/2
-# Connection/ansible_network_os come from the pipeline inventory (build_inventory sets them per host).
+# VLAN {{ vlan_id }} named {{ vlan_name }} on target hosts.
+# LLM provides intent (vlan id/name, interfaces list). Template does not invent: interfaces empty => no interface config.
+# Only vendors present in target hosts are included (vendors list).
 - name: Configure VLANs on access switches
   hosts: "{{ target_hosts }}"
   gather_facts: no
   ignore_unreachable: true
   tasks:
+{% if 'cisco_ios' in vendors %}
     - name: Ensure VLAN {{ vlan_id }} exists (Cisco IOS)
       cisco.ios.ios_vlans:
         config:
-          - vlan_id: '{{ vlan_id }}'
-            name: '{{ vlan_name }}'
+          - vlan_id: "{{ vlan_id }}"
+            name: "{{ vlan_name }}"
             state: active
         state: merged
       when: inventory_hostname in groups.get('vendor_cisco_ios', [])
 
-    - name: Configure access VLAN on Gi0/1 and Gi0/2 (Cisco IOS)
+{% if interfaces_config_with_vlan | length > 0 %}
+    - name: Configure interfaces (Cisco IOS)
       cisco.ios.ios_l2_interfaces:
         config:
-          - name: GigabitEthernet0/1
-            mode: access
-            access:
-              vlan: '{{ vlan_id }}'
-          - name: GigabitEthernet0/2
-            mode: access
-            access:
-              vlan: '{{ vlan_id }}'
+{{ interfaces_config_with_vlan_yaml }}
         state: merged
       when: inventory_hostname in groups.get('vendor_cisco_ios', [])
-
+{% endif %}
+{% endif %}
+{% if 'huawei_vrp' in vendors %}
     - name: Ensure VLAN {{ vlan_id }} exists (Huawei VRP)
       community.network.ce_config:
         lines:
@@ -37,38 +35,44 @@
           - name {{ vlan_name }}
       when: inventory_hostname in groups.get('vendor_huawei_vrp', [])
 
-    - name: Configure access VLAN on Gi1/0/1 (Huawei VRP)
+{% for iface in interfaces_config_with_vlan %}
+{% if (iface.mode | default('access')) == 'access' %}
+    - name: Configure {{ iface.name }} as access VLAN {{ vlan_id }} (Huawei VRP)
       community.network.ce_config:
         lines:
           - port link-type access
-          - port default vlan {{ vlan_id }}
-        parents: interface GigabitEthernet1/0/1
+          - port default vlan {{ iface.access.vlan }}
+        parents: interface {{ iface.name }}
       when: inventory_hostname in groups.get('vendor_huawei_vrp', [])
-
-    - name: Configure access VLAN on Gi1/0/2 (Huawei VRP)
+{% endif %}
+{% endfor %}
+{% for iface in interfaces_config_with_vlan %}
+{% if (iface.mode | default('access')) == 'trunk' %}
+    - name: Configure {{ iface.name }} as trunk (Huawei VRP)
       community.network.ce_config:
         lines:
-          - port link-type access
-          - port default vlan {{ vlan_id }}
-        parents: interface GigabitEthernet1/0/2
+          - port link-type trunk
+          - port trunk allow-pass vlan {{ iface.trunk.trunk_vlans }}
+        parents: interface {{ iface.name }}
       when: inventory_hostname in groups.get('vendor_huawei_vrp', [])
-
+{% endif %}
+{% endfor %}
+{% endif %}
+{% if 'juniper_junos' in vendors %}
     - name: Ensure VLAN {{ vlan_id }} exists (Juniper Junos)
       juniper.device.junos_vlans:
         config:
-          - name: '{{ vlan_name }}'
-            vlan_id: '{{ vlan_id }}'
+          - name: "{{ vlan_name }}"
+            vlan_id: "{{ vlan_id }}"
         state: merged
       when: inventory_hostname in groups.get('vendor_juniper_junos', [])
 
-    - name: Configure access VLAN on ge-0/0/0 and ge-0/0/1 (Juniper Junos)
+{% if interfaces_config_with_vlan | length > 0 %}
+    - name: Configure interfaces (Juniper Junos)
       juniper.device.junos_l2_interfaces:
         config:
-          - name: ge-0/0/0
-            access:
-              vlan: '{{ vlan_id }}'
-          - name: ge-0/0/1
-            access:
-              vlan: '{{ vlan_id }}'
+{{ interfaces_config_with_vlan_yaml }}
         state: merged
       when: inventory_hostname in groups.get('vendor_juniper_junos', [])
+{% endif %}
+{% endif %}

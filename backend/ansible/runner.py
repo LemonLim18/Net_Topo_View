@@ -300,6 +300,15 @@ def run_playbook(
         env_dir = priv / "env"
         env_dir.mkdir(exist_ok=True)
 
+        # Force Ansible to use project config and suppress deprecation warnings (stderr noise)
+        envvars_path = env_dir / "envvars"
+        envvars_lines = []
+        if envvars_path.exists():
+            envvars_lines = envvars_path.read_text(encoding="utf-8").strip().splitlines()
+        envvars_lines.append(f"ANSIBLE_CONFIG={(project / 'ansible.cfg').resolve()}")
+        envvars_lines.append("ANSIBLE_DEPRECATION_WARNINGS=False")
+        envvars_path.write_text("\n".join(envvars_lines), encoding="utf-8")
+
         # Extra vars as JSON file (avoids shell escaping issues)
         ev = dict(extra_vars or {})
         if job_id is not None:
@@ -410,6 +419,8 @@ runpy.run_module("ansible.cli.playbook", run_name="__main__")
             try:
                 env = os.environ.copy()
                 env["PYTHONUTF8"] = "1"  # Ansible requires UTF-8 locale; Windows default is CP1252
+                env["ANSIBLE_CONFIG"] = str((project / "ansible.cfg").resolve())
+                env["ANSIBLE_DEPRECATION_WARNINGS"] = "False"
                 proc = subprocess.run(
                     cmd,
                     cwd=str(project),

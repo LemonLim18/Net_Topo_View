@@ -32,7 +32,13 @@ from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel
 
 from ansible.bundle_artifacts import AnsibleArtifactBundle, bundle_from_dict
-from ansible.reference_resolver import fill_playbook_from_reference, vendors_from_db, vendors_from_planning_context
+from ansible.reference_resolver import (
+    fill_playbook_from_reference,
+    get_vlan_interfaces_summary,
+    validate_vlan_intent,
+    vendors_from_db,
+    vendors_from_planning_context,
+)
 from ansible.planning_context import (
     build_scoped_planning_context,
     infer_vendor_hint,
@@ -103,6 +109,54 @@ def _looks_like_device_hostname(s: str) -> bool:
     return bool(s[0].isalpha() and re.match(r"^[a-z0-9_\-]+$", s, re.IGNORECASE))
 
 
+def _extract_vlan_interface_from_description(intent_description: str) -> Optional[Dict[str, Any]]:
+    """
+    When the LLM does not fill parameters.interfaces, try to extract interface + trunk/access
+    from the prompt text (e.g. "configure GigabitEthernet1/0/1 as trunk allowed VLANs 10,20,67").
+    Returns a dict to merge into intent.params: interfaces, mode, trunk_vlans (or None if nothing found).
+    """
+    if not (intent_description or "").strip():
+        return None
+    text = intent_description.strip()
+    # Interface name: GigabitEthernet1/0/1, Gi1/0/1, GE1/0/1, Ethernet0/1, 1/0/1, etc.
+    iface_match = re.search(
+        r"\b(?:GigabitEthernet|Gi|GE|Ethernet|Eth|TenGigabitEthernet|Te|FastEthernet|Fa)\s*(\d+(?:/\d+)+|\d+)\b",
+        text,
+        re.IGNORECASE,
+    )
+    if not iface_match:
+        # Huawei-style: "1/0/1" or "GigabitEthernet1/0/1" as one word
+        iface_match = re.search(r"\b(\d+/\d+(?:/\d+)?)\b", text)
+    if not iface_match:
+        return None
+    iface_name = iface_match.group(0).replace(" ", "")
+    # Huawei-style "1/0/1" alone: use as-is (VRP accepts it) or prepend GigabitEthernet
+    if re.match(r"^\d+/\d+", iface_name) and "GigabitEthernet" not in text[: max(0, iface_match.start())].lower():
+        if "gigabit" in text.lower() or "ge " in text.lower() or " gi" in text.lower():
+            iface_name = "GigabitEthernet" + iface_name
+    # Trunk + allowed VLANs (only take list that appears after "trunk" to avoid capturing VLAN id from "VLAN 67")
+    trunk = "trunk" in text.lower()
+    allowed: List[int] = []
+    if trunk:
+        trunk_pos = text.lower().find("trunk")
+        tail = text[trunk_pos:] if trunk_pos >= 0 else text
+        m = re.search(r"(?:allowed\s+)?(?:VLANs?\s+)?(\d+(?:\s*,\s*\d+)+)", tail, re.IGNORECASE)
+        if m:
+            for part in re.split(r"\s*,\s*", m.group(1)):
+                if part.strip().isdigit():
+                    allowed.append(int(part.strip()))
+    if trunk and allowed:
+        return {
+            "interfaces": [iface_name],
+            "mode": "trunk",
+            "trunk_vlans": ",".join(str(v) for v in allowed),
+        }
+    if not trunk and iface_match:
+        # Access: interface mentioned without trunk -> access with VLAN from context (we don't have vlan id here; template will use vlan_id)
+        return {"interfaces": [iface_name], "mode": "access"}
+    return None
+
+
 def _resolve_target_hosts(target_hosts: List[str]) -> List[str]:
     """
     Expand semantic group names (all, access, switches, core, distribution) to
@@ -150,7 +204,13 @@ def _resolve_target_hosts(target_hosts: List[str]) -> List[str]:
                     seen.add(h)
                     expanded.append(h)
             continue
-        if t in ("access", "switches", "access_switches"):
+        if t == "switches":
+            for h in all_hostnames:
+                if h not in seen:
+                    seen.add(h)
+                    expanded.append(h)
+            continue
+        if t in ("access", "access_switches"):
             for h in all_hostnames:
                 if is_access(h) and h not in seen:
                     seen.add(h)
@@ -186,6 +246,77 @@ def _resolve_target_hosts(target_hosts: List[str]) -> List[str]:
                     seen.add(orig)
                     expanded.append(orig)
     return expanded if expanded else []
+
+
+def _deduce_target_devices(intent_description: str, resolved_hosts: List[str]) -> dict[str, Any]:
+    """
+    Build a backend-only explanation of how target devices were inferred.
+
+    The goal is to keep device selection logic on the backend and return
+    a readable deduction trail to preview / create-and-plan responses.
+    """
+    lower = (intent_description or "").lower()
+    clues: list[str] = []
+    if "access" in lower:
+        clues.append("role=access")
+    if "distribution" in lower or "dist" in lower:
+        clues.append("role=distribution")
+    if "core" in lower:
+        clues.append("role=core")
+    if re.search(r"\b(?:switch|switches)\b", lower):
+        clues.append("keyword=switches")
+    selector_ints = _extract_requested_numbers(intent_description)
+    if not selector_ints:
+        # Fallback: single number after switch keyword
+        selector_match = re.search(
+            r"\b(?:access\s+switch(?:es)?|distribution\s+switch(?:es)?|core\s+switch(?:es)?|switch(?:es)?)\s+(\d+)",
+            lower,
+        )
+        selector_ints = [int(selector_match.group(1))] if selector_match else []
+    selector_numbers = [str(n) for n in selector_ints]
+    if selector_numbers:
+        clues.append(f"indices={', '.join(selector_numbers)}")
+
+    if not resolved_hosts:
+        return {
+            "deduced": [],
+            "why": "No target devices could be resolved from the prompt or inventory.",
+            "clues": clues,
+            "mapping": [],
+        }
+
+    why_parts: list[str] = []
+    if "keyword=switches" in clues and len(resolved_hosts) > 1:
+        why_parts.append("The prompt used a broad switch keyword, so the backend kept the resolved switch set.")
+    if any(c.startswith("role=") for c in clues):
+        why_parts.append("Role keywords were matched against inventory roles and hostname prefixes.")
+    if selector_numbers:
+        why_parts.append("Numeric selectors were treated as positional filters within the matched role group.")
+    if not why_parts:
+        why_parts.append("The backend matched the device names/roles directly from inventory.")
+
+    mapping: list[dict[str, Any]] = []
+    lower_hosts = (intent_description or "").lower()
+    for host in resolved_hosts:
+        host_lower = host.lower()
+        host_map: list[str] = []
+        num = _number_from_hostname(host)
+        if "access" in lower_hosts and ("acc" in host_lower or "access" in host_lower):
+            host_map.append("matched role=access")
+        if "distribution" in lower_hosts and ("dist" in host_lower or "distribution" in host_lower):
+            host_map.append("matched role=distribution")
+        if "core" in lower_hosts and ("core" in host_lower):
+            host_map.append("matched role=core")
+        if num is not None and selector_ints and num in selector_ints:
+            host_map.append(f"matched numeric selector {num}")
+        mapping.append({"hostname": host, "reason": "; ".join(host_map) if host_map else "matched by inventory similarity"})
+
+    return {
+        "deduced": resolved_hosts,
+        "why": " ".join(why_parts),
+        "clues": clues,
+        "mapping": mapping,
+    }
 
 
 def _build_topo_from_db(hostnames: List[str]) -> dict:
@@ -272,16 +403,33 @@ def _resolve_backend_intent_request(req, user: dict) -> tuple["PlanAnsibleReques
         parsed.feature = str(req.feature).strip()
     if req.vendor:
         parsed.vendor = normalize_vendor(req.vendor)
-    if req.params:
-        parsed.parameters = dict(req.params)
-    if req.target_hosts:
+    if req.params is not None:
+        # Merge so request can override specific keys without wiping LLM output (e.g. empty {} from frontend)
+        base = dict(parsed.parameters or {})
+        for k, v in (req.params or {}).items():
+            base[k] = v
+        parsed.parameters = base
+    if parsed.resolved_devices:
+        parsed.resolved_devices = _resolve_target_hosts(parsed.resolved_devices)
+    elif req.target_hosts:
         parsed.scope.device_hostnames = list(req.target_hosts)
         parsed.scope.all_devices = False
         parsed.resolved_devices = _resolve_target_hosts(req.target_hosts)
-    else:
-        parsed.resolved_devices = _resolve_target_hosts(parsed.resolved_devices)
-
-    if not parsed.vendor:
+    device_deduction = _deduce_target_devices(req.intent_description, parsed.resolved_devices)
+    resolved_vendor = ""
+    if parsed.resolved_devices and _db:
+        vendors_in_targets: set[str] = set()
+        for host in parsed.resolved_devices:
+            dev = _db.get_device_by_hostname(host)
+            if dev and getattr(dev, "vendor", None):
+                v = normalize_vendor(dev.vendor)
+                if v:
+                    vendors_in_targets.add(v)
+        if len(vendors_in_targets) == 1:
+            resolved_vendor = next(iter(vendors_in_targets))
+    if resolved_vendor:
+        parsed.vendor = resolved_vendor
+    elif not parsed.vendor:
         parsed.vendor = infer_vendor_hint(parsed.resolved_devices, _db)
 
     if parsed.requires_disambiguation:
@@ -324,7 +472,9 @@ def _resolve_backend_intent_request(req, user: dict) -> tuple["PlanAnsibleReques
         model=req.model,
         ollama_base_url=req.ollama_base_url,
     )
-    return plan_req, parsed.model_dump(), policy
+    parsed_dict = parsed.model_dump()
+    parsed_dict["device_deduction"] = device_deduction
+    return plan_req, parsed_dict, policy
 
 
 async def _ensure_planning_context(
@@ -746,6 +896,22 @@ async def plan_ansible(
         vendors = vendors_from_db(resolved_hosts, _db)
     if not vendors and effective_vendor:
         vendors = [effective_vendor]
+
+    if is_vlan:
+        # When LLM did not fill interfaces, try to extract from prompt (e.g. "configure Gi1/0/1 as trunk allowed 10,20,67")
+        if not (intent.get("params") or {}).get("interfaces"):
+            extracted = _extract_vlan_interface_from_description(req.intent_description)
+            if extracted:
+                intent.setdefault("params", {}).update(extracted)
+        valid, errors = validate_vlan_intent(intent)
+        if not valid and errors:
+            raise HTTPException(
+                422,
+                detail={
+                    "message": "VLAN intent failed schema validation. Please fix the intent or provide clarification.",
+                    "issues": errors,
+                },
+            )
 
     template_filled = fill_playbook_from_reference(
         feature=req.feature or "",
@@ -2136,15 +2302,19 @@ def _number_from_hostname(hostname: str) -> Optional[int]:
 
 
 def _extract_requested_numbers(intent_description: str) -> List[int]:
-    """Parse '1, 2, and 3' or 'switch 1, 2, 3' -> [1, 2, 3]. Returns empty if no clear list."""
-    # Match "1, 2, 3" or "1, 2, and 3" or "switch 1, 2, 3" (and similar with more numbers)
-    m = re.search(r"(?:switch\s+)?(\d+)\s*,\s*(\d+)\s*,?\s*(?:and\s+)?(\d+)\b", intent_description, re.IGNORECASE)
+    """Parse device selector numbers only when the prompt clearly talks about switches/roles."""
+    lower = (intent_description or "").lower()
+    if not any(word in lower for word in ("switch", "switches", "access", "distribution", "core")):
+        return []
+    prefix = r"(?:switch(?:es)?|access\s+switch(?:es)?|distribution\s+switch(?:es)?|core\s+switch(?:es)?)\s+"
+    # Match "access switch 1, 2, and 3" or "switch 1, 2, 3"
+    m = re.search(prefix + r"(\d+)\s*,\s*(\d+)\s*,?\s*(?:and\s+)?(\d+)\b", intent_description, re.IGNORECASE)
     if m:
         return [int(m.group(1)), int(m.group(2)), int(m.group(3))]
-    # More flexible: any comma/and-separated list of numbers
-    m = re.search(r"(\d+)\s*(?:,\s*|\s+and\s+)(\d+)\s*(?:,\s*|\s+and\s+)(\d+)", intent_description, re.IGNORECASE)
+    # Match "access switch 1 and 2" or "switch 1, 2"
+    m = re.search(prefix + r"(\d+)\s*(?:,\s*|and\s+)(\d+)\b", intent_description, re.IGNORECASE)
     if m:
-        return [int(m.group(1)), int(m.group(2)), int(m.group(3))]
+        return [int(m.group(1)), int(m.group(2))]
     return []
 
 
@@ -2236,13 +2406,36 @@ def _preview_parse_and_rag(
         parsed_dict = parsed.model_dump()
         intent_type = getattr(parsed.intent_type, "value", parsed.intent_type)
         intent_action = parsed.action or "configure"
-        intent_feature = parsed.feature or "general"
+        intent_feature = (parsed.feature or "").strip() or (categories[0] if categories else "general")
         reasoning.append(
             "### 1. Intent\n"
             f"- **Type:** {intent_type} · **Action:** {intent_action}\n"
             f"- **Feature:** {intent_feature}\n"
             f"- **Categories (for templates):** {', '.join(categories) if categories else '—'}. You can add or remove above."
         )
+        # For VLAN, show which interfaces will be configured (mode + VLANs)
+        is_vlan = (parsed.feature or "").strip().lower() == "vlan" or any((c or "").strip().lower() == "vlan" for c in categories)
+        if is_vlan:
+            preview_intent = {
+                "params": dict(parsed_dict.get("parameters") or {}),
+                "target_hosts": list(parsed_dict.get("resolved_devices") or []),
+            }
+            if not preview_intent["params"].get("interfaces"):
+                extracted = _extract_vlan_interface_from_description(intent_description)
+                if extracted:
+                    preview_intent["params"].update(extracted)
+            ifaces_summary = get_vlan_interfaces_summary(preview_intent)
+            if ifaces_summary:
+                parsed_dict["interfaces_summary"] = ifaces_summary
+                lines = []
+                for s in ifaces_summary:
+                    vlan_str = ", ".join(str(v) for v in s.get("vlans") or [])
+                    mode = (s.get("mode") or "access").lower()
+                    lines.append(f"  - **{s.get('interface')}**: {mode}" + (f", VLANs {vlan_str}" if vlan_str else ""))
+                reasoning.append("- **Interfaces to configure:**\n" + "\n".join(lines))
+            else:
+                parsed_dict["interfaces_summary"] = []
+                reasoning.append("- **Interfaces to configure:** (none — VLAN creation only)")
         if parsed.intent_type in (IntentType.CONFIGURE, IntentType.DEPLOY):
             policy = _policy_validate_intent(
                 parsed.model_dump_json(),
@@ -2261,8 +2454,8 @@ def _preview_parse_and_rag(
     resolved: List[str] = list(parsed_dict.get("resolved_devices") or []) if parsed_dict else []
     if not resolved and target_hosts:
         resolved = _resolve_target_hosts(target_hosts)
-    # Fallback: when user clearly said "1, 2, and 3" (or "switch 1, 2, 3") but we got all access switches, take first N
-    resolved, subset_reason = _apply_numeric_subset_fallback(intent_description, resolved)
+    # Fallback only when the backend parser could not resolve anything at all.
+    subset_reason = ""
     scope_summary = _devices_mentioned_summary(parsed_dict, intent_description)
     # Section 2: Target devices (one block)
     devices_block = "### 2. Target devices\n"
@@ -2271,11 +2464,13 @@ def _preview_parse_and_rag(
     if scope_summary:
         devices_block += f"- {scope_summary}\n"
     devices_block += f"- **Resolved:** {', '.join(resolved) if resolved else '(none — will use \"all\")'}. You can change them in **Target inventory** below."
+    device_deduction = _deduce_target_devices(intent_description, resolved)
+    if device_deduction.get("mapping"):
+        devices_block += "\n- **Why these devices:**\n"
+        for item in device_deduction["mapping"]:
+            devices_block += f"  - {item.get('hostname')}: {item.get('reason')}\n"
     reasoning.append(devices_block)
 
-    effective_vendor = normalize_vendor(vendor or "")
-    if not effective_vendor and resolved and _db:
-        effective_vendor = normalize_vendor(infer_vendor_hint(resolved, _db) or "")
     vendors_in_targets: set[str] = set()
     if resolved and _db:
         for h in resolved:
@@ -2284,6 +2479,13 @@ def _preview_parse_and_rag(
                 v = normalize_vendor(dev.vendor)
                 if v:
                     vendors_in_targets.add(v)
+    effective_vendor = ""
+    if len(vendors_in_targets) == 1:
+        effective_vendor = next(iter(vendors_in_targets))
+    elif vendor:
+        effective_vendor = normalize_vendor(vendor)
+    elif resolved and _db:
+        effective_vendor = normalize_vendor(infer_vendor_hint(resolved, _db) or "")
     multi_vendor_targets = len(vendors_in_targets) > 1
     single_vendor = bool(effective_vendor and len(vendors_in_targets) <= 1)
     if multi_vendor_targets:
@@ -2372,6 +2574,7 @@ def _preview_parse_and_rag(
     else:
         reasoning.append("### 4. Reference templates (RAG)\n- RAG retriever is not available. Add reference templates manually if needed.")
 
+    parsed_dict["device_deduction"] = device_deduction
     return categories, references, parsed_dict, policy_approved, reasoning, resolved
 
 
