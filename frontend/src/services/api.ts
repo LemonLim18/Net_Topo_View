@@ -942,6 +942,15 @@ export const ansibleApi = {
       interfaces_disambiguation?: {
         question: string;
         devices: { hostname: string; interfaces: { name: string }[] }[];
+        validation_notice?: string;
+        invalid_entities?: {
+          hostname: string;
+          value: string;
+          kind: string;
+          message: string;
+          suggestions?: string[];
+        }[];
+        params_need_context_fix?: boolean;
       } | null;
       params_disambiguation?: {
         question: string;
@@ -955,6 +964,14 @@ export const ansibleApi = {
       };
       schema_editable_fields?: { field: string; label: string; required: boolean; type: string }[];
       interfaces_for_selection?: { question: string; devices: { hostname: string; interfaces: { name: string }[] }[] };
+      params_need_context_fix?: boolean;
+      devices_disambiguation?: {
+        ambiguous_devices?: string[];
+        missing_devices?: string[];
+        ask_user_selection?: boolean;
+        candidate_devices?: string[];
+        question?: string;
+      } | null;
     }>('/ansible/preview-intent', { method: 'POST', body: JSON.stringify(req), signal: opts?.signal }),
 
   /** List all reference playbook paths (for add-reference in Playbook Studio). */

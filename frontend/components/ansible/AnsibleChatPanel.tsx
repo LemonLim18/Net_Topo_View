@@ -207,6 +207,9 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
     intentText: string;
     /** Backend intent schema action (e.g. shutdown_interface vs configure_interface) for param key on submit. */
     schemaAction?: string;
+    validationNotice?: string;
+    invalidEntities?: { hostname: string; value: string; kind: string; message: string; suggestions?: string[] }[];
+    paramsNeedContextFix?: boolean;
   } | null>(null);
   const [selectedInterfaces, setSelectedInterfaces] = useState<Set<string>>(new Set());
   const [paramsDisambiguation, setParamsDisambiguation] = useState<{
@@ -577,19 +580,25 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
           setMessages(prev => prev.filter(m => m.id !== loadingId));
           setGenerating(false);
           const menuMsgId = crypto.randomUUID();
+          const vNotice = (ifaceDis as { validation_notice?: string }).validation_notice;
           setInterfaceDisambiguation({
             messageId: menuMsgId,
             question: ifaceDis.question || 'Please select the interfaces you want to shutdown.',
             devices: ifaceDis.devices,
             intentText: text,
             schemaAction: (res as { schema_action?: string })?.schema_action,
+            validationNotice: vNotice,
+            invalidEntities: (ifaceDis as { invalid_entities?: { hostname: string; value: string; kind: string; message: string; suggestions?: string[] }[] }).invalid_entities,
+            paramsNeedContextFix: Boolean((ifaceDis as { params_need_context_fix?: boolean }).params_need_context_fix),
           });
           // Require explicit selection (safer for shutdown; Gi0/1 vs Ethernet naming won't pre-check wrong set)
           setSelectedInterfaces(new Set());
           setMessages(prev => [...prev, {
             id: menuMsgId,
             role: 'assistant',
-            content: ifaceDis.question || 'Please select the interfaces to continue.',
+            content: vNotice
+              ? `${vNotice}\n\n${ifaceDis.question || 'Please select the interfaces to continue.'}`
+              : (ifaceDis.question || 'Please select the interfaces to continue.'),
             timestamp: Date.now(),
             interfaceDisambiguation: { question: ifaceDis.question, devices: ifaceDis.devices },
           }]);
@@ -728,18 +737,24 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
       setMessages(prev => prev.filter(m => m.id !== loadingId));
       if (ifaceDis?.devices?.length) {
         const menuMsgId = crypto.randomUUID();
+        const vNotice = (ifaceDis as { validation_notice?: string }).validation_notice;
         setInterfaceDisambiguation({
           messageId: menuMsgId,
           question: ifaceDis.question || 'Please select the interfaces you want to shutdown.',
           devices: ifaceDis.devices,
           intentText: clarifiedText,
           schemaAction: (res as { schema_action?: string })?.schema_action,
+          validationNotice: vNotice,
+          invalidEntities: (ifaceDis as { invalid_entities?: { hostname: string; value: string; kind: string; message: string; suggestions?: string[] }[] }).invalid_entities,
+          paramsNeedContextFix: Boolean((ifaceDis as { params_need_context_fix?: boolean }).params_need_context_fix),
         });
         setSelectedInterfaces(new Set());
         setMessages(prev => [...prev, {
           id: menuMsgId,
           role: 'assistant',
-          content: ifaceDis.question || 'Please select the interfaces to continue.',
+          content: vNotice
+            ? `${vNotice}\n\n${ifaceDis.question || 'Please select the interfaces to continue.'}`
+            : (ifaceDis.question || 'Please select the interfaces to continue.'),
           timestamp: Date.now(),
           interfaceDisambiguation: { question: ifaceDis.question, devices: ifaceDis.devices },
         }]);
@@ -1142,6 +1157,11 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
                     </div>
                   ) : (msg as any).interfaceDisambiguation && interfaceDisambiguation?.messageId === msg.id ? (
                     <div className="space-y-3">
+                      {interfaceDisambiguation.validationNotice ? (
+                        <div className="rounded-md border border-warning/60 bg-warning/10 px-3 py-2 text-sm text-warning-content whitespace-pre-line">
+                          {interfaceDisambiguation.validationNotice}
+                        </div>
+                      ) : null}
                       <div className="text-sm text-base-content/90">
                         {interfaceDisambiguation.question}
                       </div>
@@ -1208,15 +1228,45 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
                             abortControllerRef.current = ac;
                             try {
                               const { vendor, feature, target_hosts } = parseIntent(intentText);
-                              const ifaceParams =
-                                schemaAction === 'configure_interface'
-                                  ? {
-                                      interfaces: selected.map((name) => ({
-                                        name,
-                                        mode: 'access' as const,
-                                      })),
-                                    }
-                                  : { interfaces_to_shutdown: selected };
+                              const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                              const inferDirection = (ifaceName: string): 'in' | 'out' | null => {
+                                // Preserve in/out direction only when it appears next to the interface token in the original prompt.
+                                const esc = escapeRegExp(ifaceName);
+                                const re = new RegExp(`${esc}\\s*(in|out)\\b`, 'i');
+                                const m = intentText.match(re);
+                                const dir = m?.[1]?.toLowerCase();
+                                return dir === 'in' || dir === 'out' ? dir : null;
+                              };
+
+                              let ifaceParams: Record<string, any>;
+                              if (schemaAction === 'configure_interface' || schemaAction === 'create_vlan') {
+                                ifaceParams = {
+                                  interfaces: selected.map((name) => ({
+                                    name,
+                                    mode: 'access' as const,
+                                  })),
+                                };
+                              } else if (schemaAction === 'configure_acl') {
+                                ifaceParams = {
+                                  apply_to: selected.map((name) => {
+                                    const dir = inferDirection(name);
+                                    return dir ? `${name} ${dir}` : name;
+                                  }),
+                                };
+                              } else if (schemaAction === 'configure_qos') {
+                                ifaceParams = {
+                                  interface_apply: selected.map((name) => {
+                                    const dir = inferDirection(name);
+                                    return dir ? `${name} ${dir}` : name;
+                                  }),
+                                };
+                              } else if (schemaAction === 'configure_ospf') {
+                                ifaceParams = { passive_interfaces: selected };
+                              } else if (schemaAction === 'configure_static_route') {
+                                ifaceParams = { next_hop: selected[0] ?? '' };
+                              } else {
+                                ifaceParams = { interfaces_to_shutdown: selected };
+                              }
                               const res = await ansibleApi.previewIntent({
                                 intent_description: intentText,
                                 target_hosts: target_hosts?.length ? target_hosts : undefined,
@@ -1255,18 +1305,24 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
                                 }]);
                               } else if (resIfaceDis?.devices?.length) {
                                 const menuMsgId = crypto.randomUUID();
+                                const vNotice2 = (resIfaceDis as { validation_notice?: string }).validation_notice;
                                 setInterfaceDisambiguation({
                                   messageId: menuMsgId,
                                   question: resIfaceDis.question || 'Please select interfaces.',
                                   devices: resIfaceDis.devices,
                                   intentText,
                                   schemaAction: (res as { schema_action?: string })?.schema_action,
+                                  validationNotice: vNotice2,
+                                  invalidEntities: (resIfaceDis as { invalid_entities?: { hostname: string; value: string; kind: string; message: string; suggestions?: string[] }[] }).invalid_entities,
+                                  paramsNeedContextFix: Boolean((resIfaceDis as { params_need_context_fix?: boolean }).params_need_context_fix),
                                 });
                                 setSelectedInterfaces(new Set());
                                 setMessages(prev => [...prev, {
                                   id: menuMsgId,
                                   role: 'assistant',
-                                  content: resIfaceDis.question || 'Please select the interfaces to continue.',
+                                  content: vNotice2
+                                    ? `${vNotice2}\n\n${resIfaceDis.question || 'Please select the interfaces to continue.'}`
+                                    : (resIfaceDis.question || 'Please select the interfaces to continue.'),
                                   timestamp: Date.now(),
                                   interfaceDisambiguation: { question: resIfaceDis.question, devices: resIfaceDis.devices },
                                 }]);
@@ -1442,18 +1498,24 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
                                       }]);
                                     } else if (resIfaceDis?.devices?.length) {
                                       const menuMsgId = crypto.randomUUID();
+                                      const vNotice3 = (resIfaceDis as { validation_notice?: string }).validation_notice;
                                       setInterfaceDisambiguation({
                                         messageId: menuMsgId,
                                         question: resIfaceDis.question || 'Please select the interfaces you want to shutdown.',
                                         devices: resIfaceDis.devices,
                                         intentText,
                                         schemaAction: (res as { schema_action?: string })?.schema_action,
+                                        validationNotice: vNotice3,
+                                        invalidEntities: (resIfaceDis as { invalid_entities?: { hostname: string; value: string; kind: string; message: string; suggestions?: string[] }[] }).invalid_entities,
+                                        paramsNeedContextFix: Boolean((resIfaceDis as { params_need_context_fix?: boolean }).params_need_context_fix),
                                       });
                                       setSelectedInterfaces(new Set());
                                       setMessages(prev => [...prev, {
                                         id: menuMsgId,
                                         role: 'assistant',
-                                        content: resIfaceDis.question || 'Please select the interfaces to continue.',
+                                        content: vNotice3
+                                          ? `${vNotice3}\n\n${resIfaceDis.question || 'Please select the interfaces to continue.'}`
+                                          : (resIfaceDis.question || 'Please select the interfaces to continue.'),
                                         timestamp: Date.now(),
                                         interfaceDisambiguation: { question: resIfaceDis.question, devices: resIfaceDis.devices },
                                       }]);

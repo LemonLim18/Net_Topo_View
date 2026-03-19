@@ -318,6 +318,9 @@ def interface_intent_params_satisfied(params: Optional[Dict[str, Any]]) -> bool:
     """
     if not isinstance(params, dict):
         return False
+    # Shutdown-all via per-host inventory at playbook runtime (multi-target safe).
+    if params.get("interfaces_shutdown_use_nettopo") is True:
+        return True
     shutdown = params.get("interfaces_to_shutdown")
     if shutdown is not None:
         if isinstance(shutdown, list):

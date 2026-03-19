@@ -14,6 +14,31 @@
           - name {{ vlan_name }}
       when: inventory_hostname in groups.get('vendor_huawei_vrp', [])
 
+{% if interfaces_config_with_vlan_use_nettopo | default(false) %}
+{% if (interfaces_binding_mode | default('access')) == 'access' %}
+    - name: Configure all interfaces as access VLAN {{ vlan_id }} (Huawei VRP)
+      community.network.ce_config:
+        lines:
+          - port link-type access
+          - port default vlan {{ vlan_id }}
+        parents: "interface {{ '{{ item }}' }}"
+      loop: "{{ '{{ nettopo_interfaces | default([]) | rejectattr(''ip_address'', ''equalto'', (hostvars[inventory_hostname].ansible_host | default(''''))) | map(attribute=''name'') | map(''trim'') | reject(''equalto'', '''') | reject(''match'', ''(?i).*(management|mgmt|meth|vty|console).*'') | list }}' }}"
+      loop_control:
+        label: "{{ '{{ item }}' }}"
+      when: inventory_hostname in groups.get('vendor_huawei_vrp', [])
+{% elif (interfaces_binding_mode | default('access')) == 'trunk' %}
+    - name: Configure all interfaces as trunk (Huawei VRP)
+      community.network.ce_config:
+        lines:
+          - port link-type trunk
+          - port trunk allow-pass vlan {{ 'all' if (interfaces_binding_trunk_allowed_vlans is string and interfaces_binding_trunk_allowed_vlans == 'all') else (interfaces_binding_trunk_allowed_vlans | default([]) | map('string') | join(' ')) }}
+        parents: "interface {{ '{{ item }}' }}"
+      loop: "{{ '{{ nettopo_interfaces | default([]) | rejectattr(''ip_address'', ''equalto'', (hostvars[inventory_hostname].ansible_host | default(''''))) | map(attribute=''name'') | map(''trim'') | reject(''equalto'', '''') | reject(''match'', ''(?i).*(management|mgmt|meth|vty|console).*'') | list }}' }}"
+      loop_control:
+        label: "{{ '{{ item }}' }}"
+      when: inventory_hostname in groups.get('vendor_huawei_vrp', [])
+{% endif %}
+{% else %}
 {% for iface in interfaces_config_with_vlan %}
 {% if (iface.mode | default('access')) == 'access' %}
     - name: Configure {{ iface.name }} as access VLAN {{ vlan_id }} (Huawei VRP)
@@ -36,3 +61,4 @@
       when: inventory_hostname in groups.get('vendor_huawei_vrp', [])
 {% endif %}
 {% endfor %}
+{% endif %}

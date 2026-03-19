@@ -1,0 +1,80 @@
+{
+  "intent_tree": {
+    "target_devices": {
+      "required": true,
+      "description": "Devices where the operation will be applied",
+      "resolution": {
+        "source": ["user_input", "inventory", "topology"],
+        "strategy": ["exact_match", "group_match", "numeric_selector_resolution"]
+      }
+    },
+    "interface": {
+      "required_fields": ["interfaces"],
+      "children": {
+        "interfaces": {
+          "expand_if": "interfaces == 'all'",
+          "fields": {
+            "name": { "required": true },
+            "mode": {
+              "required": false,
+              "enum": ["access", "trunk", "routed"]
+            },
+            "admin_state": {
+              "required": false,
+              "enum": ["up", "down"]
+            },
+            "description": { "required": false },
+            "ip_address": { "required": false },
+            "subnet_mask": { "required_if": "ip_address != null" }
+          }
+        }
+      }
+    },
+    "vlan": {
+      "required_fields": ["vlan_id"],
+      "fields": {
+        "vlan_id": { "required": true },
+        "vlan_name": { "required": false }
+      }
+    },
+    "static_route": {
+      "required_fields": ["destination", "next_hop"],
+      "fields": {
+        "destination": { "required": true },
+        "next_hop": { "required": true },
+        "admin_distance": { "required": false },
+        "vrf_name": { "required": false }
+      }
+    },
+    "acl": {
+      "required_fields": ["acl_name", "acl_type", "rules"],
+      "fields": {
+        "acl_name": { "required": true },
+        "acl_type": { "required": true },
+        "rules": { "required": true },
+        "apply_to": { "required": false }
+      }
+    },
+    "qos": {
+      "required_fields": ["policy_name", "qos_type", "classification_rules"],
+      "fields": {
+        "policy_name": { "required": true },
+        "qos_type": { "required": true },
+        "classification_rules": { "required": true },
+        "interface_apply": { "required": false }
+      }
+    },
+    "ospf": {
+      "required_fields": ["process_id", "networks"],
+      "fields": {
+        "process_id": { "required": true },
+        "networks": { "required": true },
+        "router_id": { "required": false },
+        "area_definitions": { "required": false },
+        "passive_interfaces": { "required": false },
+        "redistribution": { "required": false }
+      }
+    }
+  }
+}
+

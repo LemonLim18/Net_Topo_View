@@ -15,6 +15,7 @@ Validated against reference/vlan/intent_schema.json when feature is vlan.
 
 import json
 import logging
+import re
 import yaml
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -166,6 +167,16 @@ def _normalize_intent_to_interface_shape(intent: Dict[str, Any]) -> Dict[str, An
     out: Dict[str, Any] = {}
     out["target_hosts"] = list(intent.get("target_hosts") or [])
 
+    # If the caller wants per-host nettopo_interfaces expansion (for "all interfaces"),
+    # we must ignore any LLM-provided/guessed interface config lists and ensure the
+    # templates take the shutdown-only path.
+    if bool(params.get("interfaces_shutdown_use_nettopo")):
+        return {
+            "target_hosts": out["target_hosts"],
+            "interfaces_config": [],
+            "interfaces_to_shutdown": [],
+        }
+
     interfaces_config = params.get("interfaces_config")
     if isinstance(interfaces_config, list):
         out["interfaces_config"] = [i for i in interfaces_config if isinstance(i, dict) and str(i.get("name") or "").strip()]
@@ -199,21 +210,74 @@ def _normalize_intent_to_interface_shape(intent: Dict[str, Any]) -> Dict[str, An
                     enabled = bool(x.get("enabled"))
                 elif "shutdown" in x:
                     enabled = (not bool(x.get("shutdown")))
+                # Normalize `admin_state` (user-facing) -> `enabled` (template-facing).
+                # Default when omitted: enabled=True (admin_state up).
+                admin_state = x.get("admin_state")
+                if admin_state is not None:
+                    lowered = str(admin_state).strip().lower()
+                    if lowered in ("up", "enable", "enabled"):
+                        enabled = True
+                    elif lowered in ("down", "disable", "disabled"):
+                        enabled = False
+                if enabled is None:
+                    enabled = True
                 item: dict = {"name": name}
-                if enabled is not None:
-                    item["enabled"] = enabled
+                item["enabled"] = enabled
                 if x.get("description"):
                     item["description"] = str(x.get("description"))
-                # Access VLAN shortcut
-                if x.get("vlan") is not None:
+                # Mode + L2/L3 fields normalization to the canonical template shape.
+                # Template expects:
+                #   - item.mode in {'access','trunk'}
+                #   - item.access.vlan
+                #   - item.trunk.allowed_vlans (+ native_vlan optional)
+                #   - item.ip.address + item.ip.mask
+                if x.get("mode"):
+                    mode = str(x.get("mode")).strip().lower()
+                    if mode in ("access", "trunk", "routed"):
+                        item["mode"] = mode
+
+                # Access VLAN (schema: access_vlan; legacy shortcut: vlan)
+                access_vlan = x.get("access_vlan", x.get("vlan"))
+                if access_vlan is not None and str(access_vlan).strip() != "":
                     try:
                         item["mode"] = "access"
-                        item["access"] = {"vlan": int(x.get("vlan"))}
+                        item["access"] = {"vlan": int(access_vlan)}
                     except Exception:
                         pass
+
+                # Trunk VLANs (schema: trunk_vlans; UI alias: allowed_vlans)
+                trunk_vlans_raw = x.get("trunk_vlans", x.get("allowed_vlans"))
+                if trunk_vlans_raw is not None and str(trunk_vlans_raw).strip() != "":
+                    trunk_vlans: List[int] = []
+                    if isinstance(trunk_vlans_raw, list):
+                        for v in trunk_vlans_raw:
+                            try:
+                                trunk_vlans.append(int(v))
+                            except (TypeError, ValueError):
+                                pass
+                    else:
+                        s = str(trunk_vlans_raw).strip()
+                        parts = [p.strip() for p in re.split(r"[,\s]+", s) if p.strip()]
+                        for p in parts:
+                            try:
+                                trunk_vlans.append(int(p))
+                            except (TypeError, ValueError):
+                                pass
+                    if trunk_vlans:
+                        item["mode"] = "trunk"
+                        item["trunk"] = {"allowed_vlans": trunk_vlans}
+                        if x.get("native_vlan") not in (None, ""):
+                            try:
+                                item["trunk"]["native_vlan"] = int(x.get("native_vlan"))
+                            except Exception:
+                                pass
+
                 # IP shortcut
                 if x.get("ip_address"):
-                    item["ip"] = {"address": str(x.get("ip_address")), "mask": str(x.get("subnet_mask") or "")}
+                    item["ip"] = {
+                        "address": str(x.get("ip_address")),
+                        "mask": str(x.get("subnet_mask") or ""),
+                    }
                 cfg.append(item)
             if cfg and not out["interfaces_config"]:
                 out["interfaces_config"] = cfg
@@ -241,14 +305,53 @@ def _normalize_intent_to_interface_shape(intent: Dict[str, Any]) -> Dict[str, An
                 item: dict = {"name": name}
                 if "shutdown" in params:
                     item["enabled"] = (not bool(params.get("shutdown")))
+                if "admin_state" in params and params.get("admin_state") is not None:
+                    lowered = str(params.get("admin_state")).strip().lower()
+                    if lowered in ("up", "enable", "enabled"):
+                        item["enabled"] = True
+                    elif lowered in ("down", "disable", "disabled"):
+                        item["enabled"] = False
+                # Default when omitted: enabled=True.
+                if "enabled" not in item:
+                    item["enabled"] = True
                 if params.get("description"):
                     item["description"] = str(params.get("description"))
-                if params.get("vlan") is not None:
+                if params.get("mode") in ("access", "trunk", "routed"):
+                    item["mode"] = str(params.get("mode")).strip().lower()
+                # Access VLAN (schema: access_vlan; legacy shortcut: vlan)
+                access_vlan = params.get("access_vlan", params.get("vlan"))
+                if access_vlan is not None and str(access_vlan).strip() != "":
                     try:
                         item["mode"] = "access"
-                        item["access"] = {"vlan": int(params.get("vlan"))}
+                        item["access"] = {"vlan": int(access_vlan)}
                     except Exception:
                         pass
+                # Trunk VLANs (schema: trunk_vlans; UI alias: allowed_vlans)
+                trunk_vlans_raw = params.get("trunk_vlans", params.get("allowed_vlans"))
+                if trunk_vlans_raw is not None and str(trunk_vlans_raw).strip() != "":
+                    trunk_vlans: List[int] = []
+                    if isinstance(trunk_vlans_raw, list):
+                        for v in trunk_vlans_raw:
+                            try:
+                                trunk_vlans.append(int(v))
+                            except (TypeError, ValueError):
+                                pass
+                    else:
+                        s = str(trunk_vlans_raw).strip()
+                        parts = [p.strip() for p in re.split(r"[,\s]+", s) if p.strip()]
+                        for p in parts:
+                            try:
+                                trunk_vlans.append(int(p))
+                            except (TypeError, ValueError):
+                                pass
+                    if trunk_vlans:
+                        item["mode"] = "trunk"
+                        item["trunk"] = {"allowed_vlans": trunk_vlans}
+                        if params.get("native_vlan") not in (None, ""):
+                            try:
+                                item["trunk"]["native_vlan"] = int(params.get("native_vlan"))
+                            except Exception:
+                                pass
                 if params.get("ip_address"):
                     item["ip"] = {"address": str(params.get("ip_address")), "mask": str(params.get("subnet_mask") or "")}
                 out["interfaces_config"] = [item]
@@ -441,7 +544,15 @@ def get_template_vars(
         target_hosts = list(normalized_i.get("target_hosts") or [])
         interfaces_config = list(normalized_i.get("interfaces_config") or [])
         interfaces_to_shutdown = list(normalized_i.get("interfaces_to_shutdown") or [])
-        # No silent fallback: interfaces come from intent only (controller must call resolve_interfaces first).
+        params_x = intent.get("params") or {}
+        use_nettopo_shutdown = bool(params_x.get("interfaces_shutdown_use_nettopo"))
+        use_nettopo_config = bool(params_x.get("interfaces_config_use_nettopo"))
+        if use_nettopo_shutdown:
+            interfaces_to_shutdown = []
+        if use_nettopo_config:
+            # Configure-all expansion uses `interfaces_config` (shutdown tasks are optional fallback).
+            interfaces_to_shutdown = []
+        # No silent fallback unless interfaces_shutdown_use_nettopo (per-host nettopo_interfaces at run time).
         # Pre-serialize for reference/playbook.yml first Jinja pass (avoids relying on Jinja2's tojson filter).
         return {
             "target_hosts": ",".join(str(h).strip() for h in target_hosts if str(h).strip()),
@@ -449,6 +560,8 @@ def get_template_vars(
             "interfaces_to_shutdown_override": interfaces_to_shutdown if interfaces_to_shutdown else None,
             "interfaces_config_json": json.dumps(interfaces_config),
             "interfaces_to_shutdown_json": json.dumps(interfaces_to_shutdown),
+            "interfaces_shutdown_use_nettopo": use_nettopo_shutdown,
+            "interfaces_config_use_nettopo": use_nettopo_config,
         }
 
     normalized = _normalize_intent_to_schema_shape(intent)
@@ -467,35 +580,73 @@ def get_template_vars(
 
     interfaces_config: List[Dict[str, Any]] = []
     interfaces_config_with_vlan: List[Dict[str, Any]] = []
-    for i in schema_interfaces:
-        name = (i.get("name") or "").strip()
-        if not name:
-            continue
-        mode = "trunk" if str(i.get("mode") or "").strip().lower() == "trunk" else "access"
-        interfaces_config.append({"name": name, "mode": mode})
-        if mode == "access":
-            access_vlan = i.get("access_vlan")
-            vid = str(access_vlan if access_vlan is not None else vlan_dict["id"]).strip()
-            interfaces_config_with_vlan.append({
-                "name": name,
-                "mode": "access",
-                "access": {"vlan": vid},
-            })
-        else:
-            allowed = i.get("allowed_vlans")
-            trunk_vlans = "all"
+    # "All interfaces" expansion for VLAN interface binding:
+    # If the normalized interfaces list contains a sentinel interface named "all",
+    # we avoid fill-time interface task generation (which would be wrong across hosts)
+    # and instead let VLAN templates expand from per-host `nettopo_interfaces`.
+    interfaces_config_with_vlan_use_nettopo = any(
+        str(i.get("name") or "").strip().lower() == "all" for i in (schema_interfaces or [])
+    )
+
+    default_binding_mode = None
+    default_trunk_allowed_vlans: Any = None
+    if interfaces_config_with_vlan_use_nettopo:
+        default_iface = next((i for i in schema_interfaces if str(i.get("name") or "").strip().lower() == "all"), None) or {}
+        default_binding_mode = str(default_iface.get("mode") or "access").strip().lower()
+        allowed = default_iface.get("allowed_vlans")
+        if default_binding_mode == "trunk":
             if isinstance(allowed, list) and allowed:
-                trunk_vlans = ",".join(str(x) for x in allowed)
+                try:
+                    default_trunk_allowed_vlans = [int(x) for x in allowed]
+                except Exception:
+                    default_trunk_allowed_vlans = "all"
             elif isinstance(allowed, str):
-                trunk_vlans = allowed
-            interfaces_config_with_vlan.append({
-                "name": name,
-                "mode": "trunk",
-                "trunk": {"trunk_vlans": trunk_vlans},
-            })
+                s = allowed.strip().lower()
+                if s == "all" or s == "":
+                    default_trunk_allowed_vlans = "all"
+                else:
+                    # Accept comma/space separated VLANs
+                    parts = [p.strip() for p in allowed.replace(" ", "").split(",") if p.strip()]
+                    try:
+                        default_trunk_allowed_vlans = [int(p) for p in parts if p.isdigit()]
+                    except Exception:
+                        default_trunk_allowed_vlans = "all"
+            else:
+                default_trunk_allowed_vlans = "all"
+
+    if not interfaces_config_with_vlan_use_nettopo:
+        for i in schema_interfaces:
+            name = (i.get("name") or "").strip()
+            if not name:
+                continue
+            mode = "trunk" if str(i.get("mode") or "").strip().lower() == "trunk" else "access"
+            interfaces_config.append({"name": name, "mode": mode})
+            if mode == "access":
+                access_vlan = i.get("access_vlan")
+                vid = str(access_vlan if access_vlan is not None else vlan_dict["id"]).strip()
+                interfaces_config_with_vlan.append({
+                    "name": name,
+                    "mode": "access",
+                    "access": {"vlan": vid},
+                })
+            else:
+                allowed = i.get("allowed_vlans")
+                trunk_vlans = "all"
+                if isinstance(allowed, list) and allowed:
+                    trunk_vlans = ",".join(str(x) for x in allowed)
+                elif isinstance(allowed, str):
+                    trunk_vlans = allowed
+                interfaces_config_with_vlan.append({
+                    "name": name,
+                    "mode": "trunk",
+                    "trunk": {"trunk_vlans": trunk_vlans},
+                })
 
     params["interfaces_config"] = interfaces_config
     params["interfaces_config_with_vlan"] = interfaces_config_with_vlan
+    params["interfaces_config_with_vlan_use_nettopo"] = interfaces_config_with_vlan_use_nettopo
+    params["interfaces_binding_mode"] = default_binding_mode or "access"
+    params["interfaces_binding_trunk_allowed_vlans"] = default_trunk_allowed_vlans
     yaml_str = yaml.dump(interfaces_config_with_vlan, default_flow_style=False, sort_keys=False)
     params["interfaces_config_yaml"] = "\n".join("          " + line for line in yaml_str.strip().splitlines())
     # Indented YAML for config: key — must be indented more than "config:" (8 spaces) so YAML parses as key value

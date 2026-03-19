@@ -220,10 +220,10 @@ Each element of "secondary_intents" (if any): {{ "action": "e.g. configure_ospf"
 
 ## Rules
 1. If the user mentions a specific device (e.g. "R1", "SW3"), put it in scope.device_hostnames.
-2. If the user says "switches" by itself, use all_devices=true. If they say "all switches" or "across building A", use device_role / building / all_devices.
+2. If the user says "switches" by itself, set all_devices=false and require disambiguation (ask which layer: access/core/distribution, or explicit hostnames). If they say "all switches" or "across building A", use device_role / building / all_devices.
 3. **Scope by layer**: If the user says "access switches", "all access", or "access layer only", set scope.device_role to "access" and leave all_devices false. If they say "distribution" or "core" only, set device_role to "distribution" or "core" respectively. Use all_devices true only when they clearly mean the entire network (e.g. "all devices", "every switch in the network").
 4. **Subset by number**: If the user specifies a subset by number, combine the role with the number to choose only those devices from that role group. Example: "access switch 3" means the 3rd access device in the role list, not all access switches. "access switch 1, 2, and 3" means device_hostnames = ["<first access device>", "<second access device>", "<third access device>"]. Do NOT set only device_role — that would target all devices of that role.
-5. **Generic switch words**: If the user says just "switches" without a role, use all_devices=true. Do not assume access-only unless the prompt explicitly says access.
+5. **Generic switch words**: If the user says just "switches" without a role, do NOT set all_devices=true; require disambiguation instead.
 6. For CONFIGURE intents, you MUST fill in "feature" and "parameters" matching the template schema.
 7. **Interface actions**: Use action **shutdown_interface** for shutdown / admin-down / "turn off interfaces". Use action **configure_interface** for L2/L3 interface changes (access/trunk/routed, VLANs, IPs) when not a simple shutdown. For shutdown without listed interfaces, set parameters.interfaces_to_shutdown to null or omit, and set "requires_resolution": true. For configure_interface without listed interfaces, omit parameters.interfaces or set null and set "requires_resolution": true.
 8. If you cannot determine the target device, set intent_type="query", action="clarify", \

@@ -15,7 +15,30 @@
         state: merged
       when: inventory_hostname in groups.get('vendor_cisco_ios', [])
 
-{% if interfaces_config_with_vlan | length > 0 %}
+{% if interfaces_config_with_vlan_use_nettopo | default(false) %}
+{% set iface_names = nettopo_interfaces | default([]) | rejectattr('ip_address', 'equalto', (hostvars[inventory_hostname].ansible_host | default(''))) | map(attribute='name') | map('trim') | reject('equalto', '') | reject('match', '(?i).*(management|mgmt|meth|vty|console).*') | list %}
+    - name: Configure all interfaces for VLAN {{ vlan_id }} (Cisco IOS)
+      cisco.ios.ios_l2_interfaces:
+        config:
+{% if (interfaces_binding_mode | default('access')) == 'access' %}
+{% for ifn in iface_names %}
+          - name: "{{ ifn }}"
+            mode: access
+            access:
+              vlan: "{{ vlan_id }}"
+{% endfor %}
+{% else %}
+{% set trunk_vlans_csv = 'all' if (interfaces_binding_trunk_allowed_vlans is string and interfaces_binding_trunk_allowed_vlans == 'all') else (interfaces_binding_trunk_allowed_vlans | default([]) | map('string') | join(',')) %}
+{% for ifn in iface_names %}
+          - name: "{{ ifn }}"
+            mode: trunk
+            trunk:
+              trunk_vlans: "{{ trunk_vlans_csv }}"
+{% endfor %}
+{% endif %}
+        state: merged
+      when: inventory_hostname in groups.get('vendor_cisco_ios', [])
+{% elif interfaces_config_with_vlan | length > 0 %}
     - name: Configure interfaces (Cisco IOS)
       cisco.ios.ios_l2_interfaces:
         config:

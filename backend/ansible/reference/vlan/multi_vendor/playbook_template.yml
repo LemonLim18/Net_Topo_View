@@ -17,7 +17,30 @@
         state: merged
       when: inventory_hostname in groups.get('vendor_cisco_ios', [])
 
-{% if interfaces_config_with_vlan | length > 0 %}
+{% if interfaces_config_with_vlan_use_nettopo | default(false) %}
+{% set iface_names = nettopo_interfaces | default([]) | rejectattr('ip_address', 'equalto', (hostvars[inventory_hostname].ansible_host | default(''))) | map(attribute='name') | map('trim') | reject('equalto', '') | reject('match', '(?i).*(management|mgmt|meth|vty|console).*') | list %}
+    - name: Configure all interfaces for VLAN {{ vlan_id }} (Cisco IOS)
+      cisco.ios.ios_l2_interfaces:
+        config:
+{% if (interfaces_binding_mode | default('access')) == 'access' %}
+{% for ifn in iface_names %}
+          - name: "{{ ifn }}"
+            mode: access
+            access:
+              vlan: "{{ vlan_id }}"
+{% endfor %}
+{% else %}
+{% set trunk_vlans_csv = 'all' if (interfaces_binding_trunk_allowed_vlans is string and interfaces_binding_trunk_allowed_vlans == 'all') else (interfaces_binding_trunk_allowed_vlans | default([]) | map('string') | join(',')) %}
+{% for ifn in iface_names %}
+          - name: "{{ ifn }}"
+            mode: trunk
+            trunk:
+              trunk_vlans: "{{ trunk_vlans_csv }}"
+{% endfor %}
+{% endif %}
+        state: merged
+      when: inventory_hostname in groups.get('vendor_cisco_ios', [])
+{% elif interfaces_config_with_vlan | length > 0 %}
     - name: Configure interfaces (Cisco IOS)
       cisco.ios.ios_l2_interfaces:
         config:
@@ -35,6 +58,33 @@
           - name {{ vlan_name }}
       when: inventory_hostname in groups.get('vendor_huawei_vrp', [])
 
+{% if interfaces_config_with_vlan_use_nettopo | default(false) %}
+{% if (interfaces_binding_mode | default('access')) == 'access' %}
+    - name: Configure all interfaces as access VLAN {{ vlan_id }} (Huawei VRP)
+      community.network.ce_config:
+        lines:
+          - port link-type access
+          - port default vlan {{ vlan_id }}
+        parents: "interface {{ '{{ item }}' }}"
+      loop: "{{ '{{ nettopo_interfaces | default([]) | rejectattr(''ip_address'', ''equalto'', (hostvars[inventory_hostname].ansible_host | default(''''))) | map(attribute=''name'') | map(''trim'') | reject(''equalto'', '''') | reject(''match'', ''(?i).*(management|mgmt|meth|vty|console).*'') | list }}' }}"
+      loop_control:
+        label: "{{ '{{ item }}' }}"
+      when:
+        - inventory_hostname in groups.get('vendor_huawei_vrp', [])
+{% elif (interfaces_binding_mode | default('access')) == 'trunk' %}
+    - name: Configure all interfaces as trunk (Huawei VRP)
+      community.network.ce_config:
+        lines:
+          - port link-type trunk
+          - port trunk allow-pass vlan {{ 'all' if (interfaces_binding_trunk_allowed_vlans is string and interfaces_binding_trunk_allowed_vlans == 'all') else (interfaces_binding_trunk_allowed_vlans | default([]) | map('string') | join(' ')) }}
+        parents: "interface {{ '{{ item }}' }}"
+      loop: "{{ '{{ nettopo_interfaces | default([]) | rejectattr(''ip_address'', ''equalto'', (hostvars[inventory_hostname].ansible_host | default(''''))) | map(attribute=''name'') | map(''trim'') | reject(''equalto'', '''') | reject(''match'', ''(?i).*(management|mgmt|meth|vty|console).*'') | list }}' }}"
+      loop_control:
+        label: "{{ '{{ item }}' }}"
+      when:
+        - inventory_hostname in groups.get('vendor_huawei_vrp', [])
+{% endif %}
+{% else %}
 {% for iface in interfaces_config_with_vlan %}
 {% if (iface.mode | default('access')) == 'access' %}
     - name: Configure {{ iface.name }} as access VLAN {{ vlan_id }} (Huawei VRP)
@@ -58,6 +108,7 @@
 {% endif %}
 {% endfor %}
 {% endif %}
+{% endif %}
 {% if 'juniper_junos' in vendors %}
     - name: Ensure VLAN {{ vlan_id }} exists (Juniper Junos)
       juniper.device.junos_vlans:
@@ -67,7 +118,30 @@
         state: merged
       when: inventory_hostname in groups.get('vendor_juniper_junos', [])
 
-{% if interfaces_config_with_vlan | length > 0 %}
+{% if interfaces_config_with_vlan_use_nettopo | default(false) %}
+{% set iface_names = nettopo_interfaces | default([]) | rejectattr('ip_address', 'equalto', (hostvars[inventory_hostname].ansible_host | default(''))) | map(attribute='name') | map('trim') | reject('equalto', '') | reject('match', '(?i).*(management|mgmt|meth|vty|console).*') | list %}
+    - name: Configure interfaces (Juniper Junos) [all interfaces]
+      juniper.device.junos_l2_interfaces:
+        config:
+{% if (interfaces_binding_mode | default('access')) == 'access' %}
+{% for ifn in iface_names %}
+          - name: "{{ ifn }}"
+            mode: access
+            access:
+              vlan: "{{ vlan_id }}"
+{% endfor %}
+{% else %}
+{% set trunk_vlans_csv = 'all' if (interfaces_binding_trunk_allowed_vlans is string and interfaces_binding_trunk_allowed_vlans == 'all') else (interfaces_binding_trunk_allowed_vlans | default([]) | map('string') | join(',')) %}
+{% for ifn in iface_names %}
+          - name: "{{ ifn }}"
+            mode: trunk
+            trunk:
+              trunk_vlans: "{{ trunk_vlans_csv }}"
+{% endfor %}
+{% endif %}
+        state: merged
+      when: inventory_hostname in groups.get('vendor_juniper_junos', [])
+{% elif interfaces_config_with_vlan | length > 0 %}
     - name: Configure interfaces (Juniper Junos)
       juniper.device.junos_l2_interfaces:
         config:

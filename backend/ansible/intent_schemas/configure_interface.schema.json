@@ -19,9 +19,25 @@
           "trunk_vlans": { "type": "array", "items": { "type": "integer", "minimum": 1, "maximum": 4094 } },
           "native_vlan": { "type": "integer", "minimum": 1, "maximum": 4094 },
           "admin_state": { "type": "string", "enum": ["up", "down"] },
+          "ip_address": { "type": "string", "minLength": 1 },
+          "subnet_mask": { "type": "string", "minLength": 1 },
           "description": { "type": "string" }
         },
-        "required": ["name", "mode"]
+        "required": ["name", "mode"],
+        "allOf": [
+          {
+            "if": { "properties": { "mode": { "const": "access" } } },
+            "then": { "required": ["access_vlan"] }
+          },
+          {
+            "if": { "properties": { "mode": { "const": "trunk" } } },
+            "then": { "required": ["trunk_vlans"] }
+          },
+          {
+            "if": { "required": ["ip_address"] },
+            "then": { "required": ["subnet_mask"] }
+          }
+        ]
       }
     }
   },

@@ -8,7 +8,12 @@
   ignore_unreachable: true
   vars:
     interfaces_config: {{ interfaces_config_json }}
+{% if interfaces_shutdown_use_nettopo %}
+    # Per-host names from runner inventory (multi-target "all interfaces"); filter obvious mgmt names.
+    interfaces_to_shutdown: "{{ '{{ nettopo_interfaces | default([]) | rejectattr(''ip_address'', ''equalto'', (hostvars[inventory_hostname].ansible_host | default(''''))) | map(attribute=''name'') | map(''trim'') | reject(''equalto'', '''') | reject(''match'', ''(?i).*(management|mgmt|meth|vty|console).*'') | list }}' }}"
+{% else %}
     interfaces_to_shutdown: {{ interfaces_to_shutdown_json }}
+{% endif %}
   tasks:
 {% raw %}
     - name: Configure interface (Cisco IOS)

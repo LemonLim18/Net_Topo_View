@@ -30,6 +30,33 @@ const FEATURES_DISPLAY: Record<string, string> = {
   general: 'General',
 };
 
+type AnsibleApiErrorDetail = {
+  message?: string;
+  issues?: string[];
+  validation_notice?: string;
+  interfaces_disambiguation?: { devices?: unknown[] };
+};
+
+/** Build user-visible message from fetch error (includes inventory validation from create-and-plan / preview). */
+function formatAnsibleApiError(e: unknown): string {
+  const err = e as { message?: string; detail?: AnsibleApiErrorDetail };
+  let msg =
+    err?.message ||
+    (typeof err?.detail === 'object' && err.detail?.message
+      ? err.detail.message +
+        (Array.isArray(err.detail.issues) && err.detail.issues.length ? '\n' + err.detail.issues.join('\n') : '')
+      : String(e));
+  const d = err?.detail;
+  if (typeof d === 'object' && d?.validation_notice) {
+    msg = `${d.validation_notice}\n\n${msg}`;
+  }
+  if (typeof d === 'object' && d?.interfaces_disambiguation?.devices?.length) {
+    msg +=
+      '\n\nPick interface names that exist in planned inventory (adjust the Interface list in this dialog when shown).';
+  }
+  return msg;
+}
+
 export interface SchemaEditableField {
   field: string;
   label: string;
@@ -157,13 +184,7 @@ export function PlaybookStudioOverlay({
       setVlanSelectedInterfaces(new Set());
       setStep('confirm');
     } catch (e: unknown) {
-      const err = e as { message?: string; detail?: { message?: string; issues?: string[] } };
-      const msg =
-        err?.message ||
-        (typeof err?.detail === 'object' && err.detail?.message
-          ? err.detail.message + (Array.isArray(err.detail.issues) && err.detail.issues.length ? '\n' + err.detail.issues.join('\n') : '')
-          : String(e));
-      setErrorMessage(msg);
+      setErrorMessage(formatAnsibleApiError(e));
       setStep('error');
     }
   }, [intentDescription, ansibleModel, parseIntent]);
@@ -315,12 +336,7 @@ export function PlaybookStudioOverlay({
         setStep('confirm');
         return;
       }
-      const err = e as { message?: string; detail?: { message?: string; issues?: string[] } };
-      const msg =
-        err?.message ||
-        (typeof err?.detail === 'object' && err.detail?.message
-          ? err.detail.message + (Array.isArray(err.detail.issues) && err.detail.issues.length ? '\n' + err.detail.issues.join('\n') : '')
-          : String(e));
+      const msg = formatAnsibleApiError(e);
       setErrorMessage(msg);
       setStep('error');
       Toast.error('Generation failed', msg);
