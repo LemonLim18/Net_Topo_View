@@ -1,0 +1,68 @@
+---
+- name: Shutdown interfaces on access switches
+  hosts: access_switches
+  gather_facts: no
+  tasks:
+    - name: Shutdown interfaces
+      include_tasks: tasks/main.yml
+      loop: '{{ interfaces_to_shutdown | default([]) }}'
+      loop_control:
+        label: '{{ item }}'
+
+- name: Pre-change backup
+  hosts: access_switches
+  gather_facts: no
+  tasks:
+    - name: Backup current configuration
+      cisco.ios.ios_config:
+        lines: '{{ item }}'
+        parents: 'show running-config'
+        backup: yes
+      loop: '{{ interfaces_to_shutdown | default([]) }}'
+      loop_control:
+        label: '{{ item }}'
+
+- name: Post-change verification
+  hosts: access_switches
+  gather_facts: no
+  tasks:
+    - name: Verify interfaces are down
+      cisco.ios.ios_l2_interfaces:
+        lines: '{{ item }}'
+        parents: 'show interfaces status'
+        state: down
+      loop: '{{ interfaces_to_shutdown | default([]) }}'
+      loop_control:
+        label: '{{ item }}'
+
+- name: Rescue/failure handling
+  hosts: access_switches
+  gather_facts: no
+  tasks:
+    - name: Restore configuration
+      cisco.ios.ios_config:
+        lines: '{{ item }}'
+        parents: 'show running-config'
+        backup: yes
+      loop: '{{ interfaces_to_shutdown | default([]) }}'
+      loop_control:
+        label: '{{ item }}'
+
+- name: Check mode compatibility
+  hosts: access_switches
+  gather_facts: no
+  tasks:
+    - name: Check if interfaces are down
+      cisco.ios.ios_l2_interfaces:
+        lines: '{{ item }}'
+        parents: 'show interfaces status'
+        state: down
+      loop: '{{ interfaces_to_shutdown | default([]) }}'
+      loop_control:
+        label: '{{ item }}'
+
+- name: Include vendor-specific tasks
+  hosts: access_switches
+  gather_facts: no
+  tasks:
+    - include_tasks: tasks/cisco.yml

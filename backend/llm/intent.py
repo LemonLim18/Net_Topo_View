@@ -85,17 +85,37 @@ def _extract_selector_numbers(raw: str) -> list[int]:
     lower = (raw or "").lower()
     if not any(w in lower for w in ("switch", "switches", "access", "distribution", "core")):
         return []
-    # Match "access switch 1, 2 and 3" or "switch 1, 2, 3" — capture the whole number list
+    # First, handle patterns where a single "switch" keyword is followed by a list:
+    # "access switch 1, 2 and 3" or "switch 1, 2, 3"
     m = re.search(
         r"(?:access\s+switch(?:es)?|distribution\s+switch(?:es)?|core\s+switch(?:es)?|switch(?:es)?)\s+(\d+(?:\s*(?:,\s*|and\s+)\s*\d+)*)",
         lower,
         re.IGNORECASE,
     )
-    if not m:
-        return []
-    # Extract all numbers from the captured list (e.g. "1, 2 and 3" → [1, 2, 3])
-    nums = re.findall(r"\d+", m.group(1))
-    return [int(n) for n in nums] if nums else []
+    nums: list[int] = []
+    if m:
+        nums.extend(int(n) for n in re.findall(r"\d+", m.group(1)))
+
+    # Also handle phrases where "switch" is repeated before each number:
+    # e.g. "switch 1 and switch 2", "access switch 1, switch 2 and switch 3"
+    for match in re.finditer(
+        r"(?:access|distribution|core)?\s*switch(?:es)?\s+(\d+)",
+        lower,
+        re.IGNORECASE,
+    ):
+        try:
+            nums.append(int(match.group(1)))
+        except (TypeError, ValueError):
+            continue
+
+    # Preserve order of appearance while de-duplicating
+    seen: set[int] = set()
+    ordered = []
+    for n in nums:
+        if n not in seen:
+            seen.add(n)
+            ordered.append(n)
+    return ordered
 
 
 # -----------------------------------------------------------------------
@@ -150,6 +170,7 @@ class ParsedIntent(BaseModel):
     raw_user_input: str = ""
     requires_disambiguation: bool = False
     disambiguation_message: str = ""
+    requires_resolution: bool = False  # e.g. interfaces not specified → controller must resolve or ask
     resolved_devices: List[str] = Field(default_factory=list)
     created_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
@@ -181,11 +202,18 @@ strict JSON object.  Output ONLY valid JSON — no commentary, no markdown fence
     "all_devices": false
   }},
   "risk_level": "low | medium | high | critical",
-  "justification": "<one-line summary of why this change is needed>"
+  "justification": "<one-line summary of why this change is needed>",
+  "requires_resolution": false,
+  "secondary_intents": []
 }}
+
+Each element of "secondary_intents" (if any): {{ "action": "e.g. configure_ospf", "feature": "e.g. ospf", "parameters": {{}} }}. Use for a second config task in the same request (e.g. "create VLAN 10 and enable OSPF").
 
 ## Available Templates & Their Required Parameters
 {template_schemas}
+
+## Required parameters per feature (do not guess — omit if not specified by user)
+{required_params_hint}
 
 ## Current Network Topology
 {topology_context}
@@ -197,11 +225,13 @@ strict JSON object.  Output ONLY valid JSON — no commentary, no markdown fence
 4. **Subset by number**: If the user specifies a subset by number, combine the role with the number to choose only those devices from that role group. Example: "access switch 3" means the 3rd access device in the role list, not all access switches. "access switch 1, 2, and 3" means device_hostnames = ["<first access device>", "<second access device>", "<third access device>"]. Do NOT set only device_role — that would target all devices of that role.
 5. **Generic switch words**: If the user says just "switches" without a role, use all_devices=true. Do not assume access-only unless the prompt explicitly says access.
 6. For CONFIGURE intents, you MUST fill in "feature" and "parameters" matching the template schema.
-7. If you cannot determine the target device, set intent_type="query", action="clarify", \
+7. **Interface actions**: Use action **shutdown_interface** for shutdown / admin-down / "turn off interfaces". Use action **configure_interface** for L2/L3 interface changes (access/trunk/routed, VLANs, IPs) when not a simple shutdown. For shutdown without listed interfaces, set parameters.interfaces_to_shutdown to null or omit, and set "requires_resolution": true. For configure_interface without listed interfaces, omit parameters.interfaces or set null and set "requires_resolution": true.
+8. If you cannot determine the target device, set intent_type="query", action="clarify", \
    and put a clarifying question in justification.
-8. risk_level heuristic: bgp/acl/firewall/nat = high; ospf/vlan/stp = medium; ntp/logging/banner = low.
-9. For read-only requests (show topology, list devices, check status), use intent_type="query".
-10. For security scan requests, use intent_type="audit".
+9. risk_level heuristic: bgp/acl/firewall/nat = high; ospf/vlan/stp = medium; ntp/logging/banner = low.
+10. For read-only requests (show topology, list devices, check status), use intent_type="query".
+11. For security scan requests, use intent_type="audit".
+12. **Multi-intent**: If the user request combines multiple configuration tasks (e.g. "Create VLAN 10 and enable OSPF on access switch 1"), set the primary "action" and "feature" to the first or main task, and put the other task(s) in "secondary_intents" as objects with "action", "feature", and "parameters". Use empty array if only one task.
 
 ## User Request
 {user_message}
@@ -247,9 +277,15 @@ class IntentParser:
 
         # Build template schema context for the prompt
         template_schemas = self._get_template_schemas()
+        try:
+            from ansible.intent_validation import get_required_params_hint_for_prompt
+            required_params_hint = get_required_params_hint_for_prompt()
+        except Exception:
+            required_params_hint = "(none)"
 
         prompt = _PARSE_PROMPT.format(
             template_schemas=template_schemas,
+            required_params_hint=required_params_hint,
             topology_context=topology_context or "(no topology loaded)",
             user_message=user_message,
         )
@@ -296,20 +332,56 @@ class IntentParser:
 
         # Resolve device scope against live topology
         intent.resolved_devices = self._resolve_devices(intent)
+        # Backend numeric/role fallback:
+        # - NEVER overrides explicit hostnames with conflicting guesses
+        # - CAN fill in *missing* devices when selector-based resolution is more specific.
         fallback_devices = self._fallback_devices_from_text(user_message)
         if fallback_devices:
-            lower = (user_message or "").lower()
-            has_role_number = (
-                ("access" in lower or "distribution" in lower or "core" in lower)
-                and bool(re.search(r"\b\d+\b", lower))
-            )
-            # If the prompt clearly names a role + index, prefer the backend fallback
-            # over a broader LLM result such as "all access switches".
-            if has_role_number or not intent.resolved_devices:
+            # If the user explicitly selected switches by number (e.g. "access switch 1, 2, 3"),
+            # always prefer the backend's selector-based mapping over a broad LLM result
+            # such as "all access switches".
+            selector_numbers = _extract_selector_numbers(user_message)
+            if selector_numbers:
                 intent.resolved_devices = fallback_devices
+            else:
+                resolved_set = set(intent.resolved_devices or [])
+                fallback_set = set(fallback_devices or [])
+                if not resolved_set:
+                    # No devices from the LLM/topology resolution → use backend fallback.
+                    intent.resolved_devices = fallback_devices
+                else:
+                    # If all currently resolved devices are a subset of the fallback set and
+                    # the fallback has strictly more devices, then promote the fuller fallback list.
+                    if resolved_set.issubset(fallback_set) and len(fallback_set) > len(resolved_set):
+                        intent.resolved_devices = fallback_devices
 
         intent.parameters = dict(intent.parameters or {})
+
+        # Heuristic: some clearly imperative config requests are sometimes
+        # misclassified by the LLM as query/clarify. For example:
+        #   "Shutdown the interfaces"
+        # should be treated as an interface shutdown/configure action so that
+        # downstream schema validation and params_disambiguation can run.
+        lower_msg = user_message.lower()
+        looks_like_shutdown_interfaces = (
+            any(kw in lower_msg for kw in ("shutdown the interfaces", "shut down the interfaces", "turn off the interfaces"))
+            or ("shutdown" in lower_msg and "interface" in lower_msg)
+            or ("shut down" in lower_msg and "interface" in lower_msg)
+        )
+        if not intent.is_config_change() and looks_like_shutdown_interfaces:
+            intent.intent_type = IntentType.CONFIGURE
+            if not intent.action:
+                intent.action = "shutdown_interface"
+            if not intent.feature:
+                intent.feature = "interface"
+
         intent.parameters["device_deduction"] = self._deduce_device_reason(user_message, intent.resolved_devices)
+        # If feature is interface and user did not specify interfaces, require explicit resolution (no silent fallback).
+        if intent.feature == "interface" and intent.is_config_change():
+            ifaces = intent.parameters.get("interfaces_to_shutdown") or intent.parameters.get("interfaces")
+            if not ifaces or (isinstance(ifaces, list) and not any(str(x).strip() for x in ifaces)):
+                intent.requires_resolution = True
+                logger.info("No interfaces provided by user for interface intent; requires_resolution=true")
 
         if intent.is_config_change() and not intent.resolved_devices:
             intent.requires_disambiguation = True
@@ -415,8 +487,20 @@ class IntentParser:
     def _build_intent(self, data: dict, user_message: str) -> ParsedIntent:
         """Build a ParsedIntent from raw LLM JSON output with safety defaults."""
         scope_data = data.get("scope", {})
+        raw_hosts = scope_data.get("device_hostnames", [])
+        # Normalize device_hostnames: split tokens like "Acc_1, Acc_2" or "Acc_1 and Acc_2" into separate entries.
+        norm_hosts: list[str] = []
+        for h in raw_hosts or []:
+            text = str(h or "").strip()
+            if not text:
+                continue
+            # Replace common connectors with commas, then split.
+            text = re.sub(r"\band\b", ",", text, flags=re.IGNORECASE)
+            parts = [p.strip() for p in text.split(",") if p.strip()]
+            norm_hosts.extend(parts or [text])
+
         scope = IntentScope(
-            device_hostnames=scope_data.get("device_hostnames", []),
+            device_hostnames=norm_hosts,
             device_role=scope_data.get("device_role"),
             building=scope_data.get("building"),
             vendor_filter=scope_data.get("vendor_filter"),
@@ -434,16 +518,22 @@ class IntentParser:
         except ValueError:
             risk_level = RiskLevel.MEDIUM
 
+        params = dict(data.get("parameters", {}))
+        secondary = data.get("secondary_intents")
+        if isinstance(secondary, list) and secondary:
+            params["_secondary_intents"] = secondary
+        requires_resolution = bool(data.get("requires_resolution", False))
         return ParsedIntent(
             intent_type=intent_type,
             action=data.get("action", "unknown"),
             feature=data.get("feature", ""),
             vendor=_normalize_vendor(data.get("vendor")),
-            parameters=data.get("parameters", {}),
+            parameters=params,
             scope=scope,
             risk_level=risk_level,
             justification=data.get("justification", ""),
             raw_user_input=user_message,
+            requires_resolution=requires_resolution,
         )
 
     def _fallback_devices_from_text(self, raw: str) -> list[str]:
@@ -575,18 +665,20 @@ class IntentParser:
         if intent.scope.device_hostnames:
             resolved = []
             for h in intent.scope.device_hostnames:
+                # Normalize common punctuation from chat text: "Acc_Cisco_2," / "Acc_Cisco_2."
+                h_clean = re.sub(r"[,\.;:]+$", "", str(h or "").strip())
                 match = next(
                     (
                         n
                         for n in list(inventory_by_hostname.keys()) + all_hosts
-                        if n.lower() == h.lower()
+                        if n.lower() == h_clean.lower()
                     ),
                     None,
                 )
                 if match:
                     resolved.append(match)
                 else:
-                    logger.warning("Device '%s' not found in topology", h)
+                    logger.warning("Device '%s' not found in topology", h_clean or h)
             # When user said "access switches" (etc.), filter to that role
             requested_role = _normalize_role(intent.scope.device_role)
             if not requested_role and intent.raw_user_input:

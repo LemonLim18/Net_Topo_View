@@ -1,12 +1,29 @@
 ---
-# Interface shutdown — Juniper Junos only (single-vendor reference)
-- name: Shutdown interfaces (Juniper Junos)
+# Interface config — Juniper Junos only (single-vendor reference)
+# Unified vars across interface references:
+# - interfaces_config: list of { name, enabled? } (optional; preferred)
+# - interfaces_to_shutdown: list of interface names (shutdown-only fallback)
+- name: Configure interfaces (Juniper Junos)
   hosts: "{{ target_hosts | default('all') }}"
   gather_facts: no
   ignore_unreachable: true
   vars:
-    interfaces_to_shutdown: "{{ nettopo_interfaces | default([]) | map(attribute='name') | list }}"
+    interfaces_config: "{{ interfaces_config | default([]) }}"
+    interfaces_to_shutdown: "{{ interfaces_to_shutdown | default(nettopo_interfaces | default([]) | map(attribute='name') | list) }}"
   tasks:
+    - name: Configure interface (Juniper Junos)
+      juniper.device.junos_interfaces:
+        config:
+          - name: "{{ item.name }}"
+            enabled: "{{ item.enabled | default(false) }}"
+        state: merged
+      loop: "{{ interfaces_config | default([]) }}"
+      loop_control:
+        label: "{{ item.name }}"
+      when:
+        - inventory_hostname in groups.get('vendor_juniper_junos', [])
+        - (interfaces_config | default([])) | length > 0
+
     - name: Shutdown interface (Juniper Junos)
       juniper.device.junos_interfaces:
         config:
@@ -18,4 +35,5 @@
         label: "{{ item }}"
       when:
         - inventory_hostname in groups.get('vendor_juniper_junos', [])
+        - (interfaces_config | default([])) | length == 0
         - (interfaces_to_shutdown | default([])) | length > 0

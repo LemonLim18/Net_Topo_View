@@ -1,0 +1,25 @@
+# Intent schema: general interface configuration (L2/L3)
+# Distinct from shutdown_interface (admin down). Use action configure_interface.
+action: configure_interface
+feature: interface
+required:
+  - target_devices
+  - interfaces
+optional:
+  - default_mode
+resolution_order:
+  target_devices:
+    - from_intent
+    - from_inventory
+    - ask_user
+  interfaces:
+    - from_intent
+    - from_topology
+    - ask_user
+  default_mode:
+    - from_intent
+    - ask_user
+questions:
+  target_devices: "Which devices?"
+  interfaces: "Which interfaces should be configured (names or selection)?"
+  default_mode: "Default L2 mode for listed interfaces (access or trunk)?"

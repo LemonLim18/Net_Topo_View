@@ -916,40 +916,66 @@ export const sshApi = {
 // --- M23: Ansible Workflow Studio API ---
 export const ansibleApi = {
   /** Preview intent: categories + RAG reference templates + reasoning (for studio overlay). */
-  previewIntent: (req: {
-    intent_description: string;
-    target_hosts?: string[];
-    vendor?: string;
-    feature?: string;
-    provider?: string;
-    model?: string;
-    ollama_base_url?: string;
-  }) =>
+  previewIntent: (
+    req: {
+      intent_description: string;
+      target_hosts?: string[];
+      vendor?: string;
+      feature?: string;
+      provider?: string;
+      model?: string;
+      ollama_base_url?: string;
+      params?: Record<string, unknown>; // e.g. interfaces_to_shutdown, vlan_id, vlan_name, target_hosts
+    },
+    opts?: { signal?: AbortSignal }
+  ) =>
     request<{
       categories: string[];
       references: { doc_name: string; feature: string; vendor: string; path: string }[];
       parsed_intent: Record<string, unknown>;
+      disambiguation?: {
+        kind: string;
+        question: string;
+        selector_numbers?: number[];
+        options: { id: string; label: string; clarification?: string; matches?: string[] }[];
+      } | null;
+      interfaces_disambiguation?: {
+        question: string;
+        devices: { hostname: string; interfaces: { name: string }[] }[];
+      } | null;
+      params_disambiguation?: {
+        question: string;
+        fields: { field: string; question: string }[];
+      } | null;
       policy_approved: boolean;
       reasoning: string[];
       target_hosts?: string[];
-    }>('/ansible/preview-intent', { method: 'POST', body: JSON.stringify(req) }),
+      reasoning_trace?: {
+        steps: { title: string; detail: string }[];
+      };
+      schema_editable_fields?: { field: string; label: string; required: boolean; type: string }[];
+      interfaces_for_selection?: { question: string; devices: { hostname: string; interfaces: { name: string }[] }[] };
+    }>('/ansible/preview-intent', { method: 'POST', body: JSON.stringify(req), signal: opts?.signal }),
 
   /** List all reference playbook paths (for add-reference in Playbook Studio). */
   listReferencePaths: () =>
     request<{ paths: { path: string; feature: string; vendor: string }[] }>('/ansible/reference-paths'),
 
   /** Create a change-request + job and immediately generate a playbook via LLM. */
-  createAndPlan: (req: {
-    intent_description: string;
-    target_hosts: string[];
-    vendor: string;
-    feature: string;
-    params: Record<string, any>;
-    device_id?: number;
-    provider?: string;
-    model?: string;
-    ollama_base_url?: string;
-  }) =>
+  createAndPlan: (
+    req: {
+      intent_description: string;
+      target_hosts: string[];
+      vendor: string;
+      feature: string;
+      params: Record<string, any>;
+      device_id?: number;
+      provider?: string;
+      model?: string;
+      ollama_base_url?: string;
+    },
+    opts?: { signal?: AbortSignal }
+  ) =>
     request<{
       job_id: number;
       request_id: number;
@@ -962,17 +988,20 @@ export const ansibleApi = {
       target_hosts?: string[];
     }>(
       '/ansible/create-and-plan',
-      { method: 'POST', body: JSON.stringify(req) }
+      { method: 'POST', body: JSON.stringify(req), signal: opts?.signal }
     ),
 
   /** Create a playbook from a Config Engine template (deterministic, no LLM). */
-  createFromTemplate: (req: {
-    vendor: string;
-    feature: string;
-    params: Record<string, any>;
-    target_hosts?: string[];
-    device_id?: number;
-  }) =>
+  createFromTemplate: (
+    req: {
+      vendor: string;
+      feature: string;
+      params: Record<string, any>;
+      target_hosts?: string[];
+      device_id?: number;
+    },
+    opts?: { signal?: AbortSignal }
+  ) =>
     request<{
       job_id: number; request_id: number; status: string;
       playbook: string; config: string; undo_config: string | null;
@@ -980,7 +1009,7 @@ export const ansibleApi = {
       files?: { path: string; content: string; writable?: boolean; kind?: string }[];
     }>(
       '/ansible/create-from-template',
-      { method: 'POST', body: JSON.stringify(req) }
+      { method: 'POST', body: JSON.stringify(req), signal: opts?.signal }
     ),
 
   /** Dry-run the stored playbook (--check --diff). */

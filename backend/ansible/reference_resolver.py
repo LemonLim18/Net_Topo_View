@@ -25,7 +25,7 @@ _REFERENCE_DIR = Path(__file__).parent / "reference"
 _VLAN_INTENT_SCHEMA_PATH = _REFERENCE_DIR / "vlan" / "intent_schema.json"
 
 # Known features that have reference playbooks (subdirs under reference/)
-_KNOWN_FEATURES = frozenset({"vlan"})
+_KNOWN_FEATURES = frozenset({"vlan", "interface"})
 
 # Vendors that have single-vendor playbooks under reference/{feature}/{vendor}/
 _KNOWN_VENDORS = frozenset({"cisco_ios", "huawei_vrp", "juniper_junos"})
@@ -132,6 +132,130 @@ def get_vlan_interfaces_summary(intent: Dict[str, Any]) -> List[Dict[str, Any]]:
     return out
 
 
+def _strip_device_prefix_from_iface_name(iface: str, hostnames: List[str]) -> str:
+    """Turn 'SW1:Gi0/1' into 'Gi0/1' when SW1 is a known target host (UI chip format)."""
+    s = str(iface or "").strip()
+    if ":" not in s:
+        return s
+    prefix, rest = s.split(":", 1)
+    rest = rest.strip()
+    if not rest:
+        return s
+    for h in hostnames:
+        if h and prefix.strip().lower() == str(h).strip().lower():
+            return rest
+    return s
+
+
+def _normalize_intent_to_interface_shape(intent: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Normalize intent to a consistent interface shape for reference templates.
+
+    Output:
+      - target_hosts: list[str]
+      - interfaces_config: list[dict]  (preferred; multi-scenario)
+      - interfaces_to_shutdown: list[str] (fallback; shutdown-only)
+
+    Accepted inputs (flexible):
+      - intent.params.interfaces_config: list[dict]
+      - intent.params.interfaces_to_shutdown: list[str]
+      - intent.params.interfaces: list[str] or list[dict] (name/shutdown/description/vlan/ip fields)
+      - intent.params.name + shutdown/description/vlan/ip_address/subnet_mask (single interface)
+    """
+    params = dict(intent.get("params") or {})
+    out: Dict[str, Any] = {}
+    out["target_hosts"] = list(intent.get("target_hosts") or [])
+
+    interfaces_config = params.get("interfaces_config")
+    if isinstance(interfaces_config, list):
+        out["interfaces_config"] = [i for i in interfaces_config if isinstance(i, dict) and str(i.get("name") or "").strip()]
+    else:
+        out["interfaces_config"] = []
+
+    interfaces_to_shutdown = params.get("interfaces_to_shutdown")
+    if isinstance(interfaces_to_shutdown, list):
+        out["interfaces_to_shutdown"] = [
+            _strip_device_prefix_from_iface_name(str(x), out["target_hosts"])
+            for x in interfaces_to_shutdown
+            if str(x).strip()
+        ]
+    else:
+        out["interfaces_to_shutdown"] = []
+
+    shutdown_explicit = bool(out["interfaces_to_shutdown"])
+
+    # Accept config_engine-ish interface params: interfaces (names or dicts)
+    raw_ifaces = params.get("interfaces")
+    if isinstance(raw_ifaces, list) and raw_ifaces and not shutdown_explicit:
+        # If dict items already, map them into interfaces_config
+        if all(isinstance(x, dict) for x in raw_ifaces):
+            cfg: list[dict] = []
+            for x in raw_ifaces:
+                name = str(x.get("name") or x.get("interface") or "").strip()
+                if not name:
+                    continue
+                enabled = None
+                if "enabled" in x:
+                    enabled = bool(x.get("enabled"))
+                elif "shutdown" in x:
+                    enabled = (not bool(x.get("shutdown")))
+                item: dict = {"name": name}
+                if enabled is not None:
+                    item["enabled"] = enabled
+                if x.get("description"):
+                    item["description"] = str(x.get("description"))
+                # Access VLAN shortcut
+                if x.get("vlan") is not None:
+                    try:
+                        item["mode"] = "access"
+                        item["access"] = {"vlan": int(x.get("vlan"))}
+                    except Exception:
+                        pass
+                # IP shortcut
+                if x.get("ip_address"):
+                    item["ip"] = {"address": str(x.get("ip_address")), "mask": str(x.get("subnet_mask") or "")}
+                cfg.append(item)
+            if cfg and not out["interfaces_config"]:
+                out["interfaces_config"] = cfg
+        else:
+            # Name list: treat as shutdown-only list unless shutdown=false explicitly provided elsewhere
+            names = [
+                _strip_device_prefix_from_iface_name(str(x), out["target_hosts"])
+                for x in raw_ifaces
+                if str(x).strip()
+            ]
+            if names and not out["interfaces_to_shutdown"] and not out["interfaces_config"]:
+                # If params.shutdown explicitly false, interpret as enable; else shutdown-only
+                if params.get("shutdown") is False:
+                    out["interfaces_config"] = [{"name": n, "enabled": True} for n in names]
+                else:
+                    out["interfaces_to_shutdown"] = names
+
+    # Single interface fields
+    if not out["interfaces_config"] and not out["interfaces_to_shutdown"]:
+        name = str(params.get("name") or params.get("interface") or "").strip()
+        if name:
+            if params.get("shutdown") is True:
+                out["interfaces_to_shutdown"] = [name]
+            else:
+                item: dict = {"name": name}
+                if "shutdown" in params:
+                    item["enabled"] = (not bool(params.get("shutdown")))
+                if params.get("description"):
+                    item["description"] = str(params.get("description"))
+                if params.get("vlan") is not None:
+                    try:
+                        item["mode"] = "access"
+                        item["access"] = {"vlan": int(params.get("vlan"))}
+                    except Exception:
+                        pass
+                if params.get("ip_address"):
+                    item["ip"] = {"address": str(params.get("ip_address")), "mask": str(params.get("subnet_mask") or "")}
+                out["interfaces_config"] = [item]
+
+    return out
+
+
 def validate_vlan_intent(intent: Dict[str, Any]) -> Tuple[bool, Optional[List[str]]]:
     """
     Validate intent against reference/vlan/intent_schema.json.
@@ -202,9 +326,9 @@ def resolve_playbook_template_path(
         single_path = base / vendor / _SINGLE_PLAYBOOK
         if single_path.exists():
             return single_path
-    # For vlan with no vendor info (e.g. planning_context empty), default to multi_vendor
-    # so we always get the correct reference format instead of LLM/bundle wrong format
-    if feature == "vlan":
+    # For vlan/interface with no vendor info (e.g. planning_context empty), default to multi_vendor
+    # so we always get the correct reference format instead of LLM/bundle wrong format.
+    if feature in {"vlan", "interface"}:
         multi_path = base / "multi_vendor" / _MULTI_VENDOR_TEMPLATE
         if multi_path.exists():
             return multi_path
@@ -259,7 +383,50 @@ def load_template(path: Path) -> str:
     return path.read_text(encoding="utf-8")
 
 
-def get_template_vars(intent: Dict[str, Any], _template_content: str) -> Dict[str, Any]:
+def resolve_interfaces(
+    intent: Dict[str, Any],
+    planning_context: Optional[Dict[str, Any]],
+) -> Optional[List[str]]:
+    """
+    Topology/inventory resolution when the intent has no explicit interface list in params.
+    Returns list of interface names from topology/inventory, or None if resolution fails.
+    Caller must log and abort when None; no silent fallback.
+    """
+    target_hosts = list(intent.get("target_hosts") or [])
+    if not target_hosts:
+        logger.warning("resolve_interfaces: no target_hosts in intent")
+        return None
+    if not planning_context:
+        logger.error("No topology data found → abort (planning_context missing)")
+        return None
+    devices = list(planning_context.get("devices") or [])
+    if not devices:
+        logger.error("No topology data found → abort (no devices in planning_context)")
+        return None
+    host_set = {str(h).strip() for h in target_hosts if str(h).strip()}
+    names: List[str] = []
+    seen: set = set()
+    for d in devices:
+        if str(d.get("hostname") or "").strip() not in host_set:
+            continue
+        for iface in d.get("interfaces") or []:
+            name = str(iface.get("name") or iface.get("interface") or "").strip()
+            if name and name not in seen:
+                seen.add(name)
+                names.append(name)
+    if not names:
+        logger.error("No topology data found → abort (no interfaces for target hosts)")
+        return None
+    logger.info("Resolved %d interface(s) from topology for target hosts", len(names))
+    return names
+
+
+def get_template_vars(
+    feature: str,
+    intent: Dict[str, Any],
+    _template_content: str,
+    planning_context: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     """
     Build the variable dict for template rendering from intent.
 
@@ -268,6 +435,22 @@ def get_template_vars(intent: Dict[str, Any], _template_content: str) -> Dict[st
     Exposes: vlan_id, vlan_name, vlan (dict), interfaces (schema-shaped list),
     interfaces_config_with_vlan (module-ready), target_hosts.
     """
+    feature = (feature or "").strip().lower()
+    if feature == "interface":
+        normalized_i = _normalize_intent_to_interface_shape(intent)
+        target_hosts = list(normalized_i.get("target_hosts") or [])
+        interfaces_config = list(normalized_i.get("interfaces_config") or [])
+        interfaces_to_shutdown = list(normalized_i.get("interfaces_to_shutdown") or [])
+        # No silent fallback: interfaces come from intent only (controller must call resolve_interfaces first).
+        # Pre-serialize for reference/playbook.yml first Jinja pass (avoids relying on Jinja2's tojson filter).
+        return {
+            "target_hosts": ",".join(str(h).strip() for h in target_hosts if str(h).strip()),
+            "interfaces_config_override": interfaces_config,
+            "interfaces_to_shutdown_override": interfaces_to_shutdown if interfaces_to_shutdown else None,
+            "interfaces_config_json": json.dumps(interfaces_config),
+            "interfaces_to_shutdown_json": json.dumps(interfaces_to_shutdown),
+        }
+
     normalized = _normalize_intent_to_schema_shape(intent)
     vlan_dict = normalized["vlan"]
     schema_interfaces = normalized["interfaces"]
@@ -372,7 +555,7 @@ def fill_playbook_from_reference(
         return None
     try:
         content = load_template(path)
-        variables = get_template_vars(intent, content)
+        variables = get_template_vars(feature, intent, content, planning_context=planning_context)
         variables["vendors"] = [normalize_vendor(v) for v in vendors if v]
         return render_template(content, variables)
     except Exception as exc:

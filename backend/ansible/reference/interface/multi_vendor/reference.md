@@ -20,7 +20,7 @@ Use when one playbook targets one or more switches (single host or a group). Con
 ## Module usage (shutdown = disabled interface)
 
 - **Cisco IOS:** `cisco.ios.ios_interfaces` with `config:` as a list of one item per loop: `config: [ { name: "{{ item }}", enabled: false } ]`, `state: merged`. `when:` must include `inventory_hostname in groups.get('vendor_cisco_ios', [])` and `(interfaces_to_shutdown | default([])) | length > 0`.
-- **Huawei VRP:** `community.network.ce_config` with `lines: [ shutdown ]`, `parents: "interface {{ item }}"`, `state: merged`. Do **not** use `community.network.network_config`. `when:` must include `inventory_hostname in groups.get('vendor_huawei_vrp', [])` and length check.
+- **Huawei VRP:** Multi-scenario via `community.network.ce_config`: per-interface lines from reference template (description, shutdown/undo shutdown, port link-type access/trunk, ip address). Use `interfaces_config` = list of `{ name, description?, enabled?, mode?, access?: { vlan }, trunk?: { allowed_vlans }, ip?: { address, mask } }`, or `interfaces_to_shutdown` for shutdown-only. `when:` must include `inventory_hostname in groups.get('vendor_huawei_vrp', [])` and length check.
 - **Juniper Junos:** `juniper.device.junos_interfaces` with `config: [ { name: "{{ item }}", enabled: false } ]`, `state: merged`. Use `juniper.device` (not deprecated `junipernetworks.junos`). `when:` must include `inventory_hostname in groups.get('vendor_juniper_junos', [])` and length check.
 
 ## Example task block (Cisco)

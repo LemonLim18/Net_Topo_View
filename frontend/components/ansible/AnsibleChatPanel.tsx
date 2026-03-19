@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import ReactMarkdown from 'react-markdown';
 import { DiffEditor } from '@monaco-editor/react';
-import { Send, Loader2, Bot, Sparkles, AlertCircle, FileCode, RotateCcw, ChevronRight, Paperclip, X, TriangleAlert, ChevronDown, Check, Undo2, RefreshCw } from 'lucide-react';
+import { Send, Loader2, Bot, Sparkles, AlertCircle, FileCode, RotateCcw, ChevronRight, Paperclip, X, TriangleAlert, ChevronDown, Check, Undo2, RefreshCw, Square } from 'lucide-react';
 import { ansibleApi, llmApi, ragApi } from '../../src/services/api';
 import { Toast } from '../../src/utils/swal';
 import type { LlmRuntimeState } from '../../src/services/api';
@@ -50,12 +50,24 @@ function parseIntent(text: string): {
     lower.includes('huawei') || lower.includes('vrp')    ? 'huawei_vrp'    :
     'cisco_ios';
 
+  // Interface-like tokens (Gi0/1, Te1/1, Fa0/1, Ethernet0/1, etc.) — prompts often omit the word "interface"
+  const hasIfaceToken = /\b(?:gi|gig|gigabit|te|ten|fa|fast|eth|ethernet|ge)[- ]?\d+\/\d+/i.test(text)
+    || /\b(?:gi|gig|te|fa|eth)\d+\/\d+\/\d+/i.test(text);
+
+  const looksLikeIfaceShutdown =
+    /\b(?:shut\s*down|shutdown|admin[- ]?down|disable|turn\s+off)\b/i.test(lower)
+    && (hasIfaceToken || lower.includes('interface') || lower.includes('interfaces') || lower.includes('port'));
+
+  const looksLikeIfaceConfigure =
+    (lower.includes('trunk') || lower.includes('access vlan') || /\b(?:l3|routed)\b/i.test(lower))
+    && (hasIfaceToken || lower.includes('interface') || lower.includes('interfaces'));
+
   // Feature
   const feature =
     lower.includes('vlan')          ? 'vlan'      :
     lower.includes('ospf')          ? 'ospf'      :
     lower.includes('bgp')           ? 'bgp'       :
-    lower.includes('interface')     ? 'interface' :
+    looksLikeIfaceShutdown || looksLikeIfaceConfigure || lower.includes('interface') ? 'interface' :
     lower.includes('acl') || lower.includes('access-list') ? 'acl' :
     lower.includes('route')         ? 'routing'   :
     'general';
@@ -174,10 +186,46 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
   const fileInputRef   = useRef<HTMLInputElement>(null);
   const dragCounterRef = useRef(0);
   const modelDropdownRef = useRef<HTMLDivElement>(null);
+  const abortControllerRef = useRef<AbortController | null>(null);
+  const loadingPhaseTimeoutRef = useRef<ReturnType<typeof setTimeout>[]>([]);
   /** Hydrated file paths for messages that only had playbookPath (e.g. from before multi-file links). */
   const [hydratedFilePaths, setHydratedFilePaths] = useState<Record<string, string[]>>({});
   const [studioOpen, setStudioOpen] = useState(false);
   const [studioIntent, setStudioIntent] = useState('');
+  const [disambiguation, setDisambiguation] = useState<{
+    messageId: string;
+    question: string;
+    options: { id: string; label: string; clarification?: string; matches?: string[] }[];
+    originalText: string;
+  } | null>(null);
+  const [disambiguationChoice, setDisambiguationChoice] = useState<string>('access');
+  const [disambiguationCustom, setDisambiguationCustom] = useState<string>('');
+  const [interfaceDisambiguation, setInterfaceDisambiguation] = useState<{
+    messageId: string;
+    question: string;
+    devices: { hostname: string; interfaces: { name: string }[] }[];
+    intentText: string;
+    /** Backend intent schema action (e.g. shutdown_interface vs configure_interface) for param key on submit. */
+    schemaAction?: string;
+  } | null>(null);
+  const [selectedInterfaces, setSelectedInterfaces] = useState<Set<string>>(new Set());
+  const [paramsDisambiguation, setParamsDisambiguation] = useState<{
+    messageId: string;
+    question: string;
+    fields: { field: string; question: string }[];
+    intentText: string;
+  } | null>(null);
+  const [paramsDisambiguationValues, setParamsDisambiguationValues] = useState<Record<string, string | number | string[]>>({});
+  const [paramsDisambiguationStep, setParamsDisambiguationStep] = useState(0);
+  const [studioInitialPreview, setStudioInitialPreview] = useState<{
+    categories: string[];
+    references: { doc_name: string; feature: string; vendor: string; path: string }[];
+    reasoning: string[];
+    policy_approved: boolean;
+    target_hosts: string[];
+    reasoning_trace?: { steps: { title: string; detail: string }[] };
+    parsed_intent: Record<string, unknown>;
+  } | null>(null);
 
   // Load LLM runtime (Gemini + Ollama models) and restore Ansible model selection
   useEffect(() => {
@@ -392,6 +440,8 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
         id: loadingId, role: 'assistant', content: '', isLoading: true, timestamp: Date.now(),
       }]);
       setGenerating(true);
+      const ac = new AbortController();
+      abortControllerRef.current = ac;
       try {
         const [, tplVendor, tplFeature, tplParamsRaw] = templateMatch;
         let tplParams: Record<string, any> = {};
@@ -405,7 +455,8 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
           feature: tplFeature,
           params: tplParams,
           target_hosts: ['all'],
-        });
+        }, { signal: ac.signal });
+        abortControllerRef.current = null;
 
         const playbookName = result.entrypoint_path || `playbook_${result.job_id}.yml`;
         setMessages(prev => prev.map(m =>
@@ -432,29 +483,321 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
           files: result.files,
         });
       } catch (err: any) {
-        let errorMsg = err.message || 'Unknown error';
-        if (typeof err.message === 'object') {
-          try {
-            errorMsg = err.message.message || JSON.stringify(err.message, null, 1);
-          } catch {
-            errorMsg = String(err.message);
+        abortControllerRef.current = null;
+        const isAbort = err instanceof DOMException && err.name === 'AbortError';
+        if (isAbort) {
+          setMessages(prev => prev.filter(m => m.id !== loadingId));
+          addMsg({ role: 'assistant', content: 'The generation was cancelled by the user.' });
+        } else {
+          let errorMsg = err.message || 'Unknown error';
+          if (typeof err.message === 'object') {
+            try {
+              errorMsg = err.message.message || JSON.stringify(err.message, null, 1);
+            } catch {
+              errorMsg = String(err.message);
+            }
           }
+          setMessages(prev => prev.map(m =>
+            m.id === loadingId ? {
+              ...m, isLoading: false, isError: true,
+              content: `❌ **Failed to generate playbook**\n\n${errorMsg}`,
+            } : m
+          ));
         }
-        setMessages(prev => prev.map(m =>
-          m.id === loadingId ? {
-            ...m, isLoading: false, isError: true,
-            content: `❌ **Failed to generate playbook**\n\n${errorMsg}`,
-          } : m
-        ));
       } finally {
         setGenerating(false);
       }
     } else {
-      // ── Standard LLM: open Playbook Studio overlay (categories → RAG refs → confirm → dual editor) ──
+      // ── Standard flow: run preview first to detect ambiguity ──
+      const loadingId = crypto.randomUUID();
+      const loadingPhases = ['Reviewing the user intent', 'Clarifying for some missing information', 'Loading ...'];
+      setMessages(prev => [...prev, {
+        id: loadingId,
+        role: 'assistant',
+        content: loadingPhases[0],
+        isLoading: true,
+        timestamp: Date.now(),
+      }]);
+      setGenerating(true);
+      const ac = new AbortController();
+      abortControllerRef.current = ac;
+      const t1 = setTimeout(() => {
+        setMessages(prev => prev.map((m) =>
+          m.id === loadingId ? { ...m, content: loadingPhases[1] } : m
+        ));
+      }, 3000);
+      const t2 = setTimeout(() => {
+        setMessages(prev => prev.map((m) =>
+          m.id === loadingId ? { ...m, content: loadingPhases[2] } : m
+        ));
+      }, 8000);
+      loadingPhaseTimeoutRef.current = [t1, t2];
+      const { vendor, feature, target_hosts } = parseIntent(text);
+      try {
+        const res = await ansibleApi.previewIntent({
+          intent_description: text,
+          target_hosts: target_hosts?.length ? target_hosts : undefined,
+          vendor: vendor || undefined,
+          feature: feature || undefined,
+          provider: ansibleModel.provider,
+          model: ansibleModel.model,
+          ollama_base_url: ansibleModel.ollama_base_url ?? undefined,
+        }, { signal: ac.signal });
+        loadingPhaseTimeoutRef.current.forEach(clearTimeout);
+        loadingPhaseTimeoutRef.current = [];
+        abortControllerRef.current = null;
+        const dis = (res as any)?.parsed_intent?.disambiguation || (res as any)?.disambiguation;
+        const ifaceDis = (res as any)?.interfaces_disambiguation;
+        if (dis && Array.isArray(dis.options) && dis.options.length) {
+          loadingPhaseTimeoutRef.current.forEach(clearTimeout);
+          loadingPhaseTimeoutRef.current = [];
+          setMessages(prev => prev.filter(m => m.id !== loadingId));
+          setGenerating(false);
+          const menuMsgId = crypto.randomUUID();
+          setDisambiguation({
+            messageId: menuMsgId,
+            question: dis.question || 'Which devices did you mean?',
+            options: dis.options,
+            originalText: text,
+          });
+          setDisambiguationChoice(dis.options.find((o: any) => o.id === 'access') ? 'access' : dis.options[0].id);
+          setDisambiguationCustom('');
+          setMessages(prev => [...prev, {
+            id: menuMsgId,
+            role: 'assistant',
+            content: dis.question || 'Which devices did you mean?',
+            timestamp: Date.now(),
+            disambiguation: { question: dis.question || 'Which devices did you mean?', options: dis.options },
+          }]);
+          return;
+        }
+        if (ifaceDis?.devices?.length) {
+          loadingPhaseTimeoutRef.current.forEach(clearTimeout);
+          loadingPhaseTimeoutRef.current = [];
+          setMessages(prev => prev.filter(m => m.id !== loadingId));
+          setGenerating(false);
+          const menuMsgId = crypto.randomUUID();
+          setInterfaceDisambiguation({
+            messageId: menuMsgId,
+            question: ifaceDis.question || 'Please select the interfaces you want to shutdown.',
+            devices: ifaceDis.devices,
+            intentText: text,
+            schemaAction: (res as { schema_action?: string })?.schema_action,
+          });
+          // Require explicit selection (safer for shutdown; Gi0/1 vs Ethernet naming won't pre-check wrong set)
+          setSelectedInterfaces(new Set());
+          setMessages(prev => [...prev, {
+            id: menuMsgId,
+            role: 'assistant',
+            content: ifaceDis.question || 'Please select the interfaces to continue.',
+            timestamp: Date.now(),
+            interfaceDisambiguation: { question: ifaceDis.question, devices: ifaceDis.devices },
+          }]);
+          return;
+        }
+        const paramsDis = (res as any)?.params_disambiguation;
+        if (paramsDis?.fields?.length) {
+          loadingPhaseTimeoutRef.current.forEach(clearTimeout);
+          loadingPhaseTimeoutRef.current = [];
+          setMessages(prev => prev.filter(m => m.id !== loadingId));
+          setGenerating(false);
+          const menuMsgId = crypto.randomUUID();
+          setParamsDisambiguation({
+            messageId: menuMsgId,
+            question: paramsDis.question || 'Please provide the following.',
+            fields: paramsDis.fields,
+            intentText: text,
+          });
+          setParamsDisambiguationValues({});
+          setParamsDisambiguationStep(0);
+          setMessages(prev => [...prev, {
+            id: menuMsgId,
+            role: 'assistant',
+            content: 'Clarifying for some missing information',
+            timestamp: Date.now(),
+            paramsDisambiguation: { question: paramsDis.question, fields: paramsDis.fields },
+          }]);
+          return;
+        }
+        // No disambiguation: replace loading with reasoning message.
+        loadingPhaseTimeoutRef.current.forEach(clearTimeout);
+        loadingPhaseTimeoutRef.current = [];
+        setMessages(prev => prev.filter(m => m.id !== loadingId));
+        const trace = (res as any)?.reasoning_trace as { steps?: { title: string; detail: string }[] } | undefined;
+        if (trace?.steps && trace.steps.length > 0) {
+          const lines: string[] = ['**Reasoning steps**'];
+          trace.steps.forEach((step, idx) => {
+            const title = step.title || `Step ${idx + 1}`;
+            const detail = (step.detail || '').trim();
+            if (detail) {
+              lines.push(`${idx + 1}. ${title.replace(/^\d+\.\s*/, '')}`);
+              lines.push('');
+              lines.push(detail);
+              lines.push('');
+            } else {
+              lines.push(`${idx + 1}. ${title}`);
+            }
+          });
+          const secondaryPreviews = (res as { secondary_intent_previews?: Array<{ intent_index: number; action: string; feature: string; missing_fields?: string[]; validation_errors?: string[] }> })?.secondary_intent_previews;
+          if (Array.isArray(secondaryPreviews) && secondaryPreviews.length > 0) {
+            lines.push('');
+            lines.push('**Also detected (secondary intents)**');
+            secondaryPreviews.forEach((s) => {
+              const missing = (s.missing_fields ?? []).length ? ` — missing: ${(s.missing_fields ?? []).join(', ')}` : '';
+              const errs = (s.validation_errors ?? []).length ? ` — ${(s.validation_errors ?? []).join('; ')}` : '';
+              lines.push(`- ${s.feature || s.action}${missing}${errs}`);
+            });
+            lines.push('');
+            lines.push('Primary intent will be generated first. You can run a follow-up for the others.');
+          }
+          addMsg({
+            role: 'assistant',
+            content: lines.join('\n').trim(),
+          });
+        } else {
+          const reasoning = (res as any)?.reasoning as string[] | undefined;
+          if (Array.isArray(reasoning) && reasoning.length) {
+            let snippet = reasoning.slice(0, 3).join('\n');
+            const secondaryPreviews = (res as { secondary_intent_previews?: Array<{ feature: string; action: string; missing_fields?: string[] }> })?.secondary_intent_previews;
+            if (Array.isArray(secondaryPreviews) && secondaryPreviews.length > 0) {
+              snippet += '\n\n**Also detected:** ' + secondaryPreviews.map((s) => s.feature || s.action).join(', ') + '. Primary intent will be generated first.';
+            }
+            addMsg({
+              role: 'assistant',
+              content: `Thinking:\n${snippet}`,
+            });
+          }
+        }
+        const valErr = (res as any)?.parsed_intent?.validation_errors as string[] | undefined;
+        if (Array.isArray(valErr) && valErr.length > 0) {
+          addMsg({
+            role: 'assistant',
+            content: `**Validation issues**\n\n${valErr.join('\n')}`,
+          });
+          setGenerating(false);
+          return;
+        }
+      } catch (err: unknown) {
+        loadingPhaseTimeoutRef.current.forEach(clearTimeout);
+        loadingPhaseTimeoutRef.current = [];
+        abortControllerRef.current = null;
+        setMessages(prev => prev.filter(m => m.id !== loadingId));
+        const isAbort = err instanceof DOMException && err.name === 'AbortError';
+        if (isAbort) {
+          addMsg({ role: 'assistant', content: 'The generation was cancelled by the user.' });
+        }
+      }
+      setGenerating(false);
+      setStudioInitialPreview(null);
       setStudioIntent(text);
       setStudioOpen(true);
     }
-  }, [input, isGenerating, addMsg, onPlaybookReady, attachedFiles, ansibleModel]);
+  }, [input, isGenerating, addMsg, onPlaybookReady, attachedFiles, ansibleModel, parseIntent]);
+
+  const submitDisambiguation = useCallback(async () => {
+    if (!disambiguation) return;
+    const picked = disambiguation.options.find((o) => o.id === disambiguationChoice);
+    const clarification =
+      disambiguationChoice === 'custom'
+        ? disambiguationCustom.trim()
+        : (picked?.clarification ?? picked?.label ?? '').trim();
+    if (!clarification) return;
+    const clarifiedText = `${disambiguation.originalText}\n\nClarification: ${clarification}`;
+    const msgId = disambiguation.messageId;
+    setDisambiguation(null);
+    setMessages(prev => prev.filter(m => m.id !== msgId));
+    setGenerating(true);
+    const loadingId = crypto.randomUUID();
+    const ac = new AbortController();
+    abortControllerRef.current = ac;
+    setMessages(prev => [...prev, { id: loadingId, role: 'assistant', content: '', isLoading: true, timestamp: Date.now() }]);
+    try {
+      const { vendor, feature, target_hosts } = parseIntent(clarifiedText);
+      const res = await ansibleApi.previewIntent({
+        intent_description: clarifiedText,
+        target_hosts: target_hosts?.length ? target_hosts : undefined,
+        vendor: vendor || undefined,
+        feature: feature || undefined,
+        provider: ansibleModel.provider,
+        model: ansibleModel.model,
+        ollama_base_url: ansibleModel.ollama_base_url ?? undefined,
+      }, { signal: ac.signal });
+      abortControllerRef.current = null;
+      const ifaceDis = (res as any)?.interfaces_disambiguation;
+      const paramsDis = (res as any)?.params_disambiguation;
+      setMessages(prev => prev.filter(m => m.id !== loadingId));
+      if (ifaceDis?.devices?.length) {
+        const menuMsgId = crypto.randomUUID();
+        setInterfaceDisambiguation({
+          messageId: menuMsgId,
+          question: ifaceDis.question || 'Please select the interfaces you want to shutdown.',
+          devices: ifaceDis.devices,
+          intentText: clarifiedText,
+          schemaAction: (res as { schema_action?: string })?.schema_action,
+        });
+        setSelectedInterfaces(new Set());
+        setMessages(prev => [...prev, {
+          id: menuMsgId,
+          role: 'assistant',
+          content: ifaceDis.question || 'Please select the interfaces to continue.',
+          timestamp: Date.now(),
+          interfaceDisambiguation: { question: ifaceDis.question, devices: ifaceDis.devices },
+        }]);
+      } else if (paramsDis?.fields?.length) {
+        const menuMsgId = crypto.randomUUID();
+        setParamsDisambiguation({
+          messageId: menuMsgId,
+          question: paramsDis.question || 'Please provide the following.',
+          fields: paramsDis.fields,
+          intentText: clarifiedText,
+        });
+        setParamsDisambiguationValues({});
+        setParamsDisambiguationStep(0);
+        setMessages(prev => [...prev, {
+          id: menuMsgId,
+          role: 'assistant',
+          content: 'Clarifying for some missing information',
+          timestamp: Date.now(),
+          paramsDisambiguation: { question: paramsDis.question, fields: paramsDis.fields },
+        }]);
+      } else {
+        const valErr = (res as { parsed_intent?: { validation_errors?: string[] } })?.parsed_intent?.validation_errors;
+        if (Array.isArray(valErr) && valErr.length > 0) {
+          addMsg({
+            role: 'assistant',
+            content: `**Validation issues**\n\n${valErr.join('\n')}`,
+          });
+        } else {
+          setStudioInitialPreview(null);
+          setStudioIntent(clarifiedText);
+          setStudioOpen(true);
+        }
+      }
+    } catch (err: unknown) {
+      abortControllerRef.current = null;
+      setMessages(prev => prev.filter(m => m.id !== loadingId));
+      const isAbort = err instanceof DOMException && err.name === 'AbortError';
+      if (isAbort) {
+        addMsg({ role: 'assistant', content: 'The generation was cancelled by the user.' });
+      }
+      setStudioInitialPreview(null);
+      setStudioIntent(clarifiedText);
+      setStudioOpen(true);
+    }
+    setGenerating(false);
+  }, [disambiguation, disambiguationChoice, disambiguationCustom, ansibleModel, parseIntent, addMsg]);
+
+  const handleStop = useCallback(() => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
+    }
+    loadingPhaseTimeoutRef.current.forEach(clearTimeout);
+    loadingPhaseTimeoutRef.current = [];
+    setMessages(prev => prev.filter(m => !(m as AnsibleMessage & { isLoading?: boolean }).isLoading));
+    addMsg({ role: 'assistant', content: 'The generation was cancelled by the user.' });
+    setGenerating(false);
+  }, [addMsg]);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); }
@@ -583,8 +926,9 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
       {/* Playbook Studio overlay: intent categories → RAG templates → confirm → dual editor */}
       <PlaybookStudioOverlay
         open={studioOpen}
-        onClose={() => setStudioOpen(false)}
+        onClose={() => { setStudioOpen(false); setStudioInitialPreview(null); }}
         intentDescription={studioIntent}
+        initialPreviewResult={studioInitialPreview ?? undefined}
         onPlaybookReady={(payload) => {
           onPlaybookReady(payload);
           addMsg({
@@ -745,12 +1089,407 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
                   {msg.isLoading ? (
                     <div className="flex items-center gap-2 text-base-content/60 text-sm">
                       <Loader2 className="w-3.5 h-3.5 text-primary animate-spin shrink-0" />
-                      Generating playbook…
+                      {msg.content || 'Generating the playbook…'}
                     </div>
                   ) : msg.isError ? (
                     <div className="flex items-start gap-2 text-error text-sm">
                       <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
                       {msg.content}
+                    </div>
+                  ) : msg.disambiguation ? (
+                    <div className="space-y-2">
+                      <div className="text-sm text-base-content/90">
+                        {msg.disambiguation.question}
+                      </div>
+                      <div className="flex flex-col gap-2">
+                        {msg.disambiguation.options.map((opt) => (
+                          <button
+                            key={opt.id}
+                            type="button"
+                            className={`btn btn-sm justify-start ${disambiguationChoice === opt.id ? 'btn-primary' : 'btn-ghost'}`}
+                            onClick={() => setDisambiguationChoice(opt.id)}
+                          >
+                            <span className="text-left flex-1">
+                              {opt.label}
+                              {opt.matches?.length ? (
+                                <span className="block text-[11px] opacity-70 font-mono">
+                                  {opt.matches.join(', ')}
+                                </span>
+                              ) : null}
+                            </span>
+                          </button>
+                        ))}
+                      </div>
+                      {disambiguationChoice === 'custom' && (
+                        <input
+                          className="input input-sm input-bordered w-full"
+                          value={disambiguationCustom}
+                          onChange={(e) => setDisambiguationCustom(e.target.value)}
+                          placeholder="Enter your custom answer…"
+                        />
+                      )}
+                      <div className="flex items-center gap-2">
+                        <button type="button" className="btn btn-sm btn-ghost" onClick={() => {
+                          if (disambiguation?.messageId === msg.id) setDisambiguation(null);
+                          setMessages(prev => prev.filter(m => m.id !== msg.id));
+                        }}>
+                          Cancel
+                        </button>
+                        <button type="button" className="btn btn-sm btn-primary" onClick={submitDisambiguation}>
+                          Continue
+                        </button>
+                      </div>
+                    </div>
+                  ) : (msg as any).interfaceDisambiguation && interfaceDisambiguation?.messageId === msg.id ? (
+                    <div className="space-y-3">
+                      <div className="text-sm text-base-content/90">
+                        {interfaceDisambiguation.question}
+                      </div>
+                      {interfaceDisambiguation.devices.map((dev) => (
+                        <div key={dev.hostname} className="rounded border border-base-300 bg-base-300/50 p-2">
+                          <div className="text-xs font-semibold text-base-content/80 mb-1.5">{dev.hostname}</div>
+                          <div className="flex flex-wrap gap-2">
+                            {dev.interfaces.map((iface) => {
+                              const name = iface.name;
+                              const checked = selectedInterfaces.has(name);
+                              return (
+                                <label key={name} className="flex items-center gap-1.5 cursor-pointer">
+                                  <input
+                                    type="checkbox"
+                                    checked={checked}
+                                    onChange={() => {
+                                      setSelectedInterfaces((prev) => {
+                                        const next = new Set(prev);
+                                        if (next.has(name)) next.delete(name);
+                                        else next.add(name);
+                                        return next;
+                                      });
+                                    }}
+                                    className="checkbox checkbox-sm checkbox-primary"
+                                  />
+                                  <span className="text-xs font-mono">{name}</span>
+                                </label>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      ))}
+                      <div className="flex items-center gap-2">
+                        <button type="button" className="btn btn-sm btn-ghost" onClick={() => {
+                          setInterfaceDisambiguation(null);
+                          setMessages(prev => prev.filter(m => m.id !== msg.id));
+                        }}>
+                          Cancel
+                        </button>
+                        <button
+                          type="button"
+                          className="btn btn-sm btn-primary"
+                          onClick={async () => {
+                            if (!interfaceDisambiguation) return;
+                            const selected = Array.from(selectedInterfaces);
+                            if (selected.length === 0) {
+                              Toast.warning('Select at least one interface', 'Choose one or more interfaces to continue.');
+                              return;
+                            }
+                            const msgId = interfaceDisambiguation.messageId;
+                            const intentText = interfaceDisambiguation.intentText;
+                            const schemaAction = (interfaceDisambiguation.schemaAction || 'shutdown_interface').toLowerCase();
+                            setInterfaceDisambiguation(null);
+                            setMessages(prev => prev.filter(m => m.id !== msgId));
+                            setGenerating(true);
+                            const progressId = crypto.randomUUID();
+                            setMessages(prev => [...prev, {
+                              id: progressId,
+                              role: 'assistant',
+                              content: 'Applying your interface selection and refreshing the preview…',
+                              timestamp: Date.now(),
+                            }]);
+                            const ac = new AbortController();
+                            abortControllerRef.current = ac;
+                            try {
+                              const { vendor, feature, target_hosts } = parseIntent(intentText);
+                              const ifaceParams =
+                                schemaAction === 'configure_interface'
+                                  ? {
+                                      interfaces: selected.map((name) => ({
+                                        name,
+                                        mode: 'access' as const,
+                                      })),
+                                    }
+                                  : { interfaces_to_shutdown: selected };
+                              const res = await ansibleApi.previewIntent({
+                                intent_description: intentText,
+                                target_hosts: target_hosts?.length ? target_hosts : undefined,
+                                vendor: vendor || undefined,
+                                feature: feature || undefined,
+                                provider: ansibleModel.provider,
+                                model: ansibleModel.model,
+                                ollama_base_url: ansibleModel.ollama_base_url ?? undefined,
+                                params: ifaceParams,
+                              }, { signal: ac.signal });
+                              abortControllerRef.current = null;
+                              setMessages(prev => prev.filter(m => m.id !== progressId));
+                              const valErr = (res as { parsed_intent?: { validation_errors?: string[] } })?.parsed_intent?.validation_errors;
+                              const resParamsDis = (res as any)?.params_disambiguation;
+                              const resIfaceDis = (res as any)?.interfaces_disambiguation;
+                              if (Array.isArray(valErr) && valErr.length > 0) {
+                                addMsg({
+                                  role: 'assistant',
+                                  content: `**Validation issues**\n\n${valErr.join('\n')}`,
+                                });
+                              } else if (resParamsDis?.fields?.length) {
+                                setParamsDisambiguation({
+                                  messageId: crypto.randomUUID(),
+                                  question: resParamsDis.question || 'Please provide the following.',
+                                  fields: resParamsDis.fields,
+                                  intentText,
+                                });
+                                setParamsDisambiguationValues({});
+                                setParamsDisambiguationStep(0);
+                                setMessages(prev => [...prev, {
+                                  id: crypto.randomUUID(),
+                                  role: 'assistant',
+                                  content: 'Clarifying for some missing information',
+                                  timestamp: Date.now(),
+                                  paramsDisambiguation: { question: resParamsDis.question, fields: resParamsDis.fields },
+                                }]);
+                              } else if (resIfaceDis?.devices?.length) {
+                                const menuMsgId = crypto.randomUUID();
+                                setInterfaceDisambiguation({
+                                  messageId: menuMsgId,
+                                  question: resIfaceDis.question || 'Please select interfaces.',
+                                  devices: resIfaceDis.devices,
+                                  intentText,
+                                  schemaAction: (res as { schema_action?: string })?.schema_action,
+                                });
+                                setSelectedInterfaces(new Set());
+                                setMessages(prev => [...prev, {
+                                  id: menuMsgId,
+                                  role: 'assistant',
+                                  content: resIfaceDis.question || 'Please select the interfaces to continue.',
+                                  timestamp: Date.now(),
+                                  interfaceDisambiguation: { question: resIfaceDis.question, devices: resIfaceDis.devices },
+                                }]);
+                              } else {
+                                setStudioInitialPreview(res as any);
+                                setStudioIntent(intentText);
+                                setStudioOpen(true);
+                              }
+                            } catch (err: unknown) {
+                              abortControllerRef.current = null;
+                              setMessages(prev => prev.filter(m => m.id !== progressId));
+                              const isAbort = err instanceof DOMException && err.name === 'AbortError';
+                              if (isAbort) {
+                                addMsg({ role: 'assistant', content: 'The generation was cancelled by the user.' });
+                              }
+                              setStudioInitialPreview(null);
+                              setStudioIntent(intentText);
+                              setStudioOpen(true);
+                            }
+                            setGenerating(false);
+                          }}
+                        >
+                          Continue
+                        </button>
+                      </div>
+                    </div>
+                  ) : (msg as any).paramsDisambiguation && paramsDisambiguation?.messageId === msg.id ? (
+                    <div className="space-y-3">
+                      <div className="text-sm text-base-content/90">
+                        Clarifying for some missing information
+                      </div>
+                      {paramsDisambiguation.fields.length > 0 && (
+                        <>
+                          <div className="text-xs text-base-content/60">
+                            Question {paramsDisambiguationStep + 1} of {paramsDisambiguation.fields.length}
+                          </div>
+                          <div className="flex flex-col gap-2">
+                            {(() => {
+                              const f = paramsDisambiguation.fields[paramsDisambiguationStep];
+                              if (!f) return null;
+                              return (
+                                <div key={f.field}>
+                                  <label className="text-sm text-base-content/90 block mb-0.5">{f.question}</label>
+                                  {f.field === 'target_devices' || f.field === 'interfaces' ? (
+                                    <input
+                                      type="text"
+                                      className="input input-sm input-bordered w-full font-mono"
+                                      placeholder="e.g. Acc_1, Acc_2 or Gi0/1, Gi0/2"
+                                      value={(paramsDisambiguationValues[f.field] as string) ?? ''}
+                                      onChange={(e) => setParamsDisambiguationValues((prev) => ({ ...prev, [f.field]: e.target.value }))}
+                                    />
+                                  ) : (
+                                    <input
+                                      type={f.field === 'vlan_id' || f.field === 'process_id' ? 'number' : 'text'}
+                                      className="input input-sm input-bordered w-full font-mono"
+                                      placeholder={f.field === 'vlan_id' ? '1-4094' : ''}
+                                      value={String((paramsDisambiguationValues[f.field] ?? '') as string | number)}
+                                      onChange={(e) => {
+                                        const v = e.target.value;
+                                        setParamsDisambiguationValues((prev) => ({
+                                          ...prev,
+                                          [f.field]: f.field === 'vlan_id' || f.field === 'process_id' ? (v ? parseInt(v, 10) : '') : v,
+                                        }));
+                                      }}
+                                    />
+                                  )}
+                                </div>
+                              );
+                            })()}
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <button type="button" className="btn btn-sm btn-ghost" onClick={() => {
+                              setParamsDisambiguation(null);
+                              setParamsDisambiguationValues({});
+                              setParamsDisambiguationStep(0);
+                              setMessages(prev => prev.filter(m => m.id !== msg.id));
+                            }}>
+                              Cancel
+                            </button>
+                            {paramsDisambiguationStep > 0 ? (
+                              <button
+                                type="button"
+                                className="btn btn-sm btn-ghost"
+                                onClick={() => setParamsDisambiguationStep((s) => s - 1)}
+                              >
+                                Back
+                              </button>
+                            ) : null}
+                            {paramsDisambiguationStep < paramsDisambiguation.fields.length - 1 ? (
+                              <button
+                                type="button"
+                                className="btn btn-sm btn-primary"
+                                onClick={() => setParamsDisambiguationStep((s) => s + 1)}
+                              >
+                                Next
+                              </button>
+                            ) : (
+                              <button
+                                type="button"
+                                className="btn btn-sm btn-primary"
+                                disabled={
+                                  paramsDisambiguation.fields.some(
+                                    (f) => {
+                                      const v = paramsDisambiguationValues[f.field];
+                                      if (v === undefined || v === '' || v === null) return true;
+                                      if (Array.isArray(v) && v.length === 0) return true;
+                                      if (typeof v === 'number' && Number.isNaN(v)) return true;
+                                      return false;
+                                    }
+                                  )
+                                }
+                                onClick={async () => {
+                                  if (!paramsDisambiguation) return;
+                                  const intentText = paramsDisambiguation.intentText;
+                                  const params: Record<string, unknown> = {};
+                                  paramsDisambiguation.fields.forEach((f) => {
+                                    const v = paramsDisambiguationValues[f.field];
+                                    if (v !== undefined && v !== '' && v !== null) {
+                                      if (f.field === 'target_devices' && typeof v === 'string') {
+                                        params.target_hosts = v.split(/[\s,]+/).map((s) => s.trim()).filter(Boolean);
+                                      } else {
+                                        params[f.field] = v;
+                                      }
+                                    }
+                                  });
+                                  const msgId = paramsDisambiguation.messageId;
+                                  setParamsDisambiguation(null);
+                                  setParamsDisambiguationValues({});
+                                  setParamsDisambiguationStep(0);
+                                  setMessages(prev => prev.filter(m => m.id !== msgId));
+                                  const generatingId = crypto.randomUUID();
+                                  setMessages(prev => [...prev, {
+                                    id: generatingId,
+                                    role: 'assistant',
+                                    content: 'Generating the playbook…',
+                                    isLoading: true,
+                                    timestamp: Date.now(),
+                                  }]);
+                                  setGenerating(true);
+                                  const ac = new AbortController();
+                                  abortControllerRef.current = ac;
+                                  try {
+                                    const { vendor, feature, target_hosts } = parseIntent(intentText);
+                                    const res = await ansibleApi.previewIntent({
+                                      intent_description: intentText,
+                                      target_hosts: target_hosts?.length ? target_hosts : undefined,
+                                      vendor: vendor || undefined,
+                                      feature: feature || undefined,
+                                      provider: ansibleModel.provider,
+                                      model: ansibleModel.model,
+                                      ollama_base_url: ansibleModel.ollama_base_url ?? undefined,
+                                      params: Object.keys(params).length ? params : undefined,
+                                    }, { signal: ac.signal });
+                                    abortControllerRef.current = null;
+                                    setMessages(prev => prev.filter(m => m.id !== generatingId));
+                                    const resParamsDis = (res as any)?.params_disambiguation;
+                                    const resIfaceDis = (res as any)?.interfaces_disambiguation;
+                                    if (resParamsDis?.fields?.length) {
+                                      setParamsDisambiguation({
+                                        messageId: crypto.randomUUID(),
+                                        question: resParamsDis.question || 'Please provide the following.',
+                                        fields: resParamsDis.fields,
+                                        intentText,
+                                      });
+                                      setParamsDisambiguationValues({});
+                                      setParamsDisambiguationStep(0);
+                                      setMessages(prev => [...prev, {
+                                        id: crypto.randomUUID(),
+                                        role: 'assistant',
+                                        content: 'Clarifying for some missing information',
+                                        timestamp: Date.now(),
+                                        paramsDisambiguation: { question: resParamsDis.question, fields: resParamsDis.fields },
+                                      }]);
+                                    } else if (resIfaceDis?.devices?.length) {
+                                      const menuMsgId = crypto.randomUUID();
+                                      setInterfaceDisambiguation({
+                                        messageId: menuMsgId,
+                                        question: resIfaceDis.question || 'Please select the interfaces you want to shutdown.',
+                                        devices: resIfaceDis.devices,
+                                        intentText,
+                                        schemaAction: (res as { schema_action?: string })?.schema_action,
+                                      });
+                                      setSelectedInterfaces(new Set());
+                                      setMessages(prev => [...prev, {
+                                        id: menuMsgId,
+                                        role: 'assistant',
+                                        content: resIfaceDis.question || 'Please select the interfaces to continue.',
+                                        timestamp: Date.now(),
+                                        interfaceDisambiguation: { question: resIfaceDis.question, devices: resIfaceDis.devices },
+                                      }]);
+                                    } else {
+                                      const valErr = (res as { parsed_intent?: { validation_errors?: string[] } })?.parsed_intent?.validation_errors;
+                                      if (Array.isArray(valErr) && valErr.length > 0) {
+                                        addMsg({
+                                          role: 'assistant',
+                                          content: `**Validation issues**\n\n${valErr.join('\n')}`,
+                                        });
+                                      } else {
+                                        setStudioInitialPreview(res as any);
+                                        setStudioIntent(intentText);
+                                        setStudioOpen(true);
+                                      }
+                                    }
+                                  } catch (err: unknown) {
+                                    abortControllerRef.current = null;
+                                    setMessages(prev => prev.filter(m => m.id !== generatingId));
+                                    const isAbort = err instanceof DOMException && err.name === 'AbortError';
+                                    if (isAbort) {
+                                      addMsg({ role: 'assistant', content: 'The generation was cancelled by the user.' });
+                                    }
+                                    setStudioInitialPreview(null);
+                                    setStudioIntent(intentText);
+                                    setStudioOpen(true);
+                                  }
+                                  setGenerating(false);
+                                }}
+                              >
+                                Submit
+                              </button>
+                            )}
+                          </div>
+                        </>
+                      )}
                     </div>
                   ) : (
                     <VscodeMarkdown content={msg.content} onOpenFile={onOpenFile} />
@@ -896,21 +1635,29 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
             >
               <Paperclip className="w-4 h-4" />
             </button>
-            {/* Send button */}
-            <button
-              type="button"
-              onClick={handleSend}
-              disabled={(!input.trim() && attachedFiles.length === 0) || isGenerating}
-              title="Send (Enter)"
-              className={`p-1.5 rounded border-none shrink-0 self-end transition-colors btn btn-sm ${
-                (input.trim() || attachedFiles.length > 0) && !isGenerating ? 'btn-primary' : 'btn-ghost opacity-50 cursor-not-allowed'
-              }`}
-            >
-              {isGenerating
-                ? <Loader2 className="w-4 h-4 animate-spin" />
-                : <Send className="w-4 h-4" />
-              }
-            </button>
+            {/* Send or Stop button */}
+            {isGenerating ? (
+              <button
+                type="button"
+                onClick={handleStop}
+                title="Stop generation"
+                className="p-1.5 rounded-full border-none shrink-0 self-end transition-colors btn btn-sm bg-red-600 hover:bg-red-700 text-white"
+              >
+                <Square className="w-4 h-4 fill-current" />
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={handleSend}
+                disabled={!input.trim() && attachedFiles.length === 0}
+                title="Send (Enter)"
+                className={`p-1.5 rounded-full border-none shrink-0 self-end transition-colors btn btn-sm btn-square ${
+                  (input.trim() || attachedFiles.length > 0) ? 'btn-primary' : 'btn-ghost opacity-50 cursor-not-allowed'
+                }`}
+              >
+                <Send className="w-4 h-4" />
+              </button>
+            )}
           </div>
         </div>
 

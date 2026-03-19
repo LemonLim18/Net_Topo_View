@@ -1,0 +1,31 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "properties": {
+    "target_hosts": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "acl_name": { "type": "string", "minLength": 1 },
+    "acl_type": {
+      "type": "string",
+      "enum": ["ipv4", "ipv6", "mac", "l2"]
+    },
+    "rules": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "oneOf": [
+          { "type": "string", "minLength": 1 },
+          { "type": "object" }
+        ]
+      }
+    },
+    "apply_to": {
+      "type": "array",
+      "items": { "type": "string" }
+    }
+  },
+  "required": ["target_hosts", "acl_name", "acl_type", "rules"]
+}

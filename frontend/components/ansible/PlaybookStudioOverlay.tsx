@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Editor } from '@monaco-editor/react';
 import ReactMarkdown from 'react-markdown';
 import {
@@ -13,6 +13,7 @@ import {
   ChevronDown,
   ChevronUp,
   Lightbulb,
+  Square,
 } from 'lucide-react';
 import { ansibleApi } from '../../src/services/api';
 import { Toast } from '../../src/utils/swal';
@@ -29,10 +30,29 @@ const FEATURES_DISPLAY: Record<string, string> = {
   general: 'General',
 };
 
+export interface SchemaEditableField {
+  field: string;
+  label: string;
+  required: boolean;
+  type: string;
+}
+
 export interface PlaybookStudioOverlayProps {
   open: boolean;
   onClose: () => void;
   intentDescription: string;
+  initialPreviewResult?: {
+    categories: string[];
+    references: { doc_name: string; feature: string; vendor: string; path: string }[];
+    reasoning: string[];
+    policy_approved: boolean;
+    target_hosts?: string[];
+    reasoning_trace?: { steps: { title: string; detail: string }[] };
+    parsed_intent?: Record<string, unknown>;
+    schema_editable_fields?: SchemaEditableField[];
+    interfaces_for_selection?: { question: string; devices: { hostname: string; interfaces: { name: string }[] }[] };
+    secondary_intent_previews?: Array<{ intent_index: number; action: string; feature: string; missing_fields?: string[] }>;
+  } | null;
   onPlaybookReady: (payload: {
     jobId: number;
     content: string;
@@ -41,7 +61,7 @@ export interface PlaybookStudioOverlayProps {
     files?: AnsibleGeneratedArtifactFile[];
   }) => void;
   ansibleModel: { provider: string; model: string; ollama_base_url?: string | null };
-  parseIntent: (text: string) => { vendor: string; feature: string; target_hosts: string[] };
+  parseIntent: (text: string) => { vendor: string; feature: string; target_hosts: string[]; params?: Record<string, any> };
 }
 
 type Step = 'thinking' | 'confirm' | 'generating' | 'result' | 'error';
@@ -50,6 +70,7 @@ export function PlaybookStudioOverlay({
   open,
   onClose,
   intentDescription,
+  initialPreviewResult,
   onPlaybookReady,
   ansibleModel,
   parseIntent,
@@ -70,6 +91,18 @@ export function PlaybookStudioOverlay({
   const [addRefPath, setAddRefPath] = useState('');
   const [targetHosts, setTargetHosts] = useState<string[]>([]);
   const [newTargetHost, setNewTargetHost] = useState('');
+  const [targetInterfaces, setTargetInterfaces] = useState<string[]>([]);
+  const [newTargetInterface, setNewTargetInterface] = useState('');
+  const [schemaEditableFields, setSchemaEditableFields] = useState<SchemaEditableField[]>([]);
+  const [schemaParamValues, setSchemaParamValues] = useState<Record<string, string | number>>({});
+  const [interfacesForSelection, setInterfacesForSelection] = useState<{ question: string; devices: { hostname: string; interfaces: { name: string }[] }[] } | null>(null);
+  const [interfaceBindingMode, setInterfaceBindingMode] = useState<'no' | 'access' | 'trunk'>('no');
+  const [vlanSelectedInterfaces, setVlanSelectedInterfaces] = useState<Set<string>>(new Set());
+  const [vlanAccessVlan, setVlanAccessVlan] = useState<number>(1);
+  const [vlanAllowedVlans, setVlanAllowedVlans] = useState('');
+  const [vlanNativeVlan, setVlanNativeVlan] = useState<number>(1);
+  /** Last preview API parsed_intent — used so create-and-plan sends correct feature (avoid heuristic "general"). */
+  const [previewParsedIntent, setPreviewParsedIntent] = useState<Record<string, unknown> | null>(null);
   const [resultPayload, setResultPayload] = useState<{
     jobId: number;
     content: string;
@@ -77,6 +110,7 @@ export function PlaybookStudioOverlay({
     entrypointPath?: string | null;
     files?: AnsibleGeneratedArtifactFile[];
   } | null>(null);
+  const abortControllerRef = useRef<AbortController | null>(null);
 
   const runPreview = useCallback(async () => {
     if (!intentDescription.trim()) return;
@@ -101,6 +135,26 @@ export function PlaybookStudioOverlay({
       setTargetHosts(
         res.target_hosts?.length ? res.target_hosts : target_hosts?.length ? target_hosts : []
       );
+      {
+        const p = (res.parsed_intent as any)?.parameters ?? {};
+        let ifaces: unknown[] = Array.isArray(p.interfaces_to_shutdown) ? p.interfaces_to_shutdown : [];
+        if (!ifaces.length && Array.isArray(p.interfaces)) {
+          if (p.interfaces.every((x: unknown) => typeof x === 'string')) ifaces = p.interfaces;
+          else ifaces = p.interfaces.map((x: { name?: string }) => x?.name).filter(Boolean) as string[];
+        }
+        setTargetInterfaces(ifaces.map(String));
+      }
+      setSchemaEditableFields(res.schema_editable_fields ?? []);
+      const params = (res.parsed_intent as any)?.parameters ?? {};
+      setSchemaParamValues(
+        Object.fromEntries(
+          (res.schema_editable_fields ?? []).map((f) => [f.field, params[f.field] ?? ''])
+        )
+      );
+      setInterfacesForSelection((res as any).interfaces_for_selection ?? null);
+      setPreviewParsedIntent((res.parsed_intent as Record<string, unknown>) ?? null);
+      setInterfaceBindingMode('no');
+      setVlanSelectedInterfaces(new Set());
       setStep('confirm');
     } catch (e: unknown) {
       const err = e as { message?: string; detail?: { message?: string; issues?: string[] } };
@@ -115,10 +169,43 @@ export function PlaybookStudioOverlay({
   }, [intentDescription, ansibleModel, parseIntent]);
 
   useEffect(() => {
-    if (open && intentDescription.trim()) {
+    if (!open || !intentDescription.trim()) return;
+    if (initialPreviewResult) {
+      setCategories(initialPreviewResult.categories || []);
+      setReferences(initialPreviewResult.references || []);
+      setSelectedRefs(initialPreviewResult.references || []);
+      const baseReasoning = initialPreviewResult.reasoning || [];
+      const secondaryPreviews = initialPreviewResult.secondary_intent_previews;
+      const secondaryLine =
+        Array.isArray(secondaryPreviews) && secondaryPreviews.length > 0
+          ? `**Also detected (secondary intents):** ${secondaryPreviews.map((s) => s.feature || s.action).join(', ')}. This run will generate the primary intent only; you can run a follow-up for the others.`
+          : null;
+      setReasoning(secondaryLine ? [...baseReasoning, secondaryLine] : baseReasoning);
+      setPolicyApproved(initialPreviewResult.policy_approved ?? false);
+      setTargetHosts(initialPreviewResult.target_hosts?.length ? initialPreviewResult.target_hosts : []);
+      {
+        const p = (initialPreviewResult.parsed_intent as any)?.parameters ?? {};
+        let ifaces: unknown[] = Array.isArray(p.interfaces_to_shutdown) ? p.interfaces_to_shutdown : [];
+        if (!ifaces.length && Array.isArray(p.interfaces)) {
+          if (p.interfaces.every((x: unknown) => typeof x === 'string')) ifaces = p.interfaces;
+          else ifaces = p.interfaces.map((x: { name?: string }) => x?.name).filter(Boolean) as string[];
+        }
+        setTargetInterfaces(ifaces.map(String));
+      }
+      setSchemaEditableFields(initialPreviewResult.schema_editable_fields ?? []);
+      const params = (initialPreviewResult.parsed_intent as any)?.parameters ?? {};
+      setSchemaParamValues(
+        Object.fromEntries(
+          (initialPreviewResult.schema_editable_fields ?? []).map((f) => [f.field, params[f.field] ?? ''])
+        )
+      );
+      setInterfacesForSelection(initialPreviewResult.interfaces_for_selection ?? null);
+      setPreviewParsedIntent((initialPreviewResult.parsed_intent as Record<string, unknown>) ?? null);
+      setStep('confirm');
+    } else {
       runPreview();
     }
-  }, [open, intentDescription, runPreview]);
+  }, [open, intentDescription, runPreview, initialPreviewResult]);
 
   useEffect(() => {
     if (step === 'confirm') {
@@ -161,7 +248,34 @@ export function PlaybookStudioOverlay({
   const handleConfirm = useCallback(async () => {
     setStep('generating');
     setErrorMessage(null);
-    const { vendor, feature, params } = parseIntent(intentDescription);
+    const { vendor, feature: heuristicFeature, params: baseParams } = parseIntent(intentDescription);
+    const parsedFeat = String((previewParsedIntent?.feature as string) || '').trim().toLowerCase();
+    const fromCategories = categories.find((c) => c && c !== 'general');
+    const feature =
+      parsedFeat ||
+      (fromCategories && fromCategories !== 'general' ? fromCategories : '') ||
+      heuristicFeature;
+    const params: Record<string, unknown> = { ...(baseParams || {}) };
+    Object.entries(schemaParamValues).forEach(([k, v]) => {
+      if (v === '' || v === undefined) return;
+      const field = schemaEditableFields.find((f) => f.field === k);
+      params[k] = field?.type === 'number' ? Number(v) : v;
+    });
+    if (targetHosts.length > 0) {
+      params.target_hosts = targetHosts;
+    }
+    if (targetInterfaces.length > 0) {
+      params.interfaces_to_shutdown = targetInterfaces;
+    }
+    if (interfaceBindingMode !== 'no' && vlanSelectedInterfaces.size > 0) {
+      const names = Array.from(vlanSelectedInterfaces);
+      if (interfaceBindingMode === 'access') {
+        params.interfaces = names.map((name) => ({ name, mode: 'access', access_vlan: vlanAccessVlan }));
+      } else {
+        const allowed = vlanAllowedVlans.split(',').map((s) => parseInt(s.trim(), 10)).filter((n) => !Number.isNaN(n));
+        params.interfaces = names.map((name) => ({ name, mode: 'trunk', allowed_vlans: allowed, native_vlan: vlanNativeVlan }));
+      }
+    }
     const firstRefPath = selectedRefs[0]?.path;
     if (firstRefPath) {
       loadReferenceContent(firstRefPath);
@@ -169,6 +283,8 @@ export function PlaybookStudioOverlay({
       setReferenceContent('# No reference template selected');
     }
     const hostsToUse = targetHosts.length ? targetHosts : ['all'];
+    const ac = new AbortController();
+    abortControllerRef.current = ac;
     try {
       const result = await ansibleApi.createAndPlan({
         intent_description: intentDescription,
@@ -179,7 +295,8 @@ export function PlaybookStudioOverlay({
         provider: ansibleModel.provider,
         model: ansibleModel.model,
         ollama_base_url: ansibleModel.ollama_base_url ?? undefined,
-      });
+      }, { signal: ac.signal });
+      abortControllerRef.current = null;
       setGeneratedContent(result.playbook ?? '');
       setGeneratedJobId(result.job_id ?? null);
       setResultPayload({
@@ -192,6 +309,12 @@ export function PlaybookStudioOverlay({
       setStep('result');
       // Stay on modal so user can compare template vs generated; they click Confirm to proceed
     } catch (e: unknown) {
+      abortControllerRef.current = null;
+      const isAbort = e instanceof DOMException && e.name === 'AbortError';
+      if (isAbort) {
+        setStep('confirm');
+        return;
+      }
       const err = e as { message?: string; detail?: { message?: string; issues?: string[] } };
       const msg =
         err?.message ||
@@ -202,7 +325,7 @@ export function PlaybookStudioOverlay({
       setStep('error');
       Toast.error('Generation failed', msg);
     }
-  }, [intentDescription, selectedRefs, targetHosts, ansibleModel, parseIntent, loadReferenceContent, onPlaybookReady]);
+  }, [intentDescription, selectedRefs, targetHosts, targetInterfaces, schemaParamValues, schemaEditableFields, interfaceBindingMode, vlanSelectedInterfaces, vlanAccessVlan, vlanAllowedVlans, vlanNativeVlan, ansibleModel, parseIntent, loadReferenceContent, onPlaybookReady, previewParsedIntent, categories]);
 
   if (!open) return null;
 
@@ -220,19 +343,36 @@ export function PlaybookStudioOverlay({
             <span className="text-xs text-base-content/60">
               {step === 'thinking' && 'Understanding your intent…'}
               {step === 'confirm' && 'Confirm templates & generate'}
-              {step === 'generating' && 'Generating playbook…'}
+              {step === 'generating' && 'Composing playbook…'}
               {step === 'result' && 'Generated'}
               {step === 'error' && 'Error'}
             </span>
           </div>
-          <button
-            type="button"
-            onClick={onClose}
-            className="btn btn-ghost btn-sm btn-square"
-            aria-label="Close"
-          >
-            <X className="w-4 h-4" />
-          </button>
+          <div className="flex items-center gap-1">
+            {step === 'generating' && (
+              <button
+                type="button"
+                onClick={() => {
+                  if (abortControllerRef.current) {
+                    abortControllerRef.current.abort();
+                  }
+                }}
+                title="Stop generation"
+                className="btn btn-ghost rounded-full btn-sm btn-square text-red-600 hover:bg-red-600/20"
+                aria-label="Stop"
+              >
+                <Square className="w-4 h-4 fill-current" />
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={onClose}
+              className="btn btn-ghost btn-sm btn-square"
+              aria-label="Close"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
         </div>
 
         {/* Body */}
@@ -324,9 +464,129 @@ export function PlaybookStudioOverlay({
                   <button type="button" className="btn btn-ghost btn-sm gap-0.5" onClick={addRef} disabled={!addRefPath}><Plus className="w-3 h-3" /> Add reference</button>
                 </div>
               </div>
+              {schemaEditableFields.filter((f) => f.field !== 'target_hosts' && f.field !== 'interfaces_to_shutdown' && f.field !== 'interfaces').length > 0 && (
+                <div className="mb-4">
+                  <p className="text-xs font-semibold text-base-content/70 uppercase tracking-wider mb-2">
+                    Parameters (schema)
+                  </p>
+                  <p className="text-xs text-base-content/50 mb-2">Edit values before generating. Required fields are marked.</p>
+                  <div className="space-y-2">
+                    {schemaEditableFields
+                      .filter((f) => f.field !== 'target_hosts' && f.field !== 'interfaces_to_shutdown' && f.field !== 'interfaces')
+                      .map((f) =>
+                        (f as SchemaEditableField & { type?: string }).type === 'interfaces_choice' ? (
+                          <div key={f.field} className="space-y-2 rounded-lg border border-base-300 bg-base-200/50 p-3">
+                            <label className="text-sm font-medium text-base-content/80">{f.label}</label>
+                            <div className="flex flex-wrap gap-2 items-center">
+                              <span className="text-xs text-base-content/60">Mode:</span>
+                              <select
+                                className="select select-bordered select-sm"
+                                value={interfaceBindingMode}
+                                onChange={(e) => setInterfaceBindingMode((e.target.value as 'no' | 'access' | 'trunk'))}
+                              >
+                                <option value="no">No</option>
+                                <option value="access">Access</option>
+                                <option value="trunk">Trunk</option>
+                              </select>
+                            </div>
+                            {interfaceBindingMode === 'access' && (
+                              <div className="flex flex-wrap gap-2 items-center">
+                                <label className="text-xs text-base-content/70">Access VLAN</label>
+                                <input
+                                  type="number"
+                                  min={1}
+                                  max={4094}
+                                  className="input input-bordered input-sm w-24"
+                                  value={vlanAccessVlan}
+                                  onChange={(e) => setVlanAccessVlan(parseInt(e.target.value, 10) || 1)}
+                                />
+                              </div>
+                            )}
+                            {interfaceBindingMode === 'trunk' && (
+                              <div className="space-y-1">
+                                <div className="flex flex-wrap gap-2 items-center">
+                                  <label className="text-xs text-base-content/70">Allowed VLANs (comma-separated)</label>
+                                  <input
+                                    type="text"
+                                    className="input input-bordered input-sm flex-1 min-w-0 max-w-xs"
+                                    placeholder="e.g. 10,20,100"
+                                    value={vlanAllowedVlans}
+                                    onChange={(e) => setVlanAllowedVlans(e.target.value)}
+                                  />
+                                </div>
+                                <div className="flex flex-wrap gap-2 items-center">
+                                  <label className="text-xs text-base-content/70">Native VLAN</label>
+                                  <input
+                                    type="number"
+                                    min={1}
+                                    max={4094}
+                                    className="input input-bordered input-sm w-24"
+                                    value={vlanNativeVlan}
+                                    onChange={(e) => setVlanNativeVlan(parseInt(e.target.value, 10) || 1)}
+                                  />
+                                </div>
+                              </div>
+                            )}
+                            {(interfaceBindingMode === 'access' || interfaceBindingMode === 'trunk') && interfacesForSelection?.devices?.length
+                              ? (
+                                  <div className="mt-2">
+                                    <p className="text-xs text-base-content/60 mb-1">Select interfaces (from planned context):</p>
+                                    <div className="flex flex-wrap gap-2 max-h-32 overflow-y-auto">
+                                      {interfacesForSelection.devices.flatMap((d) =>
+                                        (d.interfaces || []).map((i) => {
+                                          const name = i.name;
+                                          const checked = vlanSelectedInterfaces.has(name);
+                                          return (
+                                            <label key={`${d.hostname}-${name}`} className="label cursor-pointer gap-1.5 border border-base-300 rounded px-2 py-1 bg-base-100">
+                                              <input
+                                                type="checkbox"
+                                                checked={checked}
+                                                onChange={() => {
+                                                  setVlanSelectedInterfaces((prev) => {
+                                                    const next = new Set(prev);
+                                                    if (next.has(name)) next.delete(name);
+                                                    else next.add(name);
+                                                    return next;
+                                                  });
+                                                }}
+                                              />
+                                              <span className="text-xs font-mono">{name}</span>
+                                            </label>
+                                          );
+                                        })
+                                      )}
+                                    </div>
+                                  </div>
+                                )
+                              : null}
+                          </div>
+                        ) : (
+                          <div key={f.field} className="flex flex-wrap items-center gap-2">
+                            <label className="text-sm font-medium text-base-content/80 w-32 shrink-0">
+                              {f.label}
+                              {f.required && <span className="text-error ml-0.5">*</span>}
+                            </label>
+                            <input
+                              type={f.type === 'number' ? 'number' : 'text'}
+                              className="input input-bordered input-sm flex-1 min-w-0 max-w-xs"
+                              value={schemaParamValues[f.field] ?? ''}
+                              onChange={(e) =>
+                                setSchemaParamValues((prev) => ({
+                                  ...prev,
+                                  [f.field]: f.type === 'number' ? (e.target.value === '' ? '' : Number(e.target.value)) : e.target.value,
+                                }))
+                              }
+                              placeholder={f.required ? 'Required' : 'Optional'}
+                            />
+                          </div>
+                        )
+                      )}
+                  </div>
+                </div>
+              )}
               <div className="mb-4">
                 <p className="text-xs font-semibold text-base-content/70 uppercase tracking-wider mb-2">
-                  Target inventory — devices / interfaces
+                  Target inventory — devices
                 </p>
                 <p className="text-xs text-base-content/50 mb-2">Devices (hostnames) the playbook will target. Add or remove below; leave empty to use &quot;all&quot;.</p>
                 <div className="flex flex-wrap gap-2 items-center">
@@ -341,6 +601,25 @@ export function PlaybookStudioOverlay({
                   {targetHosts.length === 0 && !newTargetHost && <span className="text-sm text-base-content/50">No devices — playbook will target &quot;all&quot;</span>}
                 </div>
               </div>
+              {categories.map((c) => c.toLowerCase()).includes('interface') && (
+                <div className="mb-4">
+                  <p className="text-xs font-semibold text-base-content/70 uppercase tracking-wider mb-2">
+                    Target interfaces (e.g. to shutdown)
+                  </p>
+                  <p className="text-xs text-base-content/50 mb-2">Interfaces to apply the action to. Add or remove below.</p>
+                  <div className="flex flex-wrap gap-2 items-center">
+                    {targetInterfaces.map((iface) => (
+                      <span key={iface} className="badge badge-outline badge-sm gap-1 pr-1 font-mono">
+                        {iface}
+                        <button type="button" className="hover:bg-base-content/20 rounded-full p-0.5" onClick={() => setTargetInterfaces((prev) => prev.filter((x) => x !== iface))} aria-label={`Remove ${iface}`}><X className="w-3 h-3" /></button>
+                      </span>
+                    ))}
+                    <input type="text" placeholder="Add interface..." className="input input-bordered input-xs w-36 font-mono" value={newTargetInterface} onChange={(e) => setNewTargetInterface(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && (e.preventDefault(), (() => { const v = newTargetInterface.trim(); if (v && !targetInterfaces.includes(v)) { setTargetInterfaces((p) => [...p, v]); setNewTargetInterface(''); } })())} />
+                    <button type="button" className="btn btn-ghost btn-xs gap-0.5" onClick={() => { const v = newTargetInterface.trim(); if (v && !targetInterfaces.includes(v)) { setTargetInterfaces((p) => [...p, v]); setNewTargetInterface(''); } }}><Plus className="w-3 h-3" /> Add</button>
+                    {targetInterfaces.length === 0 && !newTargetInterface && <span className="text-sm text-base-content/50">No interfaces selected</span>}
+                  </div>
+                </div>
+              )}
               <div className="flex justify-end gap-2">
                 <button type="button" className="btn btn-ghost btn-sm" onClick={onClose}>
                   Cancel
@@ -356,15 +635,12 @@ export function PlaybookStudioOverlay({
             </>
           )}
 
-          {step === 'generating' && (
-            <div className="flex flex-col items-center justify-center py-12 gap-4">
-              <Loader2 className="w-10 h-10 text-primary animate-spin" />
-              <p className="text-sm text-base-content/80">
-                Generating playbook from templates — only values (green) are filled; structure (red) is preserved.
-              </p>
+          {step === 'generating' && !referenceContent && (
+            <div className="flex flex-col items-center justify-center py-12 gap-3">
+              <Loader2 className="w-8 h-8 text-primary animate-spin" />
+              <p className="text-sm text-base-content/60">Loading reference template…</p>
             </div>
           )}
-
           {(step === 'result' || (step === 'generating' && referenceContent)) && (
             <>
               <div className="grid grid-cols-2 gap-3 h-[420px]">
@@ -389,12 +665,21 @@ export function PlaybookStudioOverlay({
                       <span className="ml-1 opacity-80">(Job #{generatedJobId})</span>
                     )}
                   </div>
-                  <div className="flex-1 min-h-0 flex items-center justify-center bg-base-200">
+                  <div className="flex-1 min-h-0 flex flex-col bg-base-200 relative">
                     {step === 'generating' ? (
-                      <div className="flex flex-col items-center gap-2 text-base-content/60">
-                        <Loader2 className="w-8 h-8 text-primary animate-spin" />
-                        <span className="text-sm">Generating…</span>
-                      </div>
+                      <>
+                        <Editor
+                          height="100%"
+                          defaultLanguage="yaml"
+                          value="# Playbook will appear here when generation finishes."
+                          theme="vs-dark"
+                          options={{ readOnly: true, wordWrap: 'on', minimap: { enabled: false }, domReadOnly: true }}
+                        />
+                        <div className="absolute bottom-3 right-3 flex items-center gap-2 text-base-content/50 text-xs">
+                          <Loader2 className="w-4 h-4 text-primary animate-spin shrink-0" />
+                          <span>Composing…</span>
+                        </div>
+                      </>
                     ) : (
                       <Editor
                         height="100%"
@@ -407,7 +692,7 @@ export function PlaybookStudioOverlay({
                   </div>
                 </div>
               </div>
-              {step === 'result' && resultPayload && (
+              {(step === 'result' && resultPayload) && (
                 <div className="flex justify-end gap-2 mt-3 pt-3 border-t border-base-300">
                   <button type="button" className="btn btn-ghost btn-sm" onClick={onClose}>
                     Cancel
@@ -421,6 +706,16 @@ export function PlaybookStudioOverlay({
                       onClose();
                     }}
                   >
+                    <Check className="w-3.5 h-3.5" /> Confirm & use this playbook
+                  </button>
+                </div>
+              )}
+              {step === 'generating' && (
+                <div className="flex justify-end gap-2 mt-3 pt-3 border-t border-base-300 opacity-50 pointer-events-none">
+                  <button type="button" className="btn btn-ghost btn-sm" disabled>
+                    Cancel
+                  </button>
+                  <button type="button" className="btn btn-primary btn-sm gap-1" disabled>
                     <Check className="w-3.5 h-3.5" /> Confirm & use this playbook
                   </button>
                 </div>

@@ -1,0 +1,17 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "properties": {
+    "target_hosts": {
+      "type": "array",
+      "items": { "type": "string" },
+      "minItems": 1
+    },
+    "interfaces_to_shutdown": {
+      "type": "array",
+      "items": { "type": "string" },
+      "minItems": 1
+    }
+  },
+  "required": ["target_hosts", "interfaces_to_shutdown"]
+}

@@ -1,0 +1,35 @@
+# Intent schema: create / configure VLAN
+# Required: vlan_id, target_devices. Optional: vlan_name, interface_bindings, desired_state
+action: create_vlan
+feature: vlan
+required:
+  - vlan_id
+  - target_devices
+optional:
+  - vlan_name
+  - interface_binding
+  - desired_state
+resolution_order:
+  vlan_id:
+    - from_intent
+    - ask_user
+  vlan_name:
+    - from_intent
+    - ask_user
+  target_devices:
+    - from_intent
+    - from_inventory
+    - ask_user
+  interface_binding:
+    - from_intent
+    - from_topology
+    - ask_user
+  desired_state:
+    - from_intent
+    - ask_user
+questions:
+  vlan_id: "Which VLAN ID (1-4094)?"
+  vlan_name: "VLAN name?"
+  target_devices: "Which devices?"
+  interface_binding: "Configure interfaces? (access/trunk and which interfaces)"
+  desired_state: "Desired state (present or absent)?"

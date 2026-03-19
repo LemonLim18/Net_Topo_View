@@ -1,0 +1,21 @@
+# Intent schema: shutdown / admin-down interfaces
+# Required: target_devices, interfaces. Resolution: intent -> inventory -> topology -> ask_user
+action: shutdown_interface
+feature: interface
+required:
+  - target_devices
+  - interfaces
+optional: []
+resolution_order:
+  target_devices:
+    - from_intent
+    - from_inventory
+    - ask_user
+  interfaces:
+    - from_intent
+    - from_inventory
+    - from_topology
+    - ask_user
+questions:
+  target_devices: "Which devices?"
+  interfaces: "Which interfaces do you want to shutdown?"

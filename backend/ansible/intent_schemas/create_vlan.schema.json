@@ -1,0 +1,39 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "properties": {
+    "vlan": {
+      "type": "object",
+      "properties": {
+        "id": { "type": "integer", "minimum": 1, "maximum": 4094 },
+        "name": { "type": "string" }
+      },
+      "required": ["id"]
+    },
+    "target_hosts": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "interfaces": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": { "type": "string" },
+          "mode": { "type": "string", "enum": ["access", "trunk"] },
+          "access_vlan": { "type": "integer", "minimum": 1, "maximum": 4094 },
+          "allowed_vlans": { "type": "array", "items": { "type": "integer" } },
+          "native_vlan": { "type": "integer", "minimum": 1, "maximum": 4094 }
+        },
+        "required": ["name", "mode"],
+        "if": { "properties": { "mode": { "const": "access" } }, "required": ["mode"] },
+        "then": { "required": ["access_vlan"] },
+        "else": {
+          "if": { "properties": { "mode": { "const": "trunk" } }, "required": ["mode"] },
+          "then": { "required": ["native_vlan"] }
+        }
+      }
+    }
+  },
+  "required": ["vlan", "target_hosts"]
+}

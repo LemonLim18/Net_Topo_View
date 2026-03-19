@@ -1,0 +1,44 @@
+# Intent schema: configure OSPF
+action: configure_ospf
+feature: ospf
+required:
+  - process_id
+  - target_devices
+  - networks
+optional:
+  - router_id
+  - area_definitions
+  - passive_interfaces
+  - redistribution
+resolution_order:
+  process_id:
+    - from_intent
+    - ask_user
+  router_id:
+    - from_intent
+    - ask_user
+  target_devices:
+    - from_intent
+    - from_inventory
+    - ask_user
+  networks:
+    - from_intent
+    - from_inventory
+    - ask_user
+  area_definitions:
+    - from_intent
+    - ask_user
+  passive_interfaces:
+    - from_intent
+    - ask_user
+  redistribution:
+    - from_intent
+    - ask_user
+questions:
+  process_id: "OSPF process ID?"
+  target_devices: "Which devices?"
+  networks: "Which networks (CIDR) to advertise and in which area?"
+  router_id: "OSPF router ID (IPv4)?"
+  area_definitions: "Area definitions (network/CIDR per area)?"
+  passive_interfaces: "Passive interfaces (optional)?"
+  redistribution: "Redistribute static/connected (optional)?"

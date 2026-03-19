@@ -183,6 +183,11 @@ export interface AnsibleMessage {
   jobId?: number;
   playbookPath?: string;   // path opened in editor when playbook is ready
   generatedPaths?: string[];
+  /** Optional disambiguation menu shown inline in chat before preview modal */
+  disambiguation?: {
+    question: string;
+    options: { id: string; label: string; clarification?: string; matches?: string[] }[];
+  } | null;
   /** AI-proposed edits to existing files; user can apply section-by-section or Keep All / Undo All */
   proposedEdits?: AnsibleProposedEdit[];
 }

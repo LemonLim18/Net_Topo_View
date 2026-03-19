@@ -1,13 +1,20 @@
 ---
-# Interface shutdown — multi-vendor (reference from job_42)
-# Hosts: use a single host (e.g. Acc_Cisco_1) or a group; vars and tasks stay the same.
-- name: Shutdown interfaces
-  hosts: Acc_Cisco_1
+# Interface — multi-vendor (shutdown and multi-scenario: description, access/trunk, IP).
+# Huawei uses reference template: per-interface description / shutdown|undo shutdown / mode / IP.
+# Vars: interfaces_config = [ { name, description?, enabled?, mode?, access?: { vlan }, trunk?: { allowed_vlans }, ip?: { address, mask } } ], or interfaces_to_shutdown = [ names ].
+- name: Configure interfaces
+  hosts: "{{ target_hosts | default('all') }}"
   gather_facts: no
   ignore_unreachable: true
   vars:
-    interfaces_to_shutdown: "{{ nettopo_interfaces | default([]) | map(attribute='name') | list }}"
+    interfaces_config: {{ interfaces_config_override | default([]) | tojson }}
+{% if interfaces_to_shutdown_override is defined and interfaces_to_shutdown_override is not none and interfaces_to_shutdown_override | length > 0 %}
+    interfaces_to_shutdown: {{ interfaces_to_shutdown_override | tojson }}
+{% else %}
+    interfaces_to_shutdown: "{{ '{{ nettopo_interfaces | default([]) | map(attribute=''name'') | list }}' }}"
+{% endif %}
   tasks:
+{% raw %}
     - name: Shutdown interface (Cisco IOS)
       cisco.ios.ios_interfaces:
         config:
@@ -20,7 +27,24 @@
       when:
         - inventory_hostname in groups.get('vendor_cisco_ios', [])
         - (interfaces_to_shutdown | default([])) | length > 0
+{% endraw %}
 
+# Huawei VRP — multi-scenario (description, shutdown, access/trunk, IP) per reference template
+{% for item in interfaces_config | default([]) %}
+{% set ns = namespace(lines=[]) %}
+{% if item.description is defined and item.description %}{% set _ = ns.lines.append('description ' + (item.description | string)) %}{% endif %}
+{% if item.enabled is defined and item.enabled == false %}{% set _ = ns.lines.append('shutdown') %}{% elif item.enabled is defined and item.enabled != false %}{% set _ = ns.lines.append('undo shutdown') %}{% endif %}
+{% if item.mode is defined and item.mode == 'access' and item.access is defined %}{% set _ = ns.lines.append('port link-type access') %}{% set _ = ns.lines.append('port default vlan ' + (item.access.vlan | string)) %}{% elif item.mode is defined and item.mode == 'trunk' and item.trunk is defined %}{% set _ = ns.lines.append('port link-type trunk') %}{% set _ = ns.lines.append('port trunk allow-pass vlan ' + (item.trunk.allowed_vlans | default(item.trunk.allow_pass_vlans) | default([]) | map('string') | join(' '))) %}{% endif %}
+{% if item.ip is defined and item.ip and item.ip.address is defined %}{% set _ = ns.lines.append('ip address ' + (item.ip.address | string) + ' ' + (item.ip.mask | default(item.ip.netmask) | default('255.255.255.0') | string)) %}{% endif %}
+    - name: Configure interface {{ item.name }} (Huawei VRP)
+      community.network.ce_config:
+        parents: "interface {{ item.name }}"
+        lines: {{ ns.lines | tojson }}
+      when:
+        - inventory_hostname in groups.get('vendor_huawei_vrp', [])
+        - ns.lines | length > 0
+{% endfor %}
+{% raw %}
     - name: Shutdown interface (Huawei VRP)
       community.network.ce_config:
         lines:
@@ -32,6 +56,7 @@
         label: "{{ item }}"
       when:
         - inventory_hostname in groups.get('vendor_huawei_vrp', [])
+        - (interfaces_config | default([])) | length == 0
         - (interfaces_to_shutdown | default([])) | length > 0
 
     - name: Shutdown interface (Juniper Junos)
@@ -46,3 +71,4 @@
       when:
         - inventory_hostname in groups.get('vendor_juniper_junos', [])
         - (interfaces_to_shutdown | default([])) | length > 0
+{% endraw %}

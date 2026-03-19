@@ -1,0 +1,34 @@
+# Intent schema: ACL create / apply
+action: configure_acl
+feature: acl
+required:
+  - acl_name
+  - acl_type
+  - rules
+  - target_devices
+optional:
+  - apply_to
+resolution_order:
+  acl_name:
+    - from_intent
+    - ask_user
+  acl_type:
+    - from_intent
+    - ask_user
+  rules:
+    - from_intent
+    - from_inventory
+    - ask_user
+  target_devices:
+    - from_intent
+    - from_inventory
+    - ask_user
+  apply_to:
+    - from_intent
+    - ask_user
+questions:
+  acl_name: "ACL name or number?"
+  acl_type: "ACL type (ipv4, ipv6, mac, or l2)?"
+  rules: "ACL rules (permit/deny, protocol, src/dst) or template name?"
+  target_devices: "Which devices?"
+  apply_to: "Apply to which interfaces and direction (in/out)?"

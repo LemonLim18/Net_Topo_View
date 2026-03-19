@@ -32,9 +32,19 @@ from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel
 
 from ansible.bundle_artifacts import AnsibleArtifactBundle, bundle_from_dict
+from ansible.intent_validation import (
+    get_editable_fields_for_schema,
+    get_schema_for_parsed_intent,
+    interface_intent_params_satisfied,
+    resolve_missing_fields,
+    validate_completeness,
+    vlan_schema_fields_missing_from_user_prompt,
+)
+from ansible.intent_validation import _intent_to_flat_fields, _is_empty as _param_is_empty
 from ansible.reference_resolver import (
     fill_playbook_from_reference,
     get_vlan_interfaces_summary,
+    resolve_interfaces,
     validate_vlan_intent,
     vendors_from_db,
     vendors_from_planning_context,
@@ -42,6 +52,7 @@ from ansible.reference_resolver import (
 from ansible.planning_context import (
     build_scoped_planning_context,
     infer_vendor_hint,
+    normalize_role,
     normalize_vendor,
     planning_context_readiness,
     planning_context_to_prompt_text,
@@ -59,6 +70,106 @@ _builder  = None   # PlaybookBuilder
 _agent    = None   # NetworkAgent (for RAG context)
 _pipeline = None   # DeploymentPipeline
 _db       = None   # DatabaseManager
+
+
+def _get_safe_mode_default() -> bool:
+    """Server default for safe_mode when request omits it. Config: ANSIBLE_SAFE_MODE_DEFAULT (default true)."""
+    return os.getenv("ANSIBLE_SAFE_MODE_DEFAULT", "true").strip().lower() in ("true", "1", "yes")
+
+
+def _coerce_params_for_validation(params: Dict[str, Any]) -> None:
+    """Coerce known numeric/array params so type validation and playbook generation get expected types."""
+    if not params:
+        return
+    vlan_id = params.get("vlan_id")
+    if vlan_id is not None and str(vlan_id).strip() != "":
+        try:
+            params["vlan_id"] = int(vlan_id)
+        except (TypeError, ValueError):
+            pass
+    if params.get("target_hosts") is not None and isinstance(params["target_hosts"], str):
+        params["target_hosts"] = [params["target_hosts"]]
+    if params.get("target_devices") is not None and isinstance(params["target_devices"], str):
+        params["target_devices"] = [params["target_devices"]]
+    pid = params.get("process_id")
+    if pid is not None and str(pid).strip() != "":
+        try:
+            params["process_id"] = int(pid)
+        except (TypeError, ValueError):
+            pass
+    ad = params.get("admin_distance")
+    if ad is not None and str(ad).strip() != "":
+        try:
+            params["admin_distance"] = int(ad)
+        except (TypeError, ValueError):
+            pass
+    for key in ("networks", "rules", "classification_rules"):
+        val = params.get(key)
+        if isinstance(val, str) and val.strip():
+            stripped = val.strip()
+            if stripped.startswith("[") or stripped.startswith("{"):
+                try:
+                    parsed = json.loads(stripped)
+                    if isinstance(parsed, list):
+                        params[key] = parsed
+                    elif isinstance(parsed, dict) and key != "networks":
+                        params[key] = [parsed]
+                    elif key == "networks" and isinstance(parsed, dict):
+                        params[key] = [stripped]
+                except json.JSONDecodeError:
+                    if key == "networks":
+                        params[key] = [x.strip() for x in re.split(r"[\s,]+", stripped) if x.strip()]
+                    else:
+                        params[key] = [stripped]
+            elif key == "networks":
+                params[key] = [x.strip() for x in re.split(r"[\s,]+", stripped) if x.strip()]
+            else:
+                params[key] = [stripped]
+    if isinstance(params.get("acl_type"), str):
+        params["acl_type"] = params["acl_type"].strip().lower()
+    if isinstance(params.get("qos_type"), str):
+        params["qos_type"] = params["qos_type"].strip().lower()
+
+
+def _make_inventory_lookup_fn():
+    """Build inventory_lookup_fn for resolve_missing_fields: from_inventory uses DB (and RAG when available)."""
+    def lookup(field: str, intent: Dict[str, Any], context: Dict[str, Any]) -> tuple:
+        # value, detail = (None, None) when not resolved
+        if _db is None:
+            return None, None
+        if field == "target_devices":
+            devices = _db.get_all_devices()
+            scope = intent.get("scope") or {}
+            params = intent.get("parameters") or intent.get("params") or {}
+            role = scope.get("device_role") or params.get("device_role")
+            if role:
+                role_norm = normalize_role(role)
+                hostnames = [d.hostname for d in devices if d.hostname and normalize_role(getattr(d, "role", "")) == role_norm]
+            else:
+                hostnames = [d.hostname for d in devices if d.hostname]
+            if not hostnames:
+                return None, None
+            return hostnames, f"Resolved {len(hostnames)} device(s) from inventory"
+        if field == "interfaces":
+            params = intent.get("parameters") or intent.get("params") or {}
+            hosts = intent.get("resolved_devices") or params.get("target_hosts") or intent.get("target_hosts") or []
+            if not hosts:
+                hosts = params.get("target_hosts") or []
+            if isinstance(hosts, str):
+                hosts = [hosts]
+            names = []
+            for h in hosts:
+                dev = _db.get_device_by_hostname(str(h).strip())
+                if not dev or not getattr(dev, "id", None):
+                    continue
+                for iface in _db.get_interfaces_for_device(dev.id):
+                    if getattr(iface, "name", None):
+                        names.append(iface.name)
+            if not names:
+                return None, None
+            return names, f"Resolved {len(names)} interface(s) from inventory for {len(hosts)} device(s)"
+        return None, None
+    return lookup
 
 
 def setup_ansible(builder, agent, pipeline, db_manager) -> None:
@@ -196,6 +307,8 @@ def _resolve_target_hosts(target_hosts: List[str]) -> List[str]:
     seen: set = set()
     for raw in target_hosts:
         t = str(raw).strip().lower()
+        # Normalize punctuation from chat lists: "Acc_Cisco_2," / "Acc_Cisco_2."
+        t = re.sub(r"[,\.;:]+$", "", t)
         if not t:
             continue
         if t == "all":
@@ -408,6 +521,7 @@ def _resolve_backend_intent_request(req, user: dict) -> tuple["PlanAnsibleReques
         base = dict(parsed.parameters or {})
         for k, v in (req.params or {}).items():
             base[k] = v
+        _coerce_params_for_validation(base)
         parsed.parameters = base
     if parsed.resolved_devices:
         parsed.resolved_devices = _resolve_target_hosts(parsed.resolved_devices)
@@ -465,14 +579,20 @@ def _resolve_backend_intent_request(req, user: dict) -> tuple["PlanAnsibleReques
         feature=parsed.feature,
         params=dict(parsed.parameters or {}),
         max_interfaces=getattr(req, "max_interfaces", 5),
+        requires_resolution=getattr(parsed, "requires_resolution", False),
         auto_refine=getattr(req, "auto_refine", True),
         max_refinement_attempts=getattr(req, "max_refinement_attempts", 3),
         verify_with_dry_run=getattr(req, "verify_with_dry_run", False),
         provider=req.provider,
         model=req.model,
         ollama_base_url=req.ollama_base_url,
+        safe_mode=req.safe_mode if getattr(req, "safe_mode", None) is not None else _get_safe_mode_default(),
     )
     parsed_dict = parsed.model_dump()
+    params_dict = dict(parsed_dict.get("parameters") or {})
+    raw_secondary = params_dict.pop("_secondary_intents", None)
+    parsed_dict["secondary_intents"] = _normalize_secondary_intents(raw_secondary)
+    parsed_dict["parameters"] = params_dict
     parsed_dict["device_deduction"] = device_deduction
     return plan_req, parsed_dict, policy
 
@@ -783,6 +903,8 @@ class PlanAnsibleRequest(BaseModel):
     provider:           Optional[str] = None  # "gemini" | "ollama" for playbook LLM
     model:              Optional[str] = None
     ollama_base_url:    Optional[str] = None
+    requires_resolution: bool = False  # interface intent with no interfaces → controller must resolve or abort
+    safe_mode:          Optional[bool] = None  # when None, server uses ANSIBLE_SAFE_MODE_DEFAULT (default true)
 
 
 class PreviewIntentRequest(BaseModel):
@@ -794,6 +916,8 @@ class PreviewIntentRequest(BaseModel):
     provider:           Optional[str] = None
     model:              Optional[str] = None
     ollama_base_url:    Optional[str] = None
+    params:             Optional[Dict[str, Any]] = None  # e.g. interfaces_to_shutdown after user selects from menu
+    safe_mode:          Optional[bool] = None  # when None, server uses ANSIBLE_SAFE_MODE_DEFAULT (default true)
 
 
 class CheckResult(BaseModel):
@@ -827,11 +951,19 @@ async def plan_ansible(
     builder = _require_builder()
     resolved_hosts = _resolve_target_hosts(req.target_hosts)
     effective_vendor = normalize_vendor(req.vendor or infer_vendor_hint(resolved_hosts, _db))
+    # Frontend heuristic may send feature "general" for "Shut down Gi0/1 …" — infer interface from params
+    _params_hint = dict(req.params or {})
+    planning_feature = str(req.feature or "").strip().lower()
+    if planning_feature in ("", "general"):
+        if _params_hint.get("interfaces_to_shutdown") or (
+            isinstance(_params_hint.get("interfaces"), list) and len(_params_hint.get("interfaces") or []) > 0
+        ):
+            planning_feature = "interface"
     planning_context, planning_meta = await _ensure_planning_context(
         target_hosts=resolved_hosts,
         vendor=effective_vendor,
         intent_description=req.intent_description,
-        feature=req.feature,
+        feature=planning_feature or req.feature,
     )
 
     # Pull live RAG context from the agent (read-only)
@@ -876,18 +1008,74 @@ async def plan_ansible(
     intent = {
         "description":   req.intent_description,
         "target_hosts":  resolved_hosts,
+        "resolved_devices": resolved_hosts,
         "vendor":        effective_vendor,
         "feature":       req.feature,
-        "params":        req.params,
+        "params":        dict(req.params or {}),
         "max_interfaces": req.max_interfaces,
         "planning_context": planning_context,
         "device_inventory_context": planning_context_to_prompt_text(planning_context),
     }
 
+    # Intent schema validation: missing required params -> resolve or 422 (per implementation plan)
+    resolution_trace: List[Dict[str, Any]] = []
+    action_or_feature = getattr(req, "action", None) or req.feature
+    schema = get_schema_for_parsed_intent({"feature": req.feature, "action": getattr(req, "action", None)})
+    if schema:
+        missing_fields, validation_errors = validate_completeness(intent, schema, action_or_feature=action_or_feature)
+        if validation_errors:
+            raise HTTPException(
+                422,
+                detail={
+                    "message": "Parameter validation failed.",
+                    "validation_errors": validation_errors,
+                },
+            )
+        if missing_fields:
+            context = {
+                "planning_context": planning_context,
+                "resolve_interfaces_fn": resolve_interfaces,
+                "inventory_lookup_fn": _make_inventory_lookup_fn(),
+            }
+            safe_mode = req.safe_mode if getattr(req, "safe_mode", None) is not None else _get_safe_mode_default()
+            resolved_intent, ask_user_fields, resolution_trace = resolve_missing_fields(
+                intent, schema, context=context, safe_mode=safe_mode
+            )
+            if ask_user_fields:
+                raise HTTPException(
+                    422,
+                    detail={
+                        "message": "Missing required parameters. Please provide them via preview (params) or clarify your intent.",
+                        "missing_fields": [f["field"] for f in ask_user_fields],
+                        "questions": [{"field": f["field"], "question": f["question"]} for f in ask_user_fields],
+                    },
+                )
+            intent = resolved_intent
+
     # Template-first: if we have a reference playbook for this feature/vendor, fill it from intent only (no LLM rewrite)
     orchestration = None
     feature_lower = (req.feature or "").strip().lower()
     is_vlan = feature_lower == "vlan"
+    is_interface = feature_lower == "interface"
+
+    # Interface feature: topology resolution only when params still lack interfaces (ignore stale requires_resolution).
+    if is_interface:
+        p = intent.get("params") or {}
+        if not interface_intent_params_satisfied(p):
+            logger.info("No interfaces provided by user")
+            logger.info("Attempting topology resolution")
+            resolved_names = resolve_interfaces(intent, planning_context)
+            if not resolved_names:
+                logger.error("No topology data found → abort")
+                raise HTTPException(
+                    422,
+                    detail={
+                        "message": "No interfaces specified and topology could not resolve any. Please specify which interfaces (e.g. Gi0/1, Gi0/2) or ensure device inventory has interface data.",
+                        "feature": "interface",
+                        "target_hosts": resolved_hosts,
+                    },
+                )
+            intent.setdefault("params", {})["interfaces_to_shutdown"] = resolved_names
 
     vendors = vendors_from_planning_context(planning_context)
     # planning_context can have empty vendors when: (1) devices=[] (no inventory for hostnames),
@@ -932,13 +1120,13 @@ async def plan_ansible(
             intent=fallback_intent,
             planning_context=planning_context,
         )
-    if is_vlan and template_filled is None:
+    if (is_vlan or is_interface) and template_filled is None:
         logger.error("VLAN template fill returned None (vendors=%s); refusing to fall back to LLM", vendors)
         raise HTTPException(
             422,
             detail={
-                "message": "VLAN playbook must be generated from the reference template. Template fill failed or no reference path found.",
-                "feature": "vlan",
+                "message": f"{'VLAN' if is_vlan else 'Interface'} playbook must be generated from the reference template. Template fill failed or no reference path found.",
+                "feature": "vlan" if is_vlan else "interface",
                 "vendors": vendors,
                 "target_hosts": resolved_hosts,
             },
@@ -966,21 +1154,21 @@ async def plan_ansible(
                 "history": [{"attempt": 1, "passed": True, "issues": []}],
                 "source": "reference_template",
             }
-        elif is_vlan:
-            # VLAN must use reference only; do not fall back to LLM.
+        elif is_vlan or is_interface:
+            # VLAN/interface must use reference only; do not fall back to LLM.
             logger.error("VLAN reference template validation failed: %s", validation.get("issues"))
             raise HTTPException(
                 422,
                 detail={
-                    "message": "VLAN reference playbook failed validation. Fix template or inventory; LLM fallback is disabled for VLAN.",
+                    "message": f"{'VLAN' if is_vlan else 'Interface'} reference playbook failed validation. Fix template or inventory; LLM fallback is disabled for this feature.",
                     "validation_issues": validation.get("issues", []),
                     "errors": validation.get("errors", []),
                 },
             )
 
-    # For VLAN always use reference-style single playbook (no LLM).
+    # For VLAN/interface always use reference-style single playbook (no LLM).
     use_bundle = bool(getattr(builder, "supports_role_bundle", lambda *_: False)(req.feature))
-    if is_vlan:
+    if is_vlan or is_interface:
         use_bundle = False
     if orchestration is None:
         try:
@@ -1114,6 +1302,7 @@ async def plan_ansible(
         "manifest": {
             **((bundle_payload or {}).get("manifest", {})),
             "inventory_reconciled": bool(planning_meta.get("reconciled")),
+            "resolution_trace": resolution_trace,
         },
         "refinement": {
             "auto_refine": req.auto_refine,
@@ -2318,6 +2507,98 @@ def _extract_requested_numbers(intent_description: str) -> List[int]:
     return []
 
 
+def _switch_role_disambiguation(intent_description: str) -> Optional[dict[str, Any]]:
+    """
+    Detect ambiguous prompts like "Switch 1 and Switch 2" (no access/dist/core),
+    and offer role-scoped options to the UI.
+    """
+    if _db is None:
+        return None
+    text = (intent_description or "").strip()
+    lower = text.lower()
+    if not text:
+        return None
+    # Must mention switch + numbers.
+    if "switch" not in lower:
+        return None
+    nums = re.findall(r"\b(\d+)\b", lower)
+    if not nums:
+        return None
+    # If already scoped by role keyword, do not disambiguate.
+    if any(k in lower for k in ("access", "distribution", "dist", "core")):
+        return None
+
+    # Only treat numbers near "switch" as selectors (avoid VLAN IDs etc.)
+    selector_nums = _extract_requested_numbers(text)
+    if not selector_nums:
+        # Fallback: "switch 1 and switch 2"
+        selector_nums = [int(n) for n in nums[:2] if str(n).isdigit()]
+    if not selector_nums:
+        return None
+
+    # Build role buckets using inventory role or hostname prefix.
+    role_to_hosts: dict[str, list[str]] = {"core": [], "distribution": [], "access": []}
+    for d in _db.get_all_devices():
+        host = (getattr(d, "hostname", None) or "").strip()
+        if not host:
+            continue
+        hlow = host.lower()
+        role = (getattr(d, "role", None) or "").strip().lower()
+        if role in ("access", "access_switch") or hlow.startswith("acc_"):
+            bucket = "access"
+        elif role in ("distribution", "dist") or hlow.startswith("dist_"):
+            bucket = "distribution"
+        elif role in ("core", "core_switch") or hlow.startswith("core_"):
+            bucket = "core"
+        else:
+            continue
+        role_to_hosts[bucket].append(host)
+
+    def pick_for_role(r: str) -> list[str]:
+        hosts = role_to_hosts.get(r) or []
+        if not hosts:
+            return []
+        # Map by numeric suffix in hostname
+        num_to_host: dict[int, str] = {}
+        for h in sorted(hosts):
+            n = _number_from_hostname(h)
+            if n is not None and n not in num_to_host:
+                num_to_host[n] = h
+        chosen: list[str] = []
+        for n in selector_nums:
+            if n in num_to_host:
+                chosen.append(num_to_host[n])
+        return chosen
+
+    access = pick_for_role("access")
+    dist = pick_for_role("distribution")
+    core = pick_for_role("core")
+
+    roles_with_matches = [r for r, hs in (("core", core), ("distribution", dist), ("access", access)) if len(hs) == len(selector_nums) and hs]
+    # If multiple roles match cleanly, always disambiguate.
+    if len(roles_with_matches) <= 1:
+        # Otherwise, if the prompt is "switch <numbers>" and inventory has multiple layers,
+        # still offer clarification rather than guessing or expanding too broadly.
+        has_any_layer = any(role_to_hosts.get(r) for r in ("core", "distribution", "access"))
+        multi_layers = sum(1 for r in ("core", "distribution", "access") if role_to_hosts.get(r)) >= 2
+        if not (has_any_layer and multi_layers):
+            return None
+
+    nums_label = ", ".join(str(n) for n in selector_nums)
+    options = [
+        {"id": "core", "label": f"Core Switch {nums_label}", "clarification": f"core switch {nums_label}", "matches": core},
+        {"id": "distribution", "label": f"Distribution Switch {nums_label}", "clarification": f"distribution switch {nums_label}", "matches": dist},
+        {"id": "access", "label": f"Access Switch {nums_label}", "clarification": f"access switch {nums_label}", "matches": access},
+        {"id": "custom", "label": "Enter your custom answer", "clarification": "", "matches": []},
+    ]
+    return {
+        "kind": "target_devices",
+        "question": "Which Switch(es) did you mean by “Switch {nums}”?".format(nums=nums_label),
+        "selector_numbers": selector_nums,
+        "options": options,
+    }
+
+
 def _apply_numeric_subset_fallback(intent_description: str, resolved: List[str]) -> tuple[List[str], str]:
     """
     When user said e.g. 'access switch 1, 2, and 3' but we got too many devices,
@@ -2354,18 +2635,80 @@ def _apply_numeric_subset_fallback(intent_description: str, resolved: List[str])
 
 
 def _devices_mentioned_summary(parsed_dict: dict, intent_description: str) -> str:
-    """One-line summary of what devices the parser thought the user asked for (for reasoning)."""
-    if not parsed_dict:
-        return ""
-    scope = parsed_dict.get("scope") or {}
-    hostnames = scope.get("device_hostnames") or []
-    role = scope.get("device_role") or ""
-    if hostnames:
-        return f"**Devices mentioned in your prompt:** explicit hostnames **{', '.join(hostnames)}**."
-    if role:
-        role_label = role.replace("_", " ").strip()
-        return f"**Devices mentioned in your prompt:** scope by role **{role_label}** (parser resolved to inventory)."
-    return f"**Devices mentioned in your prompt:** (from context) \"{intent_description[:80]}{'…' if len(intent_description) > 80 else ''}\"."
+    """Return empty string to avoid showing potentially misleading 'Devices mentioned' text."""
+    return ""
+
+
+# Substrings (lowercased) that identify management interfaces to exclude from shutdown selection
+_MGMT_INTERFACE_SUBSTRINGS = ("management", "mgmt", "meth", "vty", "console")
+
+
+def _is_management_interface(iface: dict, device_management_ip: Optional[str]) -> bool:
+    """True if this interface should be treated as management (excluded from shutdown list)."""
+    name = str(iface.get("name") or iface.get("interface") or "").strip().lower()
+    if not name:
+        return False
+    if any(m in name for m in _MGMT_INTERFACE_SUBSTRINGS):
+        return True
+    if device_management_ip:
+        iface_ip = str(iface.get("ip_address") or iface.get("ip") or "").strip()
+        if iface_ip and iface_ip == str(device_management_ip).strip():
+            return True
+    return False
+
+
+def _interfaces_disambiguation_from_planning(
+    planning_context: dict,
+    resolved_hosts: List[str],
+    question: str = "Please select the interfaces you want to shutdown.",
+) -> Optional[Dict[str, Any]]:
+    """
+    Build per-device interface list for disambiguation (excluding management).
+    Returns { "question": str, "devices": [ { "hostname": str, "interfaces": [ { "name": str } ] } ] } or None.
+    """
+    devices_in = list(planning_context.get("devices") or [])
+    host_set = {str(h).strip() for h in resolved_hosts if str(h).strip()}
+    out_devices: List[Dict[str, Any]] = []
+    for d in devices_in:
+        hostname = str(d.get("hostname") or "").strip()
+        if hostname not in host_set:
+            continue
+        mgmt_ip = d.get("management_ip")
+        interfaces = []
+        for iface in d.get("interfaces") or []:
+            if _is_management_interface(iface, mgmt_ip):
+                continue
+            name = str(iface.get("name") or iface.get("interface") or "").strip()
+            if name:
+                interfaces.append({"name": name})
+        out_devices.append({"hostname": hostname, "interfaces": interfaces})
+    if not out_devices:
+        return None
+    return {"question": question, "devices": out_devices}
+
+
+def _normalize_secondary_intents(raw: Any) -> List[Dict[str, Any]]:
+    """
+    Normalize LLM secondary_intents to a list of { action, feature, parameters }.
+    Used so preview and create-and-plan can validate/display multiple intents.
+    """
+    if not raw or not isinstance(raw, list):
+        return []
+    out: List[Dict[str, Any]] = []
+    for i, item in enumerate(raw):
+        if not isinstance(item, dict):
+            continue
+        action = str(item.get("action") or "").strip() or "configure"
+        feat = str(item.get("feature") or "").strip()
+        params = dict(item.get("parameters") or {})
+        # Skip empty/invalid entries
+        if not feat and not action:
+            continue
+        if not feat and action:
+            # Infer feature from action (e.g. configure_ospf -> ospf)
+            feat = action.replace("configure_", "").replace("create_", "").replace("-", "_") or "general"
+        out.append({"action": action, "feature": feat, "parameters": params})
+    return out
 
 
 def _preview_parse_and_rag(
@@ -2404,6 +2747,16 @@ def _preview_parse_and_rag(
         if parsed.feature and parsed.feature not in categories:
             categories.append(parsed.feature)
         parsed_dict = parsed.model_dump()
+        # Normalize and expose secondary intents (multi-intent pipeline)
+        params_dict = dict(parsed_dict.get("parameters") or {})
+        raw_secondary = params_dict.pop("_secondary_intents", None)
+        secondary_list = _normalize_secondary_intents(raw_secondary)
+        parsed_dict["secondary_intents"] = secondary_list
+        parsed_dict["parameters"] = params_dict
+        for sec in secondary_list:
+            f = (sec.get("feature") or "").strip()
+            if f and f not in categories:
+                categories.append(f)
         intent_type = getattr(parsed.intent_type, "value", parsed.intent_type)
         intent_action = parsed.action or "configure"
         intent_feature = (parsed.feature or "").strip() or (categories[0] if categories else "general")
@@ -2413,6 +2766,10 @@ def _preview_parse_and_rag(
             f"- **Feature:** {intent_feature}\n"
             f"- **Categories (for templates):** {', '.join(categories) if categories else '—'}. You can add or remove above."
         )
+        if secondary_list:
+            reasoning.append(
+                f"- **Also detected (secondary):** {', '.join(s.get('feature', '') or s.get('action', '') for s in secondary_list)}. These will be validated; primary intent is generated first."
+            )
         # For VLAN, show which interfaces will be configured (mode + VLANs)
         is_vlan = (parsed.feature or "").strip().lower() == "vlan" or any((c or "").strip().lower() == "vlan" for c in categories)
         if is_vlan:
@@ -2436,6 +2793,13 @@ def _preview_parse_and_rag(
             else:
                 parsed_dict["interfaces_summary"] = []
                 reasoning.append("- **Interfaces to configure:** (none — VLAN creation only)")
+            # Validate VLAN intent at preview so user sees schema errors (e.g. VLAN ID 1–4094) before generating
+            valid, validation_errors = validate_vlan_intent(preview_intent)
+            if not valid and validation_errors:
+                parsed_dict["vlan_validation_errors"] = validation_errors
+                reasoning.append("- ⚠️ **VLAN validation failed:** " + "; ".join(validation_errors) + ". Please correct your prompt (e.g. VLAN ID must be 1–4094) before generating.")
+            else:
+                parsed_dict["vlan_validation_errors"] = []
         if parsed.intent_type in (IntentType.CONFIGURE, IntentType.DEPLOY):
             policy = _policy_validate_intent(
                 parsed.model_dump_json(),
@@ -2575,6 +2939,20 @@ def _preview_parse_and_rag(
         reasoning.append("### 4. Reference templates (RAG)\n- RAG retriever is not available. Add reference templates manually if needed.")
 
     parsed_dict["device_deduction"] = device_deduction
+    # Disambiguation: ambiguous "Switch 1 and Switch 2" without role keywords
+    disambiguation = _switch_role_disambiguation(intent_description)
+    if disambiguation:
+        parsed_dict["disambiguation"] = disambiguation
+        # Put it near the top so user sees it immediately.
+        reasoning.insert(
+            1,
+            "### 1b. Clarification needed\n"
+            "- **Your prompt is ambiguous** (e.g. “Switch 1/2” could be core, distribution, or access).\n"
+            "- Please pick one of the options in the chat to proceed.",
+        )
+    else:
+        parsed_dict["disambiguation"] = None
+
     return categories, references, parsed_dict, policy_approved, reasoning, resolved
 
 
@@ -2600,6 +2978,260 @@ async def preview_intent(
         model=req.model,
         ollama_base_url=req.ollama_base_url,
     )
+    # Merge request params (e.g. interfaces_to_shutdown, vlan_id, vlan_name, target_hosts) into parsed intent
+    if req.params:
+        p = dict(parsed_intent.get("parameters") or {})
+        p.update({k: v for k, v in req.params.items() if v is not None})
+        _coerce_params_for_validation(p)
+        parsed_intent["parameters"] = p
+        # So that validator and downstream see resolved devices when user supplies target_hosts/target_devices
+        if req.params.get("target_hosts"):
+            th = req.params["target_hosts"]
+            parsed_intent["resolved_devices"] = th if isinstance(th, list) else [th] if th else list(parsed_intent.get("resolved_devices") or [])
+        elif req.params.get("target_devices"):
+            td = req.params["target_devices"]
+            parsed_intent["resolved_devices"] = td if isinstance(td, list) else [td] if td else list(parsed_intent.get("resolved_devices") or [])
+    params = dict(parsed_intent.get("parameters") or {})
+
+    # Intent schema validation and resolution (per-action parameter dependency tree)
+    params_disambiguation: Optional[Dict[str, Any]] = None
+    action_or_feature = (parsed_intent.get("action") or parsed_intent.get("feature") or "").strip() or None
+    schema = get_schema_for_parsed_intent(parsed_intent)
+    if schema:
+        # Prefer schema action for JSON-Schema type validation (e.g. configure_interface.schema.json)
+        type_validation_key = (schema.get("action") or "").strip() or action_or_feature
+        missing_fields, _val_skip = validate_completeness(
+            parsed_intent, schema, action_or_feature=type_validation_key
+        )
+        if missing_fields:
+            planning_context_for_resolve: Optional[Dict[str, Any]] = None
+            if resolved_hosts and _db is not None:
+                try:
+                    planning_context_for_resolve = await run_in_threadpool(
+                        build_scoped_planning_context,
+                        _db,
+                        resolved_hosts,
+                        feature=str(parsed_intent.get("feature") or ""),
+                        query=req.intent_description or "",
+                    )
+                except Exception as exc:
+                    logger.debug("Preview planning_context for resolver failed: %s", exc)
+            context = {
+                "planning_context": planning_context_for_resolve,
+                "resolve_interfaces_fn": resolve_interfaces,
+                "inventory_lookup_fn": _make_inventory_lookup_fn(),
+            }
+            safe_mode = req.safe_mode if getattr(req, "safe_mode", None) is not None else _get_safe_mode_default()
+            _resolved_intent, _ask_user_fields, _resolution_trace = resolve_missing_fields(
+                parsed_intent, schema, context=context, safe_mode=safe_mode
+            )
+            parsed_intent.update(_resolved_intent)
+            params = dict(parsed_intent.get("parameters") or {})
+
+        missing_final, validation_errors_final = validate_completeness(
+            parsed_intent, schema, action_or_feature=type_validation_key
+        )
+        if validation_errors_final:
+            parsed_intent["validation_errors"] = validation_errors_final
+        else:
+            parsed_intent.pop("validation_errors", None)
+
+        questions = schema.get("questions") or {}
+        disambiguation_fields = [
+            {
+                "field": field,
+                "question": questions.get(field) or f"Please provide: {field}",
+            }
+            for field in missing_final
+        ]
+        if disambiguation_fields:
+            params_disambiguation = {
+                "question": "Please provide the following.",
+                "fields": disambiguation_fields,
+            }
+
+    # VLAN: prompts like "Configure VLAN on access switch 1" omit ID/name; the LLM still fills
+    # parameters so validate_completeness passes and the chat wizard was skipped. Force questions
+    # for any VLAN id/name the user did not clearly state in the raw prompt text.
+    if schema and (schema.get("action") or "").strip().lower().replace("-", "_") == "create_vlan":
+        force_field_names = vlan_schema_fields_missing_from_user_prompt(req.intent_description or "")
+        if force_field_names:
+            questions_vlan = schema.get("questions") or {}
+            new_entries = [
+                {
+                    "field": fname,
+                    "question": questions_vlan.get(fname) or f"Please provide: {fname}",
+                }
+                for fname in force_field_names
+            ]
+            fields_list: List[Dict[str, Any]] = list((params_disambiguation or {}).get("fields") or [])
+            seen_fields = {f["field"] for f in fields_list}
+            for e in new_entries:
+                if e["field"] not in seen_fields:
+                    fields_list.append(e)
+                    seen_fields.add(e["field"])
+            params_disambiguation = {
+                "question": (params_disambiguation or {}).get("question") or "Please provide the following.",
+                "fields": fields_list,
+            }
+
+    # Refresh params after schema/VLAN mutations; clear stale LLM flag when interfaces are present.
+    params = dict(parsed_intent.get("parameters") or {})
+    if interface_intent_params_satisfied(params):
+        parsed_intent["requires_resolution"] = False
+
+    # Build a lightweight, structured reasoning trace for the UI (no raw LLM chain-of-thought).
+    device_deduction: Dict[str, Any] = dict(params.get("device_deduction") or {})
+    mapping = device_deduction.get("mapping") or []
+    reasoning_steps: list[dict] = []
+    # Step 1: parsed intent summary.
+    try:
+        reasoning_steps.append({
+            "title": "1. Parse user intent",
+            "detail": (
+                f"type={parsed_intent.get('intent_type')}  "
+                f"action={parsed_intent.get('action')}  "
+                f"feature={parsed_intent.get('feature') or '(auto)'}  "
+                f"vendor={parsed_intent.get('vendor') or '(auto)'}"
+            ).strip(),
+        })
+    except Exception:
+        pass
+    # Step 2: device resolution summary.
+    if resolved_hosts:
+        try:
+            host_lines = []
+            for host in resolved_hosts:
+                reason = ""
+                for entry in mapping:
+                    if entry.get("hostname") == host:
+                        reason = str(entry.get("reason") or "").strip()
+                        break
+                if reason:
+                    host_lines.append(f"- {host}: {reason}")
+                else:
+                    host_lines.append(f"- {host}")
+            reasoning_steps.append({
+                "title": "2. Resolve target devices",
+                "detail": "\n".join(host_lines) if host_lines else ", ".join(resolved_hosts),
+            })
+        except Exception:
+            pass
+    # Step 3: template / reference selection (high level only).
+    try:
+        ref_summaries = []
+        for ref in references:
+            ref_summaries.append(
+                f"- {ref.get('path') or ref.get('doc_name')}: "
+                f"feature={ref.get('feature')} vendor={ref.get('vendor')}"
+            )
+        if ref_summaries:
+            reasoning_steps.append({
+                "title": "3. Select reference templates",
+                "detail": "\n".join(ref_summaries),
+            })
+    except Exception:
+        pass
+
+    # Interface disambiguation: when shutdown_interface or configure_interface and interfaces missing,
+    # return per-device interface list so the UI can show a selection menu.
+    interfaces_disambiguation: Optional[Dict[str, Any]] = None
+    device_disambiguation = parsed_intent.get("disambiguation")
+    schema_action_iface = (schema.get("action") or "").strip().lower() if schema else ""
+    has_iface_list = interface_intent_params_satisfied(params)
+    # Never use requires_resolution for this gate — same rule as plan_ansible: trust merged params only.
+    needs_interface_choice = (
+        not device_disambiguation
+        and bool(resolved_hosts)
+        and schema_action_iface in ("shutdown_interface", "configure_interface")
+        and not has_iface_list
+    )
+    if needs_interface_choice and _db is not None:
+        try:
+            planning_context = await run_in_threadpool(
+                build_scoped_planning_context,
+                _db,
+                resolved_hosts,
+                feature="interface",
+                query=req.intent_description or "",
+            )
+            if planning_context and planning_context.get("devices"):
+                iface_q = (
+                    "Select interfaces to configure (mode can be refined in Playbook Studio)."
+                    if schema_action_iface == "configure_interface"
+                    else "Please select the interfaces you want to shutdown."
+                )
+                interfaces_disambiguation = _interfaces_disambiguation_from_planning(
+                    planning_context, resolved_hosts, question=iface_q
+                )
+        except Exception as exc:
+            logger.debug("Preview interfaces disambiguation failed: %s", exc)
+
+    # For VLAN: return interfaces for selection so overlay can show Access/Trunk + interface checklist
+    interfaces_for_selection: Optional[Dict[str, Any]] = None
+    is_vlan_feature = (str(parsed_intent.get("feature") or "").strip().lower() == "vlan")
+    if not device_disambiguation and is_vlan_feature and resolved_hosts and _db is not None:
+        try:
+            planning_context_vlan = await run_in_threadpool(
+                build_scoped_planning_context,
+                _db,
+                resolved_hosts,
+                feature="vlan",
+                query=req.intent_description or "",
+            )
+            if planning_context_vlan and planning_context_vlan.get("devices"):
+                interfaces_for_selection = _interfaces_disambiguation_from_planning(
+                    planning_context_vlan, resolved_hosts,
+                    question="Select interfaces to assign to this VLAN (optional).",
+                )
+        except Exception as exc:
+            logger.debug("Preview interfaces_for_selection (vlan) failed: %s", exc)
+
+    # One disambiguation per response: if we have both params and interfaces, prefer interfaces when only "interfaces" was missing
+    if params_disambiguation and interfaces_disambiguation:
+        ask_set = {f["field"] for f in params_disambiguation.get("fields", [])}
+        # Prefer interface picker only when params wizard would ask solely for "interfaces" on shutdown.
+        if ask_set == {"interfaces"} and schema_action_iface == "shutdown_interface":
+            params_disambiguation = None
+
+    schema_editable_fields: List[Dict[str, Any]] = (
+        get_editable_fields_for_schema(schema) if schema else []
+    )
+
+    # Secondary intents: validate each and report missing/errors (no resolution or wizard for secondaries in this pass)
+    secondary_intent_previews: List[Dict[str, Any]] = []
+    for idx, sec in enumerate(parsed_intent.get("secondary_intents") or []):
+        sec_action = (sec.get("action") or "").strip() or "configure"
+        sec_feature = (sec.get("feature") or "").strip()
+        sec_params = dict(sec.get("parameters") or {})
+        sec_intent = {
+            "action": sec_action,
+            "feature": sec_feature,
+            "parameters": sec_params,
+            "resolved_devices": list(resolved_hosts),
+        }
+        sec_schema = get_schema_for_parsed_intent(sec_intent)
+        type_key = (sec_schema.get("action") or "").strip() or sec_action if sec_schema else sec_action
+        missing_sec, err_sec = validate_completeness(
+            sec_intent, sec_schema or {}, action_or_feature=type_key if sec_schema else None
+        )
+        questions_sec = (sec_schema or {}).get("questions") or {}
+        fields_sec = [
+            {"field": f, "question": questions_sec.get(f) or f"Please provide: {f}"}
+            for f in missing_sec
+        ]
+        secondary_intent_previews.append({
+            "intent_index": idx + 1,
+            "action": sec_action,
+            "feature": sec_feature,
+            "missing_fields": missing_sec,
+            "validation_errors": err_sec or [],
+            "params_disambiguation": (
+                {"question": "Please provide the following (secondary intent).", "fields": fields_sec}
+                if fields_sec else None
+            ),
+        })
+
     return {
         "categories": categories,
         "references": references,
@@ -2607,6 +3239,15 @@ async def preview_intent(
         "policy_approved": policy_approved,
         "reasoning": reasoning,
         "target_hosts": resolved_hosts,
+        "reasoning_trace": {
+            "steps": reasoning_steps,
+        },
+        "interfaces_disambiguation": interfaces_disambiguation,
+        "params_disambiguation": params_disambiguation,
+        "schema_editable_fields": schema_editable_fields,
+        "interfaces_for_selection": interfaces_for_selection,
+        "schema_action": (schema.get("action") if schema else None) or None,
+        "secondary_intent_previews": secondary_intent_previews,
     }
 
 
@@ -2653,6 +3294,7 @@ class CreateAndPlanRequest(BaseModel):
     provider:           Optional[str] = None  # "gemini" | "ollama" for playbook LLM
     model:              Optional[str] = None
     ollama_base_url:    Optional[str] = None
+    safe_mode:          Optional[bool] = None  # when None, server uses ANSIBLE_SAFE_MODE_DEFAULT (default true)
 
 
 @router.post(

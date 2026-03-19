@@ -1,0 +1,33 @@
+# Intent schema: static route
+action: configure_static_route
+feature: static_route
+required:
+  - target_devices
+  - destination
+  - next_hop
+optional:
+  - admin_distance
+  - vrf_name
+resolution_order:
+  target_devices:
+    - from_intent
+    - from_inventory
+    - ask_user
+  destination:
+    - from_intent
+    - ask_user
+  next_hop:
+    - from_intent
+    - ask_user
+  admin_distance:
+    - from_intent
+    - ask_user
+  vrf_name:
+    - from_intent
+    - ask_user
+questions:
+  target_devices: "Which devices?"
+  destination: "Destination prefix (CIDR, e.g. 0.0.0.0/0)?"
+  next_hop: "Next hop IP or egress interface?"
+  admin_distance: "Administrative distance (optional)?"
+  vrf_name: "VRF name (optional)?"
