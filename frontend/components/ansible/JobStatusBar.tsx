@@ -1,6 +1,9 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
-import { CheckCircle2, Circle, Loader2, AlertCircle, History, ScrollText, Server, Terminal, Play, ChevronDown, Trash2, PanelRightOpen, X } from 'lucide-react';
+import { CheckCircle2, Circle, Loader2, AlertCircle, History, ScrollText, Server, Terminal, Play, ChevronDown, Trash2, PanelRightOpen, X, Plus } from 'lucide-react';
 import { deployApi, ansibleApi } from '../../src/services/api';
+import SSHTerminal from '../SSHTerminal';
+import type { SSHTab } from '../SSHTerminalPanel';
+import type { SSHConnectionState } from '../SSHTerminal';
 import type { AnsibleJob, AnsibleOutputSession } from '../../typesLLM';
 
 interface JobStatusBarProps {
@@ -14,9 +17,18 @@ interface JobStatusBarProps {
   splitOutputId?: string | null;
   onSetSplitOutputId?: (id: string | null) => void;
   streamingSessionId?: string | null;
+
+  // SSH Terminal tab (used by AnsibleStudioView)
+  sshTabs?: SSHTab[];
+  activeSshTabId?: string | null;
+  sshTabStates?: Record<string, SSHConnectionState>;
+  onSelectSshTab?: (sessionId: string) => void;
+  onCloseSshTab?: (sessionId: string) => void | Promise<void>;
+  onOpenSshModal?: (hostname: string, host: string) => void;
+  onConnectionChangeSsh?: (sessionId: string, state: SSHConnectionState) => void;
 }
 
-type BottomTab = 'output' | 'history' | 'audit' | 'inventory';
+type BottomTab = 'output' | 'history' | 'audit' | 'inventory' | 'ssh';
 
 const STAGES = [
   { key: 'plan',     label: 'Plan' },
@@ -45,6 +57,15 @@ const JobStatusBar: React.FC<JobStatusBarProps> = ({
   splitOutputId = null,
   onSetSplitOutputId,
   streamingSessionId = null,
+
+  // SSH Terminal
+  sshTabs = [],
+  activeSshTabId = null,
+  sshTabStates = {},
+  onSelectSshTab,
+  onCloseSshTab,
+  onOpenSshModal,
+  onConnectionChangeSsh,
 }) => {
   const logRef = useRef<HTMLDivElement>(null);
   const [tab, setTab] = useState<BottomTab>('output');
@@ -68,6 +89,13 @@ const JobStatusBar: React.FC<JobStatusBarProps> = ({
   const [inventoryCache, setInventoryCache] = useState<Record<number, InventoryData>>({});
   const [loadingInventory, setLoadingInventory] = useState(false);
   const inventory = job?.jobId != null ? inventoryCache[job.jobId] ?? null : null;
+
+  const STATE_DOT: Record<SSHConnectionState, string> = {
+    connecting: 'bg-warning animate-pulse',
+    connected: 'bg-success',
+    disconnected: 'bg-base-content/40',
+    error: 'bg-error',
+  };
 
   const activeSession = outputSessions.find(s => s.id === activeOutputId) ?? outputSessions[0];
   useEffect(() => {
@@ -183,6 +211,7 @@ const JobStatusBar: React.FC<JobStatusBarProps> = ({
         {tabBtn('inventory', <Server className="h-3 w-3" />, 'Inventory')}
         {tabBtn('history', <History className="h-3 w-3" />, 'History')}
         {tabBtn('audit', <ScrollText className="h-3 w-3" />, 'Audit')}
+        {tabBtn('ssh', <Terminal className="h-3 w-3" />, 'SSH Terminal')}
       </div>
 
       {/* Tab content — Output: log content (left) + session list side panel (right) */}
@@ -456,6 +485,104 @@ const JobStatusBar: React.FC<JobStatusBarProps> = ({
           )}
         </div>
       )}
+
+      {/* SSH Terminal tab (kept mounted; hidden when not active) */}
+      <div
+        className="flex-1 min-h-0 bg-base-200 overflow-hidden"
+        style={{ display: tab === 'ssh' ? 'flex' : 'none' }}
+      >
+        {sshTabs.length === 0 ? (
+          <div className="flex-1 flex items-center justify-center px-4">
+            <div className="text-xs opacity-60 text-center space-y-3">
+              <div className="flex items-center justify-center gap-2">
+                <Terminal className="h-4 w-4 shrink-0 opacity-80" />
+                <span>No SSH terminal sessions yet</span>
+              </div>
+              <button
+                type="button"
+                className="btn btn-xs btn-primary"
+                onClick={() => onOpenSshModal?.('', '')}
+              >
+                <Plus className="h-3.5 w-3.5" /> New terminal
+              </button>
+            </div>
+          </div>
+        ) : (
+          <>
+            {/* Left: terminal content */}
+            <div className="flex-1 min-w-0 relative">
+              {sshTabs.map((t) => {
+                const visible = (activeSshTabId ?? sshTabs[0]?.sessionId) === t.sessionId;
+                return (
+                  <div
+                    key={t.sessionId}
+                    className="absolute inset-0"
+                    style={{ display: visible ? 'block' : 'none' }}
+                  >
+                    <SSHTerminal
+                      wsUrl={t.wsUrl}
+                      isActive={tab === 'ssh' && visible}
+                      onConnectionChange={(state) => onConnectionChangeSsh?.(t.sessionId, state)}
+                    />
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* Right: session list */}
+            <div className="shrink-0 border-l border-base-300 bg-base-100 w-44 flex flex-col">
+              <div className="flex items-center justify-between px-2 py-1 border-b border-base-300 bg-base-100 text-[10px] font-semibold uppercase tracking-wider opacity-70">
+                <span>Devices</span>
+                <button
+                  type="button"
+                  className="btn btn-ghost btn-xs p-0 min-h-0 h-5"
+                  onClick={() => onOpenSshModal?.('', '')}
+                  title="Open new SSH terminal"
+                >
+                  <Plus className="h-3 w-3" />
+                </button>
+              </div>
+              <div className="overflow-y-auto flex-1 min-h-0 py-0.5">
+                {sshTabs.map((s) => (
+                  <div
+                    key={s.sessionId}
+                    className={`group flex items-center gap-0.5 w-full text-left px-2 py-1.5 text-[11px] font-mono border-r-2 transition-colors ${
+                      (activeSshTabId ?? sshTabs[0]?.sessionId) === s.sessionId
+                        ? 'border-primary bg-primary/10 text-primary'
+                        : 'border-transparent hover:bg-base-200 opacity-80'
+                    }`}
+                  >
+                    <button
+                      type="button"
+                      className="flex-1 min-w-0 flex items-center gap-1 truncate"
+                      onClick={() => onSelectSshTab?.(s.sessionId)}
+                    >
+                      <span
+                        className={`w-1.5 h-1.5 rounded-full shrink-0 ${
+                          sshTabStates[s.sessionId] ? STATE_DOT[sshTabStates[s.sessionId]] : STATE_DOT.connecting
+                        }`}
+                      />
+                      <span className="truncate">{s.hostname}</span>
+                    </button>
+                    <button
+                      type="button"
+                      className="p-0.5 hover:bg-error/20 hover:text-error rounded"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onCloseSshTab?.(s.sessionId);
+                      }}
+                      title="Close SSH session"
+                      aria-label="Close"
+                    >
+                      <X className="h-3 w-3" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </>
+        )}
+      </div>
     </div>
   );
 };

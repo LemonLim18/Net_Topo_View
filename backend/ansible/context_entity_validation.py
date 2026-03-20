@@ -540,3 +540,69 @@ def should_validate_interface_names_against_inventory(
     if sa in ("configure_acl", "configure_qos", "configure_ospf", "configure_static_route"):
         return True
     return False
+
+
+_MGMT_IFACE_NAME_RE = re.compile(r"(?i).*(management|mgmt|meth|vty|console).*")
+
+
+def is_operational_interface_record(iface: Dict[str, Any], device_management_ip: str) -> bool:
+    """
+    Mirrors playbook Jinja filters for nettopo expansion: drop mgmt-like names and
+    interfaces whose ip_address matches device management IP.
+    """
+    name = str(iface.get("name") or iface.get("interface") or "").strip()
+    if not name:
+        return False
+    if _MGMT_IFACE_NAME_RE.match(name):
+        return False
+    ip_addr = str(iface.get("ip_address") or "").strip()
+    if not ip_addr and isinstance(iface.get("ip"), dict):
+        ip_addr = str(iface.get("ip", {}).get("address") or "").strip()
+    mgmt = str(device_management_ip or "").strip()
+    if mgmt and ip_addr and ip_addr == mgmt:
+        return False
+    return True
+
+
+def operational_interface_names_for_planned_device(device: Dict[str, Any]) -> List[str]:
+    """Sorted interface names on one planned device, excluding management heuristics."""
+    mgmt_ip = str(device.get("management_ip") or "").strip()
+    names: List[str] = []
+    for iface in device.get("interfaces") or []:
+        if not isinstance(iface, dict):
+            continue
+        n = str(iface.get("name") or iface.get("interface") or "").strip()
+        if not n or not is_operational_interface_record(iface, mgmt_ip):
+            continue
+        names.append(n)
+    return sorted(names)
+
+
+def build_planned_all_interfaces_preview(
+    planning_context: Optional[Dict[str, Any]],
+    hostnames: List[str],
+) -> Dict[str, Any]:
+    """
+    Structured preview of which interfaces 'all interfaces' would touch per host,
+    using the same mgmt-exclusion heuristics as reference templates.
+    """
+    if not planning_context or not hostnames:
+        return {"devices": [], "note": "No planning context or targets to preview."}
+    want = {str(h).strip() for h in hostnames if str(h).strip()}
+    devices_out: List[Dict[str, Any]] = []
+    for d in planning_context.get("devices") or []:
+        hn = str(d.get("hostname") or "").strip()
+        if hn not in want:
+            continue
+        ifaces = operational_interface_names_for_planned_device(d if isinstance(d, dict) else {})
+        devices_out.append(
+            {
+                "hostname": hn,
+                "interface_count": len(ifaces),
+                "interfaces": [{"name": n} for n in ifaces],
+            }
+        )
+    return {
+        "devices": devices_out,
+        "note": "Lists exclude management-style interface names and interfaces whose IP matches the device management address (same rules as template expansion).",
+    }

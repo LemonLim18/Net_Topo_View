@@ -61,7 +61,11 @@ _KEY_FILE = _HERE / ".vault_key"
 _DB_PATH = _HERE.parent / "db" / "netauto.db"
 
 ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_HOURS = 24
+# How long access tokens are valid for.
+#
+# If <= 0, we omit the `exp` claim entirely (token does not expire).
+# This is convenient for long-lived WebSocket sessions like the SSH terminal.
+ACCESS_TOKEN_EXPIRE_HOURS = int(os.environ.get("ACCESS_TOKEN_EXPIRE_HOURS", "0"))
 
 # Ensure .vault_key is gitignored
 _gitignore_path = _HERE / ".gitignore"
@@ -125,16 +129,24 @@ def create_access_token(
 ) -> str:
     """Create a signed JWT access token."""
     jwt = _get_jwt()
-    expire = datetime.now(timezone.utc) + (
-        expires_delta or timedelta(hours=ACCESS_TOKEN_EXPIRE_HOURS)
-    )
+    now = datetime.now(timezone.utc)
+    # If expires_delta is not provided, use configured TTL.
+    # If TTL <= 0, we omit `exp` so the token does not expire.
+    if expires_delta is not None:
+        expire_delta = expires_delta
+    elif ACCESS_TOKEN_EXPIRE_HOURS > 0:
+        expire_delta = timedelta(hours=ACCESS_TOKEN_EXPIRE_HOURS)
+    else:
+        expire_delta = None
+
     payload = {
         "sub": str(user_id),
         "username": username,
         "role": role,
-        "exp": expire,
-        "iat": datetime.now(timezone.utc),
+        "iat": now,
     }
+    if expire_delta is not None:
+        payload["exp"] = now + expire_delta
     return jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
 
 

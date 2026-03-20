@@ -34,6 +34,7 @@ from pydantic import BaseModel
 
 from ansible.bundle_artifacts import AnsibleArtifactBundle, bundle_from_dict
 from ansible.context_entity_validation import (
+    build_planned_all_interfaces_preview,
     intent_requests_all_interfaces,
     intersection_interfaces_from_disambiguation_devices,
     should_validate_interface_names_against_inventory,
@@ -556,9 +557,9 @@ def _build_devices_disambiguation(
         elif len(fuzzy) == 0:
             missing_tokens.append(token)
 
-    # If no explicit tokens but scope is unclear, offer safe candidate list from resolved/inventory.
+    # If no explicit tokens but scope is unclear, offer full inventory for multi-select.
     if not ambiguous_candidates and not missing_tokens and not resolved_hosts and all_hosts:
-        ambiguous_candidates = all_hosts[:12]
+        ambiguous_candidates = list(all_hosts)
 
     ambiguous_unique = []
     seen = set()
@@ -571,7 +572,7 @@ def _build_devices_disambiguation(
     if not ambiguous_unique and not missing_tokens:
         return None
 
-    candidate_devices = ambiguous_unique or resolved_hosts or all_hosts[:12]
+    candidate_devices = ambiguous_unique or resolved_hosts or list(all_hosts)
     return {
         "ambiguous_devices": ambiguous_unique,
         "missing_devices": missing_tokens,
@@ -579,6 +580,210 @@ def _build_devices_disambiguation(
         "candidate_devices": candidate_devices,
         "question": "Which target device(s) should be used from planned inventory?",
     }
+
+
+def _db_hostname_lower_to_canonical(db_manager: Any) -> Dict[str, str]:
+    """Map lowercase hostname -> canonical hostname from device DB."""
+    out: Dict[str, str] = {}
+    if db_manager is None:
+        return out
+    try:
+        for d in db_manager.get_all_devices() or []:
+            h = getattr(d, "hostname", None)
+            if not h:
+                continue
+            h = str(h).strip()
+            if h:
+                out[h.lower()] = h
+    except Exception:
+        pass
+    return out
+
+
+def _all_inventory_hostnames_sorted(db_manager: Any) -> List[str]:
+    try:
+        return sorted(
+            {
+                str(getattr(d, "hostname", "")).strip()
+                for d in (db_manager.get_all_devices() or [])
+                if str(getattr(d, "hostname", "")).strip()
+            }
+        )
+    except Exception:
+        return []
+
+
+def _compact_alnum(s: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", (s or "").lower())
+
+
+def _score_device_hint_vs_hostname(hint_raw: str, hostname: str) -> float:
+    """Higher = stronger match between user/LLM hint (e.g. SW1, Router 1) and inventory hostname."""
+    hint = str(hint_raw or "").strip()
+    if not hint:
+        return 0.0
+    hn = str(hostname or "").strip().lower()
+    if not hn:
+        return 0.0
+    ch = _compact_alnum(hostname)
+    ct = _compact_alnum(hint)
+    score = 0.0
+    hl = hint.lower()
+    if hl in hn:
+        score += 48.0
+    if ct and len(ct) >= 2 and ct in ch:
+        score += 42.0
+    try:
+        if re.search(r"(?:^|[^a-z0-9])" + re.escape(hl) + r"(?:[^a-z0-9]|$)", hn):
+            score += 18.0
+    except re.error:
+        pass
+    for part in re.split(r"[\s_\-]+", hl):
+        if len(part) >= 2 and part in hn:
+            score += 12.0
+    ratio = difflib.SequenceMatcher(None, ct, ch).ratio()
+    score += ratio * 22.0
+    return score
+
+
+def _device_hint_ranked_matches(hint: str, all_hosts: List[str], max_candidates: int = 24) -> List[str]:
+    """Return inventory hostnames that plausibly match the hint, best-first."""
+    if not all_hosts or not str(hint or "").strip():
+        return []
+    scored = [(_score_device_hint_vs_hostname(hint, host), host) for host in all_hosts]
+    scored = [(s, h) for s, h in scored if s >= 1.0]
+    scored.sort(key=lambda x: (-x[0], x[1].lower()))
+    if not scored:
+        return []
+    top_s = scored[0][0]
+    threshold = max(14.0, top_s * 0.42)
+    out: List[str] = []
+    seen: set[str] = set()
+    for s, h in scored:
+        if s < threshold:
+            break
+        k = h.lower()
+        if k not in seen:
+            seen.add(k)
+            out.append(h)
+        if len(out) >= max_candidates:
+            break
+    return out
+
+
+def _resolve_unknown_device_aliases(
+    unknown_tokens: List[str],
+    db_manager: Any,
+) -> tuple[List[str], Optional[Dict[str, Any]]]:
+    """
+    Map aliases not equal to inventory hostnames (e.g. SW1) to real devices.
+
+    Returns:
+      - auto_mapped: canonical hostnames when each hint resolves to exactly one strong match
+      - disambiguation: UI payload when 0 matches (full inventory) or 2+ plausible matches (shortlist)
+    """
+    cmap = _db_hostname_lower_to_canonical(db_manager)
+    all_hosts = sorted(set(cmap.values()))
+    uniq: List[str] = []
+    seen_t: set[str] = set()
+    for t in unknown_tokens:
+        k = str(t).strip()
+        if k and k.lower() not in seen_t:
+            seen_t.add(k.lower())
+            uniq.append(k)
+    if not uniq or not all_hosts:
+        return [], None
+
+    auto: List[str] = []
+    ambiguous_union: List[str] = []
+    need_full_inventory = False
+
+    for tok in uniq:
+        cands = _device_hint_ranked_matches(tok, all_hosts)
+        if len(cands) == 0:
+            need_full_inventory = True
+        elif len(cands) == 1:
+            h = cands[0]
+            if h not in auto:
+                auto.append(h)
+        else:
+            for h in cands:
+                if h not in ambiguous_union:
+                    ambiguous_union.append(h)
+
+    q_toks = ", ".join(f"`{t}`" for t in uniq)
+
+    if need_full_inventory:
+        return [], {
+            "ambiguous_devices": [],
+            "missing_devices": list(uniq),
+            "unknown_inventory_aliases": list(uniq),
+            "ask_user_selection": True,
+            "candidate_devices": list(all_hosts),
+            "disambiguation_kind": "not_in_inventory",
+            "question": (
+                f"{q_toks} did not match any inventory hostname closely enough. "
+                "Select one or more target devices from planned inventory (multi-select), then continue."
+            ),
+        }
+
+    if ambiguous_union:
+        return [], {
+            "ambiguous_devices": list(ambiguous_union),
+            "missing_devices": list(uniq),
+            "unknown_inventory_aliases": list(uniq),
+            "ask_user_selection": True,
+            "candidate_devices": list(ambiguous_union),
+            "disambiguation_kind": "ambiguous_hint",
+            "question": (
+                f"Several devices in planned inventory could match {q_toks}. "
+                "Select which hostname(s) you meant (multi-select), then continue."
+            ),
+        }
+
+    return list(auto), None
+
+
+def _filter_resolved_hosts_to_planned_inventory(
+    resolved: List[str],
+    db_manager: Any,
+) -> tuple[List[str], List[str]]:
+    """
+    Keep only hostnames that exist in the device DB. Return (canonical_inventory_hosts, unknown_tokens).
+    LLM/user aliases like 'SW1' that are not real inventory hostnames are returned as unknown.
+    """
+    if not resolved or db_manager is None:
+        return list(resolved or []), []
+    cmap = _db_hostname_lower_to_canonical(db_manager)
+    # No inventory loaded — do not strip LLM placeholders (tests / empty DB).
+    if not cmap:
+        return list(resolved or []), []
+    valid: List[str] = []
+    unknown: List[str] = []
+    seen: set[str] = set()
+    for raw in resolved:
+        t = str(raw).strip()
+        if not t:
+            continue
+        canon = cmap.get(t.lower())
+        if canon:
+            if canon not in seen:
+                seen.add(canon)
+                valid.append(canon)
+        else:
+            unknown.append(t)
+    return valid, unknown
+
+
+def _build_devices_disambiguation_for_unknown_inventory_tokens(
+    unknown_tokens: List[str],
+    db_manager: Any,
+) -> Optional[Dict[str, Any]]:
+    """Backward-compatible wrapper: hint-aware shortlist or full inventory."""
+    if not unknown_tokens or db_manager is None:
+        return None
+    _, dd = _resolve_unknown_device_aliases(unknown_tokens, db_manager)
+    return dd
 
 
 def _intent_explicitly_requests_broad_device_scope(intent_description: str) -> bool:
@@ -808,6 +1013,31 @@ def _resolve_backend_intent_request(req, user: dict) -> tuple["PlanAnsibleReques
     parsed.resolved_devices = _narrow_resolved_by_hostnames_in_prompt(
         req.intent_description, list(parsed.resolved_devices or []), _db
     )
+
+    if _db is not None and parsed.resolved_devices and _db_hostname_lower_to_canonical(_db):
+        _ok_hosts, _bad_hosts = _filter_resolved_hosts_to_planned_inventory(parsed.resolved_devices, _db)
+        _ok_hosts = list(_ok_hosts)
+        if _bad_hosts:
+            _auto_m, _dd = _resolve_unknown_device_aliases(_bad_hosts, _db)
+            for h in _auto_m:
+                if h not in _ok_hosts:
+                    _ok_hosts.append(h)
+            if _dd:
+                raise HTTPException(
+                    status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail={
+                        "message": "Target device hint is ambiguous or not in inventory; select hostname(s) in the UI.",
+                        "missing_fields": ["target_hosts"],
+                        "questions": [
+                            {
+                                "field": "target_hosts",
+                                "question": str(_dd.get("question") or "Select target device(s) from planned inventory."),
+                            }
+                        ],
+                        "devices_disambiguation": _dd,
+                    },
+                )
+        parsed.resolved_devices = _ok_hosts
 
     switch_disambiguation_create = _switch_role_disambiguation(req.intent_description)
     _map_create = _deduce_target_devices(req.intent_description, parsed.resolved_devices).get("mapping") or []
@@ -1249,6 +1479,31 @@ async def plan_ansible(
     """
     builder = _require_builder()
     resolved_hosts = _resolve_target_hosts(req.target_hosts)
+    if _db is not None and resolved_hosts and _db_hostname_lower_to_canonical(_db):
+        _rh_ok, _rh_bad = _filter_resolved_hosts_to_planned_inventory(resolved_hosts, _db)
+        _rh_ok = list(_rh_ok)
+        if _rh_bad:
+            _auto_m, _dd = _resolve_unknown_device_aliases(_rh_bad, _db)
+            for h in _auto_m:
+                if h not in _rh_ok:
+                    _rh_ok.append(h)
+            if _dd:
+                raise HTTPException(
+                    status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail={
+                        "message": "Target device hint is ambiguous or not in inventory; select hostname(s) in the UI.",
+                        "missing_fields": ["target_hosts"],
+                        "questions": [
+                            {
+                                "field": "target_hosts",
+                                "question": str(_dd.get("question") or "Select target device(s) from planned inventory."),
+                            }
+                        ],
+                        "devices_disambiguation": _dd,
+                        "target_hosts": [],
+                    },
+                )
+        resolved_hosts = _rh_ok
     effective_vendor = normalize_vendor(req.vendor or infer_vendor_hint(resolved_hosts, _db))
     # Frontend heuristic may send feature "general" for "Shut down Gi0/1 …" — infer interface from params
     _params_hint = dict(req.params or {})
@@ -1393,8 +1648,67 @@ async def plan_ansible(
 
     # Intent schema validation: missing required params -> resolve or 422 (per implementation plan)
     resolution_trace: List[Dict[str, Any]] = []
-    action_or_feature = getattr(req, "action", None) or req.feature
-    schema = get_schema_for_parsed_intent({"feature": req.feature, "action": getattr(req, "action", None)})
+    # For interface-changing intents, the frontend sends only `feature="interface"` (no explicit action).
+    # Infer shutdown vs configure from the prompt so schema + type validation run against the correct
+    # intent schema (shutdown_interface vs configure_interface).
+    inferred_interface_action: Optional[str] = None
+    feature_lower_req = str(req.feature or "").strip().lower().replace("-", "_")
+    if feature_lower_req == "interface":
+        # Normalize hyphen variants so "Admin‑down" / "Admin—down" still matches.
+        t_raw = str(req.intent_description or "").strip().lower()
+        t_raw = (
+            t_raw.replace("–", "-")  # en-dash
+            .replace("—", "-")  # em-dash
+            .replace("−", "-")  # minus sign
+        )
+        t = re.sub(r"\s+", " ", t_raw)
+
+        shutdown_markers = (
+            "admin-down",
+            "admin down",
+            "shutdown",
+            "shut down",
+            "disable",
+            "turn off",
+            "bring down",
+            "administratively down",
+            "admin-down all interfaces",
+            "admin down all interfaces",
+        )
+
+        # Prefer explicit params hints from the frontend when available.
+        params_hint = req.params if isinstance(req.params, dict) else {}
+        interfaces_to_shutdown = params_hint.get("interfaces_to_shutdown")
+        shutdown_from_params = bool(
+            interfaces_to_shutdown
+            or params_hint.get("interfaces_shutdown_use_nettopo") is True
+        )
+
+        shutdown_from_prompt = any(m in t for m in shutdown_markers)
+        if shutdown_from_prompt or shutdown_from_params:
+            inferred_interface_action = "shutdown_interface"
+        else:
+            inferred_interface_action = "configure_interface"
+
+    action_or_feature = getattr(req, "action", None) or inferred_interface_action or req.feature
+    schema = get_schema_for_parsed_intent(
+        {"feature": req.feature, "action": inferred_interface_action or getattr(req, "action", None)}
+    )
+
+    # "All interfaces" shutdown: type schema for shutdown_interface requires a non-empty
+    # interfaces_to_shutdown array during validation. We provide a minimal placeholder
+    # and let the later all-interfaces expansion convert it into nettopo-driven shutdown.
+    wants_all_ifaces = intent_requests_all_interfaces(req.intent_description or "")
+    if (
+        wants_all_ifaces
+        and feature_lower_req == "interface"
+        and inferred_interface_action == "shutdown_interface"
+        and isinstance(intent.get("params"), dict)
+    ):
+        p = intent["params"]
+        if not p.get("interfaces_to_shutdown"):
+            p["interfaces_to_shutdown"] = ["ALL"]
+            intent["params"] = p
     if schema:
         # Conditional interface leaves for configure_interface (shared VLANs + ip/subnet).
         # Raise 422 with "questions" so the UI can prompt users instead of surfacing
@@ -3396,6 +3710,90 @@ def _preview_parse_and_rag(
         )
     elif parsed_dict:
         parsed_dict["resolved_devices"] = list(resolved)
+
+    # Map LLM/user device hints to inventory: unique auto-map, ambiguous shortlist, or full inventory.
+    pending_devices_disambiguation: Optional[Dict[str, Any]] = None
+    inventory_unknown_device_tokens: List[str] = []
+    if _db is not None and resolved:
+        _inv_valid, _inv_unknown = _filter_resolved_hosts_to_planned_inventory(resolved, _db)
+        resolved = list(_inv_valid)
+        if _inv_unknown:
+            _auto_hosts, _dd = _resolve_unknown_device_aliases(_inv_unknown, _db)
+            for h in _auto_hosts:
+                if h not in resolved:
+                    resolved.append(h)
+            if _dd:
+                inventory_unknown_device_tokens = list(_inv_unknown)
+                pending_devices_disambiguation = _dd
+                _rq = str(_dd.get("question") or "").strip()
+                reasoning.insert(
+                    1,
+                    "### 1c. Target device(s) need confirmation\n"
+                    + (_rq + "\n" if _rq else "- Pick hostname(s) in the chat device picker or **Target inventory**.\n"),
+                )
+            elif _auto_hosts and _inv_unknown:
+                reasoning.insert(
+                    1,
+                    "### 1c. Mapped device hint(s)\n"
+                    f"- Interpreted hint(s) `{', '.join(_inv_unknown)}` as inventory host(s): **{', '.join(_auto_hosts)}**.\n",
+                )
+
+    if parsed_dict is not None:
+        parsed_dict["resolved_devices"] = list(resolved)
+        parsed_dict["inventory_unknown_device_tokens"] = inventory_unknown_device_tokens
+        if pending_devices_disambiguation:
+            parsed_dict["pending_devices_disambiguation"] = pending_devices_disambiguation
+        else:
+            parsed_dict.pop("pending_devices_disambiguation", None)
+
+    # Parser left no targets: device step first — offer full planned inventory for multi-select.
+    _feat_prev = str(parsed_dict.get("feature") or "").strip().lower() if parsed_dict else ""
+    _cats_prev = {str(c).strip().lower().replace("-", "_") for c in (categories or []) if str(c).strip()}
+    _needs_device_pick = _feat_prev in (
+        "interface",
+        "vlan",
+        "acl",
+        "qos",
+        "ospf",
+        "static_route",
+        "routing",
+        "general",
+    ) or bool(
+        _cats_prev
+        & {"interface", "vlan", "acl", "qos", "ospf", "static_route", "routing", "general"}
+    )
+    if (
+        parsed_dict is not None
+        and _db is not None
+        and _db_hostname_lower_to_canonical(_db)
+        and not resolved
+        and not parsed_dict.get("pending_devices_disambiguation")
+        and _needs_device_pick
+        and not switch_disambiguation_early
+        and not _intent_explicitly_requests_broad_device_scope(intent_description)
+    ):
+        _all_h = sorted(set(_db_hostname_lower_to_canonical(_db).values()))
+        if _all_h:
+            pending_devices_disambiguation = {
+                "ambiguous_devices": [],
+                "missing_devices": [],
+                "unknown_inventory_aliases": [],
+                "ask_user_selection": True,
+                "candidate_devices": list(_all_h),
+                "disambiguation_kind": "missing_targets",
+                "question": (
+                    "No target device was inferred from your prompt. "
+                    "Select one or more devices from planned inventory (multi-select), then continue."
+                ),
+            }
+            parsed_dict["pending_devices_disambiguation"] = pending_devices_disambiguation
+            parsed_dict["inventory_unknown_device_tokens"] = []
+            reasoning.insert(
+                1,
+                "### 1c. Select target device(s)\n"
+                "- No inventory hostname was resolved. Choose device(s) in the chat picker or **Target inventory**, then continue.\n",
+            )
+
     # Fallback only when the backend parser could not resolve anything at all.
     subset_reason = ""
     scope_summary = _devices_mentioned_summary(parsed_dict, intent_description)
@@ -3611,6 +4009,24 @@ async def preview_intent(
             )
     except Exception as exc:
         logger.debug("intent_tree_engine evaluation failed: %s", exc)
+
+    pending_dd = parsed_intent.pop("pending_devices_disambiguation", None)
+    if pending_dd:
+        devices_disambiguation = pending_dd
+        if not resolved_hosts and tree_res is not None:
+            tree_res.needs_target_devices = True
+            parsed_intent["resolved_devices"] = []
+            resolved_hosts = []
+
+    inv_bad = [str(x).strip() for x in (parsed_intent.get("inventory_unknown_device_tokens") or []) if str(x).strip()]
+    if inv_bad and _db is not None and not devices_disambiguation:
+        dd_inv = _build_devices_disambiguation_for_unknown_inventory_tokens(inv_bad, _db)
+        if dd_inv:
+            devices_disambiguation = dd_inv
+        if not resolved_hosts and tree_res is not None:
+            tree_res.needs_target_devices = True
+            parsed_intent["resolved_devices"] = []
+            resolved_hosts = []
 
     # Fail fast for tree-required leaves surfaced as UI questions.
     if (
@@ -3914,6 +4330,56 @@ async def preview_intent(
                 parsed_intent["requires_resolution"] = False
         except Exception as exc:
             logger.debug("Preview all-interfaces expansion failed: %s", exc)
+
+    # Per-device interface list from planned context when "all interfaces" uses nettopo expansion.
+    if (
+        all_if_shutdown_expanded_preview
+        and resolved_hosts
+        and _db is not None
+        and not device_disambiguation
+    ):
+        try:
+            if planning_context_preview is None:
+                planning_context_preview = await run_in_threadpool(
+                    build_scoped_planning_context,
+                    _db,
+                    resolved_hosts,
+                    feature="interface",
+                    query=req.intent_description or "",
+                )
+            _pif = build_planned_all_interfaces_preview(planning_context_preview, resolved_hosts)
+            parsed_intent["planned_all_interfaces_preview"] = _pif
+            note = str(_pif.get("note") or "").strip()
+            lines_pf: List[str] = [
+                "### 5. Planned interfaces (all-interfaces scope)",
+            ]
+            if note:
+                lines_pf.append(f"- {note}")
+            else:
+                lines_pf.append("- From planned network context (management-style interfaces excluded):")
+            for devp in _pif.get("devices") or []:
+                if not isinstance(devp, dict):
+                    continue
+                hn = str(devp.get("hostname") or "")
+                cnt = int(devp.get("interface_count") or 0)
+                iflst = [
+                    str(i.get("name") or "")
+                    for i in (devp.get("interfaces") or [])
+                    if isinstance(i, dict) and str(i.get("name") or "").strip()
+                ]
+                preview_names = ", ".join(iflst[:24])
+                if len(iflst) > 24:
+                    preview_names += ", …"
+                lines_pf.append(
+                    f"  - **{hn}**: **{cnt}** interface(s) — {preview_names or '(none listed)'}"
+                )
+            if not _pif.get("devices"):
+                lines_pf.append(
+                    "  - (No matching devices in planning context — confirm **Target inventory** hostnames.)"
+                )
+            reasoning.append("\n".join(lines_pf))
+        except Exception as exc:
+            logger.debug("Preview planned all-interfaces summary failed: %s", exc)
 
     iface_names_invalid = False
     inv_validation_result: Optional[Any] = None

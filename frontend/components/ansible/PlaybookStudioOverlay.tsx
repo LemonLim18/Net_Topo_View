@@ -123,6 +123,10 @@ export function PlaybookStudioOverlay({
   const [schemaEditableFields, setSchemaEditableFields] = useState<SchemaEditableField[]>([]);
   const [schemaParamValues, setSchemaParamValues] = useState<Record<string, string | number>>({});
   const [interfacesForSelection, setInterfacesForSelection] = useState<{ question: string; devices: { hostname: string; interfaces: { name: string }[] }[] } | null>(null);
+  const [plannedAllInterfacesPreview, setPlannedAllInterfacesPreview] = useState<{
+    devices?: { hostname?: string; interfaces?: { name?: string }[] }[];
+    note?: string;
+  } | null>(null);
   const [interfaceBindingMode, setInterfaceBindingMode] = useState<'no' | 'access' | 'trunk'>('no');
   const [vlanSelectedInterfaces, setVlanSelectedInterfaces] = useState<Set<string>>(new Set());
   const [vlanAccessVlan, setVlanAccessVlan] = useState<number>(1);
@@ -171,6 +175,9 @@ export function PlaybookStudioOverlay({
         }
         setTargetInterfaces(ifaces.map(String));
       }
+      setPlannedAllInterfacesPreview(
+        ((res.parsed_intent as any)?.planned_all_interfaces_preview as any) ?? null
+      );
       setSchemaEditableFields(res.schema_editable_fields ?? []);
       const params = (res.parsed_intent as any)?.parameters ?? {};
       setSchemaParamValues(
@@ -213,6 +220,9 @@ export function PlaybookStudioOverlay({
         }
         setTargetInterfaces(ifaces.map(String));
       }
+      setPlannedAllInterfacesPreview(
+        ((initialPreviewResult.parsed_intent as any)?.planned_all_interfaces_preview as any) ?? null
+      );
       setSchemaEditableFields(initialPreviewResult.schema_editable_fields ?? []);
       const params = (initialPreviewResult.parsed_intent as any)?.parameters ?? {};
       setSchemaParamValues(
@@ -227,6 +237,29 @@ export function PlaybookStudioOverlay({
       runPreview();
     }
   }, [open, intentDescription, runPreview, initialPreviewResult]);
+
+  // When backend expanded "all interfaces" via planned network context, pre-fill the UI chips
+  // so user can review/select from real interface names (no free-text typing).
+  useEffect(() => {
+    const opts = plannedAllInterfacesPreview;
+    if (!opts || !opts.devices || opts.devices.length === 0) return;
+    if (targetInterfaces.length !== 0) return; // don't clobber user edits
+
+    const perDevice = opts.devices.map((d) =>
+      (d.interfaces || []).map((i) => String(i.name || '').trim()).filter(Boolean)
+    );
+    if (perDevice.length === 0) return;
+
+    const union = Array.from(new Set(perDevice.flat()));
+    if (union.length === 0) return;
+
+    const intersection =
+      perDevice.length > 1
+        ? perDevice[0].filter((name) => perDevice.every((arr) => arr.includes(name)))
+        : union;
+
+    setTargetInterfaces(intersection.length > 0 ? intersection : union);
+  }, [plannedAllInterfacesPreview, targetInterfaces.length]);
 
   useEffect(() => {
     if (step === 'confirm') {
@@ -346,7 +379,7 @@ export function PlaybookStudioOverlay({
   if (!open) return null;
 
   return (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm">
+    <div className="fixed inset-0 z-100 flex items-center justify-center bg-black/60 backdrop-blur-sm">
       <div
         className="bg-base-100 border border-base-300 rounded-xl shadow-2xl flex flex-col overflow-hidden animate-in fade-in duration-200"
         style={{ width: 'min(92vw, 900px)', maxHeight: '88vh' }}
@@ -627,12 +660,106 @@ export function PlaybookStudioOverlay({
                     {targetInterfaces.map((iface) => (
                       <span key={iface} className="badge badge-outline badge-sm gap-1 pr-1 font-mono">
                         {iface}
-                        <button type="button" className="hover:bg-base-content/20 rounded-full p-0.5" onClick={() => setTargetInterfaces((prev) => prev.filter((x) => x !== iface))} aria-label={`Remove ${iface}`}><X className="w-3 h-3" /></button>
+                        <button
+                          type="button"
+                          className="hover:bg-base-content/20 rounded-full p-0.5"
+                          onClick={() => setTargetInterfaces((prev) => prev.filter((x) => x !== iface))}
+                          aria-label={`Remove ${iface}`}
+                        >
+                          <X className="w-3 h-3" />
+                        </button>
                       </span>
                     ))}
-                    <input type="text" placeholder="Add interface..." className="input input-bordered input-xs w-36 font-mono" value={newTargetInterface} onChange={(e) => setNewTargetInterface(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && (e.preventDefault(), (() => { const v = newTargetInterface.trim(); if (v && !targetInterfaces.includes(v)) { setTargetInterfaces((p) => [...p, v]); setNewTargetInterface(''); } })())} />
-                    <button type="button" className="btn btn-ghost btn-xs gap-0.5" onClick={() => { const v = newTargetInterface.trim(); if (v && !targetInterfaces.includes(v)) { setTargetInterfaces((p) => [...p, v]); setNewTargetInterface(''); } }}><Plus className="w-3 h-3" /> Add</button>
-                    {targetInterfaces.length === 0 && !newTargetInterface && <span className="text-sm text-base-content/50">No interfaces selected</span>}
+                    {plannedAllInterfacesPreview?.devices?.length ? (
+                      <div className="w-full">
+                        <p className="text-xs text-base-content/60 mb-2">
+                          {plannedAllInterfacesPreview.note ||
+                            'Select interface(s) from planned context (management-style names excluded).'}
+                        </p>
+                        <div className="dropdown dropdown-end">
+                          <label tabIndex={0} className="btn btn-ghost btn-xs gap-0.5 cursor-pointer">
+                            <Plus className="w-3 h-3" /> Add
+                          </label>
+                          <div
+                            tabIndex={0}
+                            className="dropdown-content menu p-2 shadow bg-base-100 rounded-box max-h-48 overflow-y-auto w-72"
+                          >
+                            {Array.from(
+                              new Set(
+                                plannedAllInterfacesPreview.devices.flatMap((d) =>
+                                  (d.interfaces || [])
+                                    .map((i) => String(i.name || '').trim())
+                                    .filter(Boolean)
+                                )
+                              )
+                            )
+                              .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }))
+                              .map((name) => {
+                                const checked = targetInterfaces.includes(name);
+                                return (
+                                  <li key={name} className="p-1.5">
+                                    <label className="flex items-center gap-2 cursor-pointer">
+                                      <input
+                                        type="checkbox"
+                                        checked={checked}
+                                        onChange={() => {
+                                          setTargetInterfaces((prev) => {
+                                            const next = new Set(prev);
+                                            if (next.has(name)) next.delete(name);
+                                            else next.add(name);
+                                            return Array.from(next);
+                                          });
+                                        }}
+                                      />
+                                      <span className="text-xs font-mono">{name}</span>
+                                    </label>
+                                  </li>
+                                );
+                              })}
+                            {targetInterfaces.length === 0 ? (
+                              <li className="text-xs opacity-70 p-1.5">No interfaces selected yet</li>
+                            ) : null}
+                          </div>
+                        </div>
+                      </div>
+                    ) : (
+                      <>
+                        <input
+                          type="text"
+                          placeholder="Add interface..."
+                          className="input input-bordered input-xs w-36 font-mono"
+                          value={newTargetInterface}
+                          onChange={(e) => setNewTargetInterface(e.target.value)}
+                          onKeyDown={(e) =>
+                            e.key === 'Enter' &&
+                            (e.preventDefault(),
+                              (() => {
+                                const v = newTargetInterface.trim();
+                                if (v && !targetInterfaces.includes(v)) {
+                                  setTargetInterfaces((p) => [...p, v]);
+                                  setNewTargetInterface('');
+                                }
+                              })())
+                          }
+                        />
+                        <button
+                          type="button"
+                          className="btn btn-ghost btn-xs gap-0.5"
+                          onClick={() => {
+                            const v = newTargetInterface.trim();
+                            if (v && !targetInterfaces.includes(v)) {
+                              setTargetInterfaces((p) => [...p, v]);
+                              setNewTargetInterface('');
+                            }
+                          }}
+                        >
+                          <Plus className="w-3 h-3" /> Add
+                        </button>
+                        {targetInterfaces.length === 0 && !newTargetInterface ? (
+                          <span className="text-sm text-base-content/50">No interfaces selected</span>
+                        ) : null}
+                      </>
+                    )}
                   </div>
                 </div>
               )}

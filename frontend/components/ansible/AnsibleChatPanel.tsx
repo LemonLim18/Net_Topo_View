@@ -220,6 +220,15 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
   } | null>(null);
   const [paramsDisambiguationValues, setParamsDisambiguationValues] = useState<Record<string, string | number | string[]>>({});
   const [paramsDisambiguationStep, setParamsDisambiguationStep] = useState(0);
+  /** Planned-inventory device picker (hints like SW1, wrong names, or missing targets) — before interface/params. */
+  const [deviceDisambiguation, setDeviceDisambiguation] = useState<{
+    messageId: string;
+    question: string;
+    candidateDevices: string[];
+    intentText: string;
+    kind?: string;
+  } | null>(null);
+  const [selectedDevices, setSelectedDevices] = useState<Set<string>>(new Set());
   const [studioInitialPreview, setStudioInitialPreview] = useState<{
     categories: string[];
     references: { doc_name: string; feature: string; vendor: string; path: string }[];
@@ -419,6 +428,213 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
     setMessages(prev => [...prev, { ...msg, id: crypto.randomUUID(), timestamp: Date.now() }]);
   }, []);
 
+  /**
+   * After previewIntent: device picker → switch-role menu → interface picker → params wizard → studio.
+   * Returns true if a branch handled the response (skip generic “Thinking” snippet).
+   */
+  const applyPreviewFollowUps = useCallback(
+    (res: any, intentText: string): boolean => {
+      const devicesDis = res?.devices_disambiguation as
+        | {
+            question?: string;
+            candidate_devices?: string[];
+            ask_user_selection?: boolean;
+            disambiguation_kind?: string;
+          }
+        | undefined;
+      if (
+        devicesDis?.ask_user_selection &&
+        Array.isArray(devicesDis.candidate_devices) &&
+        devicesDis.candidate_devices.length > 0
+      ) {
+        const menuMsgId = crypto.randomUUID();
+        setDeviceDisambiguation({
+          messageId: menuMsgId,
+          question:
+            devicesDis.question ||
+            'Select one or more target devices from planned inventory, then continue.',
+          candidateDevices: devicesDis.candidate_devices,
+          intentText,
+          kind: devicesDis.disambiguation_kind,
+        });
+        setSelectedDevices(new Set());
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: menuMsgId,
+            role: 'assistant',
+            content:
+              devicesDis.question ||
+              'Select target device(s) from planned inventory (multi-select), then continue.',
+            timestamp: Date.now(),
+            deviceDisambiguation: {
+              question: devicesDis.question,
+              candidate_devices: devicesDis.candidate_devices,
+            },
+          } as AnsibleMessage,
+        ]);
+        return true;
+      }
+
+      const dis = res?.parsed_intent?.disambiguation || res?.disambiguation;
+      if (dis && Array.isArray(dis.options) && dis.options.length) {
+        const menuMsgId = crypto.randomUUID();
+        setDisambiguation({
+          messageId: menuMsgId,
+          question: dis.question || 'Which devices did you mean?',
+          options: dis.options,
+          originalText: intentText,
+        });
+        setDisambiguationChoice(dis.options.find((o: { id: string }) => o.id === 'access') ? 'access' : dis.options[0].id);
+        setDisambiguationCustom('');
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: menuMsgId,
+            role: 'assistant',
+            content: dis.question || 'Which devices did you mean?',
+            timestamp: Date.now(),
+            disambiguation: { question: dis.question || 'Which devices did you mean?', options: dis.options },
+          },
+        ]);
+        return true;
+      }
+
+      const ifaceDis = res?.interfaces_disambiguation;
+      if (ifaceDis?.devices?.length) {
+        const menuMsgId = crypto.randomUUID();
+        const vNotice = ifaceDis.validation_notice as string | undefined;
+        setInterfaceDisambiguation({
+          messageId: menuMsgId,
+          question: ifaceDis.question || 'Please select the interfaces you want to shutdown.',
+          devices: ifaceDis.devices,
+          intentText,
+          schemaAction: res?.schema_action,
+          validationNotice: vNotice,
+          invalidEntities: ifaceDis.invalid_entities,
+          paramsNeedContextFix: Boolean(ifaceDis.params_need_context_fix),
+        });
+        setSelectedInterfaces(new Set());
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: menuMsgId,
+            role: 'assistant',
+            content: vNotice
+              ? `${vNotice}\n\n${ifaceDis.question || 'Please select the interfaces to continue.'}`
+              : ifaceDis.question || 'Please select the interfaces to continue.',
+            timestamp: Date.now(),
+            interfaceDisambiguation: { question: ifaceDis.question, devices: ifaceDis.devices },
+          } as AnsibleMessage,
+        ]);
+        return true;
+      }
+
+      const paramsDis = res?.params_disambiguation;
+      if (paramsDis?.fields?.length) {
+        const menuMsgId = crypto.randomUUID();
+        setParamsDisambiguation({
+          messageId: menuMsgId,
+          question: paramsDis.question || 'Please provide the following.',
+          fields: paramsDis.fields,
+          intentText,
+        });
+        setParamsDisambiguationValues({});
+        setParamsDisambiguationStep(0);
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: menuMsgId,
+            role: 'assistant',
+            content: 'Clarifying for some missing information',
+            timestamp: Date.now(),
+            paramsDisambiguation: { question: paramsDis.question, fields: paramsDis.fields },
+          } as AnsibleMessage,
+        ]);
+        return true;
+      }
+
+      return false;
+    },
+    [],
+  );
+
+  const submitDeviceDisambiguation = useCallback(async () => {
+    if (!deviceDisambiguation) return;
+    const hosts = Array.from(selectedDevices);
+    if (hosts.length === 0) {
+      Toast.warning('Select at least one device', 'Choose target device(s) from planned inventory to continue.');
+      return;
+    }
+    const msgId = deviceDisambiguation.messageId;
+    const intentText = deviceDisambiguation.intentText;
+    setDeviceDisambiguation(null);
+    setMessages((prev) => prev.filter((m) => m.id !== msgId));
+    setGenerating(true);
+    const progressId = crypto.randomUUID();
+    setMessages((prev) => [
+      ...prev,
+      {
+        id: progressId,
+        role: 'assistant',
+        content: 'Applying device selection and refreshing the preview…',
+        timestamp: Date.now(),
+      },
+    ]);
+    const ac = new AbortController();
+    abortControllerRef.current = ac;
+    try {
+      const { vendor, feature } = parseIntent(intentText);
+      const res = await ansibleApi.previewIntent(
+        {
+          intent_description: intentText,
+          target_hosts: hosts,
+          vendor: vendor || undefined,
+          feature: feature || undefined,
+          provider: ansibleModel.provider,
+          model: ansibleModel.model,
+          ollama_base_url: ansibleModel.ollama_base_url ?? undefined,
+        },
+        { signal: ac.signal },
+      );
+      abortControllerRef.current = null;
+      setMessages((prev) => prev.filter((m) => m.id !== progressId));
+      if (applyPreviewFollowUps(res, intentText)) {
+        setGenerating(false);
+        return;
+      }
+      const valErr = (res as { parsed_intent?: { validation_errors?: string[] } })?.parsed_intent?.validation_errors;
+      if (Array.isArray(valErr) && valErr.length > 0) {
+        addMsg({
+          role: 'assistant',
+          content: `**Validation issues**\n\n${valErr.join('\n')}`,
+        });
+      } else {
+        setStudioInitialPreview(res as any);
+        setStudioIntent(intentText);
+        setStudioOpen(true);
+      }
+    } catch (err: unknown) {
+      abortControllerRef.current = null;
+      setMessages((prev) => prev.filter((m) => m.id !== progressId));
+      const isAbort = err instanceof DOMException && err.name === 'AbortError';
+      if (isAbort) {
+        addMsg({ role: 'assistant', content: 'The generation was cancelled by the user.' });
+      }
+      setStudioInitialPreview(null);
+      setStudioIntent(intentText);
+      setStudioOpen(true);
+    }
+    setGenerating(false);
+  }, [
+    deviceDisambiguation,
+    selectedDevices,
+    parseIntent,
+    ansibleModel,
+    applyPreviewFollowUps,
+    addMsg,
+  ]);
+
   const handleSend = useCallback(async () => {
     const baseText = input.trim();
     if (!baseText && attachedFiles.length === 0) return;
@@ -549,89 +765,14 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
         loadingPhaseTimeoutRef.current.forEach(clearTimeout);
         loadingPhaseTimeoutRef.current = [];
         abortControllerRef.current = null;
-        const dis = (res as any)?.parsed_intent?.disambiguation || (res as any)?.disambiguation;
-        const ifaceDis = (res as any)?.interfaces_disambiguation;
-        if (dis && Array.isArray(dis.options) && dis.options.length) {
-          loadingPhaseTimeoutRef.current.forEach(clearTimeout);
-          loadingPhaseTimeoutRef.current = [];
-          setMessages(prev => prev.filter(m => m.id !== loadingId));
-          setGenerating(false);
-          const menuMsgId = crypto.randomUUID();
-          setDisambiguation({
-            messageId: menuMsgId,
-            question: dis.question || 'Which devices did you mean?',
-            options: dis.options,
-            originalText: text,
-          });
-          setDisambiguationChoice(dis.options.find((o: any) => o.id === 'access') ? 'access' : dis.options[0].id);
-          setDisambiguationCustom('');
-          setMessages(prev => [...prev, {
-            id: menuMsgId,
-            role: 'assistant',
-            content: dis.question || 'Which devices did you mean?',
-            timestamp: Date.now(),
-            disambiguation: { question: dis.question || 'Which devices did you mean?', options: dis.options },
-          }]);
-          return;
-        }
-        if (ifaceDis?.devices?.length) {
-          loadingPhaseTimeoutRef.current.forEach(clearTimeout);
-          loadingPhaseTimeoutRef.current = [];
-          setMessages(prev => prev.filter(m => m.id !== loadingId));
-          setGenerating(false);
-          const menuMsgId = crypto.randomUUID();
-          const vNotice = (ifaceDis as { validation_notice?: string }).validation_notice;
-          setInterfaceDisambiguation({
-            messageId: menuMsgId,
-            question: ifaceDis.question || 'Please select the interfaces you want to shutdown.',
-            devices: ifaceDis.devices,
-            intentText: text,
-            schemaAction: (res as { schema_action?: string })?.schema_action,
-            validationNotice: vNotice,
-            invalidEntities: (ifaceDis as { invalid_entities?: { hostname: string; value: string; kind: string; message: string; suggestions?: string[] }[] }).invalid_entities,
-            paramsNeedContextFix: Boolean((ifaceDis as { params_need_context_fix?: boolean }).params_need_context_fix),
-          });
-          // Require explicit selection (safer for shutdown; Gi0/1 vs Ethernet naming won't pre-check wrong set)
-          setSelectedInterfaces(new Set());
-          setMessages(prev => [...prev, {
-            id: menuMsgId,
-            role: 'assistant',
-            content: vNotice
-              ? `${vNotice}\n\n${ifaceDis.question || 'Please select the interfaces to continue.'}`
-              : (ifaceDis.question || 'Please select the interfaces to continue.'),
-            timestamp: Date.now(),
-            interfaceDisambiguation: { question: ifaceDis.question, devices: ifaceDis.devices },
-          }]);
-          return;
-        }
-        const paramsDis = (res as any)?.params_disambiguation;
-        if (paramsDis?.fields?.length) {
-          loadingPhaseTimeoutRef.current.forEach(clearTimeout);
-          loadingPhaseTimeoutRef.current = [];
-          setMessages(prev => prev.filter(m => m.id !== loadingId));
-          setGenerating(false);
-          const menuMsgId = crypto.randomUUID();
-          setParamsDisambiguation({
-            messageId: menuMsgId,
-            question: paramsDis.question || 'Please provide the following.',
-            fields: paramsDis.fields,
-            intentText: text,
-          });
-          setParamsDisambiguationValues({});
-          setParamsDisambiguationStep(0);
-          setMessages(prev => [...prev, {
-            id: menuMsgId,
-            role: 'assistant',
-            content: 'Clarifying for some missing information',
-            timestamp: Date.now(),
-            paramsDisambiguation: { question: paramsDis.question, fields: paramsDis.fields },
-          }]);
-          return;
-        }
-        // No disambiguation: replace loading with reasoning message.
         loadingPhaseTimeoutRef.current.forEach(clearTimeout);
         loadingPhaseTimeoutRef.current = [];
         setMessages(prev => prev.filter(m => m.id !== loadingId));
+        setGenerating(false);
+        if (applyPreviewFollowUps(res, text)) {
+          return;
+        }
+        // No disambiguation: show reasoning / open studio below.
         const trace = (res as any)?.reasoning_trace as { steps?: { title: string; detail: string }[] } | undefined;
         if (trace?.steps && trace.steps.length > 0) {
           const lines: string[] = ['**Reasoning steps**'];
@@ -701,7 +842,7 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
       setStudioIntent(text);
       setStudioOpen(true);
     }
-  }, [input, isGenerating, addMsg, onPlaybookReady, attachedFiles, ansibleModel, parseIntent]);
+  }, [input, isGenerating, addMsg, onPlaybookReady, attachedFiles, ansibleModel, parseIntent, applyPreviewFollowUps]);
 
   const submitDisambiguation = useCallback(async () => {
     if (!disambiguation) return;
@@ -732,61 +873,21 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
         ollama_base_url: ansibleModel.ollama_base_url ?? undefined,
       }, { signal: ac.signal });
       abortControllerRef.current = null;
-      const ifaceDis = (res as any)?.interfaces_disambiguation;
-      const paramsDis = (res as any)?.params_disambiguation;
       setMessages(prev => prev.filter(m => m.id !== loadingId));
-      if (ifaceDis?.devices?.length) {
-        const menuMsgId = crypto.randomUUID();
-        const vNotice = (ifaceDis as { validation_notice?: string }).validation_notice;
-        setInterfaceDisambiguation({
-          messageId: menuMsgId,
-          question: ifaceDis.question || 'Please select the interfaces you want to shutdown.',
-          devices: ifaceDis.devices,
-          intentText: clarifiedText,
-          schemaAction: (res as { schema_action?: string })?.schema_action,
-          validationNotice: vNotice,
-          invalidEntities: (ifaceDis as { invalid_entities?: { hostname: string; value: string; kind: string; message: string; suggestions?: string[] }[] }).invalid_entities,
-          paramsNeedContextFix: Boolean((ifaceDis as { params_need_context_fix?: boolean }).params_need_context_fix),
-        });
-        setSelectedInterfaces(new Set());
-        setMessages(prev => [...prev, {
-          id: menuMsgId,
+      if (applyPreviewFollowUps(res, clarifiedText)) {
+        setGenerating(false);
+        return;
+      }
+      const valErr = (res as { parsed_intent?: { validation_errors?: string[] } })?.parsed_intent?.validation_errors;
+      if (Array.isArray(valErr) && valErr.length > 0) {
+        addMsg({
           role: 'assistant',
-          content: vNotice
-            ? `${vNotice}\n\n${ifaceDis.question || 'Please select the interfaces to continue.'}`
-            : (ifaceDis.question || 'Please select the interfaces to continue.'),
-          timestamp: Date.now(),
-          interfaceDisambiguation: { question: ifaceDis.question, devices: ifaceDis.devices },
-        }]);
-      } else if (paramsDis?.fields?.length) {
-        const menuMsgId = crypto.randomUUID();
-        setParamsDisambiguation({
-          messageId: menuMsgId,
-          question: paramsDis.question || 'Please provide the following.',
-          fields: paramsDis.fields,
-          intentText: clarifiedText,
+          content: `**Validation issues**\n\n${valErr.join('\n')}`,
         });
-        setParamsDisambiguationValues({});
-        setParamsDisambiguationStep(0);
-        setMessages(prev => [...prev, {
-          id: menuMsgId,
-          role: 'assistant',
-          content: 'Clarifying for some missing information',
-          timestamp: Date.now(),
-          paramsDisambiguation: { question: paramsDis.question, fields: paramsDis.fields },
-        }]);
       } else {
-        const valErr = (res as { parsed_intent?: { validation_errors?: string[] } })?.parsed_intent?.validation_errors;
-        if (Array.isArray(valErr) && valErr.length > 0) {
-          addMsg({
-            role: 'assistant',
-            content: `**Validation issues**\n\n${valErr.join('\n')}`,
-          });
-        } else {
-          setStudioInitialPreview(null);
-          setStudioIntent(clarifiedText);
-          setStudioOpen(true);
-        }
+        setStudioInitialPreview(null);
+        setStudioIntent(clarifiedText);
+        setStudioOpen(true);
       }
     } catch (err: unknown) {
       abortControllerRef.current = null;
@@ -800,7 +901,7 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
       setStudioOpen(true);
     }
     setGenerating(false);
-  }, [disambiguation, disambiguationChoice, disambiguationCustom, ansibleModel, parseIntent, addMsg]);
+  }, [disambiguation, disambiguationChoice, disambiguationCustom, ansibleModel, parseIntent, addMsg, applyPreviewFollowUps]);
 
   const handleStop = useCallback(() => {
     if (abortControllerRef.current) {
@@ -1155,6 +1256,54 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
                         </button>
                       </div>
                     </div>
+                  ) : (msg as any).deviceDisambiguation && deviceDisambiguation?.messageId === msg.id ? (
+                    <div className="space-y-3">
+                      <div className="text-sm text-base-content/90 whitespace-pre-line">
+                        {deviceDisambiguation.question}
+                      </div>
+                      {deviceDisambiguation.kind ? (
+                        <div className="text-xs text-base-content/60">
+                          {deviceDisambiguation.kind === 'ambiguous_hint'
+                            ? 'Several inventory hosts match your hint — select the correct target device(s).'
+                            : deviceDisambiguation.kind === 'not_in_inventory'
+                              ? 'That name is not in planned inventory — pick from the list below.'
+                              : deviceDisambiguation.kind === 'missing_targets'
+                                ? 'Select which device(s) this change should apply to.'
+                                : null}
+                        </div>
+                      ) : null}
+                      <div className="flex flex-wrap gap-2 rounded border border-base-300 bg-base-300/50 p-2 max-h-52 overflow-y-auto">
+                        {deviceDisambiguation.candidateDevices.map((host) => (
+                          <label key={host} className="flex items-center gap-1.5 cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={selectedDevices.has(host)}
+                              onChange={() => {
+                                setSelectedDevices((prev) => {
+                                  const next = new Set(prev);
+                                  if (next.has(host)) next.delete(host);
+                                  else next.add(host);
+                                  return next;
+                                });
+                              }}
+                              className="checkbox checkbox-sm checkbox-primary"
+                            />
+                            <span className="text-xs font-mono">{host}</span>
+                          </label>
+                        ))}
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <button type="button" className="btn btn-sm btn-ghost" onClick={() => {
+                          setDeviceDisambiguation(null);
+                          setMessages(prev => prev.filter(m => m.id !== msg.id));
+                        }}>
+                          Cancel
+                        </button>
+                        <button type="button" className="btn btn-sm btn-primary" onClick={submitDeviceDisambiguation}>
+                          Continue
+                        </button>
+                      </div>
+                    </div>
                   ) : (msg as any).interfaceDisambiguation && interfaceDisambiguation?.messageId === msg.id ? (
                     <div className="space-y-3">
                       {interfaceDisambiguation.validationNotice ? (
@@ -1279,53 +1428,16 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
                               }, { signal: ac.signal });
                               abortControllerRef.current = null;
                               setMessages(prev => prev.filter(m => m.id !== progressId));
+                              if (applyPreviewFollowUps(res, intentText)) {
+                                setGenerating(false);
+                                return;
+                              }
                               const valErr = (res as { parsed_intent?: { validation_errors?: string[] } })?.parsed_intent?.validation_errors;
-                              const resParamsDis = (res as any)?.params_disambiguation;
-                              const resIfaceDis = (res as any)?.interfaces_disambiguation;
                               if (Array.isArray(valErr) && valErr.length > 0) {
                                 addMsg({
                                   role: 'assistant',
                                   content: `**Validation issues**\n\n${valErr.join('\n')}`,
                                 });
-                              } else if (resParamsDis?.fields?.length) {
-                                setParamsDisambiguation({
-                                  messageId: crypto.randomUUID(),
-                                  question: resParamsDis.question || 'Please provide the following.',
-                                  fields: resParamsDis.fields,
-                                  intentText,
-                                });
-                                setParamsDisambiguationValues({});
-                                setParamsDisambiguationStep(0);
-                                setMessages(prev => [...prev, {
-                                  id: crypto.randomUUID(),
-                                  role: 'assistant',
-                                  content: 'Clarifying for some missing information',
-                                  timestamp: Date.now(),
-                                  paramsDisambiguation: { question: resParamsDis.question, fields: resParamsDis.fields },
-                                }]);
-                              } else if (resIfaceDis?.devices?.length) {
-                                const menuMsgId = crypto.randomUUID();
-                                const vNotice2 = (resIfaceDis as { validation_notice?: string }).validation_notice;
-                                setInterfaceDisambiguation({
-                                  messageId: menuMsgId,
-                                  question: resIfaceDis.question || 'Please select interfaces.',
-                                  devices: resIfaceDis.devices,
-                                  intentText,
-                                  schemaAction: (res as { schema_action?: string })?.schema_action,
-                                  validationNotice: vNotice2,
-                                  invalidEntities: (resIfaceDis as { invalid_entities?: { hostname: string; value: string; kind: string; message: string; suggestions?: string[] }[] }).invalid_entities,
-                                  paramsNeedContextFix: Boolean((resIfaceDis as { params_need_context_fix?: boolean }).params_need_context_fix),
-                                });
-                                setSelectedInterfaces(new Set());
-                                setMessages(prev => [...prev, {
-                                  id: menuMsgId,
-                                  role: 'assistant',
-                                  content: vNotice2
-                                    ? `${vNotice2}\n\n${resIfaceDis.question || 'Please select the interfaces to continue.'}`
-                                    : (resIfaceDis.question || 'Please select the interfaces to continue.'),
-                                  timestamp: Date.now(),
-                                  interfaceDisambiguation: { question: resIfaceDis.question, devices: resIfaceDis.devices },
-                                }]);
                               } else {
                                 setStudioInitialPreview(res as any);
                                 setStudioIntent(intentText);
@@ -1478,59 +1590,20 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
                                     }, { signal: ac.signal });
                                     abortControllerRef.current = null;
                                     setMessages(prev => prev.filter(m => m.id !== generatingId));
-                                    const resParamsDis = (res as any)?.params_disambiguation;
-                                    const resIfaceDis = (res as any)?.interfaces_disambiguation;
-                                    if (resParamsDis?.fields?.length) {
-                                      setParamsDisambiguation({
-                                        messageId: crypto.randomUUID(),
-                                        question: resParamsDis.question || 'Please provide the following.',
-                                        fields: resParamsDis.fields,
-                                        intentText,
-                                      });
-                                      setParamsDisambiguationValues({});
-                                      setParamsDisambiguationStep(0);
-                                      setMessages(prev => [...prev, {
-                                        id: crypto.randomUUID(),
+                                    if (applyPreviewFollowUps(res, intentText)) {
+                                      setGenerating(false);
+                                      return;
+                                    }
+                                    const valErr = (res as { parsed_intent?: { validation_errors?: string[] } })?.parsed_intent?.validation_errors;
+                                    if (Array.isArray(valErr) && valErr.length > 0) {
+                                      addMsg({
                                         role: 'assistant',
-                                        content: 'Clarifying for some missing information',
-                                        timestamp: Date.now(),
-                                        paramsDisambiguation: { question: resParamsDis.question, fields: resParamsDis.fields },
-                                      }]);
-                                    } else if (resIfaceDis?.devices?.length) {
-                                      const menuMsgId = crypto.randomUUID();
-                                      const vNotice3 = (resIfaceDis as { validation_notice?: string }).validation_notice;
-                                      setInterfaceDisambiguation({
-                                        messageId: menuMsgId,
-                                        question: resIfaceDis.question || 'Please select the interfaces you want to shutdown.',
-                                        devices: resIfaceDis.devices,
-                                        intentText,
-                                        schemaAction: (res as { schema_action?: string })?.schema_action,
-                                        validationNotice: vNotice3,
-                                        invalidEntities: (resIfaceDis as { invalid_entities?: { hostname: string; value: string; kind: string; message: string; suggestions?: string[] }[] }).invalid_entities,
-                                        paramsNeedContextFix: Boolean((resIfaceDis as { params_need_context_fix?: boolean }).params_need_context_fix),
+                                        content: `**Validation issues**\n\n${valErr.join('\n')}`,
                                       });
-                                      setSelectedInterfaces(new Set());
-                                      setMessages(prev => [...prev, {
-                                        id: menuMsgId,
-                                        role: 'assistant',
-                                        content: vNotice3
-                                          ? `${vNotice3}\n\n${resIfaceDis.question || 'Please select the interfaces to continue.'}`
-                                          : (resIfaceDis.question || 'Please select the interfaces to continue.'),
-                                        timestamp: Date.now(),
-                                        interfaceDisambiguation: { question: resIfaceDis.question, devices: resIfaceDis.devices },
-                                      }]);
                                     } else {
-                                      const valErr = (res as { parsed_intent?: { validation_errors?: string[] } })?.parsed_intent?.validation_errors;
-                                      if (Array.isArray(valErr) && valErr.length > 0) {
-                                        addMsg({
-                                          role: 'assistant',
-                                          content: `**Validation issues**\n\n${valErr.join('\n')}`,
-                                        });
-                                      } else {
-                                        setStudioInitialPreview(res as any);
-                                        setStudioIntent(intentText);
-                                        setStudioOpen(true);
-                                      }
+                                      setStudioInitialPreview(res as any);
+                                      setStudioIntent(intentText);
+                                      setStudioOpen(true);
                                     }
                                   } catch (err: unknown) {
                                     abortControllerRef.current = null;
@@ -1703,7 +1776,7 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
                 type="button"
                 onClick={handleStop}
                 title="Stop generation"
-                className="p-1.5 rounded-full border-none shrink-0 self-end transition-colors btn btn-sm bg-red-600 hover:bg-red-700 text-white"
+                className="px-1.5 rounded-full border-none shrink-0 self-end transition-colors btn btn-sm bg-red-600 hover:bg-red-700 text-white"
               >
                 <Square className="w-4 h-4 fill-current" />
               </button>

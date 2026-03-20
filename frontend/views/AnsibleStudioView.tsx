@@ -3,8 +3,9 @@ import AnsibleFileTree                              from '../components/ansible/
 import PlaybookEditor                               from '../components/ansible/PlaybookEditor';
 import JobStatusBar                                 from '../components/ansible/JobStatusBar';
 import AnsibleChatPanel                             from '../components/ansible/AnsibleChatPanel';
-import SSHTerminalDrawer, { type SSHTab }           from '../components/ansible/SSHTerminalDrawer';
-import { ansibleApi, configApi }                    from '../src/services/api';
+import SSHConnectModal                             from '../components/SSHConnectModal';
+import type { SSHTab }                             from '../components/SSHTerminalPanel';
+import { ansibleApi, configApi, sshApi }          from '../src/services/api';
 import type {
   AnsibleTab, AnsibleJob, AnsibleGeneratedArtifactFile,
   AnsibleOutputSession,
@@ -14,8 +15,6 @@ import type { User }               from '../types';
 
 const ANSIBLE_TABS_KEY = 'ansible.tabs';
 const ANSIBLE_ACTIVE_TAB_KEY = 'ansible.activeTabId';
-const ANSIBLE_TERMINAL_HEIGHT_KEY = 'ansible.terminalHeight';
-const ANSIBLE_TERMINAL_MIN_KEY = 'ansible.terminalMinimized';
 const ANSIBLE_STATUS_BAR_HEIGHT_KEY = 'ansible.statusBarHeight';
 const STATUS_BAR_HEIGHT_MIN = 100;
 const STATUS_BAR_HEIGHT_MAX = 600;
@@ -195,11 +194,6 @@ const AnsibleStudioView: React.FC<AnsibleStudioViewProps> = ({ user }) => {
   const [sshTabs, setSshTabs]             = useState<SSHTab[]>([]);
   const [activeSshTab, setActiveSshTab]   = useState<string | null>(null);
   const [sshTabStates, setSshTabStates]   = useState<Record<string, SSHConnectionState>>({});
-  const [terminalHeight, setTerminalHeight] = useState(() => {
-    const raw = Number(localStorage.getItem(ANSIBLE_TERMINAL_HEIGHT_KEY));
-    return Number.isFinite(raw) && raw >= 140 ? raw : 220;
-  });
-  const [terminalMinimized, setTerminalMinimized] = useState(() => localStorage.getItem(ANSIBLE_TERMINAL_MIN_KEY) !== 'false');
   const [statusBarHeight, setStatusBarHeight] = useState(() => {
     const raw = Number(localStorage.getItem(ANSIBLE_STATUS_BAR_HEIGHT_KEY));
     return Number.isFinite(raw) && raw >= STATUS_BAR_HEIGHT_MIN && raw <= STATUS_BAR_HEIGHT_MAX
@@ -247,14 +241,6 @@ const AnsibleStudioView: React.FC<AnsibleStudioViewProps> = ({ user }) => {
     if (activeTabId) localStorage.setItem(ANSIBLE_ACTIVE_TAB_KEY, activeTabId);
     else localStorage.removeItem(ANSIBLE_ACTIVE_TAB_KEY);
   }, [activeTabId]);
-
-  useEffect(() => {
-    localStorage.setItem(ANSIBLE_TERMINAL_HEIGHT_KEY, String(terminalHeight));
-  }, [terminalHeight]);
-
-  useEffect(() => {
-    localStorage.setItem(ANSIBLE_TERMINAL_MIN_KEY, String(terminalMinimized));
-  }, [terminalMinimized]);
 
   useEffect(() => {
     localStorage.setItem(ANSIBLE_STATUS_BAR_HEIGHT_KEY, String(statusBarHeight));
@@ -552,6 +538,46 @@ const AnsibleStudioView: React.FC<AnsibleStudioViewProps> = ({ user }) => {
     setModalOpen(true);
   }, []);
 
+  const handleConnectSsh = useCallback(
+    async (hostname: string, _host: string, username: string, password: string, port: number, saveToVault: boolean) => {
+      const { session_id, host: resolvedHost } = await sshApi.connectWithCreds(
+        hostname,
+        username,
+        password,
+        port,
+        saveToVault,
+      );
+      setSshTabs(prev => [
+        ...prev,
+        { sessionId: session_id, hostname, host: resolvedHost, wsUrl: sshApi.getWsUrl(session_id) },
+      ]);
+      setActiveSshTab(session_id);
+    },
+    [],
+  );
+
+  const handleCloseSshTab = useCallback(
+    async (sessionId: string) => {
+      try {
+        await sshApi.closeSession(sessionId);
+      } catch {
+        // Session may already be closed
+      }
+
+      setSshTabs(prev => {
+        const remaining = prev.filter(t => t.sessionId !== sessionId);
+        setActiveSshTab(prevActive => (prevActive === sessionId ? (remaining[0]?.sessionId ?? null) : prevActive));
+        return remaining;
+      });
+      setSshTabStates(prev => {
+        const next = { ...prev };
+        delete next[sessionId];
+        return next;
+      });
+    },
+    [],
+  );
+
   return (
     <div className="flex flex-col h-full overflow-hidden select-none">
       {/* ── Main three-column area ── */}
@@ -611,31 +637,23 @@ const AnsibleStudioView: React.FC<AnsibleStudioViewProps> = ({ user }) => {
             splitOutputId={splitOutputId}
             onSetSplitOutputId={setSplitOutputId}
             streamingSessionId={streamingSessionId}
+
+              sshTabs={sshTabs}
+              activeSshTabId={activeSshTab}
+              sshTabStates={sshTabStates}
+              onSelectSshTab={setActiveSshTab}
+              onCloseSshTab={handleCloseSshTab}
+              onOpenSshModal={openSSHTerminal}
+              onConnectionChangeSsh={(sid, state) => setSshTabStates(prev => ({ ...prev, [sid]: state }))}
           />
           </div>
-          {/* SSH terminal — bottom of editor column only */}
-          <SSHTerminalDrawer
-        tabs={sshTabs}
-        activeTabId={activeSshTab}
-        tabStates={sshTabStates}
-        height={terminalHeight}
-        minimized={terminalMinimized}
-        pendingHostname={pendingHostname}
-        pendingHost={pendingHost}
-        modalOpen={modalOpen}
-        onSelectTab={setActiveSshTab}
-        onCloseTab={(sid) => setSshTabs(prev => prev.filter(t => t.sessionId !== sid))}
-        onConnectionChange={(sid, state) =>
-          setSshTabStates(prev => ({ ...prev, [sid]: state }))
-        }
-        onToggleMinimize={() => setTerminalMinimized(v => !v)}
-        onOpenModal={openSSHTerminal}
-        onCloseModal={() => setModalOpen(false)}
-        onTabAdded={(tab) => {
-          setSshTabs(prev => [...prev, tab]);
-          setActiveSshTab(tab.sessionId);
-        }}
-        onHeightChange={setTerminalHeight}
+
+          <SSHConnectModal
+            hostname={pendingHostname}
+            host={pendingHost}
+            isOpen={modalOpen}
+            onConnect={handleConnectSsh}
+            onClose={() => setModalOpen(false)}
           />
         </div>
 

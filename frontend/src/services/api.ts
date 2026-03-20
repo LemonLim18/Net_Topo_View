@@ -932,7 +932,13 @@ export const ansibleApi = {
     request<{
       categories: string[];
       references: { doc_name: string; feature: string; vendor: string; path: string }[];
-      parsed_intent: Record<string, unknown>;
+      parsed_intent: Record<string, unknown> & {
+        inventory_unknown_device_tokens?: string[];
+        planned_all_interfaces_preview?: {
+          devices?: { hostname: string; interface_count: number; interfaces: { name: string }[] }[];
+          note?: string;
+        };
+      };
       disambiguation?: {
         kind: string;
         question: string;
@@ -968,9 +974,12 @@ export const ansibleApi = {
       devices_disambiguation?: {
         ambiguous_devices?: string[];
         missing_devices?: string[];
+        unknown_inventory_aliases?: string[];
         ask_user_selection?: boolean;
         candidate_devices?: string[];
         question?: string;
+        /** ambiguous_hint | not_in_inventory | missing_targets */
+        disambiguation_kind?: string;
       } | null;
     }>('/ansible/preview-intent', { method: 'POST', body: JSON.stringify(req), signal: opts?.signal }),
 

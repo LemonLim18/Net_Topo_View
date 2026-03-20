@@ -188,6 +188,13 @@ export interface AnsibleMessage {
     question: string;
     options: { id: string; label: string; clarification?: string; matches?: string[] }[];
   } | null;
+  /** Planned-inventory host multi-select (hint ambiguity, unknown name, or missing targets) */
+  deviceDisambiguation?: {
+    question?: string;
+    candidate_devices?: string[];
+  } | null;
+  interfaceDisambiguation?: { question?: string; devices: unknown } | null;
+  paramsDisambiguation?: { question?: string; fields: unknown } | null;
   /** AI-proposed edits to existing files; user can apply section-by-section or Keep All / Undo All */
   proposedEdits?: AnsibleProposedEdit[];
 }
