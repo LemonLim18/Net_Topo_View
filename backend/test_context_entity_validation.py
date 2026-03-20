@@ -142,6 +142,8 @@ def test_validate_skips_host_with_no_interface_inventory():
 
 def test_intent_requests_all_interfaces():
     assert intent_requests_all_interfaces("Admin-down all interfaces on SW1")
+    assert intent_requests_all_interfaces("Now turn on all the interfaces of SW1")
+    assert intent_requests_all_interfaces("Enable all interfaces on SW1")
     assert intent_requests_all_interfaces("shut down all ports")
     assert intent_requests_all_interfaces("shutdown all")
     assert not intent_requests_all_interfaces("shutdown Ethernet0/1")

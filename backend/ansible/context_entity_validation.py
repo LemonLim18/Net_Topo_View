@@ -479,6 +479,8 @@ def intent_requests_all_interfaces(text: Optional[str]) -> bool:
     if not t:
         return False
     phrases = (
+        "all the interfaces",
+        "all the interface",
         "all interfaces",
         "all interface",
         "all ports",
@@ -491,6 +493,15 @@ def intent_requests_all_interfaces(text: Optional[str]) -> bool:
         "shut down all",
         "disable all interfaces",
         "turn off all interfaces",
+        "turn on all interfaces",
+        "turn on all the interfaces",
+        "enable all interfaces",
+        "enable all the interfaces",
+        "bring up all interfaces",
+        "bring up all the interfaces",
+        "administratively up all interfaces",
+        "no shutdown all interfaces",
+        "admin-up all interfaces",
         "administratively down all",
         "admin down all interfaces",
         "bring down all interfaces",

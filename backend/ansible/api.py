@@ -1670,10 +1670,20 @@ async def plan_ansible(
             "shut down",
             "disable",
             "turn off",
+            "turn on",
+            "enable",
+            "bring up",
+            "administratively up",
+            "admin-up",
+            "admin up",
             "bring down",
             "administratively down",
             "admin-down all interfaces",
             "admin down all interfaces",
+            "turn on all interfaces",
+            "turn on all the interfaces",
+            "enable all interfaces",
+            "bring up all interfaces",
         )
 
         # Prefer explicit params hints from the frontend when available.
@@ -1690,7 +1700,11 @@ async def plan_ansible(
         else:
             inferred_interface_action = "configure_interface"
 
-    action_or_feature = getattr(req, "action", None) or inferred_interface_action or req.feature
+    # Type validation (intent_validation.validate_types) relies on `action_or_feature`.
+    # For interface intents, prefer the prompt-inferred action so "turn on/enable"
+    # validates against shutdown_interface (no access_vlan requirement), even if
+    # the frontend/LLM set req.action to configure_interface.
+    action_or_feature = inferred_interface_action or getattr(req, "action", None) or req.feature
     schema = get_schema_for_parsed_intent(
         {"feature": req.feature, "action": inferred_interface_action or getattr(req, "action", None)}
     )
@@ -4056,6 +4070,54 @@ async def preview_intent(
 
     # Intent schema validation and resolution (per-action parameter dependency tree)
     params_disambiguation: Optional[Dict[str, Any]] = None
+
+    # For interface intents, the LLM may still return `configure_interface` even when
+    # the user asked to "turn on/enable/bring up" (admin-up) all interfaces.
+    # In that case we must validate against `shutdown_interface` so VLAN leaves
+    # are not required.
+    inferred_interface_action: Optional[str] = None
+    feat_l = str(parsed_intent.get("feature") or "").strip().lower().replace("-", "_")
+    if feat_l == "interface":
+        t_raw = str(req.intent_description or "").strip().lower()
+        t = re.sub(r"\s+", " ", t_raw)
+        shutdown_markers = (
+            "admin-down",
+            "admin down",
+            "shutdown",
+            "shut down",
+            "disable",
+            "turn off",
+            "turn on",
+            "enable",
+            "bring up",
+            "administratively up",
+            "admin-up",
+            "admin up",
+            "bring down",
+            "administratively down",
+        )
+        # If the prompt includes L2/L3 configuration hints, keep the LLM's configure_interface.
+        looks_like_vlan_or_mode_config = any(k in t for k in ("trunk", "access vlan", "vlan", "ip address", "subnet", "routed"))
+        if any(m in t for m in shutdown_markers) and not looks_like_vlan_or_mode_config:
+            inferred_interface_action = "shutdown_interface"
+
+    if inferred_interface_action:
+        parsed_intent["action"] = inferred_interface_action
+
+        # Align "all interfaces" execution flags with shutdown_interface templates.
+        # This prevents configure_interface-specific leaves (like access_vlan) from being required.
+        if intent_requests_all_interfaces(req.intent_description or "") and resolved_hosts:
+            p = dict(parsed_intent.get("parameters") or {})
+            # Remove configure-all flags if present (configure_interface path).
+            p.pop("interfaces_config_use_nettopo", None)
+            p.pop("interfaces_config", None)
+            # Enable shutdown-all nettopo expansion.
+            p["interfaces_shutdown_use_nettopo"] = True
+            # Minimal placeholder so shutdown_interface.schema.json type validation passes.
+            if not p.get("interfaces_to_shutdown"):
+                p["interfaces_to_shutdown"] = ["ALL"]
+            parsed_intent["parameters"] = p
+
     action_or_feature = (parsed_intent.get("action") or parsed_intent.get("feature") or "").strip() or None
     schema = get_schema_for_parsed_intent(parsed_intent)
     if schema:
