@@ -60,6 +60,7 @@ from ansible.intent_validation import _intent_to_flat_fields, _is_empty as _para
 from ansible.intent_tree_engine import evaluate_intent_tree
 from ansible.reference_resolver import (
     fill_playbook_from_reference,
+    format_vlan_interface_reasoning_line,
     get_vlan_interfaces_summary,
     resolve_interfaces,
     validate_vlan_intent,
@@ -67,6 +68,7 @@ from ansible.reference_resolver import (
     vendors_from_planning_context,
 )
 from ansible.multi_intent_operations import (
+    merged_params_for_vlan_interfaces_reasoning,
     refresh_preview_vlan_interfaces_reasoning_block,
     strip_stale_secondary_params_after_primary_authoritative,
 )
@@ -3783,6 +3785,38 @@ def _interfaces_disambiguation_from_planning(
     return {"question": question, "devices": out_devices}
 
 
+def _req_params_has_explicit_interfaces(req_params: Optional[Dict[str, Any]]) -> bool:
+    """
+    True when the client already sent interface bindings (chat picker, Studio merge, etc.).
+    Used so we do not re-attach the in-chat interface picker after the user confirmed.
+    """
+    if not req_params:
+        return False
+    i = req_params.get("interfaces")
+    ic = req_params.get("interfaces_config")
+    if isinstance(i, list) and len(i) > 0:
+        return True
+    if isinstance(ic, list) and len(ic) > 0:
+        return True
+    for key in ("secondary_intents", "_secondary_intents"):
+        secs = req_params.get(key)
+        if not isinstance(secs, list):
+            continue
+        for s in secs:
+            if not isinstance(s, dict):
+                continue
+            p = s.get("parameters")
+            if not isinstance(p, dict):
+                continue
+            si = p.get("interfaces")
+            sic = p.get("interfaces_config")
+            if isinstance(si, list) and len(si) > 0:
+                return True
+            if isinstance(sic, list) and len(sic) > 0:
+                return True
+    return False
+
+
 def _merge_req_params_secondary_intents_into_parsed_intent(
     parsed_intent: Dict[str, Any],
     req_params: Optional[Dict[str, Any]],
@@ -4027,11 +4061,7 @@ def _preview_parse_and_rag(
             ifaces_summary = get_vlan_interfaces_summary(preview_intent)
             if ifaces_summary:
                 parsed_dict["interfaces_summary"] = ifaces_summary
-                lines = []
-                for s in ifaces_summary:
-                    vlan_str = ", ".join(str(v) for v in s.get("vlans") or [])
-                    mode = (s.get("mode") or "access").lower()
-                    lines.append(f"  - **{s.get('interface')}**: {mode}" + (f", VLANs {vlan_str}" if vlan_str else ""))
+                lines = [format_vlan_interface_reasoning_line(s) for s in ifaces_summary]
                 reasoning.append("- **Interfaces to configure:**\n" + "\n".join(lines))
             else:
                 parsed_dict["interfaces_summary"] = []
@@ -4970,7 +5000,19 @@ async def preview_intent(
         except Exception as exc:
             logger.debug("Preview static_route next_hop validation failed: %s", exc)
 
+    # Reasoning must reflect merged client params (Playbook Studio: interfaces, trunk, native VLAN).
+    # `parsed_intent["parameters"]` is updated earlier, but re-merge `req.params` here so a single
+    # preview call always refreshes the "Interfaces to configure" line from authoritative UI keys.
     _params_for_reasoning = dict(parsed_intent.get("parameters") or {})
+    if req.params:
+        for k, v in req.params.items():
+            if k == "secondary_intents":
+                continue
+            if v is not None:
+                _params_for_reasoning[k] = v
+    _params_for_reasoning = merged_params_for_vlan_interfaces_reasoning(
+        parsed_intent, _params_for_reasoning
+    )
     refresh_preview_vlan_interfaces_reasoning_block(
         reasoning,
         merged_params=_params_for_reasoning,
@@ -5062,19 +5104,31 @@ async def preview_intent(
         except Exception as exc:
             logger.debug("Preview interfaces disambiguation failed: %s", exc)
 
-    # VLAN: optional interface checklist only when user asked for port binding or already has interfaces in params
+    # Planned-inventory interface checklist (checkboxes per device) for VLAN port binding.
+    # Do NOT gate on iface_names_invalid: when the LLM invents "GigabitEthernet…" the user still
+    # needs inventory checkboxes to pick the real "Ethernet…" name — validation + checklist stack.
+    # Also include configure_interface + VLAN-on-port prompts: primary feature may be "interface"
+    # even when the user spoke about VLAN + ports (composite or misclassified).
     interfaces_for_selection: Optional[Dict[str, Any]] = None
-    is_vlan_feature = feat_lower_preview == "vlan"
     vlan_iface_binding_prompt = user_prompt_requests_vlan_interface_binding(req.intent_description or "")
     vlan_has_iface_params = bool(
         (params.get("interfaces") or params.get("interfaces_config"))
     )
+    has_secondary_configure_interface = any(
+        isinstance(s, dict)
+        and str(s.get("action") or "").strip().lower().replace("-", "_") == "configure_interface"
+        for s in (parsed_intent.get("secondary_intents") or [])
+    )
+    show_planned_inventory_iface_checklist = (
+        feat_lower_preview == "vlan"
+        or (schema_action_iface == "configure_interface" and vlan_iface_binding_prompt)
+        or (has_secondary_configure_interface and vlan_iface_binding_prompt)
+    )
     if (
         not device_disambiguation
-        and is_vlan_feature
+        and show_planned_inventory_iface_checklist
         and resolved_hosts
         and _db is not None
-        and not iface_names_invalid
         and not vlan_database_only_preview
         and (vlan_iface_binding_prompt or vlan_has_iface_params)
     ):
@@ -5096,6 +5150,28 @@ async def preview_intent(
                 )
         except Exception as exc:
             logger.debug("Preview interfaces_for_selection (vlan) failed: %s", exc)
+
+    # Chat (AnsibleChatPanel): `interfaces_for_selection` alone only populates Playbook Studio.
+    # Without `interfaces_disambiguation`, applyPreviewFollowUps skips the in-chat picker and
+    # jumps straight to the Studio modal. Mirror the same checklist when the invalid-name path
+    # did not already build `interfaces_disambiguation`, and the client has not yet submitted
+    # interfaces via `req.params` (including composite `secondary_intents[].parameters.interfaces`).
+    if (
+        interfaces_for_selection
+        and interfaces_disambiguation is None
+        and not device_disambiguation
+        and not all_if_shutdown_expanded_preview
+        and not _req_params_has_explicit_interfaces(req.params)
+    ):
+        interfaces_disambiguation = dict(interfaces_for_selection)
+        if inv_validation_result is not None and not getattr(inv_validation_result, "ok", True):
+            interfaces_disambiguation["invalid_entities"] = list(
+                getattr(inv_validation_result, "invalid_entities", []) or []
+            )
+            vn = str(getattr(inv_validation_result, "validation_notice", "") or "").strip()
+            if vn:
+                interfaces_disambiguation["validation_notice"] = vn
+            interfaces_disambiguation["params_need_context_fix"] = bool(iface_names_invalid)
 
     params_need_context_fix = bool(iface_names_invalid)
 

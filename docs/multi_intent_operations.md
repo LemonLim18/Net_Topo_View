@@ -11,6 +11,8 @@ One natural-language message can yield a **primary** `parsed_intent` plus **`sec
 | Conditional follow-ups not expressible as flat JSON Schema (e.g. access VLAN after interfaces exist) | `backend/ansible/intent_validation.py` → `SECONDARY_INTENT_CONDITIONAL_DISAMBIGUATION_BY_ACTION` |
 | “User did not say X in the prompt” but wizard/API may have supplied it | `backend/ansible/intent_validation.py` → `merge_prompt_aware_disambiguation_for_schema` (today: `create_vlan`) |
 | Preview reasoning: refresh “Interfaces to configure” after merge | `backend/ansible/multi_intent_operations.py` → `refresh_preview_vlan_interfaces_reasoning_block` |
+| **Frontend:** planned-inventory checkbox preselect (intent names + `invalid_entities[].suggestions`) | `frontend/src/utils/interfaceInventoryPreselect.ts` — used by **Playbook Studio** and **Ansible chat** interface pickers; add new UIs by importing `buildPlannedInventoryPreselectChips` + `preselectPlannedInventoryInterfaces` |
+| **Chat before Studio:** mirror `interfaces_for_selection` → `interfaces_disambiguation` | `backend/ansible/api.py` → `_req_params_has_explicit_interfaces` + preview block after `interfaces_for_selection` — so Ansible chat shows the interface checklist **before** opening Playbook Studio when VLAN port-binding applies; skipped once `req.params` carries `interfaces` / `secondary_intents[].parameters.interfaces` |
 | Trunk VLAN wizard: multi-select options from intent + planned context | `backend/ansible/context_entity_validation.py` → `enrich_params_disambiguation_trunk_vlan_controls` (called from `api.py` preview) |
 | Drop LLM “device” tokens that are L2 words or interface names | `backend/ansible/context_entity_validation.py` → `is_spurious_device_hint_token` |
 

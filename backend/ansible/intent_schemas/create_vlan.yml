@@ -6,6 +6,10 @@
 # trunk ``all``; templates use at least ``vlan_id``. Merge with planned inventory iface VLANs
 # when available. ``native_vlan`` only if explicitly set (see intent_operation_reference.md).
 # Cisco/Juniper generated tasks use ``trunk.allowed_vlans`` per ``ios_l2_interfaces`` / ``junos_l2_interfaces``.
+# Composite: "create VLAN … and set native VLAN on …" → primary ``create_vlan`` + secondary
+# ``configure_interface`` (trunk + ``native_vlan``); see ``docs/intent_operation_reference.md``.
+# Preview ``interfaces_for_selection`` coexists with ``interfaces_inventory_validation`` (invalid LLM
+# names do not hide planned-inventory checklists).
 action: create_vlan
 feature: vlan
 required:

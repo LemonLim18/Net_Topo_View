@@ -17,6 +17,7 @@
           "mode": { "type": "string", "enum": ["access", "trunk", "routed"] },
           "access_vlan": { "type": "integer", "minimum": 1, "maximum": 4094 },
           "trunk_vlans": { "type": "array", "items": { "type": "integer", "minimum": 1, "maximum": 4094 } },
+          "allowed_vlans": { "type": "array", "items": { "type": "integer", "minimum": 1, "maximum": 4094 } },
           "native_vlan": {
             "anyOf": [
               { "type": "integer", "minimum": 1, "maximum": 4094 },
@@ -36,7 +37,12 @@
           },
           {
             "if": { "properties": { "mode": { "const": "trunk" } } },
-            "then": { "required": ["trunk_vlans"] }
+            "then": {
+              "anyOf": [
+                { "required": ["trunk_vlans"] },
+                { "required": ["allowed_vlans"] }
+              ]
+            }
           },
           {
             "if": { "required": ["ip_address"] },

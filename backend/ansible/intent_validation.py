@@ -697,6 +697,8 @@ def configure_interface_conditional_disambiguation_fields(
         elif mode == "trunk":
             tv = iface.get("trunk_vlans")
             if tv in (None, "", []):
+                tv = iface.get("allowed_vlans")
+            if tv in (None, "", []):
                 missing_trunk_vlans = True
         ip_address = iface.get("ip_address")
         if ip_address not in (None, ""):

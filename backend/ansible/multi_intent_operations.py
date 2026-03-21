@@ -98,6 +98,33 @@ def _non_empty(v: Any) -> bool:
     return True
 
 
+def merged_params_for_vlan_interfaces_reasoning(
+    parsed_intent: Dict[str, Any],
+    merged_params: Dict[str, Any],
+) -> Dict[str, Any]:
+    """
+    Prefer primary ``parameters.interfaces`` for preview reasoning.
+
+    If empty, copy interfaces from a ``configure_interface`` / ``interface`` secondary slice
+    (composite create_vlan + port binding) so **Interfaces to configure** matches Studio
+    when bindings live only on ``secondary_intents``.
+    """
+    out = dict(merged_params or {})
+    if out.get("interfaces"):
+        return out
+    for sec in parsed_intent.get("secondary_intents") or []:
+        if not isinstance(sec, dict):
+            continue
+        sa = str(sec.get("action") or "").strip().lower().replace("-", "_")
+        sf = str(sec.get("feature") or "").strip().lower().replace("-", "_")
+        if sa == "configure_interface" or sf in ("interface", "interfaces"):
+            ifaces = (sec.get("parameters") or {}).get("interfaces")
+            if isinstance(ifaces, list) and len(ifaces) > 0:
+                out["interfaces"] = ifaces
+                break
+    return out
+
+
 def refresh_preview_vlan_interfaces_reasoning_block(
     reasoning: List[str],
     *,
@@ -114,7 +141,7 @@ def refresh_preview_vlan_interfaces_reasoning_block(
     ``get_vlan_interfaces_summary``. Other multi-op summaries can extend this function or add
     parallel hooks.
     """
-    from ansible.reference_resolver import get_vlan_interfaces_summary
+    from ansible.reference_resolver import format_vlan_interface_reasoning_line, get_vlan_interfaces_summary
 
     sa = str(schema_action or "").strip().lower().replace("-", "_")
     fl = str(feature_lower or "").strip().lower()
@@ -126,17 +153,11 @@ def refresh_preview_vlan_interfaces_reasoning_block(
     }
     ifaces_summary = get_vlan_interfaces_summary(preview_intent)
     if ifaces_summary:
-        lines = []
-        for s in ifaces_summary:
-            vlan_str = ", ".join(str(v) for v in s.get("vlans") or [])
-            mode = (s.get("mode") or "access").lower()
-            lines.append(
-                f"  - **{s.get('interface')}**: {mode}"
-                + (f", VLANs {vlan_str}" if vlan_str else "")
-            )
+        lines = [format_vlan_interface_reasoning_line(s) for s in ifaces_summary]
         new_block = "- **Interfaces to configure:**\n" + "\n".join(lines)
     else:
         new_block = "- **Interfaces to configure:** (none — VLAN creation only)"
+    replaced = False
     for idx, block in enumerate(reasoning):
         if not isinstance(block, str):
             continue
@@ -147,4 +168,7 @@ def refresh_preview_vlan_interfaces_reasoning_block(
         if "Planned interfaces (all-interfaces scope)" in block:
             continue
         reasoning[idx] = new_block
-        return
+        replaced = True
+        break
+    if not replaced and ifaces_summary:
+        reasoning.append(new_block)

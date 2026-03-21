@@ -17,7 +17,7 @@
 **Current Behavior:**  
 
 
-- [ ] Create VLAN 10 and allow it on trunk port GigabitEthernet1/0/2 on SW1  
+- [ /] Create VLAN 10 and allow it on trunk port GigabitEthernet1/0/2 on SW1  
 **Current Behavior:**  
 
 

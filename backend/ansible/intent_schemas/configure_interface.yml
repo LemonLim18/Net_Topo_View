@@ -9,10 +9,14 @@
 # never ``trunk.trunk_vlans`` (unsupported on ``cisco.ios.ios_l2_interfaces``).
 #
 # ``native_vlan`` — optional; omit unless the user explicitly sets native/untagged VLAN.
+# If the user says *native VLAN* / *set native VLAN*, that is **trunk** semantics (with
+# ``native_vlan`` + ``trunk_vlans`` / ``allowed_vlans``), **not** ``mode: access`` + ``access_vlan``.
 #
 # Trunk allowed VLANs: ``trunk_vlans`` may be collected via the chat preview wizard as
 # **multi-select** (VLAN IDs from intent + planned context); see
 # ``enrich_params_disambiguation_trunk_vlan_controls`` in ``context_entity_validation.py``.
+# Preview API may attach ``interfaces_for_selection`` (planned inventory checklists) when the
+# prompt binds VLANs to ports, even if ``interfaces_inventory_validation`` reports invalid names.
 action: configure_interface
 feature: interface
 required:

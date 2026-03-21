@@ -226,14 +226,19 @@ def _normalize_intent_to_schema_shape(intent: Dict[str, Any]) -> Dict[str, Any]:
                                 pass
                             else:
                                 row["allowed_vlans"] = parsed_tv
-                if mode == "trunk" and "allowed_vlans" not in row and vlan_id_for_default is not None:
-                    row["allowed_vlans"] = [vlan_id_for_default]
                 nv = item.get("native_vlan")
                 if nv is not None and str(nv).strip() != "":
                     try:
                         row["native_vlan"] = int(nv)
                     except (TypeError, ValueError):
                         pass
+                # Native VLAN is trunk-only; LLM/Studio often omit mode when trunk_vlans + native_vlan are set.
+                if row.get("native_vlan") is not None:
+                    row["mode"] = "trunk"
+                elif item.get("trunk_vlans") is not None and str(item.get("mode") or "").strip().lower() != "access":
+                    row["mode"] = "trunk"
+                if str(row.get("mode") or "access").lower() == "trunk" and "allowed_vlans" not in row and vlan_id_for_default is not None:
+                    row["allowed_vlans"] = [vlan_id_for_default]
                 interfaces.append(row)
             else:
                 # LLM sent interface name as string; use global mode and trunk_vlans
@@ -258,7 +263,7 @@ def _normalize_intent_to_schema_shape(intent: Dict[str, Any]) -> Dict[str, Any]:
 
 def get_vlan_interfaces_summary(intent: Dict[str, Any]) -> List[Dict[str, Any]]:
     """
-    Return a list of { "interface": name, "mode": "access"|"trunk", "vlans": [id, ...] }
+    Return a list of { "interface": name, "mode": "access"|"trunk", "vlans": [id, ...], "native_vlan"? }
     from intent (for preview/reasoning display). Uses same normalization as template fill.
     """
     normalized = _normalize_intent_to_schema_shape(intent)
@@ -268,15 +273,53 @@ def get_vlan_interfaces_summary(intent: Dict[str, Any]) -> List[Dict[str, Any]]:
         if not name:
             continue
         mode = "trunk" if str(i.get("mode") or "").strip().lower() == "trunk" else "access"
+        nv_raw = i.get("native_vlan")
+        if nv_raw is not None and str(nv_raw).strip() != "":
+            mode = "trunk"
+        native_vlan: Optional[int] = None
         if mode == "trunk":
             vlans = i.get("allowed_vlans") or []
             if isinstance(vlans, str):
                 vlans = [int(x) for x in str(vlans).replace(" ", "").split(",") if str(x).strip().isdigit()]
+            nv = i.get("native_vlan")
+            if nv is not None and str(nv).strip() != "":
+                try:
+                    native_vlan = int(nv)
+                except (TypeError, ValueError):
+                    native_vlan = None
         else:
             av = i.get("access_vlan")
             vlans = [int(av)] if av is not None else []
-        out.append({"interface": name, "mode": mode, "vlans": vlans if isinstance(vlans, list) else list(vlans)})
+        row: Dict[str, Any] = {
+            "interface": name,
+            "mode": mode,
+            "vlans": vlans if isinstance(vlans, list) else list(vlans),
+        }
+        if native_vlan is not None:
+            row["native_vlan"] = native_vlan
+        out.append(row)
     return out
+
+
+def format_vlan_interface_reasoning_line(s: Dict[str, Any]) -> str:
+    """
+    One bullet for preview reasoning (Playbook Studio + initial parse).
+    Uses trunk vs access wording so "native VLAN" is not confused with access VLAN.
+    """
+    vlan_str = ", ".join(str(v) for v in s.get("vlans") or [])
+    mode = (s.get("mode") or "access").lower()
+    nv = s.get("native_vlan")
+    nv_part = (
+        f", native VLAN {nv}"
+        if mode == "trunk" and nv is not None and str(nv).strip() != ""
+        else ""
+    )
+    if mode == "trunk":
+        vlan_part = f", allowed VLANs {vlan_str}" if vlan_str else ""
+    else:
+        vlan_part = f", access VLAN {vlan_str}" if vlan_str else ""
+    iface = s.get("interface") or s.get("name") or "?"
+    return f"  - **{iface}**: {mode}" + vlan_part + nv_part
 
 
 def _strip_device_prefix_from_iface_name(iface: str, hostnames: List[str]) -> str:

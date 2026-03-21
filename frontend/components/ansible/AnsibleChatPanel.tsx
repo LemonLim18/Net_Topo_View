@@ -4,6 +4,10 @@ import { DiffEditor } from '@monaco-editor/react';
 import { Send, Loader2, Bot, Sparkles, AlertCircle, FileCode, RotateCcw, ChevronRight, Paperclip, X, TriangleAlert, ChevronDown, Check, Undo2, RefreshCw, Square } from 'lucide-react';
 import { ansibleApi, llmApi, ragApi } from '../../src/services/api';
 import { Toast } from '../../src/utils/swal';
+import {
+  buildPlannedInventoryPreselectChips,
+  preselectPlannedInventoryInterfaces,
+} from '../../src/utils/interfaceInventoryPreselect';
 import type { LlmRuntimeState } from '../../src/services/api';
 import type { AnsibleGeneratedArtifactFile, AnsibleMessage, AnsibleJob, AnsibleProposedEdit } from '../../typesLLM';
 import { PlaybookStudioOverlay } from './PlaybookStudioOverlay';
@@ -600,7 +604,15 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
           invalidEntities: ifaceDis.invalid_entities,
           paramsNeedContextFix: Boolean(ifaceDis.params_need_context_fix),
         });
-        setSelectedInterfaces(new Set());
+        {
+          const parsed = (res?.parsed_intent ?? null) as Record<string, unknown> | null;
+          const chips = buildPlannedInventoryPreselectChips(parsed, {
+            extraInvalidEntities: ifaceDis.invalid_entities as unknown[] | undefined,
+          });
+          setSelectedInterfaces(
+            preselectPlannedInventoryInterfaces(chips, { devices: ifaceDis.devices }),
+          );
+        }
         setMessages((prev) => [
           ...prev,
           {

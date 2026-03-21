@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { Editor } from '@monaco-editor/react';
 import ReactMarkdown from 'react-markdown';
 import {
@@ -17,6 +17,11 @@ import {
 } from 'lucide-react';
 import { ansibleApi } from '../../src/services/api';
 import { Toast } from '../../src/utils/swal';
+import {
+  buildPlannedInventoryPreselectChips,
+  extractTargetInterfaceNamesFromParsedIntent,
+  preselectPlannedInventoryInterfaces,
+} from '../../src/utils/interfaceInventoryPreselect';
 import type { AnsibleGeneratedArtifactFile } from '../../typesLLM';
 
 const FEATURES_DISPLAY: Record<string, string> = {
@@ -55,57 +60,6 @@ function formatAnsibleApiError(e: unknown): string {
       '\n\nPick interface names that exist in planned inventory (adjust the Interface list in this dialog when shown).';
   }
   return msg;
-}
-
-function pushInterfaceNamesFromList(arr: unknown, out: string[]): void {
-  if (!Array.isArray(arr)) return;
-  for (const x of arr) {
-    if (typeof x === 'string' && x.trim()) out.push(x.trim());
-    else if (x && typeof x === 'object' && 'name' in (x as object)) {
-      const n = String((x as { name?: string }).name || '').trim();
-      if (n) out.push(n);
-    }
-  }
-}
-
-/**
- * Names for "Target interfaces" chips: primary parameters and every `secondary_intents` slice
- * (composite create_vlan + configure_interface keeps interfaces on the secondary).
- */
-function extractTargetInterfaceNamesFromParsedIntent(
-  parsed: Record<string, unknown> | null | undefined,
-): string[] {
-  if (!parsed) return [];
-  const out: string[] = [];
-  const p = (parsed as { parameters?: Record<string, unknown> }).parameters ?? {};
-  if (Array.isArray(p.interfaces_to_shutdown)) {
-    pushInterfaceNamesFromList(p.interfaces_to_shutdown, out);
-  }
-  if (Array.isArray(p.interfaces)) {
-    pushInterfaceNamesFromList(p.interfaces, out);
-  }
-  const secondaries = (parsed as { secondary_intents?: unknown }).secondary_intents;
-  if (Array.isArray(secondaries)) {
-    for (const sec of secondaries) {
-      if (!sec || typeof sec !== 'object') continue;
-      const sp = (sec as { parameters?: Record<string, unknown> }).parameters ?? {};
-      if (Array.isArray(sp.interfaces_to_shutdown)) {
-        pushInterfaceNamesFromList(sp.interfaces_to_shutdown, out);
-      }
-      if (Array.isArray(sp.interfaces)) {
-        pushInterfaceNamesFromList(sp.interfaces, out);
-      }
-    }
-  }
-  const seen = new Set<string>();
-  const dedup: string[] = [];
-  for (const x of out) {
-    if (!seen.has(x)) {
-      seen.add(x);
-      dedup.push(x);
-    }
-  }
-  return dedup;
 }
 
 /** All L2 interface objects from primary + secondary (order: primary first, then secondaries). */
@@ -148,40 +102,27 @@ function userPromptSuggestsTrunkPortIntent(text: string): boolean {
   return false;
 }
 
-/** Loose match: inventory "Ethernet0/1" vs LLM "GigabitEthernet1/0/2" — same port suffix often matches. */
-function interfaceNameMatchesChipForPreselect(chip: string, plannedName: string): boolean {
-  const a = chip.trim().toLowerCase();
-  const b = plannedName.trim().toLowerCase();
-  if (!a || !b) return false;
-  if (a === b) return true;
-  const strip = (s: string) =>
-    s.replace(/^gigabitethernet|^gig|^ethernet|^eth|^fastethernet|^fa|^gi(?=\d)/i, '');
-  const sa = strip(a);
-  const sb = strip(b);
-  if (sa && sb && (sa === sb || sa.endsWith(sb) || sb.endsWith(sa))) return true;
-  const m1 = a.match(/(\d+\/\d+(?:\/\d+)?)/);
-  const m2 = b.match(/(\d+\/\d+(?:\/\d+)?)/);
-  if (m1 && m2 && m1[1] === m2[1]) return true;
+/** Native VLAN is a trunk concept — not access VLAN (overrides wrong LLM mode: access + access_vlan). */
+function userPromptSuggestsNativeVlanIntent(text: string): boolean {
+  const t = (text || '').trim().toLowerCase();
+  if (!t) return false;
+  if (/\bnative\s+vlan\b/.test(t)) return true;
+  if (/\bset\s+native\s+vlan\b/.test(t)) return true;
+  if (/\bnative-vlan\b/.test(t)) return true;
+  if (/\bpvid\b/.test(t) && /\bvlan\b/.test(t)) return true;
   return false;
 }
 
-/** Pre-check planned-inventory interfaces that match target interface chips (fixes "blank" checkboxes). */
-function preselectVlanCheckboxesFromChips(
-  chips: string[],
-  ifSel: { devices: { hostname: string; interfaces: { name: string }[] }[] } | null | undefined,
-): Set<string> {
-  const next = new Set<string>();
-  if (!ifSel?.devices?.length || !chips.length) return next;
-  const flat = ifSel.devices.flatMap((d) => (d.interfaces || []).map((i) => String(i.name || '').trim()).filter(Boolean));
-  for (const chip of chips) {
-    for (const name of flat) {
-      if (interfaceNameMatchesChipForPreselect(chip, name)) {
-        next.add(name);
-        break;
-      }
-    }
-  }
-  return next;
+/** Extract first "native VLAN <n>" number from prompt text. */
+function parseNativeVlanNumberFromPrompt(text: string): number | null {
+  const m =
+    text.match(/\bnative\s+vlan\s+(\d{1,4})\b/i) ||
+    text.match(/\bnative\s+vlan\s*[:\s]+(\d{1,4})/i) ||
+    text.match(/\bset\s+native\s+vlan\s+(\d{1,4})\b/i);
+  if (!m) return null;
+  const n = parseInt(m[1], 10);
+  if (Number.isNaN(n) || n < 1 || n > 4094) return null;
+  return n;
 }
 
 /** Initial Playbook Studio binding mode + VLAN fields from preview + natural language (fixes LLM access vs user trunk). */
@@ -244,7 +185,7 @@ function inferInterfaceBindingFromParsedIntent(
       mode: 'access' as const,
       accessVlan: !Number.isNaN(avn) ? avn : Number.isNaN(vlanNum) ? 1 : vlanNum,
       allowedCsv: '',
-      nativeVlan: 1,
+      nativeVlan: null,
     };
   };
 
@@ -261,6 +202,28 @@ function inferInterfaceBindingFromParsedIntent(
       allowedCsv: String(vlanNum),
       nativeVlan: null,
     };
+  }
+
+  // 3) "Native VLAN" / "set native VLAN N" → trunk + native_vlan (not access VLAN on the port)
+  if (userPromptSuggestsNativeVlanIntent(intentDescription)) {
+    const nvParsed = parseNativeVlanNumberFromPrompt(intentDescription);
+    if (nvParsed !== null) {
+      const vidForTrunk = !Number.isNaN(vlanNum) ? vlanNum : nvParsed;
+      return {
+        mode: 'trunk' as const,
+        accessVlan: vidForTrunk,
+        allowedCsv: String(vidForTrunk),
+        nativeVlan: nvParsed,
+      };
+    }
+    if (!Number.isNaN(vlanNum)) {
+      return {
+        mode: 'trunk' as const,
+        accessVlan: vlanNum,
+        allowedCsv: String(vlanNum),
+        nativeVlan: null,
+      };
+    }
   }
 
   if (!iface) return base;
@@ -415,9 +378,13 @@ export function PlaybookStudioOverlay({
         setVlanAccessVlan(inf.accessVlan);
         setVlanAllowedVlans(inf.allowedCsv);
         setVlanNativeVlan(inf.nativeVlan);
-        const chips = extractTargetInterfaceNamesFromParsedIntent(parsedPi);
+        const chips = buildPlannedInventoryPreselectChips(parsedPi);
         setVlanSelectedInterfaces(
-          preselectVlanCheckboxesFromChips(chips, (res as { interfaces_for_selection?: { devices: { hostname: string; interfaces: { name: string }[] }[] } }).interfaces_for_selection ?? null),
+          preselectPlannedInventoryInterfaces(
+            chips,
+            (res as { interfaces_for_selection?: { devices: { hostname: string; interfaces: { name: string }[] }[] } })
+              .interfaces_for_selection ?? null,
+          ),
         );
       }
       skipNextInventoryRefreshRef.current = true;
@@ -467,9 +434,9 @@ export function PlaybookStudioOverlay({
         setVlanAccessVlan(inf.accessVlan);
         setVlanAllowedVlans(inf.allowedCsv);
         setVlanNativeVlan(inf.nativeVlan);
-        const chips = extractTargetInterfaceNamesFromParsedIntent(parsedPi);
+        const chips = buildPlannedInventoryPreselectChips(parsedPi);
         setVlanSelectedInterfaces(
-          preselectVlanCheckboxesFromChips(chips, initialPreviewResult.interfaces_for_selection ?? null),
+          preselectPlannedInventoryInterfaces(chips, initialPreviewResult.interfaces_for_selection ?? null),
         );
       }
       skipNextInventoryRefreshRef.current = true;
