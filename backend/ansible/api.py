@@ -35,9 +35,11 @@ from pydantic import BaseModel
 from ansible.bundle_artifacts import AnsibleArtifactBundle, bundle_from_dict
 from ansible.context_entity_validation import (
     build_planned_all_interfaces_preview,
+    enrich_params_disambiguation_trunk_vlan_controls,
     explicit_interface_names_from_request_params,
     intent_requests_all_interfaces,
     intersection_interfaces_from_disambiguation_devices,
+    is_spurious_device_hint_token,
     should_validate_interface_names_against_inventory,
     validate_static_route_next_hop_ip_against_context,
     validate_interface_params_against_context,
@@ -721,11 +723,16 @@ def _resolve_unknown_device_aliases(
     if not uniq or not all_hosts:
         return [], None
 
+    # Ignore L2 English words / interface-looking tokens the LLM put in ``resolved_devices``.
+    meaningful = [t for t in uniq if not is_spurious_device_hint_token(t)]
+    if not meaningful:
+        return [], None
+
     auto: List[str] = []
     ambiguous_union: List[str] = []
     need_full_inventory = False
 
-    for tok in uniq:
+    for tok in meaningful:
         cands = _device_hint_ranked_matches(tok, all_hosts)
         if len(cands) == 0:
             need_full_inventory = True
@@ -738,13 +745,13 @@ def _resolve_unknown_device_aliases(
                 if h not in ambiguous_union:
                     ambiguous_union.append(h)
 
-    q_toks = ", ".join(f"`{t}`" for t in uniq)
+    q_toks = ", ".join(f"`{t}`" for t in meaningful)
 
     if need_full_inventory:
         return [], {
             "ambiguous_devices": [],
-            "missing_devices": list(uniq),
-            "unknown_inventory_aliases": list(uniq),
+            "missing_devices": list(meaningful),
+            "unknown_inventory_aliases": list(meaningful),
             "ask_user_selection": True,
             "candidate_devices": list(all_hosts),
             "disambiguation_kind": "not_in_inventory",
@@ -757,8 +764,8 @@ def _resolve_unknown_device_aliases(
     if ambiguous_union:
         return [], {
             "ambiguous_devices": list(ambiguous_union),
-            "missing_devices": list(uniq),
-            "unknown_inventory_aliases": list(uniq),
+            "missing_devices": list(meaningful),
+            "unknown_inventory_aliases": list(meaningful),
             "ask_user_selection": True,
             "candidate_devices": list(ambiguous_union),
             "disambiguation_kind": "ambiguous_hint",
@@ -798,6 +805,10 @@ def _filter_resolved_hosts_to_planned_inventory(
                 seen.add(canon)
                 valid.append(canon)
         else:
+            # LLM often emits L2 words ("trunk", "port") or interface-looking tokens as
+            # pseudo-hostnames — never treat those as inventory aliases.
+            if is_spurious_device_hint_token(t):
+                continue
             unknown.append(t)
     return valid, unknown
 
@@ -1877,7 +1888,10 @@ async def plan_ansible(
                     if only_mode == "trunk" and missing_trunk_vlans:
                         conditional_missing.append({
                             "field": "trunk_vlans",
-                            "question": "Which trunk VLANs should be allowed on all selected interfaces? (comma-separated)",
+                            "question": (
+                                "Which VLAN IDs should be allowed on this trunk? "
+                                "(Pick from the list when using chat preview — options follow intent and planned context.)"
+                            ),
                         })
 
                 if missing_subnet_mask and len(ip_addrs) == 1:
@@ -3382,6 +3396,21 @@ def _entrypoint_content(bundle: dict[str, Any]) -> str:
     return ""
 
 
+def _candidate_entrypoint_paths_for_disk(entrypoint_path: str) -> list[str]:
+    """
+    Plan-ansible stores a virtual entrypoint `generated/job_<id>/playbook.yml` in the DB,
+    but writes the real file to `playbooks/generated/job_<id>/playbook.yml`.
+    Try both so manual editor changes are picked up by Check/Deploy.
+    """
+    path_str = str(entrypoint_path or "").replace("\\", "/").strip("/")
+    if not path_str:
+        return []
+    out: list[str] = [path_str]
+    if path_str.startswith("generated/job_") and not path_str.startswith("playbooks/"):
+        out.append(f"playbooks/{path_str}")
+    return out
+
+
 def _entrypoint_content_from_disk(entrypoint_path: str) -> str | None:
     """
     If the entrypoint file exists on disk under the Ansible project, return its content.
@@ -3389,19 +3418,18 @@ def _entrypoint_content_from_disk(entrypoint_path: str) -> str | None:
     by the UI and by Check/Deploy instead of the stored DB version.
     Returns None if path is empty, invalid, or file does not exist.
     """
-    path_str = str(entrypoint_path or "").replace("\\", "/").strip("/")
-    if not path_str:
-        return None
-    try:
-        disk_path = _safe_path(path_str)
-    except HTTPException:
-        return None
-    if not disk_path.is_file():
-        return None
-    try:
-        return disk_path.read_text(encoding="utf-8")
-    except Exception:
-        return None
+    for rel in _candidate_entrypoint_paths_for_disk(entrypoint_path):
+        try:
+            disk_path = _safe_path(rel)
+        except HTTPException:
+            continue
+        if not disk_path.is_file():
+            continue
+        try:
+            return disk_path.read_text(encoding="utf-8")
+        except Exception:
+            continue
+    return None
 
 
 def _persist_bundle_to_workspace(bundle: dict[str, Any]) -> None:
@@ -4342,6 +4370,10 @@ async def preview_intent(
             parsed_intent,
             req.params,
         )
+        # Same configure_interface coercion (access/trunk/subnet propagation) as primary ``parameters``.
+        for _sec in parsed_intent.get("secondary_intents") or []:
+            if isinstance(_sec, dict) and isinstance(_sec.get("parameters"), dict):
+                _coerce_params_for_validation(_sec["parameters"])
         # So that validator and downstream see resolved devices when user supplies target_hosts/target_devices
         if req.params.get("target_hosts"):
             th = req.params["target_hosts"]
@@ -4405,7 +4437,11 @@ async def preview_intent(
             parsed_intent["resolved_devices"] = []
             resolved_hosts = []
 
-    inv_bad = [str(x).strip() for x in (parsed_intent.get("inventory_unknown_device_tokens") or []) if str(x).strip()]
+    inv_bad = [
+        str(x).strip()
+        for x in (parsed_intent.get("inventory_unknown_device_tokens") or [])
+        if str(x).strip() and not is_spurious_device_hint_token(str(x))
+    ]
     if inv_bad and _db is not None and not devices_disambiguation:
         dd_inv = _build_devices_disambiguation_for_unknown_inventory_tokens(inv_bad, _db)
         if dd_inv:
@@ -5073,6 +5109,26 @@ async def preview_intent(
             params_disambiguation = None
         elif iface_names_invalid and ask_set and ask_set.issubset(_iface_only_param_fields):
             params_disambiguation = None
+
+    # Trunk allowed-VLANs: attach multi-select options from intent + planned context (chat UI).
+    if params_disambiguation and resolved_hosts and _db is not None:
+        try:
+            pc_trunk = planning_context_preview
+            if pc_trunk is None:
+                pc_trunk = await run_in_threadpool(
+                    build_scoped_planning_context,
+                    _db,
+                    resolved_hosts,
+                    feature="vlan",
+                    query=req.intent_description or "",
+                )
+            params_disambiguation = enrich_params_disambiguation_trunk_vlan_controls(
+                params_disambiguation,
+                planning_context=pc_trunk,
+                parsed_intent=parsed_intent,
+            )
+        except Exception as exc:
+            logger.debug("Preview trunk VLAN multi-select enrichment failed: %s", exc)
 
     schema_editable_fields: List[Dict[str, Any]] = (
         get_editable_fields_for_schema(schema) if schema else []

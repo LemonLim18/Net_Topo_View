@@ -13,7 +13,7 @@
 **Current Behavior:**  
 
 
-- [ ] Create VLAN 30 and apply it as access VLAN on GigabitEthernet1/0/1 on SW1  
+- [ /] Create VLAN 30 and apply it as access VLAN on GigabitEthernet1/0/1 on SW1  
 **Current Behavior:**  
 
 

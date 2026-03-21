@@ -717,7 +717,10 @@ def configure_interface_conditional_disambiguation_fields(
             shared_fields.append(
                 {
                     "field": "trunk_vlans",
-                    "question": "Which trunk VLANs should be allowed on all selected interfaces? (comma-separated)",
+                    "question": (
+                        "Which VLAN IDs should be allowed on this trunk? "
+                        "(Pick from the list — options come from your intent and planned network context.)"
+                    ),
                 }
             )
 

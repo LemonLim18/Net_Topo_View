@@ -1,5 +1,18 @@
 # Intent schema: general interface configuration (L2/L3)
 # Distinct from shutdown_interface (admin down). Use action configure_interface.
+#
+# Trunk allowed VLANs: ``trunk_vlans`` / ``allowed_vlans`` — empty does NOT mean “all VLANs”;
+# resolver/templates default to at least the VLAN being operated on; merge with inventory
+# when present (union / append semantics). See ``docs/intent_operation_reference.md``.
+#
+# Rendered Ansible (Cisco/Juniper L2 resource modules): use ``trunk.allowed_vlans`` in YAML —
+# never ``trunk.trunk_vlans`` (unsupported on ``cisco.ios.ios_l2_interfaces``).
+#
+# ``native_vlan`` — optional; omit unless the user explicitly sets native/untagged VLAN.
+#
+# Trunk allowed VLANs: ``trunk_vlans`` may be collected via the chat preview wizard as
+# **multi-select** (VLAN IDs from intent + planned context); see
+# ``enrich_params_disambiguation_trunk_vlan_controls`` in ``context_entity_validation.py``.
 action: configure_interface
 feature: interface
 required:

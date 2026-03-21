@@ -44,7 +44,10 @@
 
 - name: Build L2 config from intent (trunk ports)
   set_fact:
-    _l2_config: "{{ _l2_config + [{'name': item.name, 'mode': 'trunk', 'trunk': {'trunk_vlans': (item.allowed_vlans | default([]) | map('string') | list | join(',')) if (item.allowed_vlans | default([]) | length) else 'all'}}] }}"
+    _l2_config: "{{ _l2_config + [{'name': item.name, 'mode': 'trunk', 'trunk': _trunk_dict}] }}"
+  vars:
+    _tv: "{{ 'all' if (item.allowed_vlans is defined and item.allowed_vlans is string and (item.allowed_vlans | lower == 'all')) else ((item.allowed_vlans | default([]) | map('string') | list | join(',')) if (item.allowed_vlans is not string and item.allowed_vlans | default([]) | length > 0) else (vlan.id | string)) }}"
+    _trunk_dict: "{{ {'allowed_vlans': _tv} | combine({'native_vlan': item.native_vlan | int}) if (item.native_vlan is defined and item.native_vlan is not none) else {'allowed_vlans': _tv} }}"
   loop: "{{ interfaces | default([]) }}"
   when:
     - interfaces | default([]) | length > 0

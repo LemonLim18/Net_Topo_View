@@ -11,6 +11,217 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Set, Tuple
 
+# Tokens that often appear in L2 prompts but must not be treated as inventory hostnames
+# when the LLM mistakenly lists them in ``resolved_devices``.
+_DEVICE_HINT_STOPWORDS = frozenset(
+    {
+        "trunk",
+        "trunking",
+        "native",
+        "access",
+        "port",
+        "ports",
+        "tagged",
+        "untagged",
+        "voice",
+        "vlan",
+        "vlans",
+        "interface",
+        "interfaces",
+        "switchport",
+        "switchports",
+        "allowed",
+        "allow",
+        "layer",
+        "uplink",
+        "downlink",
+        "pvid",
+        "encapsulation",
+        "dot1q",
+        "isl",
+        "spanning",
+        "switching",
+    }
+)
+
+
+def looks_like_interface_token(candidate: str) -> bool:
+    """
+    True when ``candidate`` looks like a switch/router interface name, not a hostname.
+
+    Used to drop LLM tokens such as ``GigabitEthernet1/0/2`` from device-alias resolution.
+    """
+    c = str(candidate or "").strip()
+    if not c:
+        return False
+    try:
+        ipaddress.ip_address(c)
+        return False
+    except Exception:
+        pass
+    if ":" in c:
+        _, c = c.split(":", 1)
+        c = c.strip()
+    if "/" in c:
+        return True
+    if re.match(
+        r"(?i)^(?:gi|gigabit|eth|ethernet|fa|fastethernet|te|tengigabitethernet|po|port-channel|vlan|vl|vlanif|fxp|ge-|xe-|ge|xe|et-|et|irb|ae\d+|lo|loopback|mgmt|management)",
+        c,
+    ):
+        return True
+    if re.match(r"(?i)^\d+/\d+(?:/\d+)?$", c):
+        return True
+    return False
+
+
+def is_spurious_device_hint_token(raw: str) -> bool:
+    """
+    True when a string must not be fed into inventory hostname / alias matching.
+
+    Examples: ``trunk``, ``port`` (English words from "trunk port"), or interface names.
+    """
+    t = str(raw or "").strip()
+    if not t:
+        return True
+    tl = t.lower()
+    if tl in _DEVICE_HINT_STOPWORDS:
+        return True
+    if looks_like_interface_token(t):
+        return True
+    return False
+
+
+def _vlan_numbers_from_scalar(val: Any) -> List[int]:
+    out: List[int] = []
+    if val is None or isinstance(val, bool):
+        return out
+    if isinstance(val, (int, float)):
+        try:
+            i = int(val)
+            if 1 <= i <= 4094:
+                out.append(i)
+        except (TypeError, ValueError):
+            pass
+        return out
+    if isinstance(val, list):
+        for x in val:
+            out.extend(_vlan_numbers_from_scalar(x))
+        return out
+    s = str(val).strip()
+    if not s or s.lower() in ("all", "none", "null"):
+        return out
+    for part in re.split(r"[\s,;]+", s):
+        part = part.strip()
+        if not part or not part.isdigit():
+            continue
+        try:
+            i = int(part)
+            if 1 <= i <= 4094:
+                out.append(i)
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def _vlan_numbers_from_iface_dict(iface: Dict[str, Any]) -> List[int]:
+    out: List[int] = []
+    for key in ("access_vlan", "voice_vlan", "native_vlan"):
+        out.extend(_vlan_numbers_from_scalar(iface.get(key)))
+    for key in ("allowed_vlans", "trunk_vlans", "vlans"):
+        out.extend(_vlan_numbers_from_scalar(iface.get(key)))
+    return out
+
+
+def collect_vlan_id_candidates_for_preview(
+    parsed_intent: Optional[Dict[str, Any]],
+    planning_context: Optional[Dict[str, Any]],
+    *,
+    max_options: int = 128,
+) -> List[int]:
+    """
+    VLAN IDs to offer as multi-select in the chat params wizard (trunk allowed VLANs).
+
+    Sources: intent parameters (e.g. ``create_vlan`` vlan_id) and interface records under
+    ``planning_context['devices']`` (access/trunk-related VLAN fields).
+    """
+    seen: Set[int] = set()
+    order: List[int] = []
+
+    def add(i: int) -> None:
+        if i in seen:
+            return
+        seen.add(i)
+        order.append(i)
+
+    if isinstance(parsed_intent, dict):
+        p = dict(parsed_intent.get("parameters") or {})
+        for v in _vlan_numbers_from_scalar(p.get("vlan_id")):
+            add(v)
+        vlan = p.get("vlan")
+        if isinstance(vlan, dict):
+            for v in _vlan_numbers_from_scalar(vlan.get("id") or vlan.get("vlan_id")):
+                add(v)
+        for sec in parsed_intent.get("secondary_intents") or []:
+            if not isinstance(sec, dict):
+                continue
+            sp = dict(sec.get("parameters") or {})
+            for v in _vlan_numbers_from_scalar(sp.get("vlan_id")):
+                add(v)
+            for v in _vlan_numbers_from_scalar(sp.get("trunk_vlans")):
+                add(v)
+            if isinstance(sp.get("interfaces"), list):
+                for iface in sp["interfaces"]:
+                    if isinstance(iface, dict):
+                        for v in _vlan_numbers_from_iface_dict(iface):
+                            add(v)
+
+    if isinstance(planning_context, dict):
+        for d in planning_context.get("devices") or []:
+            if not isinstance(d, dict):
+                continue
+            for iface in d.get("interfaces") or []:
+                if isinstance(iface, dict):
+                    for v in _vlan_numbers_from_iface_dict(iface):
+                        add(v)
+
+    order.sort()
+    if len(order) <= max_options:
+        return order
+    return order[:max_options]
+
+
+def enrich_params_disambiguation_trunk_vlan_controls(
+    params_disambiguation: Optional[Dict[str, Any]],
+    *,
+    planning_context: Optional[Dict[str, Any]],
+    parsed_intent: Optional[Dict[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    """
+    Attach ``control`` + ``options`` to ``trunk_vlans`` wizard fields so the UI can render
+    multi-select instead of free-text (avoids typos; options come from intent + planned context).
+    """
+    if not params_disambiguation:
+        return None
+    fields_in = list(params_disambiguation.get("fields") or [])
+    if not fields_in:
+        return params_disambiguation
+    opts = collect_vlan_id_candidates_for_preview(parsed_intent, planning_context)
+    if not opts:
+        return params_disambiguation
+    fields_out: List[Dict[str, Any]] = []
+    for f in fields_in:
+        if not isinstance(f, dict):
+            fields_out.append(f)
+            continue
+        if f.get("field") != "trunk_vlans":
+            fields_out.append(f)
+            continue
+        nf = dict(f)
+        nf["control"] = "multi_select_integers"
+        nf["options"] = list(opts)
+        fields_out.append(nf)
+    return {**params_disambiguation, "fields": fields_out}
+
 
 def split_qualified_interface_token(raw: str) -> Tuple[Optional[str], str]:
     """

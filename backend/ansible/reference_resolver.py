@@ -23,6 +23,110 @@ from typing import Any, Dict, List, Optional, Tuple
 logger = logging.getLogger("ansible.reference_resolver")
 
 _REFERENCE_DIR = Path(__file__).parent / "reference"
+
+
+def _parse_vlan_int_list(value: Any) -> List[int]:
+    """Parse VLAN id(s) from list, comma string, or scalar; ignores non-digits."""
+    out: List[int] = []
+    if value is None:
+        return out
+    if isinstance(value, list):
+        for x in value:
+            s = str(x).strip()
+            if s.isdigit():
+                try:
+                    out.append(int(s))
+                except (TypeError, ValueError):
+                    continue
+        return out
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        try:
+            return [int(value)]
+        except (TypeError, ValueError):
+            return out
+    s = str(value).strip()
+    if not s or s.lower() == "all":
+        return out
+    for part in s.replace(" ", "").split(","):
+        if part.isdigit():
+            try:
+                out.append(int(part))
+            except (TypeError, ValueError):
+                continue
+    return out
+
+
+def _iface_trunk_allowed_from_planning(
+    planning_context: Optional[Dict[str, Any]],
+    target_hosts: List[str],
+    iface_name: str,
+) -> List[int]:
+    """
+    Union of allowed/trunk VLAN IDs from planned inventory iface records for this interface
+    name across the selected hosts (append semantics vs intent-only replace).
+    """
+    if not planning_context or not iface_name:
+        return []
+    stripped = _strip_device_prefix_from_iface_name(iface_name, target_hosts)
+    host_set = {str(h).strip().lower() for h in target_hosts if str(h).strip()}
+    out: List[int] = []
+    for d in planning_context.get("devices") or []:
+        if not isinstance(d, dict):
+            continue
+        hn = str(d.get("hostname") or "").strip()
+        if host_set and hn.lower() not in host_set:
+            continue
+        for iface in d.get("interfaces") or []:
+            if not isinstance(iface, dict):
+                continue
+            iname = str(iface.get("name") or iface.get("interface") or "").strip()
+            if iname.lower() != stripped.lower():
+                continue
+            for key in ("allowed_vlans", "trunk_vlans", "vlans"):
+                out.extend(_parse_vlan_int_list(iface.get(key)))
+    return sorted(set(out))
+
+
+def _merge_trunk_allowed_with_planning(
+    interfaces: List[Dict[str, Any]],
+    vlan_id: int,
+    planning_context: Optional[Dict[str, Any]],
+    target_hosts: List[str],
+) -> List[Dict[str, Any]]:
+    """Union intent trunk VLANs with inventory (when present); never widen to 'all' from empty."""
+    if not planning_context or not target_hosts:
+        return interfaces
+    out: List[Dict[str, Any]] = []
+    for i in interfaces:
+        if not isinstance(i, dict):
+            continue
+        mode = str(i.get("mode") or "").strip().lower()
+        if mode != "trunk":
+            out.append(i)
+            continue
+        av = i.get("allowed_vlans")
+        if isinstance(av, str) and av.strip().lower() == "all":
+            out.append(dict(i))
+            continue
+        intent_list = _parse_vlan_int_list(av)
+        if not intent_list:
+            intent_list = [int(vlan_id)]
+        planning_list = _iface_trunk_allowed_from_planning(planning_context, target_hosts, str(i.get("name") or ""))
+        merged = sorted(set(intent_list + planning_list))
+        row = dict(i)
+        row["allowed_vlans"] = merged
+        out.append(row)
+    return out
+
+
+def _target_hosts_from_intent(intent: Dict[str, Any]) -> List[str]:
+    th = list(intent.get("target_hosts") or [])
+    if th:
+        return th
+    params = intent.get("params") or {}
+    if isinstance(params, dict):
+        return list(params.get("target_hosts") or params.get("target_devices") or [])
+    return []
 _VLAN_INTENT_SCHEMA_PATH = _REFERENCE_DIR / "vlan" / "intent_schema.json"
 
 # Known features that have reference playbooks (subdirs under reference/)
@@ -85,6 +189,7 @@ def _normalize_intent_to_schema_shape(intent: Dict[str, Any]) -> Dict[str, Any]:
                 for part in global_trunk_vlans.replace(" ", "").split(","):
                     if part.isdigit():
                         allowed_list.append(int(part))
+        vlan_id_for_default = int(out["vlan"]["id"]) if isinstance(out.get("vlan"), dict) else None
         for item in raw_ifaces:
             if isinstance(item, dict):
                 mode = "trunk" if str(item.get("mode") or "").strip().lower() == "trunk" else "access"
@@ -99,8 +204,30 @@ def _normalize_intent_to_schema_shape(intent: Dict[str, Any]) -> Dict[str, Any]:
                     except (TypeError, ValueError):
                         row["access_vlan"] = av
                 al = item.get("allowed_vlans")
-                if isinstance(al, list) and al:
+                if isinstance(al, str) and al.strip().lower() == "all":
+                    row["allowed_vlans"] = "all"
+                elif isinstance(al, list) and al:
                     row["allowed_vlans"] = al
+                elif isinstance(al, str) and al.strip():
+                    parsed_al = _parse_vlan_int_list(al)
+                    if parsed_al:
+                        row["allowed_vlans"] = parsed_al
+                tv = item.get("trunk_vlans")
+                if tv is not None:
+                    if isinstance(tv, str) and tv.strip().lower() == "all":
+                        row["allowed_vlans"] = "all"
+                    else:
+                        parsed_tv = _parse_vlan_int_list(tv)
+                        if parsed_tv:
+                            prev = row.get("allowed_vlans")
+                            if isinstance(prev, list) and prev:
+                                row["allowed_vlans"] = sorted(set(prev + parsed_tv))
+                            elif prev == "all":
+                                pass
+                            else:
+                                row["allowed_vlans"] = parsed_tv
+                if mode == "trunk" and "allowed_vlans" not in row and vlan_id_for_default is not None:
+                    row["allowed_vlans"] = [vlan_id_for_default]
                 nv = item.get("native_vlan")
                 if nv is not None and str(nv).strip() != "":
                     try:
@@ -114,8 +241,13 @@ def _normalize_intent_to_schema_shape(intent: Dict[str, Any]) -> Dict[str, Any]:
                 if not name:
                     continue
                 mode = "trunk" if global_mode == "trunk" else "access"
-                if mode == "trunk" and allowed_list:
-                    interfaces.append({"name": name, "mode": "trunk", "allowed_vlans": allowed_list})
+                if mode == "trunk":
+                    if allowed_list:
+                        interfaces.append({"name": name, "mode": "trunk", "allowed_vlans": allowed_list})
+                    elif vlan_id_for_default is not None:
+                        interfaces.append({"name": name, "mode": "trunk", "allowed_vlans": [vlan_id_for_default]})
+                    else:
+                        interfaces.append({"name": name, "mode": "trunk"})
                 else:
                     interfaces.append({"name": name, "mode": "access"})
         out["interfaces"] = [i for i in interfaces if i.get("name")]
@@ -584,7 +716,11 @@ def get_template_vars(
 
     normalized = _normalize_intent_to_schema_shape(intent)
     vlan_dict = normalized["vlan"]
-    schema_interfaces = normalized["interfaces"]
+    schema_interfaces = list(normalized.get("interfaces") or [])
+    target_hosts_resolved = _target_hosts_from_intent(intent)
+    schema_interfaces = _merge_trunk_allowed_with_planning(
+        schema_interfaces, int(vlan_dict["id"]), planning_context, target_hosts_resolved
+    )
     vlan_id_str = str(vlan_dict["id"]).strip()
     vlan_name_str = str(vlan_dict.get("name") or "VLAN").strip()
 
@@ -613,6 +749,7 @@ def get_template_vars(
         default_iface = next((i for i in schema_interfaces if str(i.get("name") or "").strip().lower() == "all"), None) or {}
         default_binding_mode = str(default_iface.get("mode") or "access").strip().lower()
         allowed = default_iface.get("allowed_vlans")
+        vid_int = int(vlan_dict["id"])
         if default_binding_mode == "trunk":
             native_vlan = default_iface.get("native_vlan")
             if native_vlan is not None and str(native_vlan).strip() != "":
@@ -624,20 +761,25 @@ def get_template_vars(
                 try:
                     default_trunk_allowed_vlans = [int(x) for x in allowed]
                 except Exception:
-                    default_trunk_allowed_vlans = "all"
+                    default_trunk_allowed_vlans = [vid_int]
             elif isinstance(allowed, str):
                 s = allowed.strip().lower()
-                if s == "all" or s == "":
+                if s == "all":
                     default_trunk_allowed_vlans = "all"
+                elif s == "":
+                    default_trunk_allowed_vlans = [vid_int]
                 else:
                     # Accept comma/space separated VLANs
                     parts = [p.strip() for p in allowed.replace(" ", "").split(",") if p.strip()]
                     try:
                         default_trunk_allowed_vlans = [int(p) for p in parts if p.isdigit()]
                     except Exception:
-                        default_trunk_allowed_vlans = "all"
+                        default_trunk_allowed_vlans = [vid_int]
+                    if not default_trunk_allowed_vlans:
+                        default_trunk_allowed_vlans = [vid_int]
             else:
-                default_trunk_allowed_vlans = "all"
+                # Missing / null allowed list: never default to "all" (too broad vs "allow this VLAN on trunk").
+                default_trunk_allowed_vlans = [vid_int]
 
     if not interfaces_config_with_vlan_use_nettopo:
         for i in schema_interfaces:
@@ -656,11 +798,15 @@ def get_template_vars(
                 })
             else:
                 allowed = i.get("allowed_vlans")
-                trunk_vlans = "all"
-                if isinstance(allowed, list) and allowed:
-                    trunk_vlans = ",".join(str(x) for x in allowed)
-                elif isinstance(allowed, str):
-                    trunk_vlans = allowed
+                vid_int = int(vlan_dict["id"])
+                # cisco.ios.ios_l2_interfaces / juniper junos_l2_interfaces: trunk.allowed_vlans (not trunk_vlans)
+                if isinstance(allowed, str) and allowed.strip().lower() == "all":
+                    trunk_allowed = "all"
+                else:
+                    plist = _parse_vlan_int_list(allowed)
+                    if not plist:
+                        plist = [vid_int]
+                    trunk_allowed = ",".join(str(x) for x in plist)
                 native_vlan = i.get("native_vlan")
                 native_vlan_int: Optional[int] = None
                 if native_vlan is not None and str(native_vlan).strip() != "":
@@ -672,7 +818,7 @@ def get_template_vars(
                     "name": name,
                     "mode": "trunk",
                     "trunk": {
-                        "trunk_vlans": trunk_vlans,
+                        "allowed_vlans": trunk_allowed,
                         **({"native_vlan": native_vlan_int} if native_vlan_int is not None else {}),
                     },
                 })
@@ -688,8 +834,7 @@ def get_template_vars(
     # Indented YAML for config: key — must be indented more than "config:" (8 spaces) so YAML parses as key value
     indent = "          "  # 10 spaces so value is under config:
     params["interfaces_config_with_vlan_yaml"] = "\n".join(indent + line for line in yaml_str.strip().splitlines())
-    target_hosts = list(intent.get("target_hosts") or [])
-    params["target_hosts"] = ",".join(str(h).strip() for h in target_hosts if str(h).strip())
+    params["target_hosts"] = ",".join(str(h).strip() for h in target_hosts_resolved if str(h).strip())
     return params
 
 
@@ -725,6 +870,18 @@ def render_template(template_content: str, variables: Dict[str, Any]) -> str:
     return tpl.render(**variables)
 
 
+def _sanitize_ios_l2_trunk_yaml_keys(playbook_yaml: str) -> str:
+    """
+    cisco.ios.ios_l2_interfaces (and juniper junos_l2_interfaces) require trunk.allowed_vlans,
+    not trunk.trunk_vlans. Older templates, cached jobs, or remote deployments may still emit
+    the invalid key — rewrite at fill time so dry-runs succeed after template updates.
+    """
+    if "trunk_vlans:" not in playbook_yaml:
+        return playbook_yaml
+    # Only rewrite YAML mapping keys (indented trunk_vlans:), not Jinja e.g. iface.trunk.trunk_vlans
+    return re.sub(r"(?m)^(\s*)trunk_vlans:(\s|$)", r"\1allowed_vlans:\2", playbook_yaml)
+
+
 def fill_playbook_from_reference(
     feature: str,
     vendors: List[str],
@@ -744,7 +901,8 @@ def fill_playbook_from_reference(
         content = load_template(path)
         variables = get_template_vars(feature, intent, content, planning_context=planning_context)
         variables["vendors"] = [normalize_vendor(v) for v in vendors if v]
-        return render_template(content, variables)
+        rendered = render_template(content, variables)
+        return _sanitize_ios_l2_trunk_yaml_keys(rendered)
     except Exception as exc:
         logger.warning("Template fill failed for %s: %s", path, exc)
         return None

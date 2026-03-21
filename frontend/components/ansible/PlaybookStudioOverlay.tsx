@@ -108,6 +108,173 @@ function extractTargetInterfaceNamesFromParsedIntent(
   return dedup;
 }
 
+/** All L2 interface objects from primary + secondary (order: primary first, then secondaries). */
+function collectAllInterfaceObjectsFromParsedIntent(
+  parsed: Record<string, unknown> | null | undefined,
+): Record<string, unknown>[] {
+  const out: Record<string, unknown>[] = [];
+  if (!parsed) return out;
+  const p = (parsed as { parameters?: Record<string, unknown> }).parameters ?? {};
+  if (Array.isArray(p.interfaces)) {
+    for (const x of p.interfaces) {
+      if (x && typeof x === 'object') out.push(x as Record<string, unknown>);
+    }
+  }
+  const secs = (parsed as { secondary_intents?: unknown }).secondary_intents;
+  if (Array.isArray(secs)) {
+    for (const sec of secs) {
+      if (!sec || typeof sec !== 'object') continue;
+      const sp = (sec as { parameters?: Record<string, unknown> }).parameters ?? {};
+      if (Array.isArray(sp.interfaces)) {
+        for (const x of sp.interfaces) {
+          if (x && typeof x === 'object') out.push(x as Record<string, unknown>);
+        }
+      }
+    }
+  }
+  return out;
+}
+
+/** True when the user text clearly asks for a trunk port (overrides wrong LLM mode: access). */
+function userPromptSuggestsTrunkPortIntent(text: string): boolean {
+  const t = (text || '').trim().toLowerCase();
+  if (!t) return false;
+  if (/\btrunk\s+port\b/.test(t)) return true;
+  if (/\btrunk\s+(interface|intf|if)\b/.test(t)) return true;
+  if (/\bon\s+a\s+trunk\b/.test(t)) return true;
+  if (/\ballow\s+(it\s+)?on\s+trunk\b/.test(t)) return true;
+  if (/\btrunk\s+VLANs?\b/.test(t)) return true;
+  if (/\btrunk\b/.test(t) && /\b(port|interface|gi|gigabit|ethernet|eth)\b/.test(t)) return true;
+  return false;
+}
+
+/** Loose match: inventory "Ethernet0/1" vs LLM "GigabitEthernet1/0/2" — same port suffix often matches. */
+function interfaceNameMatchesChipForPreselect(chip: string, plannedName: string): boolean {
+  const a = chip.trim().toLowerCase();
+  const b = plannedName.trim().toLowerCase();
+  if (!a || !b) return false;
+  if (a === b) return true;
+  const strip = (s: string) =>
+    s.replace(/^gigabitethernet|^gig|^ethernet|^eth|^fastethernet|^fa|^gi(?=\d)/i, '');
+  const sa = strip(a);
+  const sb = strip(b);
+  if (sa && sb && (sa === sb || sa.endsWith(sb) || sb.endsWith(sa))) return true;
+  const m1 = a.match(/(\d+\/\d+(?:\/\d+)?)/);
+  const m2 = b.match(/(\d+\/\d+(?:\/\d+)?)/);
+  if (m1 && m2 && m1[1] === m2[1]) return true;
+  return false;
+}
+
+/** Pre-check planned-inventory interfaces that match target interface chips (fixes "blank" checkboxes). */
+function preselectVlanCheckboxesFromChips(
+  chips: string[],
+  ifSel: { devices: { hostname: string; interfaces: { name: string }[] }[] } | null | undefined,
+): Set<string> {
+  const next = new Set<string>();
+  if (!ifSel?.devices?.length || !chips.length) return next;
+  const flat = ifSel.devices.flatMap((d) => (d.interfaces || []).map((i) => String(i.name || '').trim()).filter(Boolean));
+  for (const chip of chips) {
+    for (const name of flat) {
+      if (interfaceNameMatchesChipForPreselect(chip, name)) {
+        next.add(name);
+        break;
+      }
+    }
+  }
+  return next;
+}
+
+/** Initial Playbook Studio binding mode + VLAN fields from preview + natural language (fixes LLM access vs user trunk). */
+function inferInterfaceBindingFromParsedIntent(
+  parsed: Record<string, unknown> | null | undefined,
+  intentDescription: string,
+): {
+  mode: 'no' | 'access' | 'trunk';
+  accessVlan: number;
+  allowedCsv: string;
+  nativeVlan: number | null;
+} {
+  const base = { mode: 'no' as const, accessVlan: 1, allowedCsv: '', nativeVlan: null as number | null };
+  if (!parsed) return base;
+  const params = (parsed as { parameters?: Record<string, unknown> }).parameters ?? {};
+  const vid = params.vlan_id;
+  const vlanNum =
+    typeof vid === 'number'
+      ? vid
+      : vid !== undefined && vid !== null && vid !== ''
+        ? parseInt(String(vid), 10)
+        : NaN;
+
+  const allIfaces = collectAllInterfaceObjectsFromParsedIntent(parsed);
+  const anyTrunk = allIfaces.find((i) => String(i.mode || '').toLowerCase() === 'trunk');
+  const anyAccess = allIfaces.find((i) => String(i.mode || '').toLowerCase() === 'access');
+  const iface = anyTrunk || anyAccess || allIfaces[0] || null;
+
+  const buildTrunkFromIface = (i: Record<string, unknown>) => {
+    const tv = i.trunk_vlans ?? (i as { allowed_vlans?: unknown }).allowed_vlans;
+    let csv = '';
+    if (Array.isArray(tv)) csv = tv.map((x) => String(x)).join(',');
+    else if (typeof tv === 'string') csv = tv;
+    if (!csv && !Number.isNaN(vlanNum)) csv = String(vlanNum);
+    const nv = i.native_vlan;
+    let native: number | null = null;
+    if (typeof nv === 'number' && !Number.isNaN(nv)) {
+      native = nv;
+    } else if (nv !== undefined && nv !== null && nv !== '') {
+      const p = parseInt(String(nv), 10);
+      native = Number.isNaN(p) ? null : p;
+    }
+    return {
+      mode: 'trunk' as const,
+      accessVlan: Number.isNaN(vlanNum) ? 1 : vlanNum,
+      allowedCsv: csv,
+      nativeVlan: native,
+    };
+  };
+
+  const buildAccessFromIface = (i: Record<string, unknown>) => {
+    const av = i.access_vlan;
+    const avn =
+      typeof av === 'number'
+        ? av
+        : av !== undefined && av !== null && av !== ''
+          ? parseInt(String(av), 10)
+          : NaN;
+    return {
+      mode: 'access' as const,
+      accessVlan: !Number.isNaN(avn) ? avn : Number.isNaN(vlanNum) ? 1 : vlanNum,
+      allowedCsv: '',
+      nativeVlan: 1,
+    };
+  };
+
+  // 1) Any parsed interface is explicitly trunk → trunk
+  if (anyTrunk) {
+    return buildTrunkFromIface(anyTrunk);
+  }
+
+  // 2) User said "trunk port" but LLM used access → trust the prompt when VLAN id exists
+  if (userPromptSuggestsTrunkPortIntent(intentDescription) && !Number.isNaN(vlanNum)) {
+    return {
+      mode: 'trunk' as const,
+      accessVlan: vlanNum,
+      allowedCsv: String(vlanNum),
+      nativeVlan: null,
+    };
+  }
+
+  if (!iface) return base;
+
+  const m = String(iface.mode || '').toLowerCase();
+  if (m === 'trunk') {
+    return buildTrunkFromIface(iface);
+  }
+  if (m === 'access') {
+    return buildAccessFromIface(iface);
+  }
+  return base;
+}
+
 export interface SchemaEditableField {
   field: string;
   label: string;
@@ -182,7 +349,7 @@ export function PlaybookStudioOverlay({
   const [vlanSelectedInterfaces, setVlanSelectedInterfaces] = useState<Set<string>>(new Set());
   const [vlanAccessVlan, setVlanAccessVlan] = useState<number>(1);
   const [vlanAllowedVlans, setVlanAllowedVlans] = useState('');
-  const [vlanNativeVlan, setVlanNativeVlan] = useState<number>(1);
+  const [vlanNativeVlan, setVlanNativeVlan] = useState<number | null>(null);
   /** Last preview API parsed_intent — used so create-and-plan sends correct feature (avoid heuristic "general"). */
   const [previewParsedIntent, setPreviewParsedIntent] = useState<Record<string, unknown> | null>(null);
   const previewParsedIntentRef = useRef<Record<string, unknown> | null>(null);
@@ -241,8 +408,18 @@ export function PlaybookStudioOverlay({
       );
       setInterfacesForSelection((res as any).interfaces_for_selection ?? null);
       setPreviewParsedIntent((res.parsed_intent as Record<string, unknown>) ?? null);
-      setInterfaceBindingMode('no');
-      setVlanSelectedInterfaces(new Set());
+      {
+        const parsedPi = (res.parsed_intent as Record<string, unknown>) ?? null;
+        const inf = inferInterfaceBindingFromParsedIntent(parsedPi, intentDescription);
+        setInterfaceBindingMode(inf.mode);
+        setVlanAccessVlan(inf.accessVlan);
+        setVlanAllowedVlans(inf.allowedCsv);
+        setVlanNativeVlan(inf.nativeVlan);
+        const chips = extractTargetInterfaceNamesFromParsedIntent(parsedPi);
+        setVlanSelectedInterfaces(
+          preselectVlanCheckboxesFromChips(chips, (res as { interfaces_for_selection?: { devices: { hostname: string; interfaces: { name: string }[] }[] } }).interfaces_for_selection ?? null),
+        );
+      }
       skipNextInventoryRefreshRef.current = true;
       setStep('confirm');
     } catch (e: unknown) {
@@ -283,6 +460,18 @@ export function PlaybookStudioOverlay({
       );
       setInterfacesForSelection(initialPreviewResult.interfaces_for_selection ?? null);
       setPreviewParsedIntent((initialPreviewResult.parsed_intent as Record<string, unknown>) ?? null);
+      {
+        const parsedPi = (initialPreviewResult.parsed_intent as Record<string, unknown>) ?? null;
+        const inf = inferInterfaceBindingFromParsedIntent(parsedPi, intentDescription);
+        setInterfaceBindingMode(inf.mode);
+        setVlanAccessVlan(inf.accessVlan);
+        setVlanAllowedVlans(inf.allowedCsv);
+        setVlanNativeVlan(inf.nativeVlan);
+        const chips = extractTargetInterfaceNamesFromParsedIntent(parsedPi);
+        setVlanSelectedInterfaces(
+          preselectVlanCheckboxesFromChips(chips, initialPreviewResult.interfaces_for_selection ?? null),
+        );
+      }
       skipNextInventoryRefreshRef.current = true;
       setStep('confirm');
     } else {
@@ -396,43 +585,84 @@ export function PlaybookStudioOverlay({
 
       if (parsedAction === 'shutdown_interface') {
         params.interfaces_to_shutdown = targetInterfaces;
-      } else if (parsedAction === 'configure_interface') {
-        params.interfaces = targetInterfaces.map((name) => ({
-          name,
-          mode: 'access' as const,
-          ...(accessVlan !== undefined ? { access_vlan: accessVlan } : {}),
-        }));
       } else if (parsedAction === 'create_vlan') {
-        // Primary create_vlan must carry interfaces so backend inventory override + VLAN summary match the UI chips.
-        params.interfaces = targetInterfaces.map((name) => ({
-          name,
-          mode: 'access' as const,
-          ...(accessVlan !== undefined ? { access_vlan: accessVlan } : {}),
-        }));
-        const ifaceIdx = secondariesFromPreview.findIndex(
-          (s) =>
-            String(s?.action || '')
-              .toLowerCase()
-              .replace(/-/g, '_') === 'configure_interface' ||
-            String(s?.feature || '').toLowerCase() === 'interface',
-        );
-        if (ifaceIdx >= 0) {
-          const base = (params._secondary_intents as typeof secondariesFromPreview) || [];
-          params._secondary_intents = base.map((s, i) => {
-            if (i !== ifaceIdx) return s;
-            const p0 = (s.parameters || {}) as Record<string, unknown>;
-            return {
-              ...s,
-              parameters: {
-                ...p0,
-                interfaces: targetInterfaces.map((name) => ({
+        // Studio "No" = VLAN database only — do not send L2 interfaces from chips (they were misleading access/trunk).
+        if (interfaceBindingMode === 'no') {
+          delete params.interfaces;
+          delete params.interfaces_config;
+          if (Array.isArray(params._secondary_intents)) {
+            params._secondary_intents = params._secondary_intents.map((s) => {
+              const p0 = { ...(s.parameters || {}) };
+              delete p0.interfaces;
+              delete p0.interfaces_config;
+              return { ...s, parameters: p0 };
+            });
+          }
+        } else {
+          const names =
+            vlanSelectedInterfaces.size > 0 ? Array.from(vlanSelectedInterfaces) : targetInterfaces;
+          if (names.length > 0) {
+            let ifaceList: Array<Record<string, unknown>>;
+            if (interfaceBindingMode === 'access') {
+              ifaceList = names.map((name) => ({
+                name,
+                mode: 'access' as const,
+                access_vlan: vlanAccessVlan,
+              }));
+            } else {
+              const trunkParsed = vlanAllowedVlans
+                .split(',')
+                .map((s) => parseInt(s.trim(), 10))
+                .filter((n) => !Number.isNaN(n));
+              const trunkVlans =
+                trunkParsed.length > 0 ? trunkParsed : accessVlan !== undefined ? [accessVlan] : [];
+              ifaceList = names.map((name) => {
+                const row: Record<string, unknown> = {
                   name,
-                  mode: 'access',
-                  ...(accessVlan !== undefined ? { access_vlan: accessVlan } : {}),
-                })),
-              },
-            };
-          });
+                  mode: 'trunk' as const,
+                  trunk_vlans: trunkVlans,
+                };
+                if (vlanNativeVlan !== null && vlanNativeVlan !== undefined) {
+                  row.native_vlan = vlanNativeVlan;
+                }
+                return row;
+              });
+            }
+            params.interfaces = ifaceList;
+            const ifaceIdx = secondariesFromPreview.findIndex(
+              (s) =>
+                String(s?.action || '')
+                  .toLowerCase()
+                  .replace(/-/g, '_') === 'configure_interface' ||
+                String(s?.feature || '').toLowerCase() === 'interface',
+            );
+            if (ifaceIdx >= 0) {
+              const base = (params._secondary_intents as typeof secondariesFromPreview) || [];
+              params._secondary_intents = base.map((s, i) => {
+                if (i !== ifaceIdx) return s;
+                const p0 = (s.parameters || {}) as Record<string, unknown>;
+                return {
+                  ...s,
+                  parameters: {
+                    ...p0,
+                    interfaces: ifaceList,
+                  },
+                };
+              });
+            }
+          }
+        }
+      } else if (parsedAction === 'configure_interface') {
+        const pipIf = pip?.parameters as { interfaces?: unknown } | undefined;
+        const existing = pipIf?.interfaces;
+        if (Array.isArray(existing) && existing.length > 0) {
+          params.interfaces = existing;
+        } else {
+          params.interfaces = targetInterfaces.map((name) => ({
+            name,
+            mode: 'access' as const,
+            ...(accessVlan !== undefined ? { access_vlan: accessVlan } : {}),
+          }));
         }
       } else {
         const ifaceIdx = secondariesFromPreview.findIndex(
@@ -460,15 +690,6 @@ export function PlaybookStudioOverlay({
             };
           });
         }
-      }
-    }
-    if (interfaceBindingMode !== 'no' && vlanSelectedInterfaces.size > 0) {
-      const names = Array.from(vlanSelectedInterfaces);
-      if (interfaceBindingMode === 'access') {
-        params.interfaces = names.map((name) => ({ name, mode: 'access', access_vlan: vlanAccessVlan }));
-      } else {
-        const allowed = vlanAllowedVlans.split(',').map((s) => parseInt(s.trim(), 10)).filter((n) => !Number.isNaN(n));
-        params.interfaces = names.map((name) => ({ name, mode: 'trunk', allowed_vlans: allowed, native_vlan: vlanNativeVlan }));
       }
     }
     return params;
@@ -792,11 +1013,18 @@ export function PlaybookStudioOverlay({
                                 value={interfaceBindingMode}
                                 onChange={(e) => setInterfaceBindingMode((e.target.value as 'no' | 'access' | 'trunk'))}
                               >
-                                <option value="no">No</option>
+                                <option value="no">No (VLAN DB only — no L2 on ports)</option>
                                 <option value="access">Access</option>
                                 <option value="trunk">Trunk</option>
                               </select>
                             </div>
+                            {interfaceBindingMode === 'no' ? (
+                              <p className="text-xs text-base-content/50 max-w-xl">
+                                Target interface chips below are for reference only until you choose Access or Trunk; generate
+                                with <strong>No</strong> to produce a VLAN-only playbook (no{' '}
+                                <span className="font-mono">ios_l2_interfaces</span>).
+                              </p>
+                            ) : null}
                             {interfaceBindingMode === 'access' && (
                               <div className="flex flex-wrap gap-2 items-center">
                                 <label className="text-xs text-base-content/70">Access VLAN</label>
@@ -823,14 +1051,22 @@ export function PlaybookStudioOverlay({
                                   />
                                 </div>
                                 <div className="flex flex-wrap gap-2 items-center">
-                                  <label className="text-xs text-base-content/70">Native VLAN</label>
+                                  <label className="text-xs text-base-content/70">Native VLAN (optional)</label>
                                   <input
                                     type="number"
                                     min={1}
                                     max={4094}
                                     className="input input-bordered input-sm w-24"
-                                    value={vlanNativeVlan}
-                                    onChange={(e) => setVlanNativeVlan(parseInt(e.target.value, 10) || 1)}
+                                    placeholder="omit = unchanged"
+                                    value={vlanNativeVlan === null ? '' : vlanNativeVlan}
+                                    onChange={(e) => {
+                                      const v = e.target.value.trim();
+                                      if (v === '') setVlanNativeVlan(null);
+                                      else {
+                                        const n = parseInt(v, 10);
+                                        setVlanNativeVlan(Number.isNaN(n) ? null : n);
+                                      }
+                                    }}
                                   />
                                 </div>
                               </div>

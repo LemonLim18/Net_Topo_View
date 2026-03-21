@@ -113,6 +113,9 @@ export type PreviewParamField = {
   question: string;
   secondary_intent_index?: number;
   label?: string;
+  /** When set with ``options``, render checkboxes instead of free-text (e.g. trunk VLAN IDs from planned context). */
+  control?: 'multi_select_integers';
+  options?: number[];
 };
 
 /** Value map key: disambiguate duplicate field names across primary vs secondary intents. */
@@ -244,7 +247,9 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
     fields: PreviewParamField[];
     intentText: string;
   } | null>(null);
-  const [paramsDisambiguationValues, setParamsDisambiguationValues] = useState<Record<string, string | number | string[]>>({});
+  const [paramsDisambiguationValues, setParamsDisambiguationValues] = useState<
+    Record<string, string | number | string[] | number[]>
+  >({});
   const [paramsDisambiguationStep, setParamsDisambiguationStep] = useState(0);
   /** Planned-inventory device picker (hints like SW1, wrong names, or missing targets) — before interface/params. */
   const [deviceDisambiguation, setDeviceDisambiguation] = useState<{
@@ -540,13 +545,33 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
       const paramsDis = res?.params_disambiguation;
       if (paramsDis?.fields?.length) {
         const menuMsgId = crypto.randomUUID();
+        const fieldsList = (paramsDis.fields || []) as PreviewParamField[];
+        const initVals: Record<string, string | number | string[] | number[]> = {};
+        const pParams = (res?.parsed_intent?.parameters || {}) as Record<string, unknown>;
+        const rawVid = pParams.vlan_id ?? (pParams.vlan as { id?: number } | undefined)?.id;
+        const vid =
+          rawVid !== undefined && rawVid !== null && rawVid !== ''
+            ? parseInt(String(rawVid), 10)
+            : NaN;
+        if (!Number.isNaN(vid)) {
+          for (const f of fieldsList) {
+            if (
+              f.field === 'trunk_vlans' &&
+              f.control === 'multi_select_integers' &&
+              Array.isArray(f.options) &&
+              f.options.includes(vid)
+            ) {
+              initVals[previewFieldValueKey(f)] = [vid];
+            }
+          }
+        }
         setParamsDisambiguation({
           messageId: menuMsgId,
           question: paramsDis.question || 'Please provide the following.',
           fields: paramsDis.fields,
           intentText,
         });
-        setParamsDisambiguationValues({});
+        setParamsDisambiguationValues(initVals);
         setParamsDisambiguationStep(0);
         setMessages((prev) => [
           ...prev,
@@ -1604,7 +1629,38 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
                                     <div className="text-xs text-amber-600/90 dark:text-amber-400/90 mb-1">{f.label}</div>
                                   ) : null}
                                   <label className="text-sm text-base-content/90 block mb-0.5">{f.question}</label>
-                                  {f.field === 'target_devices' || f.field === 'interfaces' ? (
+                                  {f.control === 'multi_select_integers' &&
+                                  Array.isArray(f.options) &&
+                                  f.options.length > 0 ? (
+                                    <div className="flex flex-wrap gap-2 rounded border border-base-300 bg-base-300/50 p-2 max-h-52 overflow-y-auto">
+                                      {f.options.map((n) => {
+                                        const cur = (paramsDisambiguationValues[vk] as number[] | undefined) ?? [];
+                                        const checked = cur.includes(n);
+                                        return (
+                                          <label
+                                            key={`${vk}-${n}`}
+                                            className="flex items-center gap-1.5 cursor-pointer"
+                                          >
+                                            <input
+                                              type="checkbox"
+                                              checked={checked}
+                                              onChange={() => {
+                                                setParamsDisambiguationValues((prev) => {
+                                                  const prevArr = (prev[vk] as number[] | undefined) ?? [];
+                                                  const next = prevArr.includes(n)
+                                                    ? prevArr.filter((x) => x !== n)
+                                                    : [...prevArr, n].sort((a, b) => a - b);
+                                                  return { ...prev, [vk]: next };
+                                                });
+                                              }}
+                                              className="checkbox checkbox-sm checkbox-primary"
+                                            />
+                                            <span className="text-xs font-mono">VLAN {n}</span>
+                                          </label>
+                                        );
+                                      })}
+                                    </div>
+                                  ) : f.field === 'target_devices' || f.field === 'interfaces' ? (
                                     <input
                                       type="text"
                                       className="input input-sm input-bordered w-full font-mono"
