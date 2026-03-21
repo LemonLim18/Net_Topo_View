@@ -1,0 +1,15 @@
+{
+  "case_id": "acl_apply_3000_inbound_gi0_1_sw1",
+  "started_at": "2026-03-20T12:04:23.806553",
+  "intent_description": "Apply ACL 3000 inbound on GigabitEthernet1/0/1 on SW1",
+  "preview_initial": {
+    "status_code": 200,
+    "text": "{\"categories\":[\"acl\"],\"references\":[],\"parsed_intent\":{\"id\":\"ce5c0482\",\"intent_type\":\"configure\",\"action\":\"configure_interface\",\"feature\":\"acl\",\"vendor\":\"\",\"parameters\":{\"interfaces\":[\"SW1:GigabitEthernet1/0/1\"],\"acl_name\":\"3000\",\"acl_direction\":\"inbound\",\"device_deduction\":{\"deduced\":[\"Acc_Cisco_1\",\"Acc_Cisco_2\",\"Acc_Cisco_5\",\"Acc_Cisco_6\",\"Acc_Huawei_3\",\"Acc_Juniper_4\",\"Core_Cisco_1\",\"Core_Cisco_2\",\"Dist_Cisco_1\",\"Dist_Cisco_3\",\"Dist_Huawei_2\",\"Dist_Huawei_4\"],\"mapping\":[{\"hostname\":\"Acc_Cisco_1\",\"reason\":\"matched prompt number\"},{\"hostname\":\"Acc_Cisco_2\",\"reason\":\"matched by inventory/name similarity\"},{\"hostname\":\"Acc_Cisco_5\",\"reason\":\"matched by inventory/name similarity\"},{\"hostname\":\"Acc_Cisco_6\",\"reason\":\"matched by inventory/name similarity\"},{\"hostname\":\"Acc_Huawei_3\",\"reason\":\"matched prompt number\"},{\"hostname\":\"Acc_Juniper_4\",\"reason\":\"matched by inventory/name similarity\"},{\"hostname\":\"Core_Cisco_1\",\"reason\":\"matched prompt number\"},{\"hostname\":\"Core_Cisco_2\",\"reason\":\"matched by inventory/name similarity\"},{\"hostname\":\"Dist_Cisco_1\",\"reason\":\"matched prompt number\"},{\"hostname\":\"Dist_Cisco_3\",\"reason\":\"matched prompt number\"},{\"hostname\":\"Dist_Huawei_2\",\"reason\":\"matched by inventory/name similarity\"},{\"hostname\":\"Dist_Huawei_4\",\"reason\":\"matched by inventory/name similarity\"}],\"why\":\"Backend selected the closest inventory names from the prompt wording.\"},\"target_hosts\":[\"Acc_Cisco_1\",\"Acc_Cisco_2\",\"Acc_Cisco_5\",\"Acc_Cisco_6\",\"Acc_Huawei_3\",\"Acc_Juniper_4\",\"Core_Cisco_1\",\"Core_Cisco_2\",\"Dist_Cisco_1\",\"Dist_Cisco_3\",\"Dist_Huawei_2\",\"Dist_Huawei_4\",\"awe\",\"dsa\"]},\"scope\":{\"device_hostnames\":[],\"device_role\":null,\"building\":null,\"vendor_filter\":null,\"all_devices\":false},\"risk_level\":\"medium\",\"justification\":\"\",\"raw_user_input\":\"Apply ACL 3000 inbound on GigabitEthernet1/0/1 on SW1\",\"requires_disambiguation\":false,\"disambiguation_message\":\"\",\"requires_resolution\":false,\"resolved_devices\":[\"Acc_Cisco_1\",\"Acc_Cisco_2\",\"Acc_Cisco_5\",\"Acc_Cisco_6\",\"Acc_Huawei"
+  },
+  "preview_initial_assert": {
+    "ok": true,
+    "notes": []
+  },
+  "finished_at": "2026-03-20T12:04:37.398622",
+  "result_ok": true
+}

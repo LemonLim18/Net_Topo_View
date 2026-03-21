@@ -2,6 +2,7 @@
 
 from ansible.context_entity_validation import (
     collect_user_interface_names_from_params,
+    explicit_interface_names_from_request_params,
     hosts_for_device_hint,
     intent_requests_all_interfaces,
     interface_names_for_host,
@@ -128,8 +129,64 @@ def test_validate_match_case_insensitive():
     assert r.ok
 
 
-def test_validate_skips_host_with_no_interface_inventory():
-    """Cannot prove invalid when inventory has no interfaces for that host."""
+def test_explicit_interface_names_from_nested_secondary_intents():
+    """Studio may send interface picks only under _secondary_intents[].parameters.interfaces."""
+    params = {
+        "_secondary_intents": [
+            {
+                "action": "configure_interface",
+                "feature": "interface",
+                "parameters": {
+                    "interfaces": [{"name": "Ethernet0/2", "mode": "access", "access_vlan": 30}],
+                },
+            }
+        ]
+    }
+    names = explicit_interface_names_from_request_params(params)
+    assert names == ["Ethernet0/2"]
+
+
+def test_validate_interface_names_override_ignores_stale_llm_secondary():
+    """req.params.interfaces is authoritative: do not fail on LLM Gi token in secondary_intents."""
+    ctx = {
+        "devices": [
+            {
+                "hostname": "Acc_Cisco_1",
+                "interfaces": [{"name": "Ethernet0/2"}],
+            }
+        ]
+    }
+    params = {
+        "interfaces": [{"name": "Ethernet0/2", "mode": "access"}],
+    }
+    stale_secondary = [
+        {
+            "action": "configure_interface",
+            "feature": "interface",
+            "parameters": {"interfaces": [{"name": "GigabitEthernet1/0/1", "mode": "access"}]},
+        }
+    ]
+    override = explicit_interface_names_from_request_params(params)
+    r = validate_interface_params_against_context(
+        params,
+        ["Acc_Cisco_1"],
+        ctx,
+        secondary_intents=stale_secondary,
+        interface_names_override=override,
+    )
+    assert r.ok
+    # Without override, collect() sees both names and fails on Gi.
+    r2 = validate_interface_params_against_context(
+        params,
+        ["Acc_Cisco_1"],
+        ctx,
+        secondary_intents=stale_secondary,
+    )
+    assert not r2.ok
+
+
+def test_validate_host_with_empty_interface_inventory_is_flagged():
+    """Device present but no interface rows: names cannot be verified (not a silent pass)."""
     ctx = {
         "devices": [
             {"hostname": "sw1", "interfaces": []},
@@ -137,7 +194,7 @@ def test_validate_skips_host_with_no_interface_inventory():
     }
     params = {"interfaces_to_shutdown": ["Gi0/1"]}
     r = validate_interface_params_against_context(params, ["sw1"], ctx)
-    assert r.ok
+    assert not r.ok
 
 
 def test_intent_requests_all_interfaces():
@@ -191,7 +248,9 @@ if __name__ == "__main__":
     test_hosts_for_device_hint_exact()
     test_validate_mismatch_gigabit_vs_ethernet()
     test_validate_match_case_insensitive()
-    test_validate_skips_host_with_no_interface_inventory()
+    test_explicit_interface_names_from_nested_secondary_intents()
+    test_validate_interface_names_override_ignores_stale_llm_secondary()
+    test_validate_host_with_empty_interface_inventory_is_flagged()
     test_intent_requests_all_interfaces()
     test_intersection_interfaces_from_disambiguation_devices()
     test_interface_intent_satisfied_with_nettopo_shutdown_flag()

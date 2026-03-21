@@ -1,0 +1,15 @@
+{
+  "case_id": "static_route_add_172_16_0_0_16_via_gi0_1_router_2",
+  "started_at": "2026-03-20T12:25:02.376522",
+  "intent_description": "Add a static route to 172.16.0.0/16 via GigabitEthernet0/1 on router 2",
+  "preview_initial": {
+    "status_code": 200,
+    "text": "{\"categories\":[\"static_route\"],\"references\":[],\"parsed_intent\":{\"id\":\"f55d3599\",\"intent_type\":\"configure\",\"action\":\"configure_interface\",\"feature\":\"static_route\",\"vendor\":\"\",\"parameters\":{\"interfaces\":[{\"name\":\"GigabitEthernet0/1\",\"device\":\"router2\"}],\"destination_network\":\"172.16.0.0/16\",\"device_deduction\":{\"deduced\":[\"Acc_Cisco_1\",\"Acc_Cisco_2\",\"Acc_Cisco_5\",\"Acc_Cisco_6\",\"Acc_Huawei_3\",\"Acc_Juniper_4\",\"Core_Cisco_1\",\"Core_Cisco_2\",\"Dist_Cisco_1\",\"Dist_Cisco_3\",\"Dist_Huawei_2\",\"Dist_Huawei_4\"],\"mapping\":[{\"hostname\":\"Acc_Cisco_1\",\"reason\":\"matched prompt number\"},{\"hostname\":\"Acc_Cisco_2\",\"reason\":\"matched prompt number\"},{\"hostname\":\"Acc_Cisco_5\",\"reason\":\"matched by inventory/name similarity\"},{\"hostname\":\"Acc_Cisco_6\",\"reason\":\"matched prompt number\"},{\"hostname\":\"Acc_Huawei_3\",\"reason\":\"matched by inventory/name similarity\"},{\"hostname\":\"Acc_Juniper_4\",\"reason\":\"matched by inventory/name similarity\"},{\"hostname\":\"Core_Cisco_1\",\"reason\":\"matched prompt number\"},{\"hostname\":\"Core_Cisco_2\",\"reason\":\"matched prompt number\"},{\"hostname\":\"Dist_Cisco_1\",\"reason\":\"matched prompt number\"},{\"hostname\":\"Dist_Cisco_3\",\"reason\":\"matched by inventory/name similarity\"},{\"hostname\":\"Dist_Huawei_2\",\"reason\":\"matched prompt number\"},{\"hostname\":\"Dist_Huawei_4\",\"reason\":\"matched by inventory/name similarity\"}],\"why\":\"Backend selected the closest inventory names from the prompt wording.\"},\"target_hosts\":[\"Acc_Cisco_1\",\"Acc_Cisco_2\",\"Acc_Cisco_5\",\"Acc_Cisco_6\",\"Acc_Huawei_3\",\"Acc_Juniper_4\",\"Core_Cisco_1\",\"Core_Cisco_2\",\"Dist_Cisco_1\",\"Dist_Cisco_3\",\"Dist_Huawei_2\",\"Dist_Huawei_4\",\"awe\",\"dsa\"]},\"scope\":{\"device_hostnames\":[],\"device_role\":null,\"building\":null,\"vendor_filter\":null,\"all_devices\":false},\"risk_level\":\"medium\",\"justification\":\"\",\"raw_user_input\":\"Add a static route to 172.16.0.0/16 via GigabitEthernet0/1 on router 2\",\"requires_disambiguation\":false,\"disambiguation_message\":\"\",\"requires_resolution\":false,\"resolved_devices\":[\"Acc_Cisco_1\",\"Acc_Cisco_2\",\"Acc_Cisco_5\",\"Acc"
+  },
+  "preview_initial_assert": {
+    "ok": true,
+    "notes": []
+  },
+  "finished_at": "2026-03-20T12:25:50.769224",
+  "result_ok": true
+}

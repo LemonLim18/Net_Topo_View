@@ -176,6 +176,7 @@ const AnsibleStudioView: React.FC<AnsibleStudioViewProps> = ({ user }) => {
   const [splitOutputId, setSplitOutputId]     = useState<string | null>(null);
   const deploySessionIdRef = useRef<string | null>(null);
   const [streamingSessionId, setStreamingSessionId] = useState<string | null>(null);
+  const deployPollTimerRef = useRef<number | null>(null);
 
   // ── File tree ────────────────────────────────────────────────────────────
   const [fileTreeRefresh, setFileTreeRefresh] = useState(0);
@@ -479,12 +480,23 @@ const AnsibleStudioView: React.FC<AnsibleStudioViewProps> = ({ user }) => {
     const es = ansibleApi.streamJobOutput(activeJobId);
     esRef.current = es;
 
+    // Poll job state during deploy so the UI reflects Apply/Commit stage
+    // and the Deploy button shows its loading indicator while running.
+    if (deployPollTimerRef.current) window.clearInterval(deployPollTimerRef.current);
+    deployPollTimerRef.current = window.setInterval(() => {
+      refreshJob(activeJobId);
+    }, 1500);
+
     es.onmessage = (e: MessageEvent) => {
       try {
         const data = JSON.parse(e.data);
         if (data.done) {
           es.close();
           setIsStreaming(false);
+          if (deployPollTimerRef.current) {
+            window.clearInterval(deployPollTimerRef.current);
+            deployPollTimerRef.current = null;
+          }
           deploySessionIdRef.current = null;
           setStreamingSessionId(null);
           refreshJob(activeJobId);
@@ -501,13 +513,26 @@ const AnsibleStudioView: React.FC<AnsibleStudioViewProps> = ({ user }) => {
         );
       } catch { /* ignore */ }
     };
-    es.onerror = () => { es.close(); setIsStreaming(false); deploySessionIdRef.current = null; setStreamingSessionId(null); };
+    es.onerror = () => {
+      es.close();
+      setIsStreaming(false);
+      if (deployPollTimerRef.current) {
+        window.clearInterval(deployPollTimerRef.current);
+        deployPollTimerRef.current = null;
+      }
+      deploySessionIdRef.current = null;
+      setStreamingSessionId(null);
+    };
 
     try {
       await ansibleApi.executeJob(activeJobId);
     } catch (err) {
       es.close();
       setIsStreaming(false);
+      if (deployPollTimerRef.current) {
+        window.clearInterval(deployPollTimerRef.current);
+        deployPollTimerRef.current = null;
+      }
       deploySessionIdRef.current = null;
       setStreamingSessionId(null);
     }

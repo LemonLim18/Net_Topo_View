@@ -1,0 +1,15 @@
+{
+  "case_id": "ospf_enable_redistribution_static_routes_router_2",
+  "started_at": "2026-03-20T11:49:46.399559",
+  "intent_description": "Enable OSPF redistribution of static routes on router 2",
+  "preview_initial": {
+    "status_code": 200,
+    "text": "{\"categories\":[\"ospf\"],\"references\":[],\"parsed_intent\":{\"resolved_devices\":[],\"inventory_unknown_device_tokens\":[],\"device_deduction\":{\"deduced\":[],\"why\":\"No target devices could be resolved from the prompt or inventory.\",\"clues\":[\"role=distribution\"],\"mapping\":[]},\"disambiguation\":null},\"policy_approved\":false,\"reasoning\":[\"### 1. Intent\\nIntent parsing encountered an issue: Ollama API error 404: {\\\"error\\\":\\\"model 'qwen3b' not found\\\"}. Using provided feature/vendor if any.\",\"### 1c. Select target device(s)\\n- No inventory hostname was resolved. Choose device(s) in the chat picker or **Target inventory**, then continue.\\n\",\"### 2. Target devices\\n- **Resolved:** (none — pick specific host(s) in **Target inventory** or answer the device question below). You can change them in **Target inventory** below.\",\"### 3. Vendor & templates\\n- No vendor filter; reference templates may include multi-vendor and vendor-specific.\",\"### 4. Reference templates (RAG)\\n- RAG retrieved **4** ansible_reference chunk(s). Matching playbook paths are listed below.\\n- No reference playbook files were found on disk for the retrieved docs; you can add references manually below.\"],\"target_hosts\":[],\"reasoning_trace\":{\"steps\":[{\"title\":\"1. Parse user intent\",\"detail\":\"type=None  action=None  feature=(auto)  vendor=(auto)\"}]},\"interfaces_disambiguation\":null,\"params_disambiguation\":null,\"schema_editable_fields\":[],\"interfaces_for_selection\":null,\"schema_action\":null,\"secondary_intent_previews\":[],\"params_need_context_fix\":false,\"devices_disambiguation\":{\"ambiguous_devices\":[],\"missing_devices\":[],\"unknown_inventory_aliases\":[],\"ask_user_selection\":true,\"candidate_devices\":[\"Acc_Cisco_1\",\"Acc_Cisco_2\",\"Acc_Cisco_5\",\"Acc_Cisco_6\",\"Acc_Huawei_3\",\"Acc_Juniper_4\",\"Core_Cisco_1\",\"Core_Cisco_2\",\"Dist_Cisco_1\",\"Dist_Cisco_3\",\"Dist_Huawei_2\",\"Dist_Huawei_4\",\"awe\",\"dsa\"],\"disambiguation_kind\":\"missing_targets\",\"question\":\"No target device was inferred from your prompt. Select one or more devices from pl"
+  },
+  "preview_initial_assert": {
+    "ok": true,
+    "notes": []
+  },
+  "finished_at": "2026-03-20T11:49:57.050044",
+  "result_ok": true
+}

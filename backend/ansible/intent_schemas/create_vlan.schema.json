@@ -6,9 +6,9 @@
       "type": "object",
       "properties": {
         "id": { "type": "integer", "minimum": 1, "maximum": 4094 },
-        "name": { "type": "string" }
+        "name": { "type": "string", "minLength": 1 }
       },
-      "required": ["id"]
+      "required": ["id", "name"]
     },
     "target_hosts": {
       "type": "array",
@@ -23,14 +23,19 @@
           "mode": { "type": "string", "enum": ["access", "trunk"] },
           "access_vlan": { "type": "integer", "minimum": 1, "maximum": 4094 },
           "allowed_vlans": { "type": "array", "items": { "type": "integer" } },
-          "native_vlan": { "type": "integer", "minimum": 1, "maximum": 4094 }
+          "native_vlan": {
+            "anyOf": [
+              { "type": "integer", "minimum": 1, "maximum": 4094 },
+              { "type": "null" }
+            ]
+          }
         },
         "required": ["name", "mode"],
         "if": { "properties": { "mode": { "const": "access" } }, "required": ["mode"] },
         "then": { "required": ["access_vlan"] },
         "else": {
           "if": { "properties": { "mode": { "const": "trunk" } }, "required": ["mode"] },
-          "then": { "required": ["native_vlan"] }
+          "then": {}
         }
       }
     }

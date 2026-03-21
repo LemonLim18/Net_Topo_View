@@ -67,7 +67,7 @@
     - name: Shutdown interface (Huawei VRP)
       community.network.ce_config:
         lines:
-          - shutdown
+          - "{{ 'shutdown' if (interfaces_admin_enabled | default(false)) == false else 'undo shutdown' }}"
         parents: "interface {{ item }}"
         state: merged
       loop: "{{ interfaces_to_shutdown | default([]) }}"

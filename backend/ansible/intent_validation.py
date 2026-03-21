@@ -10,7 +10,7 @@ import json
 import logging
 import re
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 logger = logging.getLogger("ansible.intent_validation")
 
@@ -104,11 +104,33 @@ def _normalize_intent_for_type_schema(intent: Dict[str, Any], schema_key: str) -
         out["interfaces"] = []
         for item in ifaces:
             if isinstance(item, str):
-                out["interfaces"].append({"name": item, "mode": "access"})
+                # When intent supplies only interface names for VLAN binding,
+                # treat it as "bind VLAN as access VLAN" and default access_vlan=vlan_id.
+                # This avoids type validation failures on create_vlan.schema.json.
+                iface_obj: Dict[str, Any] = {"name": item, "mode": "access"}
+                if vlan_id is not None:
+                    iface_obj["access_vlan"] = vlan_id
+                out["interfaces"].append(iface_obj)
             elif isinstance(item, dict):
-                out["interfaces"].append(item)
+                iface_obj = dict(item)
+                # Default mode/access_vlan semantics when LLM/intent omitted them.
+                # If mode is explicitly access and access_vlan missing, use vlan_id.
+                mode = str(iface_obj.get("mode") or "access").strip().lower()
+                if not iface_obj.get("mode"):
+                    iface_obj["mode"] = mode
+                if mode == "access" and vlan_id is not None:
+                    if iface_obj.get("access_vlan") in (None, "", []):
+                        iface_obj["access_vlan"] = vlan_id
+                # Optional JSON-Schema fields must be omitted when null (not JSON null vs integer).
+                for _null_opt in ("native_vlan", "access_vlan", "allowed_vlans"):
+                    if _null_opt in iface_obj and iface_obj[_null_opt] is None:
+                        del iface_obj[_null_opt]
+                out["interfaces"].append(iface_obj)
             else:
-                out["interfaces"].append({"name": str(item), "mode": "access"})
+                iface_obj = {"name": str(item), "mode": "access"}
+                if vlan_id is not None:
+                    iface_obj["access_vlan"] = vlan_id
+                out["interfaces"].append(iface_obj)
     elif schema_key == "shutdown_interface":
         out["target_hosts"] = flat.get("target_devices") or []
         ifaces = flat.get("interfaces") or []
@@ -125,7 +147,11 @@ def _normalize_intent_for_type_schema(intent: Dict[str, Any], schema_key: str) -
             if isinstance(item, str):
                 norm.append({"name": item.strip(), "mode": "access"})
             elif isinstance(item, dict):
-                norm.append(item)
+                d = dict(item)
+                for _null_opt in ("native_vlan", "access_vlan", "allowed_vlans", "trunk_vlans"):
+                    if _null_opt in d and d[_null_opt] is None:
+                        del d[_null_opt]
+                norm.append(d)
             else:
                 norm.append({"name": str(item), "mode": "access"})
         out["interfaces"] = norm
@@ -540,6 +566,245 @@ def vlan_schema_fields_missing_from_user_prompt(intent_description: str) -> List
     return out
 
 
+def _params_satisfies_create_vlan_field(parameters: Optional[Dict[str, Any]], field: str) -> bool:
+    """
+    True when merged intent parameters already contain vlan_id / vlan_name (from LLM, wizard, or API).
+    Used so we do not re-ask in params_disambiguation after the user filled the chat wizard.
+    """
+    if not isinstance(parameters, dict):
+        return False
+    if field == "vlan_id":
+        v = parameters.get("vlan_id")
+        if v is not None and str(v).strip() != "":
+            return True
+        vlan = parameters.get("vlan")
+        if isinstance(vlan, dict):
+            vid = vlan.get("id")
+            if vid is None:
+                vid = vlan.get("vlan_id")
+            if vid is not None and str(vid).strip() != "":
+                return True
+        return False
+    if field == "vlan_name":
+        v = parameters.get("vlan_name")
+        if v is not None and str(v).strip() != "":
+            return True
+        vlan = parameters.get("vlan")
+        if isinstance(vlan, dict):
+            n = vlan.get("name")
+            if n is None:
+                n = vlan.get("vlan_name")
+            if n is not None and str(n).strip() != "":
+                return True
+        return False
+    return False
+
+
+def _vlan_field_trusted_by_request(
+    field: str,
+    trusted_param_keys: Set[str],
+    parameters: Optional[Dict[str, Any]],
+) -> bool:
+    """
+    True when the client explicitly sent this field via preview ``req.params`` (wizard / API),
+    not when the LLM invented it inside ``parameters`` before merge.
+
+    Supports flat ``vlan_id`` / ``vlan_name`` and nested ``vlan: {id, name}``.
+    """
+    if not trusted_param_keys:
+        return False
+    t = trusted_param_keys
+    params = parameters if isinstance(parameters, dict) else {}
+    if field == "vlan_id":
+        if "vlan_id" in t:
+            return True
+        if "vlan" in t and isinstance(params.get("vlan"), dict):
+            v = params["vlan"]
+            if v.get("id") not in (None, "") or v.get("vlan_id") not in (None, ""):
+                return True
+    if field == "vlan_name":
+        if "vlan_name" in t:
+            return True
+        if "vlan" in t and isinstance(params.get("vlan"), dict):
+            v = params["vlan"]
+            if v.get("name") not in (None, "") or v.get("vlan_name") not in (None, ""):
+                return True
+    return False
+
+
+def vlan_schema_fields_missing_from_user_prompt_respecting_params(
+    intent_description: str,
+    parameters: Optional[Dict[str, Any]],
+    trusted_param_keys: Optional[Set[str]] = None,
+) -> List[str]:
+    """
+    Same as ``vlan_schema_fields_missing_from_user_prompt``, but drops vlan_id / vlan_name when
+    the user confirmed them out-of-band (preview wizard sends keys in ``req.params`` —
+    ``trusted_param_keys``), because the raw ``intent_description`` never changes.
+
+    Values that exist only because the LLM filled ``parameters`` must **not** suppress the
+    wizard; otherwise missing VLAN names reappear as "sudden" regressions.
+    """
+    missing = vlan_schema_fields_missing_from_user_prompt(intent_description)
+    trusted = trusted_param_keys or set()
+    result: List[str] = []
+    for f in missing:
+        if f in ("vlan_id", "vlan_name"):
+            if _vlan_field_trusted_by_request(f, trusted, parameters) and _params_satisfies_create_vlan_field(
+                parameters, f
+            ):
+                continue
+            result.append(f)
+        else:
+            result.append(f)
+    return result
+
+
+def user_prompt_requests_vlan_interface_binding(description: str) -> bool:
+    """
+    True when the user is asking to map a VLAN to specific ports (access/trunk/tagging),
+    not only to create the VLAN in the switching database on target devices.
+
+    Used to ignore LLM-hallucinated interface lists for prompts like
+    "Create VLAN 67 on access switches 1–3" (device scope, not port binding).
+    """
+    if not description or not str(description).strip():
+        return False
+    tl = re.sub(r"\s+", " ", str(description).strip().lower())
+
+    if re.search(r"\btrunk\b", tl):
+        return True
+    if re.search(r"\buntagged\b", tl) or re.search(r"\btagged\b", tl):
+        return True
+
+    phrases = (
+        "native vlan",
+        "native-vlan",
+        "allowed vlan",
+        "allow vlan",
+        "allowed vlans",
+        "access vlan",
+        "voice vlan",
+        "switchport",
+        "tag vlan",
+        "pvid",
+        " as access",
+        " as trunk",
+        "access port",
+        "access ports",
+        "trunk port",
+        "trunk ports",
+        "configure interface",
+        "on interface",
+        " on port ",
+        " on gi",
+        " on gigabit",
+        " on ethernet",
+        " on ge-",
+        "uplink ",
+        "etherchannel",
+        "port-channel",
+        " lag ",
+        " lags ",
+    )
+    for p in phrases:
+        if p in tl:
+            return True
+
+    if re.search(
+        r"\b(?:gigabitethernet|ten-?gig|tengigabitethernet|fastethernet|port-channel|etherchannel|bundle-ethernet|xe-|ae\d)",
+        tl,
+    ):
+        return True
+    if re.search(r"\b(?:gi|te|fa|eth)\s*\d", tl):
+        return True
+    if re.search(r"\bethernet\s*\d+/\d+", tl):
+        return True
+    if re.search(r"\bge-\d+/\d+/\d+", tl):
+        return True
+    if re.search(r"\bge\s*\d+/\d+/\d+", tl):
+        return True
+    return False
+
+
+_VLAN_DB_ONLY_STRIP_PARAM_KEYS = frozenset({
+    "interfaces",
+    "interfaces_config",
+    "interfaces_config_use_nettopo",
+    "interface_binding",
+    "default_mode",
+})
+
+
+def coerce_vlan_database_only_intent(
+    parsed_intent: Dict[str, Any],
+    intent_description: str,
+    *,
+    user_supplied_interface_params: bool = False,
+) -> bool:
+    """
+    When feature is VLAN and the user did not ask for interface assignment, drop
+    interface-related parameters and force action ``create_vlan`` so preview/planning
+    validate against the VLAN DB schema (not ``configure_interface``).
+
+    Mutates ``parsed_intent`` in place (``action``, ``parameters``). Returns True if changed.
+
+    If the caller merged explicit ``interfaces`` / ``interfaces_config`` from the API
+    (e.g. user picked ports in the UI), pass ``user_supplied_interface_params=True`` so
+    we do not strip those selections.
+    """
+    feat = str(parsed_intent.get("feature") or "").strip().lower().replace("-", "_")
+    if feat != "vlan":
+        return False
+    if user_supplied_interface_params:
+        return False
+    if user_prompt_requests_vlan_interface_binding(intent_description or ""):
+        return False
+
+    params = dict(parsed_intent.get("parameters") or {})
+    changed = False
+    for k in _VLAN_DB_ONLY_STRIP_PARAM_KEYS:
+        if k in params:
+            params.pop(k, None)
+            changed = True
+
+    act = str(parsed_intent.get("action") or "").strip().lower().replace("-", "_")
+    if act != "create_vlan":
+        parsed_intent["action"] = "create_vlan"
+        changed = True
+
+    if changed:
+        parsed_intent["parameters"] = params
+        # Parser may have set this when it invented interfaces.
+        if parsed_intent.get("requires_resolution") is True:
+            parsed_intent["requires_resolution"] = False
+    return changed
+
+
+def is_vlan_database_only_intent(
+    *,
+    feature_lower: str,
+    schema_action: str,
+    parameters: Optional[Dict[str, Any]],
+    intent_description: str,
+) -> bool:
+    """
+    True when the workflow is VLAN database creation only: no port binding language
+    in the prompt and no interfaces payload. Used to skip interface inventory checks
+    and hide interface pickers in preview/plan.
+    """
+    fl = str(feature_lower or "").strip().lower().replace("-", "_")
+    sa = str(schema_action or "").strip().lower().replace("-", "_")
+    if fl != "vlan" or sa != "create_vlan":
+        return False
+    if user_prompt_requests_vlan_interface_binding(intent_description or ""):
+        return False
+    p = parameters or {}
+    if p.get("interfaces") or p.get("interfaces_config"):
+        return False
+    return True
+
+
 def get_schema_for_parsed_intent(parsed_intent: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """
     Resolve schema from parsed_intent.action or parsed_intent.feature.
@@ -556,10 +821,37 @@ def get_schema_for_parsed_intent(parsed_intent: Dict[str, Any]) -> Optional[Dict
     return None
 
 
+_INTENT_OPERATION_REFERENCE_CANDIDATES = (
+    Path(__file__).resolve().parent.parent.parent / "docs" / "intent_operation_reference.md",
+    Path(__file__).resolve().parent / "intent_operation_reference.md",
+)
+
+
+def get_intent_operation_reference_for_prompt(max_chars: int = 14000) -> str:
+    """
+    Load the canonical human/LLM intent operations document (VLAN DB vs interface, etc.).
+    Tries ``docs/intent_operation_reference.md`` first, then a copy next to intent_schemas.
+    """
+    for path in _INTENT_OPERATION_REFERENCE_CANDIDATES:
+        if not path.is_file():
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+            if len(text) > max_chars:
+                return text[:max_chars] + "\n\n… (truncated for prompt size)"
+            return text
+        except Exception as exc:
+            logger.warning("Failed to read intent operation reference %s: %s", path, exc)
+    return (
+        "(Document not found: add docs/intent_operation_reference.md — "
+        "see intent_schemas/*.yml for required/optional per action.)"
+    )
+
+
 def get_required_params_hint_for_prompt() -> str:
     """
-    Build a short hint for the LLM parse prompt: required parameters per feature
-    so the LLM is less likely to invent values. Used in llm/intent.py.
+    Compact per-operation summary from intent_schemas/*.yml for the LLM parse prompt.
+    The full narrative lives in ``get_intent_operation_reference_for_prompt()``.
     """
     lines = []
     for name in (
@@ -574,11 +866,13 @@ def get_required_params_hint_for_prompt() -> str:
         schema = load_schema(name)
         if not schema:
             continue
-        required = schema.get("required") or []
-        if not required:
-            continue
-        feature = (schema.get("feature") or name).strip()
-        lines.append(f"  - {feature}: {', '.join(required)}")
+        action = (schema.get("action") or name).strip()
+        feature = (schema.get("feature") or "").strip()
+        required = list(schema.get("required") or [])
+        optional = list(schema.get("optional") or [])
+        lines.append(
+            f"  - action={action!r} feature={feature!r} → required: {required}; optional: {optional}"
+        )
     if not lines:
         return "(none)"
     return "\n".join(lines)

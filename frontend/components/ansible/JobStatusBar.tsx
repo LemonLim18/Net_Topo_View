@@ -90,6 +90,21 @@ const JobStatusBar: React.FC<JobStatusBarProps> = ({
   const [loadingInventory, setLoadingInventory] = useState(false);
   const inventory = job?.jobId != null ? inventoryCache[job.jobId] ?? null : null;
 
+  // Remember which session was streaming so we can force the UI back to "Output"
+  // once deploy completes for easy operator review.
+  const lastStreamingSessionRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (isStreaming && streamingSessionId) {
+      lastStreamingSessionRef.current = streamingSessionId;
+    }
+  }, [isStreaming, streamingSessionId]);
+  useEffect(() => {
+    if (!isStreaming && lastStreamingSessionRef.current) {
+      setTab('output');
+      lastStreamingSessionRef.current = null;
+    }
+  }, [isStreaming]);
+
   const STATE_DOT: Record<SSHConnectionState, string> = {
     connecting: 'bg-warning animate-pulse',
     connected: 'bg-success',

@@ -1,0 +1,27 @@
+{
+  "case_id": "vlan_create_generic_ambiguous",
+  "started_at": "2026-03-20T12:13:03.880727",
+  "intent_description": "Create VLAN on devices (generic / ambiguous test)",
+  "preview_initial": {
+    "status_code": 200,
+    "text": "{\"categories\":[\"vlan\"],\"references\":[{\"doc_name\":\"playbook_template.yml\",\"feature\":\"vlan\",\"vendor\":\"multi_vendor\",\"path\":\"reference/vlan/multi_vendor/playbook_template.yml\"}],\"parsed_intent\":{\"id\":\"37e4d971\",\"intent_type\":\"configure\",\"action\":\"configure_interface\",\"feature\":\"vlan\",\"vendor\":\"\",\"parameters\":{\"vlan_id\":10,\"interfaces\":[\"Acc_Cisco_1:Ethernet0/1\",\"Acc_Cisco_2:Ethernet0/1\",\"Acc_Cisco_5:Ethernet0/1\",\"Acc_Cisco_6:Ethernet0/1\",\"Acc_Huawei_3:GigabitEthernet1/0/1\",\"Acc_Juniper_4:ge-0/0/0\"],\"device_deduction\":{\"deduced\":[\"Acc_Cisco_1\",\"Acc_Cisco_2\",\"Acc_Cisco_5\",\"Acc_Cisco_6\",\"Acc_Huawei_3\",\"Acc_Juniper_4\",\"Core_Cisco_1\",\"Core_Cisco_2\",\"Dist_Cisco_1\",\"Dist_Cisco_3\",\"Dist_Huawei_2\",\"Dist_Huawei_4\"],\"mapping\":[{\"hostname\":\"Acc_Cisco_1\",\"reason\":\"matched by inventory/name similarity\"},{\"hostname\":\"Acc_Cisco_2\",\"reason\":\"matched by inventory/name similarity\"},{\"hostname\":\"Acc_Cisco_5\",\"reason\":\"matched by inventory/name similarity\"},{\"hostname\":\"Acc_Cisco_6\",\"reason\":\"matched by inventory/name similarity\"},{\"hostname\":\"Acc_Huawei_3\",\"reason\":\"matched by inventory/name similarity\"},{\"hostname\":\"Acc_Juniper_4\",\"reason\":\"matched by inventory/name similarity\"},{\"hostname\":\"Core_Cisco_1\",\"reason\":\"matched by inventory/name similarity\"},{\"hostname\":\"Core_Cisco_2\",\"reason\":\"matched by inventory/name similarity\"},{\"hostname\":\"Dist_Cisco_1\",\"reason\":\"matched by inventory/name similarity\"},{\"hostname\":\"Dist_Cisco_3\",\"reason\":\"matched by inventory/name similarity\"},{\"hostname\":\"Dist_Huawei_2\",\"reason\":\"matched by inventory/name similarity\"},{\"hostname\":\"Dist_Huawei_4\",\"reason\":\"matched by inventory/name similarity\"}],\"why\":\"Backend selected the closest inventory names from the prompt wording.\"},\"target_hosts\":[\"Acc_Cisco_1\",\"Acc_Cisco_2\",\"Acc_Cisco_5\",\"Acc_Cisco_6\",\"Acc_Huawei_3\",\"Acc_Juniper_4\",\"Core_Cisco_1\",\"Core_Cisco_2\",\"Dist_Cisco_1\",\"Dist_Cisco_3\",\"Dist_Huawei_2\",\"Dist_Huawei_4\",\"awe\",\"dsa\"]},\"scope\":{\"device_hostnames\":[],\"device_role\":null,\"building\":null,\"vendor_fil"
+  },
+  "preview_initial_assert": {
+    "ok": false,
+    "notes": [
+      "params_disambiguation fields missing: expected to contain ['vlan_id', 'vlan_name'], actual=[]"
+    ]
+  },
+  "create_and_plan": {
+    "status_code": 422,
+    "text": "{\"detail\":{\"message\":\"Target devices are not clear from your prompt. Specify hostnames (e.g. Acc_Cisco_1) or a clear scope (e.g. all access switches), using Target inventory or your message.\",\"requires_target_clarification\":true}}"
+  },
+  "stageB_assert": {
+    "ok": false,
+    "notes": [
+      "create-and-plan HTTP status mismatch: 422"
+    ]
+  },
+  "finished_at": "2026-03-20T12:13:33.811683",
+  "result_ok": false
+}

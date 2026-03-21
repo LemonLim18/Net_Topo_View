@@ -1,0 +1,15 @@
+{
+  "case_id": "static_route_add_10_10_10_0_24_via_192_168_1_1_sw1",
+  "started_at": "2026-03-20T12:23:34.416406",
+  "intent_description": "Add a static route to 10.10.10.0/24 via 192.168.1.1 on SW1",
+  "preview_initial": {
+    "status_code": 200,
+    "text": "{\"categories\":[\"static_route\"],\"references\":[],\"parsed_intent\":{\"id\":\"29a2d157\",\"intent_type\":\"configure\",\"action\":\"configure_interface\",\"feature\":\"static_route\",\"vendor\":\"\",\"parameters\":{\"interfaces\":[\"SW1:Ethernet0/1\"],\"destination_network\":\"10.10.10.0/24\",\"gateway\":\"192.168.1.1\",\"device_deduction\":{\"deduced\":[\"Acc_Cisco_1\",\"Acc_Cisco_2\",\"Acc_Cisco_5\",\"Acc_Cisco_6\",\"Acc_Huawei_3\",\"Acc_Juniper_4\",\"Core_Cisco_1\",\"Core_Cisco_2\",\"Dist_Cisco_1\",\"Dist_Cisco_3\",\"Dist_Huawei_2\",\"Dist_Huawei_4\"],\"mapping\":[{\"hostname\":\"Acc_Cisco_1\",\"reason\":\"matched prompt number\"},{\"hostname\":\"Acc_Cisco_2\",\"reason\":\"matched prompt number\"},{\"hostname\":\"Acc_Cisco_5\",\"reason\":\"matched by inventory/name similarity\"},{\"hostname\":\"Acc_Cisco_6\",\"reason\":\"matched prompt number\"},{\"hostname\":\"Acc_Huawei_3\",\"reason\":\"matched by inventory/name similarity\"},{\"hostname\":\"Acc_Juniper_4\",\"reason\":\"matched prompt number\"},{\"hostname\":\"Core_Cisco_1\",\"reason\":\"matched prompt number\"},{\"hostname\":\"Core_Cisco_2\",\"reason\":\"matched prompt number\"},{\"hostname\":\"Dist_Cisco_1\",\"reason\":\"matched prompt number\"},{\"hostname\":\"Dist_Cisco_3\",\"reason\":\"matched by inventory/name similarity\"},{\"hostname\":\"Dist_Huawei_2\",\"reason\":\"matched prompt number\"},{\"hostname\":\"Dist_Huawei_4\",\"reason\":\"matched prompt number\"}],\"why\":\"Backend selected the closest inventory names from the prompt wording.\"},\"target_hosts\":[\"Acc_Cisco_1\",\"Acc_Cisco_2\",\"Acc_Cisco_5\",\"Acc_Cisco_6\",\"Acc_Huawei_3\",\"Acc_Juniper_4\",\"Core_Cisco_1\",\"Core_Cisco_2\",\"Dist_Cisco_1\",\"Dist_Cisco_3\",\"Dist_Huawei_2\",\"Dist_Huawei_4\",\"awe\",\"dsa\"]},\"scope\":{\"device_hostnames\":[],\"device_role\":null,\"building\":null,\"vendor_filter\":null,\"all_devices\":false},\"risk_level\":\"medium\",\"justification\":\"\",\"raw_user_input\":\"Add a static route to 10.10.10.0/24 via 192.168.1.1 on SW1\",\"requires_disambiguation\":false,\"disambiguation_message\":\"\",\"requires_resolution\":false,\"resolved_devices\":[\"Acc_Cisco_1\",\"Acc_Cisco_2\",\"Acc_Cisco_5\",\"Acc_Cisco_6\",\"Acc_Huawei_3\",\"Acc_Juniper_4\",\"Core_Ci"
+  },
+  "preview_initial_assert": {
+    "ok": true,
+    "notes": []
+  },
+  "finished_at": "2026-03-20T12:24:08.448757",
+  "result_ok": true
+}

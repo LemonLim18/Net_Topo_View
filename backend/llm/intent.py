@@ -212,7 +212,10 @@ Each element of "secondary_intents" (if any): {{ "action": "e.g. configure_ospf"
 ## Available Templates & Their Required Parameters
 {template_schemas}
 
-## Required parameters per feature (do not guess — omit if not specified by user)
+## Operation-specific intent reference (canonical — choose action + feature from here)
+{operation_reference}
+
+## Compact required/optional per operation (from intent_schemas; do not guess values)
 {required_params_hint}
 
 ## Current Network Topology
@@ -224,14 +227,20 @@ Each element of "secondary_intents" (if any): {{ "action": "e.g. configure_ospf"
 3. **Scope by layer**: If the user says "access switches", "all access", or "access layer only", set scope.device_role to "access" and leave all_devices false. If they say "distribution" or "core" only, set device_role to "distribution" or "core" respectively. Use all_devices true only when they clearly mean the entire network (e.g. "all devices", "every switch in the network").
 4. **Subset by number**: If the user specifies a subset by number, combine the role with the number to choose only those devices from that role group. Example: "access switch 3" means the 3rd access device in the role list, not all access switches. "access switch 1, 2, and 3" means device_hostnames = ["<first access device>", "<second access device>", "<third access device>"]. Do NOT set only device_role — that would target all devices of that role.
 5. **Generic switch words**: If the user says just "switches" without a role, do NOT set all_devices=true; require disambiguation instead.
-6. For CONFIGURE intents, you MUST fill in "feature" and "parameters" matching the template schema.
-7. **Interface actions**: Use action **shutdown_interface** for shutdown / admin-down / "turn off interfaces". Use action **configure_interface** for L2/L3 interface changes (access/trunk/routed, VLANs, IPs) when not a simple shutdown. For shutdown without listed interfaces, set parameters.interfaces_to_shutdown to null or omit, and set "requires_resolution": true. For configure_interface without listed interfaces, omit parameters.interfaces or set null and set "requires_resolution": true.
-8. If you cannot determine the target device, set intent_type="query", action="clarify", \
+6. **VLAN database vs VLAN on ports**: If the user only asks to **create** / **add** a VLAN (ID and name) on devices/switches and does **not** mention specific ports, access/trunk, allowed VLANs, or interface names (Gi/Ethernet/ge-), **action must be `create_vlan`** and **feature must be `vlan`**. **Never** use `configure_interface` for that. **Never** invent `parameters.interfaces` or `Host:Interface` strings.
+7. **VLAN on interfaces (ports only)**: If the user asks to assign VLANs to ports (access/trunk/native/allowed) or names interfaces **but does not ask to create a new VLAN in the switching database**, use **action `configure_interface`** and **feature `interface`** (not `feature: vlan`).
+7b. **Composite in one prompt — create VLAN AND configure ports** (multi-intent): If the user combines **both** (e.g. "Create VLAN 100 named HR and configure GigabitEthernet1/0/1 as access", or "Add VLAN 30 … on Gi… as access VLAN"), you MUST **not** collapse this into a single `configure_interface` intent. Use:
+   - **Primary intent**: `action`: **`create_vlan`**, `feature`: **`vlan`**, `parameters`: **`vlan_id`**, **`vlan_name`**, **`target_devices`** / scope (VLAN DB step; **no** `parameters.interfaces` on the primary).
+   - **`secondary_intents`**: one object with `action`: **`configure_interface`**, `feature`: **`interface`**, `parameters`: **`interfaces`** (list of objects with `name`, `mode` e.g. `access`, `access_vlan` = the VLAN ID from the primary).
+   Order: VLAN database creation is always the **primary** `create_vlan` task when both appear; port binding is **secondary**. If the user lists multiple unrelated tasks (e.g. VLAN + OSPF), same pattern: primary = first task, others in `secondary_intents`.
+8. For CONFIGURE intents, you MUST fill in "feature" and "parameters" matching the operation reference above.
+9. **Interface actions**: Use action **shutdown_interface** for shutdown / admin-down / "turn off interfaces". Use action **configure_interface** for L2/L3 interface changes (access/trunk/routed, VLANs, IPs) when not a simple shutdown. For shutdown without listed interfaces, set parameters.interfaces_to_shutdown to null or omit, and set "requires_resolution": true. For configure_interface without listed interfaces, omit parameters.interfaces or set null and set "requires_resolution": true.
+10. If you cannot determine the target device, set intent_type="query", action="clarify", \
    and put a clarifying question in justification.
-9. risk_level heuristic: bgp/acl/firewall/nat = high; ospf/vlan/stp = medium; ntp/logging/banner = low.
-10. For read-only requests (show topology, list devices, check status), use intent_type="query".
-11. For security scan requests, use intent_type="audit".
-12. **Multi-intent**: If the user request combines multiple configuration tasks (e.g. "Create VLAN 10 and enable OSPF on access switch 1"), set the primary "action" and "feature" to the first or main task, and put the other task(s) in "secondary_intents" as objects with "action", "feature", and "parameters". Use empty array if only one task.
+11. risk_level heuristic: bgp/acl/firewall/nat = high; ospf/vlan/stp = medium; ntp/logging/banner = low.
+12. For read-only requests (show topology, list devices, check status), use intent_type="query".
+13. For security scan requests, use intent_type="audit".
+14. **Multi-intent**: If the user request combines multiple configuration tasks, set the primary "action" and "feature" to the **first** task (see rule 7b for VLAN+interface), and put the other task(s) in "secondary_intents" as objects with "action", "feature", and "parameters". Examples: (a) "Create VLAN 10 and enable OSPF on access switch 1" → primary `create_vlan`, secondary OSPF; (b) "Create VLAN 100 named HR and set Gi1/0/1 to access" → primary `create_vlan`, secondary `configure_interface`. Use empty array if only one task.
 
 ## User Request
 {user_message}
@@ -278,13 +287,19 @@ class IntentParser:
         # Build template schema context for the prompt
         template_schemas = self._get_template_schemas()
         try:
-            from ansible.intent_validation import get_required_params_hint_for_prompt
+            from ansible.intent_validation import (
+                get_intent_operation_reference_for_prompt,
+                get_required_params_hint_for_prompt,
+            )
+            operation_reference = get_intent_operation_reference_for_prompt()
             required_params_hint = get_required_params_hint_for_prompt()
         except Exception:
+            operation_reference = "(not available)"
             required_params_hint = "(none)"
 
         prompt = _PARSE_PROMPT.format(
             template_schemas=template_schemas,
+            operation_reference=operation_reference,
             required_params_hint=required_params_hint,
             topology_context=topology_context or "(no topology loaded)",
             user_message=user_message,

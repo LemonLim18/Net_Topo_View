@@ -1,0 +1,25 @@
+{
+  "case_id": "vlan_create_120_web_vlan_on_sw1_sw2",
+  "started_at": "2026-03-20T12:21:08.091288",
+  "intent_description": "Create VLAN 120 named WEB_Vlan on SW1 and SW2",
+  "preview_initial": {
+    "status_code": 200,
+    "text": "{\"categories\":[\"vlan\"],\"references\":[{\"doc_name\":\"playbook_template.yml\",\"feature\":\"vlan\",\"vendor\":\"multi_vendor\",\"path\":\"reference/vlan/multi_vendor/playbook_template.yml\"}],\"parsed_intent\":{\"id\":\"3cd5b4f2\",\"intent_type\":\"configure\",\"action\":\"configure_interface\",\"feature\":\"vlan\",\"vendor\":\"\",\"parameters\":{\"interfaces\":[{\"device_hostnames\":[\"SW1\",\"SW2\"],\"vlan_id\":120,\"vlan_name\":\"WEB_Vlan\",\"vlan_type\":\"access\"}],\"device_deduction\":{\"deduced\":[\"Acc_Cisco_1\",\"Acc_Cisco_2\",\"Acc_Cisco_5\",\"Acc_Cisco_6\",\"Acc_Huawei_3\",\"Acc_Juniper_4\",\"Core_Cisco_1\",\"Core_Cisco_2\",\"Dist_Cisco_1\",\"Dist_Cisco_3\",\"Dist_Huawei_2\",\"Dist_Huawei_4\"],\"mapping\":[{\"hostname\":\"Acc_Cisco_1\",\"reason\":\"matched prompt number\"},{\"hostname\":\"Acc_Cisco_2\",\"reason\":\"matched prompt number\"},{\"hostname\":\"Acc_Cisco_5\",\"reason\":\"matched by inventory/name similarity\"},{\"hostname\":\"Acc_Cisco_6\",\"reason\":\"matched by inventory/name similarity\"},{\"hostname\":\"Acc_Huawei_3\",\"reason\":\"matched by inventory/name similarity\"},{\"hostname\":\"Acc_Juniper_4\",\"reason\":\"matched by inventory/name similarity\"},{\"hostname\":\"Core_Cisco_1\",\"reason\":\"matched prompt number\"},{\"hostname\":\"Core_Cisco_2\",\"reason\":\"matched prompt number\"},{\"hostname\":\"Dist_Cisco_1\",\"reason\":\"matched prompt number\"},{\"hostname\":\"Dist_Cisco_3\",\"reason\":\"matched by inventory/name similarity\"},{\"hostname\":\"Dist_Huawei_2\",\"reason\":\"matched prompt number\"},{\"hostname\":\"Dist_Huawei_4\",\"reason\":\"matched by inventory/name similarity\"}],\"why\":\"Backend selected the closest inventory names from the prompt wording.\"},\"target_hosts\":[\"Acc_Cisco_1\",\"Acc_Cisco_2\",\"Acc_Cisco_5\",\"Acc_Cisco_6\",\"Acc_Huawei_3\",\"Acc_Juniper_4\",\"Core_Cisco_1\",\"Core_Cisco_2\",\"Dist_Cisco_1\",\"Dist_Cisco_3\",\"Dist_Huawei_2\",\"Dist_Huawei_4\",\"awe\",\"dsa\"]},\"scope\":{\"device_hostnames\":[],\"device_role\":null,\"building\":null,\"vendor_filter\":null,\"all_devices\":false},\"risk_level\":\"medium\",\"justification\":\"\",\"raw_user_input\":\"Create VLAN 120 named WEB_Vlan on SW1 and SW2\",\"requires_disambiguation\":false,\"disam"
+  },
+  "preview_initial_assert": {
+    "ok": true,
+    "notes": []
+  },
+  "create_and_plan": {
+    "status_code": 422,
+    "text": "{\"detail\":{\"message\":\"Target devices are not clear from your prompt. Specify hostnames (e.g. Acc_Cisco_1) or a clear scope (e.g. all access switches), using Target inventory or your message.\",\"requires_target_clarification\":true}}"
+  },
+  "stageB_assert": {
+    "ok": false,
+    "notes": [
+      "create-and-plan HTTP status mismatch: 422"
+    ]
+  },
+  "finished_at": "2026-03-20T12:22:19.828319",
+  "result_ok": false
+}

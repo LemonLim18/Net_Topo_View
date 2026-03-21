@@ -32,6 +32,9 @@
         lines:
           - port link-type trunk
           - port trunk allow-pass vlan {{ 'all' if (interfaces_binding_trunk_allowed_vlans is string and interfaces_binding_trunk_allowed_vlans == 'all') else (interfaces_binding_trunk_allowed_vlans | default([]) | map('string') | join(' ')) }}
+{% if interfaces_binding_trunk_native_vlan is not none %}
+          - port trunk pvid vlan {{ interfaces_binding_trunk_native_vlan }}
+{% endif %}
         parents: "interface {{ '{{ item }}' }}"
       loop: "{{ '{{ nettopo_interfaces | default([]) | rejectattr(''ip_address'', ''equalto'', (hostvars[inventory_hostname].ansible_host | default(''''))) | map(attribute=''name'') | map(''trim'') | reject(''equalto'', '''') | reject(''match'', ''(?i).*(management|mgmt|meth|vty|console).*'') | list }}' }}"
       loop_control:
@@ -57,6 +60,9 @@
         lines:
           - port link-type trunk
           - port trunk allow-pass vlan {{ iface.trunk.trunk_vlans }}
+{% if iface.trunk.native_vlan is defined and iface.trunk.native_vlan is not none %}
+          - port trunk pvid vlan {{ iface.trunk.native_vlan }}
+{% endif %}
         parents: interface {{ iface.name }}
       when: inventory_hostname in groups.get('vendor_huawei_vrp', [])
 {% endif %}

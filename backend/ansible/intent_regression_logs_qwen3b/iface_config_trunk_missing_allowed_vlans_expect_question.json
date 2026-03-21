@@ -1,0 +1,17 @@
+{
+  "case_id": "iface_config_trunk_missing_allowed_vlans_expect_question",
+  "started_at": "2026-03-20T11:52:35.830715",
+  "intent_description": "Configure GigabitEthernet1/0/5 as trunk on SW1 (allowed VLANs not specified)",
+  "preview_initial": {
+    "status_code": 200,
+    "text": "{\"categories\":[\"interface\"],\"references\":[{\"doc_name\":\"playbook_template.yml\",\"feature\":\"interface\",\"vendor\":\"multi_vendor\",\"path\":\"reference/interface/multi_vendor/playbook_template.yml\"}],\"parsed_intent\":{\"resolved_devices\":[],\"inventory_unknown_device_tokens\":[],\"device_deduction\":{\"deduced\":[],\"why\":\"No target devices could be resolved from the prompt or inventory.\",\"clues\":[],\"mapping\":[]},\"disambiguation\":null},\"policy_approved\":false,\"reasoning\":[\"### 1. Intent\\nIntent parsing encountered an issue: Ollama API error 404: {\\\"error\\\":\\\"model 'qwen3b' not found\\\"}. Using provided feature/vendor if any.\",\"### 1c. Select target device(s)\\n- No inventory hostname was resolved. Choose device(s) in the chat picker or **Target inventory**, then continue.\\n\",\"### 2. Target devices\\n- **Resolved:** (none — pick specific host(s) in **Target inventory** or answer the device question below). You can change them in **Target inventory** below.\",\"### 3. Vendor & templates\\n- No vendor filter; reference templates may include multi-vendor and vendor-specific.\",\"### 4. Reference templates (RAG)\\n- RAG retrieved **4** ansible_reference chunk(s). Matching playbook paths are listed below.\\n- Templates were inferred from intent categories and vendor; you can remove or add more below.\"],\"target_hosts\":[],\"reasoning_trace\":{\"steps\":[{\"title\":\"1. Parse user intent\",\"detail\":\"type=None  action=None  feature=(auto)  vendor=(auto)\"},{\"title\":\"3. Select reference templates\",\"detail\":\"- reference/interface/multi_vendor/playbook_template.yml: feature=interface vendor=multi_vendor\"}]},\"interfaces_disambiguation\":null,\"params_disambiguation\":null,\"schema_editable_fields\":[],\"interfaces_for_selection\":null,\"schema_action\":null,\"secondary_intent_previews\":[],\"params_need_context_fix\":false,\"devices_disambiguation\":{\"ambiguous_devices\":[],\"missing_devices\":[],\"unknown_inventory_aliases\":[],\"ask_user_selection\":true,\"candidate_devices\":[\"Acc_Cisco_1\",\"Acc_Cisco_2\",\"Acc_Cisco_5\",\"Acc_Cisco_6\",\"Acc_H"
+  },
+  "preview_initial_assert": {
+    "ok": false,
+    "notes": [
+      "HTTP status mismatch: expected 422, got 200"
+    ]
+  },
+  "finished_at": "2026-03-20T11:52:46.376167",
+  "result_ok": false
+}

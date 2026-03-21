@@ -9,6 +9,7 @@
   vars:
     interfaces_config_defaults: {{ interfaces_config_override | default([]) | tojson }}
     interfaces_config: {{ interfaces_config_override | default([]) | tojson }}
+    interfaces_admin_enabled: {{ interfaces_admin_enabled | default(false) }}
 {% if interfaces_config_use_nettopo | default(false) %}
     # Per-host expanded config from nettopo_interfaces (mgmt excluded by name + mgmt IP match).
     interfaces_config: "{{ '{{ [ ((interfaces_config_defaults | default([]) | first | default({})) | combine({''name'': n})) for n in (nettopo_interfaces | default([]) | rejectattr(''ip_address'', ''equalto'', (hostvars[inventory_hostname].ansible_host | default(''''))) | map(attribute=''name'') | map(''trim'') | reject(''equalto'', '''') | reject(''match'', ''(?i).*(management|mgmt|meth|vty|console).*'') | list) ] }}' }}"
@@ -24,7 +25,7 @@
       cisco.ios.ios_interfaces:
         config:
           - name: "{{ item }}"
-            enabled: false
+            enabled: "{{ interfaces_admin_enabled | default(false) }}"
         state: merged
       loop: "{{ interfaces_to_shutdown | default([]) }}"
       loop_control:
@@ -76,7 +77,7 @@
     - name: Shutdown interface (Huawei VRP)
       community.network.ce_config:
         lines:
-          - shutdown
+          - "{{ 'shutdown' if (interfaces_admin_enabled | default(false)) == false else 'undo shutdown' }}"
         parents: "interface {{ item }}"
         state: merged
       loop: "{{ interfaces_to_shutdown | default([]) }}"
@@ -91,7 +92,7 @@
       juniper.device.junos_interfaces:
         config:
           - name: "{{ item }}"
-            enabled: false
+            enabled: "{{ interfaces_admin_enabled | default(false) }}"
         state: merged
       loop: "{{ interfaces_to_shutdown | default([]) }}"
       loop_control:

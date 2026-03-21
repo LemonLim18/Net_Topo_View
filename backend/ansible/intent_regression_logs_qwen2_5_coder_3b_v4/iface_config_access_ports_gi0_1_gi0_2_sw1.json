@@ -1,0 +1,17 @@
+{
+  "case_id": "iface_config_access_ports_gi0_1_gi0_2_sw1",
+  "started_at": "2026-03-20T12:24:19.055691",
+  "intent_description": "Configure GigabitEthernet1/0/1 and GigabitEthernet1/0/2 as access ports on SW1",
+  "preview_initial": {
+    "status_code": 200,
+    "text": "{\"categories\":[\"interface\",\"access_ports\"],\"references\":[{\"doc_name\":\"playbook_template.yml\",\"feature\":\"interface\",\"vendor\":\"multi_vendor\",\"path\":\"reference/interface/multi_vendor/playbook_template.yml\"}],\"parsed_intent\":{\"id\":\"fb9a7666\",\"intent_type\":\"configure\",\"action\":\"configure_interface\",\"feature\":\"access_ports\",\"vendor\":\"\",\"parameters\":{\"device_hostnames\":[\"SW1\"],\"interfaces\":[{\"interface_name\":\"GigabitEthernet1/0/1\",\"interface_type\":\"access\"},{\"interface_name\":\"GigabitEthernet1/0/2\",\"interface_type\":\"access\"}],\"device_deduction\":{\"deduced\":[\"Acc_Cisco_1\",\"Acc_Cisco_2\",\"Acc_Cisco_5\",\"Acc_Cisco_6\",\"Acc_Huawei_3\",\"Acc_Juniper_4\",\"Core_Cisco_1\",\"Core_Cisco_2\",\"Dist_Cisco_1\",\"Dist_Cisco_3\",\"Dist_Huawei_2\",\"Dist_Huawei_4\"],\"mapping\":[{\"hostname\":\"Acc_Cisco_1\",\"reason\":\"matched role=access; matched prompt number\"},{\"hostname\":\"Acc_Cisco_2\",\"reason\":\"matched role=access; matched prompt number\"},{\"hostname\":\"Acc_Cisco_5\",\"reason\":\"matched role=access\"},{\"hostname\":\"Acc_Cisco_6\",\"reason\":\"matched role=access\"},{\"hostname\":\"Acc_Huawei_3\",\"reason\":\"matched role=access\"},{\"hostname\":\"Acc_Juniper_4\",\"reason\":\"matched role=access\"},{\"hostname\":\"Core_Cisco_1\",\"reason\":\"matched prompt number\"},{\"hostname\":\"Core_Cisco_2\",\"reason\":\"matched prompt number\"},{\"hostname\":\"Dist_Cisco_1\",\"reason\":\"matched prompt number\"},{\"hostname\":\"Dist_Cisco_3\",\"reason\":\"matched by inventory/name similarity\"},{\"hostname\":\"Dist_Huawei_2\",\"reason\":\"matched prompt number\"},{\"hostname\":\"Dist_Huawei_4\",\"reason\":\"matched by inventory/name similarity\"}],\"why\":\"Backend selected the closest inventory names from the prompt wording.\"},\"target_hosts\":[\"Acc_Cisco_1\",\"Acc_Cisco_2\",\"Acc_Cisco_5\",\"Acc_Cisco_6\",\"Acc_Huawei_3\",\"Acc_Juniper_4\",\"Core_Cisco_1\",\"Core_Cisco_2\",\"Dist_Cisco_1\",\"Dist_Cisco_3\",\"Dist_Huawei_2\",\"Dist_Huawei_4\",\"awe\",\"dsa\"]},\"scope\":{\"device_hostnames\":[],\"device_role\":null,\"building\":null,\"vendor_filter\":null,\"all_devices\":false},\"risk_level\":\"medium\",\"justification\":\"\",\"raw_user_input\":\"Con"
+  },
+  "preview_initial_assert": {
+    "ok": false,
+    "notes": [
+      "HTTP status mismatch: expected 422, got 200"
+    ]
+  },
+  "finished_at": "2026-03-20T12:25:02.375796",
+  "result_ok": false
+}

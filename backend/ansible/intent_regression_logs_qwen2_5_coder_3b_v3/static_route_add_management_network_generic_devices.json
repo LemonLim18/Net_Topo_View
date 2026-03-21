@@ -1,0 +1,15 @@
+{
+  "case_id": "static_route_add_management_network_generic_devices",
+  "started_at": "2026-03-20T12:27:14.631991",
+  "intent_description": "Add a static route for the management network on devices",
+  "preview_initial": {
+    "status_code": 200,
+    "text": "{\"categories\":[\"static_route\"],\"references\":[],\"parsed_intent\":{\"id\":\"644b185f\",\"intent_type\":\"configure\",\"action\":\"configure_static_route\",\"feature\":\"static_route\",\"vendor\":\"\",\"parameters\":{\"device_hostnames\":[\"Acc_Cisco_1\",\"Acc_Cisco_2\",\"Acc_Cisco_5\",\"Acc_Cisco_6\",\"Acc_Huawei_3\",\"Acc_Juniper_4\"],\"network\":\"192.168.1.0/24\",\"gateway\":\"192.168.1.1\",\"device_deduction\":{\"deduced\":[\"Acc_Cisco_1\",\"Acc_Cisco_2\",\"Acc_Cisco_5\",\"Acc_Cisco_6\",\"Acc_Huawei_3\",\"Acc_Juniper_4\",\"Core_Cisco_1\",\"Core_Cisco_2\",\"Dist_Cisco_1\",\"Dist_Cisco_3\",\"Dist_Huawei_2\",\"Dist_Huawei_4\"],\"mapping\":[{\"hostname\":\"Acc_Cisco_1\",\"reason\":\"matched by inventory/name similarity\"},{\"hostname\":\"Acc_Cisco_2\",\"reason\":\"matched by inventory/name similarity\"},{\"hostname\":\"Acc_Cisco_5\",\"reason\":\"matched by inventory/name similarity\"},{\"hostname\":\"Acc_Cisco_6\",\"reason\":\"matched by inventory/name similarity\"},{\"hostname\":\"Acc_Huawei_3\",\"reason\":\"matched by inventory/name similarity\"},{\"hostname\":\"Acc_Juniper_4\",\"reason\":\"matched by inventory/name similarity\"},{\"hostname\":\"Core_Cisco_1\",\"reason\":\"matched by inventory/name similarity\"},{\"hostname\":\"Core_Cisco_2\",\"reason\":\"matched by inventory/name similarity\"},{\"hostname\":\"Dist_Cisco_1\",\"reason\":\"matched by inventory/name similarity\"},{\"hostname\":\"Dist_Cisco_3\",\"reason\":\"matched by inventory/name similarity\"},{\"hostname\":\"Dist_Huawei_2\",\"reason\":\"matched by inventory/name similarity\"},{\"hostname\":\"Dist_Huawei_4\",\"reason\":\"matched by inventory/name similarity\"}],\"why\":\"Backend selected the closest inventory names from the prompt wording.\"},\"target_hosts\":[\"Acc_Cisco_1\",\"Acc_Cisco_2\",\"Acc_Cisco_5\",\"Acc_Cisco_6\",\"Acc_Huawei_3\",\"Acc_Juniper_4\",\"Core_Cisco_1\",\"Core_Cisco_2\",\"Dist_Cisco_1\",\"Dist_Cisco_3\",\"Dist_Huawei_2\",\"Dist_Huawei_4\",\"awe\",\"dsa\"]},\"scope\":{\"device_hostnames\":[],\"device_role\":null,\"building\":null,\"vendor_filter\":null,\"all_devices\":false},\"risk_level\":\"medium\",\"justification\":\"\",\"raw_user_input\":\"Add a static route for the management network on devices\",\"re"
+  },
+  "preview_initial_assert": {
+    "ok": true,
+    "notes": []
+  },
+  "finished_at": "2026-03-20T12:28:02.388367",
+  "result_ok": true
+}

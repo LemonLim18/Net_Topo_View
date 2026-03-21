@@ -1,0 +1,240 @@
+version: 1
+# This file is generated/curated to drive intent-validation regression prompts.
+# It contains the raw natural-language prompts only; expected outcomes live in the golden file.
+cases:
+  # -----------------------------
+  # VLAN (6 checklist prompts)
+  # -----------------------------
+  - id: vlan_create_67_shuying_access_1_2_3
+    category: vlan
+    intent_description: "Create VLAN 67 named ShuYing on access switch 1, 2, and 3"
+
+  - id: vlan_create_120_web_vlan_on_sw1_sw2
+    category: vlan
+    intent_description: "Create VLAN 120 named WEB_Vlan on SW1 and SW2"
+
+  - id: vlan_create_30_access_vlan_gi0_1_sw1
+    category: vlan
+    intent_description: "Create VLAN 30 and apply it as access VLAN on GigabitEthernet1/0/1 on SW1"
+
+  - id: vlan_create_10_trunk_allow_gi0_2_sw1
+    category: vlan
+    intent_description: "Create VLAN 10 and allow it on trunk port GigabitEthernet1/0/2 on SW1"
+
+  - id: vlan_create_200_guest_native_vlan_200_gi0_3
+    category: vlan
+    intent_description: "Create VLAN 200 named Guest and set native VLAN 200 on GigabitEthernet1/0/3"
+
+  - id: vlan_create_generic_ambiguous
+    category: vlan
+    intent_description: "Create VLAN on devices (generic / ambiguous test)"
+
+  # -----------------------------
+  # Interface (6 checklist prompts)
+  # -----------------------------
+  - id: iface_admin_down_all_on_sw1
+    category: interface
+    intent_description: "Admin-down all interfaces on SW1"
+
+  - id: iface_shutdown_gi0_1_router2
+    category: interface
+    intent_description: "Shut down GigabitEthernet1/0/1 on router 2"
+
+  - id: iface_config_access_ports_gi0_1_gi0_2_sw1
+    category: interface
+    intent_description: "Configure GigabitEthernet1/0/1 and GigabitEthernet1/0/2 as access ports on SW1"
+
+  - id: iface_config_trunk_gi0_5_allow_vlans_sw1
+    category: interface
+    intent_description: "Configure GigabitEthernet1/0/5 as trunk and allow VLANs 10, 20, 67 on SW1"
+
+  - id: iface_config_routed_gi0_3_ip_192_168_10_1_24_sw1
+    category: interface
+    intent_description: "Set GigabitEthernet1/0/3 as routed interface with IP address 192.168.10.1/24 on SW1"
+
+  - id: iface_config_generic_ambiguous
+    category: interface
+    intent_description: "Configure interfaces on devices (generic / ambiguous test)"
+
+  # -----------------------------
+  # ACL (6 checklist prompts)
+  # -----------------------------
+  - id: acl_create_2000_permit_ssh_sw1
+    category: acl
+    intent_description: "Create ACL 2000 to permit SSH from 192.168.1.0/24 on SW1"
+
+  - id: acl_create_block_http_deny_tcp_80_sw1
+    category: acl
+    intent_description: "Create ACL named BLOCK_HTTP to deny TCP port 80 on SW1"
+
+  - id: acl_apply_3000_inbound_gi0_1_sw1
+    category: acl
+    intent_description: "Apply ACL 3000 inbound on GigabitEthernet1/0/1 on SW1"
+
+  - id: acl_apply_block_http_outbound_gi0_2_sw1
+    category: acl
+    intent_description: "Apply ACL BLOCK_HTTP outbound on GigabitEthernet1/0/2 on SW1"
+
+  - id: acl_deny_icmp_apply_on_access_switch_3
+    category: acl
+    intent_description: "Create ACL to deny ICMP and apply it on access switch 3"
+
+  - id: acl_add_rule_generic_ambiguous
+    category: acl
+    intent_description: "Add ACL rule on devices (generic / ambiguous test)"
+
+  # -----------------------------
+  # QoS (6 checklist prompts)
+  # -----------------------------
+  - id: qos_create_voice_policy_sw1
+    category: qos
+    intent_description: "Create QoS policy VOICE_POLICY on SW1"
+
+  - id: qos_config_prioritize_voice_gi0_1_sw1
+    category: qos
+    intent_description: "Configure QoS to prioritize voice traffic on GigabitEthernet1/0/1"
+
+  - id: qos_apply_in_policy_inbound_gi0_2_sw1
+    category: qos
+    intent_description: "Apply QoS policy IN_POLICY inbound on GigabitEthernet1/0/2 on SW1"
+
+  - id: qos_mark_dscp_46_on_sw2
+    category: qos
+    intent_description: "Mark traffic with DSCP 46 for voice on access switch 2"
+
+  - id: qos_create_policing_policy_http_sw1
+    category: qos
+    intent_description: "Create policing policy for HTTP traffic on SW1"
+
+  - id: qos_config_generic_ambiguous
+    category: qos
+    intent_description: "Configure QoS on devices (generic / ambiguous test)"
+
+  # -----------------------------
+  # Static Route (6 checklist prompts)
+  # -----------------------------
+  - id: static_route_add_10_10_10_0_24_via_192_168_1_1_sw1
+    category: static_route
+    intent_description: "Add a static route to 10.10.10.0/24 via 192.168.1.1 on SW1"
+
+  - id: static_route_add_default_route_on_router_2
+    category: static_route
+    intent_description: "Add a default route on router 2"
+
+  - id: static_route_add_172_16_0_0_16_via_gi0_1_router_2
+    category: static_route
+    intent_description: "Add a static route to 172.16.0.0/16 via GigabitEthernet0/1 on router 2"
+
+  - id: static_route_add_192_168_50_0_24_via_10_0_0_2_sw1
+    category: static_route
+    intent_description: "Add a static route to 192.168.50.0/24 with next hop 10.0.0.2 on SW1"
+
+  - id: static_route_add_management_network_generic_devices
+    category: static_route
+    intent_description: "Add a static route for the management network on devices"
+
+  - id: static_route_create_generic_route_ambiguous
+    category: static_route
+    intent_description: "Create a route on devices (generic / ambiguous test)"
+
+  # -----------------------------
+  # OSPF (6 checklist prompts)
+  # -----------------------------
+  - id: ospf_config_process_1_on_router_2
+    category: ospf
+    intent_description: "Configure OSPF process 1 on router 2"
+
+  - id: ospf_add_network_192_168_1_0_24_area_0_router_2
+    category: ospf
+    intent_description: "Add network 192.168.1.0/24 to OSPF area 0 on router 2"
+
+  - id: ospf_set_router_id_1_1_1_1_advertise_10_0_0_0_24_area_0_sw1
+    category: ospf
+    intent_description: "Set router ID 1.1.1.1 and advertise 10.0.0.0/24 in area 0 on SW1"
+
+  - id: ospf_make_gi1_0_1_passive_on_router_1
+    category: ospf
+    intent_description: "Make GigabitEthernet1/0/1 passive in OSPF on router 1"
+
+  - id: ospf_enable_redistribution_static_routes_router_2
+    category: ospf
+    intent_description: "Enable OSPF redistribution of static routes on router 2"
+
+  - id: ospf_config_generic_ambiguous
+    category: ospf
+    intent_description: "Configure OSPF on devices (generic / ambiguous test)"
+
+  # -----------------------------
+  # Ambiguity / Validation (6 checklist prompts)
+  # -----------------------------
+  - id: amb_vlan_configure_vlan_on_sw1_missing_id_name
+    category: vlan
+    intent_description: "Configure VLAN on SW1"
+
+  - id: amb_iface_admin_down_all_on_sw1_and_sw3
+    category: interface
+    intent_description: "Admin-down all interfaces on SW1 and SW3"
+
+  - id: amb_acl_apply_inbound_missing_acl_name
+    category: acl
+    intent_description: "Apply ACL inbound on GigabitEthernet1/0/1"
+
+  - id: amb_static_route_add_via_next_hop_missing_destination
+    category: static_route
+    intent_description: "Add static route via next hop 192.168.1.254"
+
+  - id: amb_qos_put_on_uplink_port
+    category: qos
+    intent_description: "Put QoS on the uplink port"
+
+  - id: amb_ospf_add_network_for_access_network
+    category: ospf
+    intent_description: "Add OSPF network for the access network"
+
+  # -----------------------------
+  # Derived negative / edge prompts (from intent schemas)
+  # -----------------------------
+  - id: vlan_create_missing_vlan_name_but_has_id
+    category: vlan
+    intent_description: "Create VLAN 67 on access switch 1"
+
+  - id: vlan_create_missing_vlan_id_but_has_name
+    category: vlan
+    intent_description: "Create VLAN named DATA on access switch 1"
+
+  - id: vlan_trunk_missing_native_vlan_expect_question
+    category: vlan
+    intent_description: "Create VLAN 10 and allow it on trunk port GigabitEthernet1/0/2 on SW1 (native VLAN not specified)"
+
+  - id: iface_config_access_missing_access_vlan_expect_question
+    category: interface
+    intent_description: "Configure GigabitEthernet1/0/1 as access port on SW1 (access VLAN not specified)"
+
+  - id: iface_config_trunk_missing_allowed_vlans_expect_question
+    category: interface
+    intent_description: "Configure GigabitEthernet1/0/5 as trunk on SW1 (allowed VLANs not specified)"
+
+  - id: iface_config_routed_missing_subnet_mask_expect_question
+    category: interface
+    intent_description: "Set GigabitEthernet1/0/3 as routed interface with IP address 192.168.10.1 on SW1"
+
+  - id: acl_create_missing_rules_expect_question
+    category: acl
+    intent_description: "Create ACL named WEB_FILTER on SW1"
+
+  - id: qos_create_missing_classification_rules_expect_question
+    category: qos
+    intent_description: "Create QoS policy VOICE_POLICY on SW1 (classification rules not specified)"
+
+  - id: static_route_missing_next_hop_expect_question
+    category: static_route
+    intent_description: "Add a static route to 10.10.10.0/24 on SW1 (next hop missing)"
+
+  - id: ospf_missing_process_id_expect_question
+    category: ospf
+    intent_description: "Add network 192.168.1.0/24 to OSPF area 0 on router 2 (process id missing)"
+
+  - id: ospf_missing_networks_expect_question
+    category: ospf
+    intent_description: "Enable OSPF process 1 on router 2 (no networks specified)"
+

@@ -10,6 +10,7 @@
   vars:
     interfaces_config: "{{ interfaces_config | default([]) }}"
     interfaces_to_shutdown: "{{ interfaces_to_shutdown | default(nettopo_interfaces | default([]) | map(attribute='name') | list) }}"
+    interfaces_admin_enabled: {{ interfaces_admin_enabled | default(false) }}
   tasks:
     - name: Configure interface (Juniper Junos)
       juniper.device.junos_interfaces:
@@ -28,7 +29,7 @@
       juniper.device.junos_interfaces:
         config:
           - name: "{{ item }}"
-            enabled: false
+            enabled: "{{ interfaces_admin_enabled | default(false) }}"
         state: merged
       loop: "{{ interfaces_to_shutdown | default([]) }}"
       loop_control:

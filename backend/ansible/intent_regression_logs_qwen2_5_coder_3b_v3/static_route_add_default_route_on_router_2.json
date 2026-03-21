@@ -1,0 +1,17 @@
+{
+  "case_id": "static_route_add_default_route_on_router_2",
+  "started_at": "2026-03-20T12:24:08.449758",
+  "intent_description": "Add a default route on router 2",
+  "preview_initial": {
+    "status_code": 200,
+    "text": "{\"categories\":[\"static_route\",\"routing\"],\"references\":[],\"parsed_intent\":{\"id\":\"9adc3c1a\",\"intent_type\":\"configure\",\"action\":\"configure_interface\",\"feature\":\"routing\",\"vendor\":\"\",\"parameters\":{\"router\":\"router2\",\"interface\":\"default\",\"action\":\"add\",\"route\":\"0.0.0.0/0\",\"next_hop\":\"192.168.1.1\",\"device_deduction\":{\"deduced\":[\"Acc_Cisco_1\",\"Acc_Cisco_2\",\"Acc_Cisco_5\",\"Acc_Cisco_6\",\"Acc_Huawei_3\",\"Acc_Juniper_4\",\"Core_Cisco_1\",\"Core_Cisco_2\",\"Dist_Cisco_1\",\"Dist_Cisco_3\",\"Dist_Huawei_2\",\"Dist_Huawei_4\"],\"mapping\":[{\"hostname\":\"Acc_Cisco_1\",\"reason\":\"matched by inventory/name similarity\"},{\"hostname\":\"Acc_Cisco_2\",\"reason\":\"matched prompt number\"},{\"hostname\":\"Acc_Cisco_5\",\"reason\":\"matched by inventory/name similarity\"},{\"hostname\":\"Acc_Cisco_6\",\"reason\":\"matched by inventory/name similarity\"},{\"hostname\":\"Acc_Huawei_3\",\"reason\":\"matched by inventory/name similarity\"},{\"hostname\":\"Acc_Juniper_4\",\"reason\":\"matched by inventory/name similarity\"},{\"hostname\":\"Core_Cisco_1\",\"reason\":\"matched by inventory/name similarity\"},{\"hostname\":\"Core_Cisco_2\",\"reason\":\"matched prompt number\"},{\"hostname\":\"Dist_Cisco_1\",\"reason\":\"matched by inventory/name similarity\"},{\"hostname\":\"Dist_Cisco_3\",\"reason\":\"matched by inventory/name similarity\"},{\"hostname\":\"Dist_Huawei_2\",\"reason\":\"matched prompt number\"},{\"hostname\":\"Dist_Huawei_4\",\"reason\":\"matched by inventory/name similarity\"}],\"why\":\"Backend selected the closest inventory names from the prompt wording.\"},\"target_hosts\":[\"Acc_Cisco_1\",\"Acc_Cisco_2\",\"Acc_Cisco_5\",\"Acc_Cisco_6\",\"Acc_Huawei_3\",\"Acc_Juniper_4\",\"Core_Cisco_1\",\"Core_Cisco_2\",\"Dist_Cisco_1\",\"Dist_Cisco_3\",\"Dist_Huawei_2\",\"Dist_Huawei_4\",\"awe\",\"dsa\"]},\"scope\":{\"device_hostnames\":[],\"device_role\":null,\"building\":null,\"vendor_filter\":null,\"all_devices\":false},\"risk_level\":\"medium\",\"justification\":\"\",\"raw_user_input\":\"Add a default route on router 2\",\"requires_disambiguation\":false,\"disambiguation_message\":\"\",\"requires_resolution\":false,\"resolved_devices\":[\"Acc_Cisco_1\",\"Acc_Ci"
+  },
+  "preview_initial_assert": {
+    "ok": false,
+    "notes": [
+      "params_disambiguation fields missing: expected to contain ['next_hop'], actual=['interfaces']"
+    ]
+  },
+  "finished_at": "2026-03-20T12:25:02.375807",
+  "result_ok": false
+}

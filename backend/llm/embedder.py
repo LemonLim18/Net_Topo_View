@@ -50,7 +50,18 @@ class GeminiEmbedder:
         self._available = False
         self._query_cache: OrderedDict[str, list[float]] = OrderedDict()
         self._cache_lock = threading.Lock()
-        self._init_client()
+        # Force deterministic local embedding (useful for CI/regression where
+        # Gemini embedding calls are slow or unavailable).
+        force_fallback = str(os.getenv("EMBEDDER_FORCE_FALLBACK", "")).strip().lower() in {
+            "1",
+            "true",
+            "yes",
+        }
+        if force_fallback:
+            logger.info("GeminiEmbedder forced fallback embedding (EMBEDDER_FORCE_FALLBACK=%s)", os.getenv("EMBEDDER_FORCE_FALLBACK"))
+            self._available = False
+        else:
+            self._init_client()
 
     def _init_client(self) -> None:
         """Lazy-initialise the google-genai client."""

@@ -25,7 +25,7 @@ import shutil
 import stat
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import StreamingResponse
@@ -35,6 +35,7 @@ from pydantic import BaseModel
 from ansible.bundle_artifacts import AnsibleArtifactBundle, bundle_from_dict
 from ansible.context_entity_validation import (
     build_planned_all_interfaces_preview,
+    explicit_interface_names_from_request_params,
     intent_requests_all_interfaces,
     intersection_interfaces_from_disambiguation_devices,
     should_validate_interface_names_against_inventory,
@@ -42,12 +43,15 @@ from ansible.context_entity_validation import (
     validate_interface_params_against_context,
 )
 from ansible.intent_validation import (
+    coerce_vlan_database_only_intent,
     get_editable_fields_for_schema,
     get_schema_for_parsed_intent,
     interface_intent_params_satisfied,
+    is_vlan_database_only_intent,
     resolve_missing_fields,
+    user_prompt_requests_vlan_interface_binding,
     validate_completeness,
-    vlan_schema_fields_missing_from_user_prompt,
+    vlan_schema_fields_missing_from_user_prompt_respecting_params,
 )
 from ansible.intent_validation import _intent_to_flat_fields, _is_empty as _param_is_empty
 from ansible.intent_tree_engine import evaluate_intent_tree
@@ -422,12 +426,23 @@ def _resolve_target_hosts(target_hosts: List[str]) -> List[str]:
     return expanded if expanded else []
 
 
-def _deduce_target_devices(intent_description: str, resolved_hosts: List[str]) -> dict[str, Any]:
+_EXPLICIT_TARGET_REASON = "User-selected target (Target inventory or API)"
+
+
+def _deduce_target_devices(
+    intent_description: str,
+    resolved_hosts: List[str],
+    *,
+    explicit_user_targets: bool = False,
+) -> dict[str, Any]:
     """
     Build a backend-only explanation of how target devices were inferred.
 
     The goal is to keep device selection logic on the backend and return
     a readable deduction trail to preview / create-and-plan responses.
+
+    When ``explicit_user_targets`` is True, hostnames came from the UI / API — do not label them
+    as weak "inventory similarity" matches (that text interacts badly with bulk-resolution heuristics).
     """
     lower = (intent_description or "").lower()
     clues: list[str] = []
@@ -460,6 +475,10 @@ def _deduce_target_devices(intent_description: str, resolved_hosts: List[str]) -
         }
 
     why_parts: list[str] = []
+    if explicit_user_targets:
+        why_parts.append(
+            "Target device(s) were chosen explicitly in **Target inventory** or the device picker (not inferred only from chat text)."
+        )
     if "keyword=switches" in clues and len(resolved_hosts) > 1:
         why_parts.append("The prompt used a broad switch keyword, so the backend kept the resolved switch set.")
     if any(c.startswith("role=") for c in clues):
@@ -472,6 +491,9 @@ def _deduce_target_devices(intent_description: str, resolved_hosts: List[str]) -
     mapping: list[dict[str, Any]] = []
     lower_hosts = (intent_description or "").lower()
     for host in resolved_hosts:
+        if explicit_user_targets:
+            mapping.append({"hostname": host, "reason": _EXPLICIT_TARGET_REASON})
+            continue
         host_lower = host.lower()
         host_map: list[str] = []
         num = _number_from_hostname(host)
@@ -837,6 +859,8 @@ def _markdown_section_2_target_devices(
     intent_description: str,
     resolved: List[str],
     device_deduction: Optional[Dict[str, Any]] = None,
+    *,
+    explicit_user_targets: bool = False,
 ) -> str:
     """Rebuild '### 2. Target devices' markdown to match final resolved host list."""
     devices_block = "### 2. Target devices\n"
@@ -844,7 +868,9 @@ def _markdown_section_2_target_devices(
         f"- **Resolved:** {', '.join(resolved) if resolved else '(none — pick specific host(s) in **Target inventory** or answer the device question below)'}. "
         "You can change them in **Target inventory** below."
     )
-    dd = device_deduction if device_deduction is not None else _deduce_target_devices(intent_description, resolved)
+    dd = device_deduction if device_deduction is not None else _deduce_target_devices(
+        intent_description, resolved, explicit_user_targets=explicit_user_targets
+    )
     if dd.get("mapping"):
         devices_block += "\n- **Why these devices:**\n"
         for item in dd["mapping"]:
@@ -857,13 +883,17 @@ def _sync_preview_device_deduction_and_reasoning(
     reasoning: List[str],
     intent_description: str,
     resolved: List[str],
+    *,
+    explicit_user_targets: bool = False,
 ) -> None:
     """Align parsed_intent.device_deduction and markdown Section 2 with final resolved_hosts."""
-    dd = _deduce_target_devices(intent_description, resolved)
+    dd = _deduce_target_devices(intent_description, resolved, explicit_user_targets=explicit_user_targets)
     parsed_intent["device_deduction"] = dd
     for idx, r in enumerate(reasoning):
         if isinstance(r, str) and r.startswith("### 2. Target devices"):
-            reasoning[idx] = _markdown_section_2_target_devices(intent_description, resolved, dd)
+            reasoning[idx] = _markdown_section_2_target_devices(
+                intent_description, resolved, dd, explicit_user_targets=explicit_user_targets
+            )
             return
 
 
@@ -872,11 +902,18 @@ def _target_resolution_is_unclear(
     resolved: List[str],
     mapping: List[Dict[str, Any]],
     db_manager: Any,
+    *,
+    explicit_user_targets: bool = False,
 ) -> bool:
     """
     True when we should not trust the parser's device list (e.g. LLM returned most of inventory
     with only weak "inventory similarity" explanations and the prompt never scoped devices).
+
+    When ``explicit_user_targets`` is True (UI / API supplied ``target_hosts``), never treat the
+    selection as unclear — otherwise two explicit picks both labeled "similarity" hit the 75% rule.
     """
+    if explicit_user_targets:
+        return False
     if len(resolved) < 2:
         return False
     if _intent_explicitly_requests_broad_device_scope(intent_description):
@@ -999,10 +1036,19 @@ def _resolve_backend_intent_request(req, user: dict) -> tuple["PlanAnsibleReques
         explicit_targets = td if isinstance(td, list) else [td] if td else []
 
     # Prefer explicit target list from API or params over LLM-resolved bulk inventory.
+    # If the client sent only `['all']` but params carry a concrete list (Studio overlay), prefer params.
     if req.target_hosts:
         parsed.scope.device_hostnames = list(req.target_hosts)
         parsed.scope.all_devices = False
-        parsed.resolved_devices = _resolve_target_hosts(req.target_hosts)
+        th_in = list(req.target_hosts)
+        if (
+            len(th_in) == 1
+            and str(th_in[0]).strip().lower() == "all"
+            and explicit_targets
+        ):
+            parsed.resolved_devices = _resolve_target_hosts(explicit_targets)
+        else:
+            parsed.resolved_devices = _resolve_target_hosts(th_in)
     elif explicit_targets:
         parsed.resolved_devices = _resolve_target_hosts(explicit_targets)
     elif parsed.resolved_devices:
@@ -1013,6 +1059,10 @@ def _resolve_backend_intent_request(req, user: dict) -> tuple["PlanAnsibleReques
     parsed.resolved_devices = _narrow_resolved_by_hostnames_in_prompt(
         req.intent_description, list(parsed.resolved_devices or []), _db
     )
+    _nr, _ = _apply_numeric_subset_fallback(
+        req.intent_description, list(parsed.resolved_devices or [])
+    )
+    parsed.resolved_devices = _nr
 
     if _db is not None and parsed.resolved_devices and _db_hostname_lower_to_canonical(_db):
         _ok_hosts, _bad_hosts = _filter_resolved_hosts_to_planned_inventory(parsed.resolved_devices, _db)
@@ -1039,12 +1089,24 @@ def _resolve_backend_intent_request(req, user: dict) -> tuple["PlanAnsibleReques
                 )
         parsed.resolved_devices = _ok_hosts
 
+    # User/studio explicitly chose targets — do not reject as "unclear bulk" (same idea as preview + tree).
+    user_explicit_targets_create = bool(req.target_hosts) or bool(explicit_targets)
+
     switch_disambiguation_create = _switch_role_disambiguation(req.intent_description)
-    _map_create = _deduce_target_devices(req.intent_description, parsed.resolved_devices).get("mapping") or []
+    _map_create = _deduce_target_devices(
+        req.intent_description, parsed.resolved_devices, explicit_user_targets=user_explicit_targets_create
+    ).get("mapping") or []
     if (
         not switch_disambiguation_create
         and parsed.resolved_devices
-        and _target_resolution_is_unclear(req.intent_description, parsed.resolved_devices, _map_create, _db)
+        and not user_explicit_targets_create
+        and _target_resolution_is_unclear(
+            req.intent_description,
+            parsed.resolved_devices,
+            _map_create,
+            _db,
+            explicit_user_targets=user_explicit_targets_create,
+        )
     ):
         raise HTTPException(
             422,
@@ -1058,7 +1120,9 @@ def _resolve_backend_intent_request(req, user: dict) -> tuple["PlanAnsibleReques
             },
         )
 
-    device_deduction = _deduce_target_devices(req.intent_description, parsed.resolved_devices)
+    device_deduction = _deduce_target_devices(
+        req.intent_description, parsed.resolved_devices, explicit_user_targets=user_explicit_targets_create
+    )
     resolved_vendor = ""
     if parsed.resolved_devices and _db:
         vendors_in_targets: set[str] = set()
@@ -1083,6 +1147,29 @@ def _resolve_backend_intent_request(req, user: dict) -> tuple["PlanAnsibleReques
         raise HTTPException(422, "Intent parser did not resolve a configuration feature.")
     if not parsed.resolved_devices:
         raise HTTPException(422, "Intent parser did not resolve any target devices.")
+
+    # VLAN DB-only prompts: drop LLM-invented interfaces / configure_interface so planning
+    # does not cross-check bogus Host:Interface hints against target inventory.
+    _coerce_for_plan = {
+        "action": parsed.action or "",
+        "feature": parsed.feature or "",
+        "parameters": dict(parsed.parameters or {}),
+    }
+    _user_iface_params = bool(
+        req.params is not None
+        and (
+            (req.params.get("interfaces") or req.params.get("interfaces_config"))
+        )
+    )
+    if coerce_vlan_database_only_intent(
+        _coerce_for_plan,
+        req.intent_description or "",
+        user_supplied_interface_params=_user_iface_params,
+    ):
+        parsed.action = _coerce_for_plan["action"]
+        parsed.parameters = _coerce_for_plan["parameters"]
+        if getattr(parsed, "requires_resolution", False):
+            parsed.requires_resolution = False
 
     policy = _policy_validate_intent(
         parsed.model_dump_json(),
@@ -1122,6 +1209,10 @@ def _resolve_backend_intent_request(req, user: dict) -> tuple["PlanAnsibleReques
     raw_secondary = params_dict.pop("_secondary_intents", None)
     parsed_dict["secondary_intents"] = _normalize_secondary_intents(raw_secondary)
     parsed_dict["parameters"] = params_dict
+    _strip_stale_secondary_interface_params_when_primary_interfaces_are_user_selected(
+        parsed_dict,
+        req.params,
+    )
     parsed_dict["device_deduction"] = device_deduction
     return plan_req, parsed_dict, policy
 
@@ -1505,8 +1596,18 @@ async def plan_ansible(
                 )
         resolved_hosts = _rh_ok
     effective_vendor = normalize_vendor(req.vendor or infer_vendor_hint(resolved_hosts, _db))
+    plan_params = dict(req.params or {})
+    if str(req.feature or "").strip().lower() == "vlan":
+        _vlan_user_if = bool(plan_params.get("interfaces") or plan_params.get("interfaces_config"))
+        _vlan_coerce = {"action": "", "feature": "vlan", "parameters": plan_params}
+        if coerce_vlan_database_only_intent(
+            _vlan_coerce,
+            req.intent_description or "",
+            user_supplied_interface_params=_vlan_user_if,
+        ):
+            plan_params = _vlan_coerce["parameters"]
     # Frontend heuristic may send feature "general" for "Shut down Gi0/1 …" — infer interface from params
-    _params_hint = dict(req.params or {})
+    _params_hint = dict(plan_params)
     planning_feature = str(req.feature or "").strip().lower()
     if planning_feature in ("", "general"):
         if _params_hint.get("interfaces_to_shutdown") or (
@@ -1565,7 +1666,7 @@ async def plan_ansible(
         "resolved_devices": resolved_hosts,
         "vendor":        effective_vendor,
         "feature":       req.feature,
-        "params":        dict(req.params or {}),
+        "params":        dict(plan_params),
         "max_interfaces": req.max_interfaces,
         "planning_context": planning_context,
         "device_inventory_context": planning_context_to_prompt_text(planning_context),
@@ -1578,7 +1679,7 @@ async def plan_ansible(
     parsed_intent = {
         "action": None,
         "feature": req.feature,
-        "parameters": dict(req.params or {}),
+        "parameters": dict(plan_params),
         "device_deduction": {},
     }
 
@@ -1587,12 +1688,14 @@ async def plan_ansible(
     # rather than executing against a bulk inventory guess.
     tree_res = None
     devices_disambiguation: Optional[Dict[str, Any]] = None
+    plan_explicit_targets = bool(req.target_hosts)
     try:
         tree_res = evaluate_intent_tree(
             intent_description=req.intent_description,
             parsed_intent=parsed_intent,
             resolved_hosts=list(resolved_hosts or []),
             db_manager=_db,
+            explicit_targets_from_request=plan_explicit_targets,
         )
         if tree_res.needs_target_devices:
             resolved_hosts = []
@@ -1687,7 +1790,7 @@ async def plan_ansible(
         )
 
         # Prefer explicit params hints from the frontend when available.
-        params_hint = req.params if isinstance(req.params, dict) else {}
+        params_hint = plan_params if isinstance(plan_params, dict) else {}
         interfaces_to_shutdown = params_hint.get("interfaces_to_shutdown")
         shutdown_from_params = bool(
             interfaces_to_shutdown
@@ -1853,10 +1956,11 @@ async def plan_ansible(
 
     if is_vlan:
         # When LLM did not fill interfaces, try to extract from prompt (e.g. "configure Gi1/0/1 as trunk allowed 10,20,67")
-        if not (intent.get("params") or {}).get("interfaces"):
-            extracted = _extract_vlan_interface_from_description(req.intent_description)
-            if extracted:
-                intent.setdefault("params", {}).update(extracted)
+        if user_prompt_requests_vlan_interface_binding(req.intent_description or ""):
+            if not (intent.get("params") or {}).get("interfaces"):
+                extracted = _extract_vlan_interface_from_description(req.intent_description)
+                if extracted:
+                    intent.setdefault("params", {}).update(extracted)
         valid, errors = validate_vlan_intent(intent)
         if not valid and errors:
             raise HTTPException(
@@ -1886,6 +1990,35 @@ async def plan_ansible(
                 intent["params"].pop("interfaces_config", None)
                 intent["params"].pop("interfaces_config_use_nettopo", None)
                 intent["params"]["interfaces_shutdown_use_nettopo"] = True
+
+                # Admin intent: "turn on/enable/bring up" should set enabled=true.
+                prompt_l = str(req.intent_description or "").lower()
+                admin_up = any(
+                    x in prompt_l
+                    for x in (
+                        "turn on",
+                        "enable",
+                        "bring up",
+                        "administratively up",
+                        "admin-up",
+                        "admin up",
+                        "no shutdown",
+                    )
+                )
+                admin_down = any(
+                    x in prompt_l
+                    for x in (
+                        "turn off",
+                        "disable",
+                        "shut down",
+                        "shutdown",
+                        "bring down",
+                        "administratively down",
+                        "admin-down",
+                        "admin down",
+                    )
+                )
+                intent["params"]["interfaces_admin_enabled"] = bool(admin_up and not admin_down)
             else:
                 # Configure-all: keep a single default interface object (mode/VLAN/IP/...) so schema passes,
                 # but replace interface names at template runtime via nettopo_interfaces.
@@ -1914,9 +2047,32 @@ async def plan_ansible(
         except Exception as exc:
             logger.debug("plan_ansible all-interfaces expansion skipped: %s", exc)
 
+    p_inv = intent.get("params") or {}
+    _plan_secondary_intents: List[Dict[str, Any]] = list(intent.get("secondary_intents") or [])
+    _plan_iface_override = explicit_interface_names_from_request_params(req.params) if req.params else []
+
     # Cross-check user-supplied interface names against planned inventory before template fill.
-    if should_validate_interface_names_against_inventory(schema_action_plan, feature_lower, p_inv) and not all_if_shutdown_expanded:
-        vr = validate_interface_params_against_context(p_inv, resolved_hosts, planning_context)
+    # ``collect_user_interface_names_from_params`` also reads ``_secondary_intents`` inside ``p_inv``.
+    # Top-level ``intent.secondary_intents`` must be passed explicitly (same as preview).
+    # When the client sent explicit ``interfaces`` / ``interfaces_config`` on the request, validate
+    # only those names (ignore LLM-only tokens still merged into ``p_inv`` or secondaries).
+    if (
+        should_validate_interface_names_against_inventory(
+            schema_action_plan,
+            feature_lower,
+            p_inv,
+            secondary_intents=_plan_secondary_intents or None,
+            interface_names_override=_plan_iface_override or None,
+        )
+        and not all_if_shutdown_expanded
+    ):
+        vr = validate_interface_params_against_context(
+            p_inv,
+            resolved_hosts,
+            planning_context,
+            secondary_intents=_plan_secondary_intents or None,
+            interface_names_override=_plan_iface_override or None,
+        )
         if not vr.ok:
             iface_dis = _interfaces_disambiguation_from_planning(
                 planning_context,
@@ -2409,10 +2565,19 @@ async def execute_playbook(
     if not row:
         raise HTTPException(404, f"Job {job_id} not found")
 
-    if row["status"] != "approved":
+    # Execution gate:
+    # - Normal flow: job must be 'approved'
+    # - To support repeated deploys without forcing re-approve after a prior run,
+    #   allow 'success'/'failed' jobs as well (they were executable only after approval).
+    if row["status"] not in ("approved", "success", "failed"):
         raise HTTPException(
             403,
             f"Job {job_id} must be 'approved' before execution. Current status: {row['status']}"
+        )
+    if row["status"] in ("success", "failed") and row.get("stage") not in ("commit", "rollback"):
+        raise HTTPException(
+            403,
+            f"Job {job_id} is not in an executable stage. Current status: {row['status']} stage: {row.get('stage')}",
         )
 
     artifact = _load_job_artifact(job_id)
@@ -2471,8 +2636,15 @@ async def execute_playbook(
     final_status = "success" if result.success else "failed"
     with _db._connect() as conn:
         conn.execute(
-            "UPDATE jobs SET status = ?, stage = ? WHERE id = ?",
-            (final_status, "commit" if result.success else "rollback", job_id)
+            # Keep job in an "approved" state so it can be re-executed
+            # without forcing the user to approve again.
+            "UPDATE jobs SET status = ?, stage = ?, error_message = ? WHERE id = ?",
+            (
+                "approved",
+                "commit" if result.success else "rollback",
+                (result.summary if not result.success else None),
+                job_id,
+            ),
         )
 
     logger.info(
@@ -3387,6 +3559,10 @@ def _extract_requested_numbers(intent_description: str) -> List[int]:
     m = re.search(prefix + r"(\d+)\s*(?:,\s*|and\s+)(\d+)\b", intent_description, re.IGNORECASE)
     if m:
         return [int(m.group(1)), int(m.group(2))]
+    # Single selector: "access switch 3" (avoid matching bare numbers elsewhere)
+    m = re.search(prefix + r"(\d+)\b", intent_description, re.IGNORECASE)
+    if m:
+        return [int(m.group(1))]
     return []
 
 
@@ -3490,6 +3666,10 @@ def _apply_numeric_subset_fallback(intent_description: str, resolved: List[str])
     """
     if not resolved or _db is None:
         return resolved, ""
+    lower = (intent_description or "").lower()
+    # Only apply for access-layer wording — avoids mis-mapping "distribution/core switch N" using access inventory.
+    if "access" not in lower:
+        return resolved, ""
     requested = _extract_requested_numbers(intent_description)
     if not requested:
         return resolved, ""
@@ -3570,6 +3750,226 @@ def _interfaces_disambiguation_from_planning(
     return {"question": question, "devices": out_devices}
 
 
+def _merge_req_params_secondary_intents_into_parsed_intent(
+    parsed_intent: Dict[str, Any],
+    req_params: Optional[Dict[str, Any]],
+) -> None:
+    """
+    Apply preview wizard / API patches for ``params.secondary_intents`` onto
+    ``parsed_intent['secondary_intents']``. These keys must not be merged into primary
+    ``parameters``.
+    """
+    if not req_params or not isinstance(req_params.get("secondary_intents"), list):
+        return
+    patches = _normalize_secondary_intents(req_params["secondary_intents"])
+    if not patches:
+        return
+    existing = list(parsed_intent.get("secondary_intents") or [])
+    for i, patch in enumerate(patches):
+        if i < len(existing):
+            ep = dict(existing[i].get("parameters") or {})
+            pp = dict(patch.get("parameters") or {})
+            ep.update({k: v for k, v in pp.items() if v is not None})
+            existing[i] = {**existing[i], **patch, "parameters": ep}
+        else:
+            existing.append(patch)
+    parsed_intent["secondary_intents"] = existing
+
+
+def _strip_stale_secondary_interface_params_when_primary_interfaces_are_user_selected(
+    parsed_intent: Dict[str, Any],
+    req_params: Optional[Dict[str, Any]],
+) -> None:
+    """
+    When the client sends explicit primary ``interfaces`` / ``interfaces_config`` (picker /
+    Studio), remove ``interfaces`` / ``interfaces_config`` from **secondary_intents** slices
+    that still carry LLM-invented names from the prompt (e.g. GigabitEthernet1/0/1).
+
+    Otherwise inventory validation collects names from both primary (Ethernet0/2) and
+    secondary (Gi…) and fails even though the user already corrected the primary list.
+
+    If ``req_params.secondary_intents`` includes a slice patch whose ``parameters`` already
+    set ``interfaces`` / ``interfaces_config``, that slice is left unchanged.
+    """
+    if not req_params:
+        return
+    user_if = req_params.get("interfaces") or req_params.get("interfaces_config")
+    if user_if is None:
+        return
+    if isinstance(user_if, list) and len(user_if) == 0:
+        return
+
+    secs = list(parsed_intent.get("secondary_intents") or [])
+    if not secs:
+        return
+
+    patch_list = req_params.get("secondary_intents")
+    has_patch_list = isinstance(patch_list, list) and len(patch_list) > 0
+
+    for i, sec in enumerate(secs):
+        if not isinstance(sec, dict):
+            continue
+        if has_patch_list and i < len(patch_list) and isinstance(patch_list[i], dict):
+            pp = dict(patch_list[i].get("parameters") or {})
+            if pp.get("interfaces") or pp.get("interfaces_config"):
+                continue
+        sp = dict(sec.get("parameters") or {})
+        if not sp.get("interfaces") and not sp.get("interfaces_config"):
+            continue
+        sp.pop("interfaces", None)
+        sp.pop("interfaces_config", None)
+        sec["parameters"] = sp
+    parsed_intent["secondary_intents"] = secs
+
+
+def _configure_interface_conditional_disambiguation_fields(
+    parameters: Dict[str, Any],
+) -> List[Dict[str, Any]]:
+    """
+    Shared access/trunk/subnet follow-up questions for configure_interface (primary or secondary).
+    """
+    shared_fields: List[Dict[str, Any]] = []
+    p2 = dict(parameters or {})
+    interfaces = p2.get("interfaces") or []
+    if not isinstance(interfaces, list) or not interfaces:
+        return shared_fields
+    default_mode = str(p2.get("default_mode") or "").strip().lower() or None
+    modes: set[str] = set()
+    missing_access_vlan = False
+    missing_trunk_vlans = False
+    ip_addrs: set[str] = set()
+    missing_subnet_mask = False
+
+    for iface in interfaces:
+        if not isinstance(iface, dict):
+            continue
+        mode = str(iface.get("mode") or default_mode or "").strip().lower()
+        if mode:
+            modes.add(mode)
+        if mode == "access":
+            if iface.get("access_vlan") in (None, "", []):
+                missing_access_vlan = True
+        elif mode == "trunk":
+            tv = iface.get("trunk_vlans")
+            if tv in (None, "", []):
+                missing_trunk_vlans = True
+        ip_address = iface.get("ip_address")
+        if ip_address not in (None, ""):
+            ip_addrs.add(str(ip_address))
+            if iface.get("subnet_mask") in (None, ""):
+                missing_subnet_mask = True
+
+    if len(modes) == 1:
+        only_mode = next(iter(modes))
+        if only_mode == "access" and missing_access_vlan:
+            shared_fields.append(
+                {
+                    "field": "access_vlan",
+                    "question": "Which access VLAN should be applied to all selected interfaces?",
+                }
+            )
+        if only_mode == "trunk" and missing_trunk_vlans:
+            shared_fields.append(
+                {
+                    "field": "trunk_vlans",
+                    "question": "Which trunk VLANs should be allowed on all selected interfaces? (comma-separated)",
+                }
+            )
+
+    if missing_subnet_mask and len(ip_addrs) == 1:
+        shared_fields.append(
+            {
+                "field": "subnet_mask",
+                "question": "Subnet mask for the provided interface IP address(es)?",
+            }
+        )
+    return shared_fields
+
+
+def _append_secondary_intent_schema_disambiguation(
+    parsed_intent: Dict[str, Any],
+    resolved_hosts: List[str],
+    params_disambiguation: Optional[Dict[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    """
+    For each ``secondary_intents`` slice, run the same operation-specific schema completeness
+    checks as the primary intent and merge missing fields into ``params_disambiguation`` with
+    ``secondary_intent_index`` so the chat wizard can collect answers per operation.
+    """
+    secondaries = list(parsed_intent.get("secondary_intents") or [])
+    if not secondaries:
+        return params_disambiguation
+    fields_list: List[Dict[str, Any]] = list((params_disambiguation or {}).get("fields") or [])
+    seen: Set[Tuple[Any, ...]] = set()
+    for f in fields_list:
+        if not isinstance(f, dict):
+            continue
+        seen.add(
+            (
+                f.get("field"),
+                f.get("secondary_intent_index"),
+            )
+        )
+
+    for idx, sec in enumerate(secondaries):
+        if not isinstance(sec, dict):
+            continue
+        sec_action = (sec.get("action") or "").strip() or "configure"
+        sec_feature = (sec.get("feature") or "").strip()
+        sec_params = dict(sec.get("parameters") or {})
+        sec_intent = {
+            "action": sec_action,
+            "feature": sec_feature,
+            "parameters": sec_params,
+            "resolved_devices": list(resolved_hosts or []),
+        }
+        sec_schema = get_schema_for_parsed_intent(sec_intent)
+        if not sec_schema:
+            continue
+        type_key = (sec_schema.get("action") or "").strip() or sec_action
+        missing_sec, _err_sec = validate_completeness(
+            sec_intent, sec_schema, action_or_feature=type_key if sec_schema else None
+        )
+        questions_sec = (sec_schema or {}).get("questions") or {}
+        sec_label = f"{sec_action} ({sec_feature})" if sec_feature else sec_action
+        for field in missing_sec:
+            key = (field, idx)
+            if key in seen:
+                continue
+            fields_list.append(
+                {
+                    "field": field,
+                    "question": questions_sec.get(field) or f"Please provide: {field}",
+                    "secondary_intent_index": idx,
+                    "label": f"Also required: {sec_label}",
+                }
+            )
+            seen.add(key)
+
+        schema_action_key = (sec_schema.get("action") or "").strip().lower().replace("-", "_")
+        if schema_action_key == "configure_interface":
+            for e in _configure_interface_conditional_disambiguation_fields(sec_params):
+                key = (e["field"], idx)
+                if key in seen:
+                    continue
+                fields_list.append(
+                    {
+                        "field": e["field"],
+                        "question": e["question"],
+                        "secondary_intent_index": idx,
+                        "label": f"Also required: {sec_label}",
+                    }
+                )
+                seen.add(key)
+
+    if not fields_list:
+        return params_disambiguation
+    return {
+        "question": (params_disambiguation or {}).get("question") or "Please provide the following.",
+        "fields": fields_list,
+    }
+
+
 def _normalize_secondary_intents(raw: Any) -> List[Dict[str, Any]]:
     """
     Normalize LLM secondary_intents to a list of { action, feature, parameters }.
@@ -3594,6 +3994,139 @@ def _normalize_secondary_intents(raw: Any) -> List[Dict[str, Any]]:
     return out
 
 
+def _merge_vlan_user_prompt_disambiguation(
+    intent_description: str,
+    schema: Optional[Dict[str, Any]],
+    params_disambiguation: Optional[Dict[str, Any]],
+    *,
+    parameters: Optional[Dict[str, Any]] = None,
+    trusted_param_keys: Optional[Set[str]] = None,
+) -> Optional[Dict[str, Any]]:
+    """
+    For ``create_vlan`` (primary or a secondary_intents slice), ask for vlan_id/vlan_name
+    the user did not clearly state in natural language — driven by intent schema, not by
+    regex-matching the raw prompt for the words \"create vlan\".
+
+    When the user supplies values via the preview wizard, ``parameters`` contains them but
+    ``intent_description`` does not change; we must not re-ask those fields.
+    """
+    if not schema:
+        return params_disambiguation
+    sa = (schema.get("action") or "").strip().lower().replace("-", "_")
+    if sa != "create_vlan":
+        return params_disambiguation
+    force_field_names = vlan_schema_fields_missing_from_user_prompt_respecting_params(
+        intent_description or "", parameters, trusted_param_keys=trusted_param_keys
+    )
+    if not force_field_names:
+        return params_disambiguation
+    questions_vlan = schema.get("questions") or {}
+    fallback_questions = {
+        "vlan_id": "Which VLAN ID (1-4094)?",
+        "vlan_name": "VLAN name?",
+    }
+    new_entries = [
+        {
+            "field": fname,
+            "question": questions_vlan.get(fname) or fallback_questions.get(fname) or f"Please provide: {fname}",
+        }
+        for fname in force_field_names
+    ]
+    fields_list: List[Dict[str, Any]] = list((params_disambiguation or {}).get("fields") or [])
+    seen_fields = {f["field"] for f in fields_list}
+    for e in new_entries:
+        if e["field"] not in seen_fields:
+            fields_list.append(e)
+            seen_fields.add(e["field"])
+    return {
+        "question": (params_disambiguation or {}).get("question") or "Please provide the following.",
+        "fields": fields_list,
+    }
+
+
+def _annotate_reasoning_interfaces_with_planned_inventory(
+    reasoning: List[str],
+    *,
+    inv_result: Any,
+    resolved_hosts: List[str],
+) -> None:
+    """
+    ``_preview_parse_and_rag`` appends an optimistic **Interfaces to configure** line from the
+    parser/LLM before target hosts and planned inventory are finalized. When
+    ``validate_interface_params_against_context`` fails, replace that block so the preview does
+    not show bogus interface names (e.g. Gi1/0/1) as if they were already valid for the
+    selected device(s).
+    """
+    if not reasoning or inv_result is None:
+        return
+    notice = str(getattr(inv_result, "validation_notice", "") or "").strip()
+    if not notice:
+        return
+    hosts_txt = ", ".join(str(h) for h in resolved_hosts if str(h).strip()) or "(unknown targets)"
+    replacement = (
+        "- **Interfaces to configure (cross-checked with planned inventory):**\n"
+        f"  - **Selected target device(s):** {hosts_txt}\n"
+        "  - ⚠️ **The interface name(s) from your intent are not valid for this device in planned context.**\n\n"
+        + "\n".join(f"  {line}" for line in notice.splitlines())
+    )
+    for idx, block in enumerate(reasoning):
+        if (
+            isinstance(block, str)
+            and "**Interfaces to configure:**" in block
+            and "cross-checked with planned inventory" not in block
+        ):
+            reasoning[idx] = replacement
+            return
+
+
+def _refresh_vlan_interfaces_reasoning_from_merged_params(
+    reasoning: List[str],
+    *,
+    merged_params: Dict[str, Any],
+    resolved_hosts: List[str],
+    schema_action: str,
+    feature_lower: str,
+) -> None:
+    """
+    ``_preview_parse_and_rag`` appends **Interfaces to configure** from the LLM parse only.
+    After ``preview_intent`` merges ``req.params`` (wizard / target inventory / interface picker),
+    replace that block so the UI shows the same interface names as ``parameters`` (e.g. Ethernet0/2),
+    not a stale GigabitEthernet guess from the prompt.
+    """
+    sa = str(schema_action or "").strip().lower().replace("-", "_")
+    fl = str(feature_lower or "").strip().lower()
+    if sa != "create_vlan" and fl != "vlan":
+        return
+    preview_intent = {
+        "params": merged_params,
+        "target_hosts": list(resolved_hosts or []),
+    }
+    ifaces_summary = get_vlan_interfaces_summary(preview_intent)
+    if ifaces_summary:
+        lines = []
+        for s in ifaces_summary:
+            vlan_str = ", ".join(str(v) for v in s.get("vlans") or [])
+            mode = (s.get("mode") or "access").lower()
+            lines.append(
+                f"  - **{s.get('interface')}**: {mode}"
+                + (f", VLANs {vlan_str}" if vlan_str else "")
+            )
+        new_block = "- **Interfaces to configure:**\n" + "\n".join(lines)
+    else:
+        new_block = "- **Interfaces to configure:** (none — VLAN creation only)"
+    for idx, block in enumerate(reasoning):
+        if not isinstance(block, str):
+            continue
+        if "**Interfaces to configure:**" not in block:
+            continue
+        if "cross-checked with planned inventory" in block:
+            continue
+        if "Planned interfaces (all-interfaces scope)" in block:
+            continue
+        reasoning[idx] = new_block
+        return
+
+
 def _preview_parse_and_rag(
     intent_description: str,
     target_hosts: List[str],
@@ -3602,6 +4135,7 @@ def _preview_parse_and_rag(
     provider: Optional[str],
     model: Optional[str],
     ollama_base_url: Optional[str],
+    request_params: Optional[Dict[str, Any]] = None,
 ) -> tuple[list[str], list[dict], dict, bool, list[str], list[str]]:
     """
     Parse intent (lightweight: no policy raise) and run RAG for ansible_reference.
@@ -3698,19 +4232,38 @@ def _preview_parse_and_rag(
             categories = [feature]
 
     # Target hosts: prefer explicit API `target_hosts` (UI inventory) over LLM `resolved_devices`.
+    # Also accept params.target_hosts / params.target_devices when the client only sends `params` (wizard flows).
+    merged_targets: List[str] = list(target_hosts or [])
+    if not merged_targets and request_params:
+        for key in ("target_hosts", "target_devices"):
+            v = request_params.get(key)
+            if v is None:
+                continue
+            if isinstance(v, list) and len(v) > 0:
+                merged_targets = list(v)
+                break
+            if isinstance(v, str) and v.strip():
+                merged_targets = [v.strip()]
+                break
+    explicit_targets_from_ui = bool(merged_targets)
+
     parsed_resolved: List[str] = list(parsed_dict.get("resolved_devices") or []) if parsed_dict else []
-    if target_hosts:
-        resolved: List[str] = _resolve_target_hosts(target_hosts)
+    if merged_targets:
+        resolved: List[str] = _resolve_target_hosts(merged_targets)
     else:
         resolved = _resolve_target_hosts(parsed_resolved)
     resolved = _narrow_resolved_by_hostnames_in_prompt(intent_description, resolved, _db)
+    resolved, _numeric_subset_note = _apply_numeric_subset_fallback(intent_description, resolved)
     switch_disambiguation_early = _switch_role_disambiguation(intent_description)
-    _dd_pre = _deduce_target_devices(intent_description, resolved)
+    _dd_pre = _deduce_target_devices(intent_description, resolved, explicit_user_targets=explicit_targets_from_ui)
     _map_pre: List[Dict[str, Any]] = list(_dd_pre.get("mapping") or [])
     if (
         not switch_disambiguation_early
         and resolved
-        and _target_resolution_is_unclear(intent_description, resolved, _map_pre, _db)
+        and not explicit_targets_from_ui
+        and _target_resolution_is_unclear(
+            intent_description, resolved, _map_pre, _db, explicit_user_targets=explicit_targets_from_ui
+        )
     ):
         resolved = []
         if parsed_dict:
@@ -3724,6 +4277,10 @@ def _preview_parse_and_rag(
         )
     elif parsed_dict:
         parsed_dict["resolved_devices"] = list(resolved)
+        if _numeric_subset_note:
+            reasoning.append(
+                "### 1c. Target scope (numeric selection)\n- " + _numeric_subset_note.strip()
+            )
 
     # Map LLM/user device hints to inventory: unique auto-map, ambiguous shortlist, or full inventory.
     pending_devices_disambiguation: Optional[Dict[str, Any]] = None
@@ -3811,9 +4368,13 @@ def _preview_parse_and_rag(
     # Fallback only when the backend parser could not resolve anything at all.
     subset_reason = ""
     scope_summary = _devices_mentioned_summary(parsed_dict, intent_description)
-    device_deduction = _deduce_target_devices(intent_description, resolved)
+    device_deduction = _deduce_target_devices(
+        intent_description, resolved, explicit_user_targets=explicit_targets_from_ui
+    )
     # Section 2: Target devices (one block)
-    sec2 = _markdown_section_2_target_devices(intent_description, resolved, device_deduction)
+    sec2 = _markdown_section_2_target_devices(
+        intent_description, resolved, device_deduction, explicit_user_targets=explicit_targets_from_ui
+    )
     _sec2_prefix = ""
     if subset_reason:
         _sec2_prefix += f"- {subset_reason}\n"
@@ -3964,13 +4525,25 @@ async def preview_intent(
         provider=req.provider,
         model=req.model,
         ollama_base_url=req.ollama_base_url,
+        request_params=req.params,
     )
     # Merge request params (e.g. interfaces_to_shutdown, vlan_id, vlan_name, target_hosts) into parsed intent
     if req.params:
         p = dict(parsed_intent.get("parameters") or {})
-        p.update({k: v for k, v in req.params.items() if v is not None})
+        p.update(
+            {
+                k: v
+                for k, v in req.params.items()
+                if v is not None and k != "secondary_intents"
+            }
+        )
         _coerce_params_for_validation(p)
         parsed_intent["parameters"] = p
+        _merge_req_params_secondary_intents_into_parsed_intent(parsed_intent, req.params)
+        _strip_stale_secondary_interface_params_when_primary_interfaces_are_user_selected(
+            parsed_intent,
+            req.params,
+        )
         # So that validator and downstream see resolved devices when user supplies target_hosts/target_devices
         if req.params.get("target_hosts"):
             th = req.params["target_hosts"]
@@ -3997,6 +4570,7 @@ async def preview_intent(
             resolved_hosts,
             list((parsed_intent.get("device_deduction") or {}).get("mapping") or []),
             _db,
+            explicit_user_targets=_explicit_targets_in_request,
         )
     ):
         parsed_intent["resolved_devices"] = []
@@ -4012,6 +4586,7 @@ async def preview_intent(
             parsed_intent=parsed_intent,
             resolved_hosts=list(resolved_hosts or []),
             db_manager=_db,
+            explicit_targets_from_request=_explicit_targets_in_request,
         )
         if tree_res.needs_target_devices:
             parsed_intent["resolved_devices"] = []
@@ -4066,6 +4641,16 @@ async def preview_intent(
                 },
             )
 
+    _preview_user_iface = bool(
+        req.params
+        and (req.params.get("interfaces") or req.params.get("interfaces_config"))
+    )
+    coerce_vlan_database_only_intent(
+        parsed_intent,
+        req.intent_description or "",
+        user_supplied_interface_params=_preview_user_iface,
+    )
+
     params = dict(parsed_intent.get("parameters") or {})
 
     # Intent schema validation and resolution (per-action parameter dependency tree)
@@ -4116,6 +4701,35 @@ async def preview_intent(
             # Minimal placeholder so shutdown_interface.schema.json type validation passes.
             if not p.get("interfaces_to_shutdown"):
                 p["interfaces_to_shutdown"] = ["ALL"]
+
+            # Admin intent: for "turn on/enable/bring up" interfaces, set enabled=true.
+            prompt_l = str(req.intent_description or "").lower()
+            admin_up = any(
+                x in prompt_l
+                for x in (
+                    "turn on",
+                    "enable",
+                    "bring up",
+                    "administratively up",
+                    "admin-up",
+                    "admin up",
+                    "no shutdown",
+                )
+            )
+            admin_down = any(
+                x in prompt_l
+                for x in (
+                    "turn off",
+                    "disable",
+                    "shut down",
+                    "shutdown",
+                    "bring down",
+                    "administratively down",
+                    "admin-down",
+                    "admin down",
+                )
+            )
+            p["interfaces_admin_enabled"] = bool(admin_up and not admin_down)
             parsed_intent["parameters"] = p
 
     action_or_feature = (parsed_intent.get("action") or parsed_intent.get("feature") or "").strip() or None
@@ -4178,89 +4792,65 @@ async def preview_intent(
         # so we provide best-effort controller-side disambiguation for shared values.
         schema_action_key = (schema.get("action") or "").strip().lower().replace("-", "_")
         if schema_action_key == "configure_interface":
-            p2 = dict(parsed_intent.get("parameters") or {})
-            interfaces = p2.get("interfaces") or []
-            if isinstance(interfaces, list) and interfaces:
-                default_mode = str(p2.get("default_mode") or "").strip().lower() or None
-                modes: set[str] = set()
-                missing_access_vlan = False
-                missing_trunk_vlans = False
-                ip_addrs: set[str] = set()
-                missing_subnet_mask = False
-
-                for iface in interfaces:
-                    if not isinstance(iface, dict):
-                        continue
-                    mode = str(iface.get("mode") or default_mode or "").strip().lower()
-                    if mode:
-                        modes.add(mode)
-                    if mode == "access":
-                        if iface.get("access_vlan") in (None, "", []):
-                            missing_access_vlan = True
-                    elif mode == "trunk":
-                        tv = iface.get("trunk_vlans")
-                        if tv in (None, "", []):
-                            missing_trunk_vlans = True
-                    ip_address = iface.get("ip_address")
-                    if ip_address not in (None, ""):
-                        ip_addrs.add(str(ip_address))
-                        if iface.get("subnet_mask") in (None, ""):
-                            missing_subnet_mask = True
-
-                # Shared ask only when mode set is unambiguous.
-                shared_fields: List[Dict[str, Any]] = []
-                if len(modes) == 1:
-                    only_mode = next(iter(modes))
-                    if only_mode == "access" and missing_access_vlan:
-                        shared_fields.append(
-                            {"field": "access_vlan", "question": "Which access VLAN should be applied to all selected interfaces?"}
-                        )
-                    if only_mode == "trunk" and missing_trunk_vlans:
-                        shared_fields.append(
-                            {"field": "trunk_vlans", "question": "Which trunk VLANs should be allowed on all selected interfaces? (comma-separated)"}
-                        )
-
-                # Shared subnet_mask ask only if all provided ip_address values are identical.
-                if missing_subnet_mask and len(ip_addrs) == 1:
-                    shared_fields.append(
-                        {"field": "subnet_mask", "question": "Subnet mask for the provided interface IP address(es)?"}
-                    )
-
-                if shared_fields:
-                    fields_list: List[Dict[str, Any]] = list((params_disambiguation or {}).get("fields") or [])
-                    seen_fields = {f.get("field") for f in fields_list if isinstance(f, dict)}
-                    for e in shared_fields:
-                        if e["field"] not in seen_fields:
-                            fields_list.append(e)
-                    params_disambiguation = {
-                        "question": (params_disambiguation or {}).get("question") or "Please provide the following.",
-                        "fields": fields_list,
-                    }
-
-    # VLAN: prompts like "Configure VLAN on access switch 1" omit ID/name; the LLM still fills
-    # parameters so validate_completeness passes and the chat wizard was skipped. Force questions
-    # for any VLAN id/name the user did not clearly state in the raw prompt text.
-    if schema and (schema.get("action") or "").strip().lower().replace("-", "_") == "create_vlan":
-        force_field_names = vlan_schema_fields_missing_from_user_prompt(req.intent_description or "")
-        if force_field_names:
-            questions_vlan = schema.get("questions") or {}
-            new_entries = [
-                {
-                    "field": fname,
-                    "question": questions_vlan.get(fname) or f"Please provide: {fname}",
+            shared_fields = _configure_interface_conditional_disambiguation_fields(
+                dict(parsed_intent.get("parameters") or {})
+            )
+            if shared_fields:
+                fields_list: List[Dict[str, Any]] = list((params_disambiguation or {}).get("fields") or [])
+                seen_fields = {f.get("field") for f in fields_list if isinstance(f, dict)}
+                for e in shared_fields:
+                    if e["field"] not in seen_fields:
+                        fields_list.append(e)
+                params_disambiguation = {
+                    "question": (params_disambiguation or {}).get("question") or "Please provide the following.",
+                    "fields": fields_list,
                 }
-                for fname in force_field_names
-            ]
-            fields_list: List[Dict[str, Any]] = list((params_disambiguation or {}).get("fields") or [])
-            seen_fields = {f["field"] for f in fields_list}
-            for e in new_entries:
-                if e["field"] not in seen_fields:
-                    fields_list.append(e)
-                    seen_fields.add(e["field"])
-            params_disambiguation = {
-                "question": (params_disambiguation or {}).get("question") or "Please provide the following.",
-                "fields": fields_list,
+
+    # VLAN (create_vlan): prompts may omit ID/name; merge disambiguation for primary and any
+    # secondary_intents slice whose schema action is create_vlan (multi-intent composite prompts).
+    # Use merged parameters so wizard-supplied vlan_id/vlan_name are not asked again (raw text unchanged).
+    _params_merged = dict(parsed_intent.get("parameters") or {})
+    _trusted_param_keys: Optional[Set[str]] = None
+    if req.params:
+
+        def _trusted_preview_param_value(val: Any) -> bool:
+            if val is None or val == [] or val == {}:
+                return False
+            if isinstance(val, str) and not val.strip():
+                return False
+            return True
+
+        _trusted_param_keys = {str(k) for k, v in req.params.items() if _trusted_preview_param_value(v)}
+    params_disambiguation = _merge_vlan_user_prompt_disambiguation(
+        req.intent_description or "",
+        schema,
+        params_disambiguation,
+        parameters=_params_merged,
+        trusted_param_keys=_trusted_param_keys,
+    )
+    for sec in parsed_intent.get("secondary_intents") or []:
+        if not isinstance(sec, dict):
+            continue
+        sec_schema = get_schema_for_parsed_intent(
+            {
+                "action": sec.get("action"),
+                "feature": sec.get("feature"),
+                "parameters": dict(sec.get("parameters") or {}),
             }
+        )
+        params_disambiguation = _merge_vlan_user_prompt_disambiguation(
+            req.intent_description or "",
+            sec_schema,
+            params_disambiguation,
+            parameters=_params_merged,
+            trusted_param_keys=_trusted_param_keys,
+        )
+
+    params_disambiguation = _append_secondary_intent_schema_disambiguation(
+        parsed_intent,
+        list(resolved_hosts or []),
+        params_disambiguation,
+    )
 
     # Refresh params after schema/VLAN mutations; clear stale LLM flag when interfaces are present.
     params = dict(parsed_intent.get("parameters") or {})
@@ -4336,6 +4926,12 @@ async def preview_intent(
     schema_action_iface = (schema.get("action") or "").strip().lower().replace("-", "_") if schema else ""
     feat_lower_preview = str(parsed_intent.get("feature") or "").strip().lower()
     has_iface_list = interface_intent_params_satisfied(params)
+    vlan_database_only_preview = is_vlan_database_only_intent(
+        feature_lower=feat_lower_preview,
+        schema_action=schema_action_iface,
+        parameters=params,
+        intent_description=req.intent_description or "",
+    )
 
     all_if_shutdown_expanded_preview = False
     planning_context_preview: Optional[Dict[str, Any]] = None
@@ -4445,13 +5041,21 @@ async def preview_intent(
 
     iface_names_invalid = False
     inv_validation_result: Optional[Any] = None
+    _preview_secondary_intents: List[Dict[str, Any]] = list(
+        parsed_intent.get("secondary_intents") or []
+    )
+    _preview_iface_override = explicit_interface_names_from_request_params(req.params) if req.params else []
 
     if (
         not all_if_shutdown_expanded_preview
         and _db is not None
         and resolved_hosts
         and should_validate_interface_names_against_inventory(
-            schema_action_iface, feat_lower_preview, params
+            schema_action_iface,
+            feat_lower_preview,
+            params,
+            secondary_intents=_preview_secondary_intents or None,
+            interface_names_override=_preview_iface_override or None,
         )
     ):
         try:
@@ -4476,7 +5080,11 @@ async def preview_intent(
                 query=req.intent_description or "",
             )
             inv_validation_result = validate_interface_params_against_context(
-                params, resolved_hosts, planning_context_preview
+                params,
+                resolved_hosts,
+                planning_context_preview,
+                secondary_intents=_preview_secondary_intents or None,
+                interface_names_override=_preview_iface_override or None,
             )
             iface_names_invalid = not inv_validation_result.ok
             # Static route next-hop IP semantic validation against planned context.
@@ -4528,6 +5136,33 @@ async def preview_intent(
         except Exception as exc:
             logger.debug("Preview static_route next_hop validation failed: %s", exc)
 
+    _params_for_reasoning = dict(parsed_intent.get("parameters") or {})
+    _refresh_vlan_interfaces_reasoning_from_merged_params(
+        reasoning,
+        merged_params=_params_for_reasoning,
+        resolved_hosts=list(resolved_hosts or []),
+        schema_action=schema_action_iface,
+        feature_lower=feat_lower_preview,
+    )
+
+    if inv_validation_result is not None:
+        parsed_intent["interfaces_inventory_validation"] = {
+            "ok": bool(getattr(inv_validation_result, "ok", True)),
+            "validation_notice": str(getattr(inv_validation_result, "validation_notice", "") or ""),
+            "invalid_entities": list(getattr(inv_validation_result, "invalid_entities", []) or []),
+        }
+    if (
+        iface_names_invalid
+        and inv_validation_result is not None
+        and not getattr(inv_validation_result, "ok", True)
+        and reasoning
+    ):
+        _annotate_reasoning_interfaces_with_planned_inventory(
+            reasoning,
+            inv_result=inv_validation_result,
+            resolved_hosts=list(resolved_hosts or []),
+        )
+
     needs_interface_picker = (
         not all_if_shutdown_expanded_preview
         and not device_disambiguation
@@ -4553,6 +5188,7 @@ async def preview_intent(
                 )
             )
         )
+        and not vlan_database_only_preview
     )
 
     if needs_interface_picker:
@@ -4592,15 +5228,21 @@ async def preview_intent(
         except Exception as exc:
             logger.debug("Preview interfaces disambiguation failed: %s", exc)
 
-    # VLAN: optional interface checklist when inventory names are valid
+    # VLAN: optional interface checklist only when user asked for port binding or already has interfaces in params
     interfaces_for_selection: Optional[Dict[str, Any]] = None
     is_vlan_feature = feat_lower_preview == "vlan"
+    vlan_iface_binding_prompt = user_prompt_requests_vlan_interface_binding(req.intent_description or "")
+    vlan_has_iface_params = bool(
+        (params.get("interfaces") or params.get("interfaces_config"))
+    )
     if (
         not device_disambiguation
         and is_vlan_feature
         and resolved_hosts
         and _db is not None
         and not iface_names_invalid
+        and not vlan_database_only_preview
+        and (vlan_iface_binding_prompt or vlan_has_iface_params)
     ):
         try:
             planning_context_vlan = planning_context_preview
@@ -4624,18 +5266,22 @@ async def preview_intent(
     params_need_context_fix = bool(iface_names_invalid)
 
     # One disambiguation per response: if we have both params and interfaces, prefer interface picker
+    # only when the param wizard is *only* about interface fields. Previously, any ask_set that
+    # contained "interfaces" (e.g. vlan_name + interfaces) wiped the whole wizard — hiding VLAN name.
+    _iface_only_param_fields = frozenset({"interfaces", "interfaces_config", "interfaces_to_shutdown"})
     if params_disambiguation and interfaces_disambiguation:
         ask_set = {f["field"] for f in params_disambiguation.get("fields", [])}
         if ask_set == {"interfaces"} and schema_action_iface == "shutdown_interface":
             params_disambiguation = None
-        elif iface_names_invalid and "interfaces" in ask_set:
+        elif iface_names_invalid and ask_set and ask_set.issubset(_iface_only_param_fields):
             params_disambiguation = None
 
     schema_editable_fields: List[Dict[str, Any]] = (
         get_editable_fields_for_schema(schema) if schema else []
     )
 
-    # Secondary intents: validate each and report missing/errors (no resolution or wizard for secondaries in this pass)
+    # Secondary intents: validate each; missing fields are merged into top-level params_disambiguation
+    # (fields carry secondary_intent_index). Nested per-secondary wizard removed to avoid duplicate UI.
     secondary_intent_previews: List[Dict[str, Any]] = []
     for idx, sec in enumerate(parsed_intent.get("secondary_intents") or []):
         sec_action = (sec.get("action") or "").strip() or "configure"
@@ -4652,24 +5298,22 @@ async def preview_intent(
         missing_sec, err_sec = validate_completeness(
             sec_intent, sec_schema or {}, action_or_feature=type_key if sec_schema else None
         )
-        questions_sec = (sec_schema or {}).get("questions") or {}
-        fields_sec = [
-            {"field": f, "question": questions_sec.get(f) or f"Please provide: {f}"}
-            for f in missing_sec
-        ]
         secondary_intent_previews.append({
             "intent_index": idx + 1,
             "action": sec_action,
             "feature": sec_feature,
             "missing_fields": missing_sec,
             "validation_errors": err_sec or [],
-            "params_disambiguation": (
-                {"question": "Please provide the following (secondary intent).", "fields": fields_sec}
-                if fields_sec else None
-            ),
+            "params_disambiguation": None,
         })
 
-    _sync_preview_device_deduction_and_reasoning(parsed_intent, reasoning, req.intent_description, resolved_hosts)
+    _sync_preview_device_deduction_and_reasoning(
+        parsed_intent,
+        reasoning,
+        req.intent_description,
+        resolved_hosts,
+        explicit_user_targets=_explicit_targets_in_request,
+    )
 
     return {
         "categories": categories,
@@ -4732,6 +5376,11 @@ class CreateAndPlanRequest(BaseModel):
     feature:            str = ""
     params:             Dict[str, Any] = {}
     device_id:          int = 0
+    # When enabled, the generated playbook is validated with an Ansible check-mode
+    # dry-run (no deployment/execution).
+    verify_with_dry_run: bool = False
+    auto_refine:        bool = True
+    max_refinement_attempts: int = 3
     provider:           Optional[str] = None  # "gemini" | "ollama" for playbook LLM
     model:              Optional[str] = None
     ollama_base_url:    Optional[str] = None

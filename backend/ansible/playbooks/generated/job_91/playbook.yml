@@ -8,6 +8,7 @@
   ignore_unreachable: true
   vars:
     interfaces_config: []
+    interfaces_admin_enabled: True
 
     # Per-host names from runner inventory (multi-target "all interfaces"); filter obvious mgmt names.
     
@@ -33,7 +34,7 @@
       cisco.ios.ios_interfaces:
         config:
           - name: "{{ item }}"
-            enabled: false
+            enabled: "{{ interfaces_admin_enabled | default(false) }}"
         state: merged
       loop: "{{ interfaces_to_shutdown | default([]) }}"
       loop_control:

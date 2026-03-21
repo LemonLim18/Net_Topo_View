@@ -11,7 +11,7 @@ class TestPreviewIntentStaticRouteMissingFields(unittest.TestCase):
         old_db = getattr(ansible_api, "_db", None)
         ansible_api._db = None
 
-        def _fake_preview_parse_and_rag(*, intent_description, target_hosts, vendor, feature, provider, model, ollama_base_url):
+        def _fake_preview_parse_and_rag(*, intent_description, target_hosts, vendor, feature, provider, model, ollama_base_url, request_params=None):
             parsed_intent = {
                 "action": "configure_static_route",
                 "feature": "static_route",

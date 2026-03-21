@@ -110,9 +110,18 @@ def normalize_interface_name(s: str) -> str:
     return t.casefold()
 
 
-def collect_user_interface_names_from_params(params: Optional[Dict[str, Any]]) -> List[str]:
+def collect_user_interface_names_from_params(
+    params: Optional[Dict[str, Any]],
+    *,
+    secondary_intents: Optional[List[Dict[str, Any]]] = None,
+) -> List[str]:
     """
     Ordered unique list of interface strings from shutdown / configure / VLAN params.
+
+    Also merges names from:
+
+    - ``parameters._secondary_intents`` / ``parameters.secondary_intents`` (LLM / Studio),
+    - optional ``secondary_intents`` (top-level ``parsed_intent.secondary_intents`` from preview).
     """
     if not isinstance(params, dict):
         return []
@@ -220,6 +229,84 @@ def collect_user_interface_names_from_params(params: Optional[Dict[str, Any]]) -
         nh = params.get("next_hop")
         for tok in _extract_interface_tokens_from_text(nh):
             add_one(tok)
+
+    def _merge_names_from_secondary_parameters(sp: Dict[str, Any]) -> None:
+        for n in collect_user_interface_names_from_params(sp):
+            nk = normalize_interface_name(n)
+            if nk and nk not in seen:
+                seen.add(nk)
+                out.append(n)
+
+    # Secondary intents embedded in params (create-and-plan / merged request bodies).
+    for _sk in ("_secondary_intents", "secondary_intents"):
+        sec_list = params.get(_sk)
+        if not isinstance(sec_list, list):
+            continue
+        for sec in sec_list:
+            if not isinstance(sec, dict):
+                continue
+            sp = sec.get("parameters")
+            if isinstance(sp, dict):
+                _merge_names_from_secondary_parameters(sp)
+
+    # Top-level parsed_intent.secondary_intents (preview-intent passes these separately).
+    if secondary_intents:
+        for sec in secondary_intents:
+            if not isinstance(sec, dict):
+                continue
+            sp = sec.get("parameters")
+            if isinstance(sp, dict):
+                _merge_names_from_secondary_parameters(sp)
+
+    return out
+
+
+def explicit_interface_names_from_request_params(params: Optional[Dict[str, Any]]) -> List[str]:
+    """
+    Interface names explicitly supplied by the client in ``interfaces`` / ``interfaces_config``,
+    including the same keys nested under ``secondary_intents`` / ``_secondary_intents`` slices
+    (Studio sends port picks on the secondary only for create_vlan + interface composites).
+
+    When this list is non-empty, :func:`validate_interface_params_against_context` can take
+    ``interface_names_override`` so inventory checks **only** these names — not LLM-invented
+    tokens still present elsewhere in merged parameters.
+    """
+    if not isinstance(params, dict):
+        return []
+    out: List[str] = []
+    seen: Set[str] = set()
+
+    def _append_from_iface_list(v: Any) -> None:
+        if not isinstance(v, list) or not v:
+            return
+        for x in v:
+            if isinstance(x, dict):
+                n = str(x.get("name") or x.get("interface") or "").strip()
+            else:
+                n = str(x).strip()
+            if not n:
+                continue
+            nk = normalize_interface_name(n)
+            if nk and nk not in seen:
+                seen.add(nk)
+                out.append(n)
+
+    for key in ("interfaces", "interfaces_config"):
+        _append_from_iface_list(params.get(key))
+
+    for sk in ("secondary_intents", "_secondary_intents"):
+        sec_list = params.get(sk)
+        if not isinstance(sec_list, list):
+            continue
+        for sec in sec_list:
+            if not isinstance(sec, dict):
+                continue
+            sp = sec.get("parameters")
+            if not isinstance(sp, dict):
+                continue
+            for key in ("interfaces", "interfaces_config", "interfaces_to_shutdown"):
+                _append_from_iface_list(sp.get(key))
+
     return out
 
 
@@ -227,9 +314,9 @@ def interface_names_for_host(planning_context: Optional[Dict[str, Any]], hostnam
     """Canonical interface names for a device (same fields as inventory / disambiguation)."""
     if not planning_context or not hostname:
         return []
-    host = str(hostname).strip()
+    host_cf = str(hostname).strip().casefold()
     for d in planning_context.get("devices") or []:
-        if str(d.get("hostname") or "").strip() != host:
+        if str(d.get("hostname") or "").strip().casefold() != host_cf:
             continue
         names: List[str] = []
         for iface in d.get("interfaces") or []:
@@ -378,6 +465,9 @@ def validate_interface_params_against_context(
     params: Optional[Dict[str, Any]],
     resolved_hosts: List[str],
     planning_context: Optional[Dict[str, Any]],
+    *,
+    secondary_intents: Optional[List[Dict[str, Any]]] = None,
+    interface_names_override: Optional[List[str]] = None,
 ) -> InterfaceInventoryValidationResult:
     """
     Validates interface names against per-device inventory.
@@ -386,8 +476,32 @@ def validate_interface_params_against_context(
       that has interface inventory.
     - Qualified names (e.g. SW1:Ethernet0/1) are checked only on host(s) that match
       the device hint, so we do not spam every device with false errors.
+
+    ``secondary_intents`` must match ``should_validate_interface_names_against_inventory`` /
+    ``collect_user_interface_names_from_params`` — composite port work lives there, not only
+    in primary ``parameters``.
+
+    When ``interface_names_override`` is non-empty (e.g. client sent explicit ``interfaces``
+    in ``req.params``), only those names are validated — ignoring LLM guesses still merged
+    into ``params`` or ``secondary_intents``.
     """
-    names = collect_user_interface_names_from_params(params)
+    if interface_names_override:
+        deduped: List[str] = []
+        seen_nk: Set[str] = set()
+        for raw in interface_names_override:
+            n = str(raw).strip()
+            if not n:
+                continue
+            nk = normalize_interface_name(n)
+            if nk and nk not in seen_nk:
+                seen_nk.add(nk)
+                deduped.append(n)
+        names = deduped
+    else:
+        names = collect_user_interface_names_from_params(
+            params,
+            secondary_intents=secondary_intents,
+        )
     if not names or not resolved_hosts:
         return InterfaceInventoryValidationResult(ok=True)
 
@@ -427,14 +541,50 @@ def validate_interface_params_against_context(
         if not nk:
             continue
         for host in hosts_to_check:
+            key = (host, original_token, nk)
+            if key in seen_failures:
+                continue
             canonical = interface_names_for_host(planning_context, host)
             if not canonical:
+                # Do not silently accept LLM interface names when we have no list to check against.
+                seen_failures.add(key)
+                dev_found = any(
+                    str(d.get("hostname") or "").strip().casefold() == str(host).strip().casefold()
+                    for d in (planning_context.get("devices") or [])
+                    if isinstance(d, dict)
+                )
+                if dev_found:
+                    invalid.append(
+                        {
+                            "hostname": host,
+                            "value": original_token,
+                            "kind": "interface",
+                            "message": (
+                                f"Planned network context has **no interface names** listed for **{host}**, "
+                                f"so **`{iface_only}`** cannot be verified. Sync/refresh topology or pick interfaces "
+                                "when the device has interface inventory."
+                            ),
+                            "suggestions": [],
+                            "interface_for_match": iface_only,
+                        }
+                    )
+                else:
+                    invalid.append(
+                        {
+                            "hostname": host,
+                            "value": original_token,
+                            "kind": "interface",
+                            "message": (
+                                f"Device **{host}** was not found in the planned network context used for "
+                                f"interface validation, so **`{iface_only}`** cannot be verified against inventory."
+                            ),
+                            "suggestions": [],
+                            "interface_for_match": iface_only,
+                        }
+                    )
                 continue
             norm_map = _normalized_map(canonical)
             if nk in norm_map:
-                continue
-            key = (host, original_token, nk)
-            if key in seen_failures:
                 continue
             seen_failures.add(key)
             sug = _suggestions_for(iface_only, canonical)
@@ -537,20 +687,28 @@ def should_validate_interface_names_against_inventory(
     schema_action: str,
     feature_lower: str,
     params: Optional[Dict[str, Any]],
+    *,
+    secondary_intents: Optional[List[Dict[str, Any]]] = None,
+    interface_names_override: Optional[List[str]] = None,
 ) -> bool:
     """True when we have interface strings in params and intent is interface or VLAN."""
-    if not collect_user_interface_names_from_params(params):
-        return False
     sa = str(schema_action or "").strip().lower().replace("-", "_")
     fl = str(feature_lower or "").strip().lower()
-    if sa in ("shutdown_interface", "configure_interface"):
-        return True
-    if sa == "create_vlan" or fl == "vlan":
-        return True
-    # Non-interface categories that embed interface-like strings.
-    if sa in ("configure_acl", "configure_qos", "configure_ospf", "configure_static_route"):
-        return True
-    return False
+    intent_uses_iface_inventory = (
+        sa in ("shutdown_interface", "configure_interface")
+        or sa == "create_vlan"
+        or fl == "vlan"
+        or sa in ("configure_acl", "configure_qos", "configure_ospf", "configure_static_route")
+    )
+    if not intent_uses_iface_inventory:
+        return False
+    if interface_names_override:
+        oa = [str(x).strip() for x in interface_names_override if str(x).strip()]
+        if oa:
+            return True
+    if not collect_user_interface_names_from_params(params, secondary_intents=secondary_intents):
+        return False
+    return True
 
 
 _MGMT_IFACE_NAME_RE = re.compile(r"(?i).*(management|mgmt|meth|vty|console).*")

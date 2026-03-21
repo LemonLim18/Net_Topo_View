@@ -87,13 +87,27 @@ def _normalize_intent_to_schema_shape(intent: Dict[str, Any]) -> Dict[str, Any]:
                         allowed_list.append(int(part))
         for item in raw_ifaces:
             if isinstance(item, dict):
-                interfaces.append({
+                mode = "trunk" if str(item.get("mode") or "").strip().lower() == "trunk" else "access"
+                row: Dict[str, Any] = {
                     "name": str(item.get("name", "")).strip(),
-                    "mode": "trunk" if str(item.get("mode") or "").strip().lower() == "trunk" else "access",
-                    "access_vlan": item.get("access_vlan"),
-                    "allowed_vlans": item.get("allowed_vlans") or [],
-                    "native_vlan": item.get("native_vlan"),
-                })
+                    "mode": mode,
+                }
+                av = item.get("access_vlan")
+                if av is not None and str(av).strip() != "":
+                    try:
+                        row["access_vlan"] = int(av)
+                    except (TypeError, ValueError):
+                        row["access_vlan"] = av
+                al = item.get("allowed_vlans")
+                if isinstance(al, list) and al:
+                    row["allowed_vlans"] = al
+                nv = item.get("native_vlan")
+                if nv is not None and str(nv).strip() != "":
+                    try:
+                        row["native_vlan"] = int(nv)
+                    except (TypeError, ValueError):
+                        pass
+                interfaces.append(row)
             else:
                 # LLM sent interface name as string; use global mode and trunk_vlans
                 name = str(item).strip()
@@ -547,6 +561,9 @@ def get_template_vars(
         params_x = intent.get("params") or {}
         use_nettopo_shutdown = bool(params_x.get("interfaces_shutdown_use_nettopo"))
         use_nettopo_config = bool(params_x.get("interfaces_config_use_nettopo"))
+        # Optional: admin-up vs admin-down behavior for shutdown-style templates.
+        # When omitted, templates default to admin-down (disabled).
+        interfaces_admin_enabled = params_x.get("interfaces_admin_enabled")
         if use_nettopo_shutdown:
             interfaces_to_shutdown = []
         if use_nettopo_config:
@@ -562,6 +579,7 @@ def get_template_vars(
             "interfaces_to_shutdown_json": json.dumps(interfaces_to_shutdown),
             "interfaces_shutdown_use_nettopo": use_nettopo_shutdown,
             "interfaces_config_use_nettopo": use_nettopo_config,
+            "interfaces_admin_enabled": interfaces_admin_enabled,
         }
 
     normalized = _normalize_intent_to_schema_shape(intent)
@@ -590,11 +608,18 @@ def get_template_vars(
 
     default_binding_mode = None
     default_trunk_allowed_vlans: Any = None
+    default_trunk_native_vlan: Optional[int] = None
     if interfaces_config_with_vlan_use_nettopo:
         default_iface = next((i for i in schema_interfaces if str(i.get("name") or "").strip().lower() == "all"), None) or {}
         default_binding_mode = str(default_iface.get("mode") or "access").strip().lower()
         allowed = default_iface.get("allowed_vlans")
         if default_binding_mode == "trunk":
+            native_vlan = default_iface.get("native_vlan")
+            if native_vlan is not None and str(native_vlan).strip() != "":
+                try:
+                    default_trunk_native_vlan = int(native_vlan)
+                except Exception:
+                    default_trunk_native_vlan = None
             if isinstance(allowed, list) and allowed:
                 try:
                     default_trunk_allowed_vlans = [int(x) for x in allowed]
@@ -636,10 +661,20 @@ def get_template_vars(
                     trunk_vlans = ",".join(str(x) for x in allowed)
                 elif isinstance(allowed, str):
                     trunk_vlans = allowed
+                native_vlan = i.get("native_vlan")
+                native_vlan_int: Optional[int] = None
+                if native_vlan is not None and str(native_vlan).strip() != "":
+                    try:
+                        native_vlan_int = int(native_vlan)
+                    except Exception:
+                        native_vlan_int = None
                 interfaces_config_with_vlan.append({
                     "name": name,
                     "mode": "trunk",
-                    "trunk": {"trunk_vlans": trunk_vlans},
+                    "trunk": {
+                        "trunk_vlans": trunk_vlans,
+                        **({"native_vlan": native_vlan_int} if native_vlan_int is not None else {}),
+                    },
                 })
 
     params["interfaces_config"] = interfaces_config
@@ -647,6 +682,7 @@ def get_template_vars(
     params["interfaces_config_with_vlan_use_nettopo"] = interfaces_config_with_vlan_use_nettopo
     params["interfaces_binding_mode"] = default_binding_mode or "access"
     params["interfaces_binding_trunk_allowed_vlans"] = default_trunk_allowed_vlans
+    params["interfaces_binding_trunk_native_vlan"] = default_trunk_native_vlan
     yaml_str = yaml.dump(interfaces_config_with_vlan, default_flow_style=False, sort_keys=False)
     params["interfaces_config_yaml"] = "\n".join("          " + line for line in yaml_str.strip().splitlines())
     # Indented YAML for config: key — must be indented more than "config:" (8 spaces) so YAML parses as key value

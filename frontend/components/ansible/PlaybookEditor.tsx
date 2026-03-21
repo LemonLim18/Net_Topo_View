@@ -65,12 +65,16 @@ const PlaybookEditor: React.FC<PlaybookEditorProps> = ({
   const isApproved  = job?.status === 'approved';
   const isDeploying = job?.status === 'running';
   const isDone      = job?.status === 'success' || job?.status === 'failed';
+  // Allow re-deploy when a job was already approved at least once.
+  // Backend enforces "must be approved" for execution, but historically jobs may
+  // move to success/failed status after the first run; we still want Deploy to stay available.
+  const canDeploy = isApproved || job?.status === 'success' || job?.status === 'failed';
   const approveTitle = !isAdmin
     ? 'Admin role required for device deployment approval'
     : 'Approve playbook for device deployment';
   const deployTitle = !isAdmin
     ? 'Admin role required for deployment to devices'
-    : !isApproved
+    : !canDeploy
       ? 'Job must be approved first'
       : 'Deploy to all target devices';
 
@@ -172,7 +176,7 @@ const PlaybookEditor: React.FC<PlaybookEditorProps> = ({
         <button
           className={`btn btn-xs gap-1 ${isDeploying ? 'btn-disabled' : 'btn-success'}`}
           onClick={onDeploy}
-          disabled={!isAdmin || !isApproved || isDeploying}
+          disabled={!isAdmin || !canDeploy || isDeploying}
           title={deployTitle}
         >
           <Play className="h-3 w-3" />

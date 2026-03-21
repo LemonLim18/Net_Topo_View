@@ -1,0 +1,500 @@
+version: 1
+#
+# Golden expectations for intent-validation regression.
+# Notes:
+# - For VLAN + Interface (reference templates exist), Stage B is enabled and we assert playbook snippets.
+# - For ACL/QoS/OSPF/Static-route, Stage B is disabled by default (LLM-generated playbooks would be too flaky initially),
+#   and we only assert preview/disambiguation/validation behavior.
+# - Runner should treat missing keys as "no assertion".
+#
+cases:
+  # -----------------------------
+  # VLAN
+  # -----------------------------
+  vlan_create_67_shuying_access_1_2_3:
+    expected_preview:
+      preview_status: 200
+    stageB:
+      enabled: true
+      must_contain:
+        - "Ensure VLAN 67 exists"
+
+  vlan_create_120_web_vlan_on_sw1_sw2:
+    expected_preview:
+      preview_status: 200
+    stageB:
+      enabled: true
+      must_contain:
+        - "Ensure VLAN 120 exists"
+
+  vlan_create_30_access_vlan_gi0_1_sw1:
+    expected_preview:
+      preview_status: 200
+    stageB:
+      enabled: true
+      must_contain:
+        - "Ensure VLAN 30 exists"
+
+  vlan_create_10_trunk_allow_gi0_2_sw1:
+    expected_preview:
+      preview_status: 200
+    stageB:
+      enabled: true
+      must_contain:
+        - "Ensure VLAN 10 exists"
+
+  vlan_create_200_guest_native_vlan_200_gi0_3:
+    expected_preview:
+      preview_status: 200
+    stageB:
+      enabled: true
+      must_contain:
+        - "Ensure VLAN 200 exists"
+        # This assertion is intentional: the reference VLAN template should respect native_vlan.
+        - "native_vlan"
+
+  vlan_create_generic_ambiguous:
+    expected_preview:
+      preview_status: 200
+      expected_params_disambiguation_fields_contains:
+        - "vlan_id"
+        - "vlan_name"
+    auto_answers:
+      vlan_id: 100
+      vlan_name: "DATA"
+      target_devices: ["SW1"]
+    stageB:
+      enabled: true
+      must_contain:
+        - "Ensure VLAN 100 exists"
+
+  # Ambiguity / validation
+  amb_vlan_configure_vlan_on_sw1_missing_id_name:
+    expected_preview:
+      preview_status: 200
+      expected_params_disambiguation_fields_contains:
+        - "vlan_id"
+        - "vlan_name"
+    auto_answers:
+      vlan_id: 100
+      vlan_name: "DATA"
+    stageB:
+      enabled: true
+      must_contain:
+        - "Ensure VLAN 100 exists"
+
+  vlan_create_missing_vlan_name_but_has_id:
+    expected_preview:
+      preview_status: 200
+      expected_params_disambiguation_fields_contains:
+        - "vlan_name"
+    auto_answers:
+      vlan_name: "DATA"
+    stageB:
+      enabled: true
+      must_contain:
+        - "Ensure VLAN 67 exists"
+
+  vlan_create_missing_vlan_id_but_has_name:
+    expected_preview:
+      preview_status: 200
+      expected_params_disambiguation_fields_contains:
+        - "vlan_id"
+    auto_answers:
+      vlan_id: 100
+      vlan_name: "DATA"
+    stageB:
+      enabled: true
+      must_contain:
+        - "Ensure VLAN 100 exists"
+
+  vlan_trunk_missing_native_vlan_expect_question:
+    expected_preview:
+      preview_status: 200
+      # The VLAN reference template relies on reference/vlan intent schema; native_vlan should be validated for trunk.
+      expected_validation_errors_contains:
+        - "native_vlan"
+        - "required"
+    stageB:
+      enabled: false
+
+  # -----------------------------
+  # Interface (reference templates exist)
+  # -----------------------------
+  iface_admin_down_all_on_sw1:
+    expected_preview:
+      preview_status: 200
+    stageB:
+      enabled: true
+      must_contain:
+        - "Shutdown interface"
+        - "nettopo_interfaces"
+
+  amb_iface_admin_down_all_on_sw1_and_sw3:
+    expected_preview:
+      preview_status: 200
+    stageB:
+      enabled: true
+      must_contain:
+        - "Shutdown interface"
+        - "nettopo_interfaces"
+
+  iface_shutdown_gi0_1_router2:
+    expected_preview:
+      preview_status: 200
+    stageB:
+      enabled: true
+      must_contain:
+        - "Shutdown interface"
+        - "GigabitEthernet1/0/1"
+
+  # configure_interface prompts missing conditional leaves should produce 422.
+  iface_config_access_ports_gi0_1_gi0_2_sw1:
+    expected_preview:
+      preview_status: 422
+      expected_missing_fields_contains:
+        - "access_vlan"
+    stageB:
+      enabled: false
+
+  iface_config_trunk_gi0_5_allow_vlans_sw1:
+    expected_preview:
+      preview_status: 200
+    stageB:
+      enabled: true
+      must_contain:
+        - "Configure interface"
+        - "GigabitEthernet1/0/5"
+        - "10"
+        - "20"
+        - "67"
+
+  iface_config_routed_gi0_3_ip_192_168_10_1_24_sw1:
+    expected_preview:
+      preview_status: 200
+    stageB:
+      enabled: true
+      must_contain:
+        - "GigabitEthernet1/0/3"
+        - "192.168.10.1"
+
+  iface_config_generic_ambiguous:
+    # Generic interface prompt should trigger device/interface disambiguation.
+    expected_preview:
+      preview_status: 200
+      expected_any_disambiguation_kind: true
+    stageB:
+      enabled: false
+
+  # Derived interface negative cases
+  iface_config_access_missing_access_vlan_expect_question:
+    expected_preview:
+      preview_status: 422
+      expected_missing_fields_contains:
+        - "access_vlan"
+    stageB:
+      enabled: false
+
+  iface_config_trunk_missing_allowed_vlans_expect_question:
+    expected_preview:
+      preview_status: 422
+      expected_missing_fields_contains:
+        - "trunk_vlans"
+    stageB:
+      enabled: false
+
+  iface_config_routed_missing_subnet_mask_expect_question:
+    expected_preview:
+      preview_status: 422
+      expected_missing_fields_contains:
+        - "subnet_mask"
+    stageB:
+      enabled: false
+
+  # -----------------------------
+  # ACL / QoS / Static Route / OSPF
+  # (StageB disabled; we mainly validate preview/disambiguation correctness)
+  # -----------------------------
+  acl_create_2000_permit_ssh_sw1:
+    expected_preview:
+      preview_status: 200
+    stageB:
+      enabled: true
+      must_contain:
+        - "ip access-list"
+        - "2000"
+        - "eq 22"
+
+  acl_create_block_http_deny_tcp_80_sw1:
+    expected_preview:
+      preview_status: 200
+    stageB:
+      enabled: true
+      must_contain:
+        - "ip access-list"
+        - "BLOCK_HTTP"
+        - "deny"
+        - "eq 80"
+
+  # Applying an existing ACL should not require re-specifying acl rules.
+  acl_apply_3000_inbound_gi0_1_sw1:
+    expected_preview:
+      preview_status: 200
+      expected_params_disambiguation_fields_forbidden_contains:
+        - "rules"
+    stageB:
+      enabled: true
+      must_contain:
+        - "3000"
+        - "GigabitEthernet1/0/1"
+
+  acl_apply_block_http_outbound_gi0_2_sw1:
+    expected_preview:
+      preview_status: 200
+      expected_params_disambiguation_fields_forbidden_contains:
+        - "rules"
+    stageB:
+      enabled: true
+      must_contain:
+        - "BLOCK_HTTP"
+        - "GigabitEthernet1/0/2"
+
+  acl_deny_icmp_apply_on_access_switch_3:
+    expected_preview:
+      preview_status: 200
+    stageB:
+      enabled: true
+      must_contain:
+        - "ip access-list"
+        - "icmp"
+        - "deny"
+
+  acl_add_rule_generic_ambiguous:
+    expected_preview:
+      preview_status: 200
+      expected_any_disambiguation_kind: true
+    stageB:
+      enabled: false
+
+  qos_create_voice_policy_sw1:
+    expected_preview:
+      preview_status: 200
+    stageB:
+      enabled: true
+      must_contain:
+        - "policy-map"
+        - "VOICE_POLICY"
+
+  qos_config_prioritize_voice_gi0_1_sw1:
+    expected_preview:
+      preview_status: 200
+    stageB:
+      enabled: true
+      must_contain:
+        - "service-policy"
+        - "GigabitEthernet1/0/1"
+
+  qos_apply_in_policy_inbound_gi0_2_sw1:
+    expected_preview:
+      preview_status: 200
+      # Applying an existing policy should not require re-specifying classification rules.
+      expected_params_disambiguation_fields_forbidden_contains:
+        - "classification_rules"
+    stageB:
+      enabled: true
+      must_contain:
+        - "service-policy"
+        - "IN_POLICY"
+
+  qos_mark_dscp_46_on_sw2:
+    expected_preview:
+      preview_status: 200
+    stageB:
+      enabled: true
+      must_contain:
+        - "set dscp 46"
+
+  qos_create_policing_policy_http_sw1:
+    expected_preview:
+      preview_status: 200
+    stageB:
+      enabled: true
+      must_contain:
+        - "class-map"
+        - "policy-map"
+        - "police"
+
+  qos_config_generic_ambiguous:
+    expected_preview:
+      preview_status: 200
+      expected_any_disambiguation_kind: true
+    stageB:
+      enabled: false
+
+  static_route_add_10_10_10_0_24_via_192_168_1_1_sw1:
+    expected_preview:
+      preview_status: 200
+    stageB:
+      enabled: true
+      must_contain:
+        - "ip route 10.10.10.0"
+        - "192.168.1.1"
+
+  # Default route on a router without explicit next hop should trigger next_hop disambiguation.
+  static_route_add_default_route_on_router_2:
+    expected_preview:
+      preview_status: 200
+      expected_params_disambiguation_fields_contains:
+        - "next_hop"
+    stageB:
+      enabled: false
+
+  static_route_add_172_16_0_0_16_via_gi0_1_router_2:
+    expected_preview:
+      preview_status: 200
+    stageB:
+      enabled: true
+      must_contain:
+        - "ip route 172.16.0.0"
+        - "GigabitEthernet0/1"
+
+  static_route_add_192_168_50_0_24_via_10_0_0_2_sw1:
+    expected_preview:
+      preview_status: 200
+    stageB:
+      enabled: true
+      must_contain:
+        - "ip route 192.168.50.0"
+        - "10.0.0.2"
+
+  static_route_add_management_network_generic_devices:
+    expected_preview:
+      preview_status: 200
+      expected_any_disambiguation_kind: true
+    stageB:
+      enabled: false
+
+  static_route_create_generic_route_ambiguous:
+    expected_preview:
+      preview_status: 200
+      expected_any_disambiguation_kind: true
+    stageB:
+      enabled: false
+
+  static_route_missing_next_hop_expect_question:
+    expected_preview:
+      preview_status: 200
+      expected_params_disambiguation_fields_contains:
+        - "next_hop"
+    stageB:
+      enabled: false
+
+  # OSPF
+  ospf_config_process_1_on_router_2:
+    expected_preview:
+      preview_status: 200
+      expected_params_disambiguation_fields_contains:
+        - "networks"
+    stageB:
+      enabled: false
+
+  ospf_add_network_192_168_1_0_24_area_0_router_2:
+    expected_preview:
+      preview_status: 200
+      expected_params_disambiguation_fields_contains:
+        - "process_id"
+    stageB:
+      enabled: false
+
+  ospf_set_router_id_1_1_1_1_advertise_10_0_0_0_24_area_0_sw1:
+    expected_preview:
+      preview_status: 200
+      expected_params_disambiguation_fields_contains:
+        - "process_id"
+    stageB:
+      enabled: false
+
+  ospf_make_gi1_0_1_passive_on_router_1:
+    expected_preview:
+      preview_status: 200
+      expected_any_disambiguation_kind: true
+    stageB:
+      enabled: false
+
+  ospf_enable_redistribution_static_routes_router_2:
+    expected_preview:
+      preview_status: 200
+      expected_any_disambiguation_kind: true
+    stageB:
+      enabled: false
+
+  ospf_config_generic_ambiguous:
+    expected_preview:
+      preview_status: 200
+      expected_any_disambiguation_kind: true
+    stageB:
+      enabled: false
+
+  # Ambiguity / validation cases for OSPF
+  amb_ospf_add_network_for_access_network:
+    expected_preview:
+      preview_status: 200
+      expected_any_disambiguation_kind: true
+    stageB:
+      enabled: false
+
+  ospf_missing_process_id_expect_question:
+    expected_preview:
+      preview_status: 200
+      expected_params_disambiguation_fields_contains:
+        - "process_id"
+    stageB:
+      enabled: false
+
+  ospf_missing_networks_expect_question:
+    expected_preview:
+      preview_status: 200
+      expected_params_disambiguation_fields_contains:
+        - "networks"
+    stageB:
+      enabled: false
+
+  # Ambiguity cases for other categories
+  amb_acl_apply_inbound_missing_acl_name:
+    expected_preview:
+      preview_status: 200
+      expected_any_disambiguation_kind: true
+    stageB:
+      enabled: false
+
+  amb_static_route_add_via_next_hop_missing_destination:
+    expected_preview:
+      preview_status: 200
+      expected_params_disambiguation_fields_contains:
+        - "destination"
+    stageB:
+      enabled: false
+
+  amb_qos_put_on_uplink_port:
+    expected_preview:
+      preview_status: 200
+      expected_any_disambiguation_kind: true
+    stageB:
+      enabled: false
+
+  acl_create_missing_rules_expect_question:
+    expected_preview:
+      preview_status: 200
+      expected_params_disambiguation_fields_contains:
+        - "rules"
+    stageB:
+      enabled: false
+
+  qos_create_missing_classification_rules_expect_question:
+    expected_preview:
+      preview_status: 200
+      expected_params_disambiguation_fields_contains:
+        - "classification_rules"
+    stageB:
+      enabled: false
+

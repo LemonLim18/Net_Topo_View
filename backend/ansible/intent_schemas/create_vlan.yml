@@ -1,12 +1,13 @@
-# Intent schema: create / configure VLAN
-# Required: vlan_id, target_devices. Optional: vlan_name, interface_bindings, desired_state
+# Intent schema: VLAN database (create / ensure VLAN exists on switches)
+# Required: vlan_id, vlan_name, target_devices. Optional: interface_binding, desired_state
+# For L2 port binding (access/trunk), use configure_interface + feature interface — not this action.
 action: create_vlan
 feature: vlan
 required:
   - vlan_id
+  - vlan_name
   - target_devices
 optional:
-  - vlan_name
   - interface_binding
   - desired_state
 resolution_order:

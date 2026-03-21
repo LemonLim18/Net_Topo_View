@@ -94,7 +94,33 @@ function parseIntent(text: string): {
   const nameMatch = text.match(/name[d]?\s+["']?(\w[\w-]+)["']?/i);
   if (nameMatch) params['vlan_name'] = nameMatch[1];
 
-  return { vendor, feature, target_hosts: target_hosts.length ? target_hosts : ['all'], params };
+  // Empty means "unspecified" — callers pass undefined to the API instead of ['all'],
+  // which previously forced full-inventory resolution and broke follow-up previews.
+  return { vendor, feature, target_hosts: target_hosts.length ? target_hosts : [], params };
+}
+
+/** Hosts from lightweight parse, or undefined when nothing real was inferred (never force ['all']). */
+function safeParsedHostsForPreview(text: string): string[] | undefined {
+  const { target_hosts } = parseIntent(text);
+  if (!target_hosts.length) return undefined;
+  const filtered = target_hosts.filter((h) => h && h !== 'all');
+  return filtered.length ? filtered : undefined;
+}
+
+/** Backend preview param wizard field (primary or secondary_intents slice). */
+export type PreviewParamField = {
+  field: string;
+  question: string;
+  secondary_intent_index?: number;
+  label?: string;
+};
+
+/** Value map key: disambiguate duplicate field names across primary vs secondary intents. */
+function previewFieldValueKey(f: PreviewParamField): string {
+  if (f.secondary_intent_index !== undefined && f.secondary_intent_index !== null) {
+    return `${f.field}::__sec__${f.secondary_intent_index}`;
+  }
+  return f.field;
 }
 
 // ── VS Code-style markdown renderer ──────────────────────────────────────────
@@ -215,7 +241,7 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
   const [paramsDisambiguation, setParamsDisambiguation] = useState<{
     messageId: string;
     question: string;
-    fields: { field: string; question: string }[];
+    fields: PreviewParamField[];
     intentText: string;
   } | null>(null);
   const [paramsDisambiguationValues, setParamsDisambiguationValues] = useState<Record<string, string | number | string[]>>({});
@@ -229,6 +255,10 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
     kind?: string;
   } | null>(null);
   const [selectedDevices, setSelectedDevices] = useState<Set<string>>(new Set());
+  /** After device picker / explicit selection — always pass these on later preview follow-ups (params wizard, interfaces). */
+  const [previewLockedTargetHosts, setPreviewLockedTargetHosts] = useState<string[]>([]);
+  /** Merged params (vlan_id/name, target_hosts, interfaces, …) so each follow-up preview does not drop prior answers. */
+  const [previewAccumulatedParams, setPreviewAccumulatedParams] = useState<Record<string, unknown>>({});
   const [studioInitialPreview, setStudioInitialPreview] = useState<{
     categories: string[];
     references: { doc_name: string; feature: string; vendor: string; path: string }[];
@@ -429,11 +459,16 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
   }, []);
 
   /**
-   * After previewIntent: device picker → switch-role menu → interface picker → params wizard → studio.
+   * After previewIntent: device picker → switch-role menu → params wizard → interface picker → studio.
+   * Params before interfaces so missing VLAN fields aren’t skipped when inventory also returns an interface picker.
    * Returns true if a branch handled the response (skip generic “Thinking” snippet).
    */
   const applyPreviewFollowUps = useCallback(
     (res: any, intentText: string): boolean => {
+      const secMerge = res?.parsed_intent?.secondary_intents;
+      if (Array.isArray(secMerge) && secMerge.length) {
+        setPreviewAccumulatedParams((prev) => ({ ...prev, secondary_intents: secMerge }));
+      }
       const devicesDis = res?.devices_disambiguation as
         | {
             question?: string;
@@ -500,6 +535,32 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
         return true;
       }
 
+      // Params wizard BEFORE interface picker: when both are returned (e.g. missing vlan_name + invalid Gi…),
+      // handling interfaces first would hide the VLAN name step forever (early return).
+      const paramsDis = res?.params_disambiguation;
+      if (paramsDis?.fields?.length) {
+        const menuMsgId = crypto.randomUUID();
+        setParamsDisambiguation({
+          messageId: menuMsgId,
+          question: paramsDis.question || 'Please provide the following.',
+          fields: paramsDis.fields,
+          intentText,
+        });
+        setParamsDisambiguationValues({});
+        setParamsDisambiguationStep(0);
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: menuMsgId,
+            role: 'assistant',
+            content: 'Clarifying for some missing information',
+            timestamp: Date.now(),
+            paramsDisambiguation: { question: paramsDis.question, fields: paramsDis.fields },
+          } as AnsibleMessage,
+        ]);
+        return true;
+      }
+
       const ifaceDis = res?.interfaces_disambiguation;
       if (ifaceDis?.devices?.length) {
         const menuMsgId = crypto.randomUUID();
@@ -525,30 +586,6 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
               : ifaceDis.question || 'Please select the interfaces to continue.',
             timestamp: Date.now(),
             interfaceDisambiguation: { question: ifaceDis.question, devices: ifaceDis.devices },
-          } as AnsibleMessage,
-        ]);
-        return true;
-      }
-
-      const paramsDis = res?.params_disambiguation;
-      if (paramsDis?.fields?.length) {
-        const menuMsgId = crypto.randomUUID();
-        setParamsDisambiguation({
-          messageId: menuMsgId,
-          question: paramsDis.question || 'Please provide the following.',
-          fields: paramsDis.fields,
-          intentText,
-        });
-        setParamsDisambiguationValues({});
-        setParamsDisambiguationStep(0);
-        setMessages((prev) => [
-          ...prev,
-          {
-            id: menuMsgId,
-            role: 'assistant',
-            content: 'Clarifying for some missing information',
-            timestamp: Date.now(),
-            paramsDisambiguation: { question: paramsDis.question, fields: paramsDis.fields },
           } as AnsibleMessage,
         ]);
         return true;
@@ -584,11 +621,16 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
     const ac = new AbortController();
     abortControllerRef.current = ac;
     try {
-      const { vendor, feature } = parseIntent(intentText);
+      const { vendor, feature, params: parsedParams } = parseIntent(intentText);
+      const merged = { ...previewAccumulatedParams, ...parsedParams, target_hosts: hosts };
+      setPreviewLockedTargetHosts(hosts);
+      setPreviewAccumulatedParams(merged);
       const res = await ansibleApi.previewIntent(
         {
           intent_description: intentText,
           target_hosts: hosts,
+          // Duplicate under params so preview merge + _preview_parse_and_rag always see explicit picks
+          params: merged,
           vendor: vendor || undefined,
           feature: feature || undefined,
           provider: ansibleModel.provider,
@@ -629,6 +671,7 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
   }, [
     deviceDisambiguation,
     selectedDevices,
+    previewAccumulatedParams,
     parseIntent,
     ansibleModel,
     applyPreviewFollowUps,
@@ -728,6 +771,8 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
       }
     } else {
       // ── Standard flow: run preview first to detect ambiguity ──
+      setPreviewLockedTargetHosts([]);
+      setPreviewAccumulatedParams({});
       const loadingId = crypto.randomUUID();
       const loadingPhases = ['Reviewing the user intent', 'Clarifying for some missing information', 'Loading ...'];
       setMessages(prev => [...prev, {
@@ -751,11 +796,12 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
         ));
       }, 8000);
       loadingPhaseTimeoutRef.current = [t1, t2];
-      const { vendor, feature, target_hosts } = parseIntent(text);
+      const { vendor, feature } = parseIntent(text);
+      const initialHosts = safeParsedHostsForPreview(text);
       try {
         const res = await ansibleApi.previewIntent({
           intent_description: text,
-          target_hosts: target_hosts?.length ? target_hosts : undefined,
+          target_hosts: initialHosts,
           vendor: vendor || undefined,
           feature: feature || undefined,
           provider: ansibleModel.provider,
@@ -919,10 +965,14 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); }
   };
 
-  const clearMessages = () => setMessages([{
-    id: 'welcome', role: 'assistant', timestamp: Date.now(),
-    content: '**Ansible AI** is ready. Describe your configuration intent.',
-  }]);
+  const clearMessages = () => {
+    setPreviewLockedTargetHosts([]);
+    setPreviewAccumulatedParams({});
+    setMessages([{
+      id: 'welcome', role: 'assistant', timestamp: Date.now(),
+      content: '**Ansible AI** is ready. Describe your configuration intent.',
+    }]);
+  };
 
   const handleRebuildRag = useCallback(async () => {
     setIsRebuildingRag(true);
@@ -1376,7 +1426,16 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
                             const ac = new AbortController();
                             abortControllerRef.current = ac;
                             try {
-                              const { vendor, feature, target_hosts } = parseIntent(intentText);
+                              const { vendor, feature, params: parsedParams } = parseIntent(intentText);
+                              // During interface disambiguation, keep the user's selected devices authoritative;
+                              // re-parsing the original text would reintroduce wrong tokens like "SW1".
+                              const selectedHosts = Array.from(selectedDevices);
+                              const effectiveTargetHosts =
+                                selectedHosts.length > 0
+                                  ? selectedHosts
+                                  : previewLockedTargetHosts.length > 0
+                                    ? previewLockedTargetHosts
+                                    : safeParsedHostsForPreview(intentText);
                               const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
                               const inferDirection = (ifaceName: string): 'in' | 'out' | null => {
                                 // Preserve in/out direction only when it appears next to the interface token in the original prompt.
@@ -1388,11 +1447,62 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
                               };
 
                               let ifaceParams: Record<string, any>;
-                              if (schemaAction === 'configure_interface' || schemaAction === 'create_vlan') {
+                              const secondaryIntents = (previewAccumulatedParams.secondary_intents as
+                                | Array<{ action?: string; feature?: string; parameters?: Record<string, unknown> }>
+                                | undefined) || [];
+                              /** First secondary slice that is interface work (works with 3+ ops; order need not be [0]). */
+                              const ifaceSecondaryIdx = secondaryIntents.findIndex(
+                                (s) =>
+                                  (s.action || '').toLowerCase().replace(/-/g, '_') === 'configure_interface' ||
+                                  (s.feature || '').toLowerCase() === 'interface',
+                              );
+                              const secondaryIsIface = ifaceSecondaryIdx >= 0;
+
+                              if (secondaryIsIface) {
+                                const vidRaw =
+                                  (previewAccumulatedParams.vlan_id as number | string | undefined) ??
+                                  parsedParams.vlan_id;
+                                const accessVlan =
+                                  vidRaw !== undefined && vidRaw !== ''
+                                    ? typeof vidRaw === 'number'
+                                      ? vidRaw
+                                      : parseInt(String(vidRaw), 10)
+                                    : NaN;
+                                const ifaceList = {
+                                  interfaces: selected.map((name) => ({
+                                    name,
+                                    mode: 'access' as const,
+                                    ...(!Number.isNaN(accessVlan)
+                                      ? { access_vlan: accessVlan }
+                                      : {}),
+                                  })),
+                                };
+                                const mergedSec = [...secondaryIntents];
+                                const pPrev = (mergedSec[ifaceSecondaryIdx]?.parameters as Record<string, unknown>) || {};
+                                mergedSec[ifaceSecondaryIdx] = {
+                                  ...mergedSec[ifaceSecondaryIdx],
+                                  action: mergedSec[ifaceSecondaryIdx]?.action || 'configure_interface',
+                                  feature: mergedSec[ifaceSecondaryIdx]?.feature || 'interface',
+                                  parameters: { ...pPrev, ...ifaceList },
+                                };
+                                ifaceParams = { secondary_intents: mergedSec };
+                              } else if (schemaAction === 'configure_interface' || schemaAction === 'create_vlan') {
+                                const vidRaw =
+                                  (previewAccumulatedParams.vlan_id as number | string | undefined) ??
+                                  parsedParams.vlan_id;
+                                const accessVlan =
+                                  vidRaw !== undefined && vidRaw !== ''
+                                    ? typeof vidRaw === 'number'
+                                      ? vidRaw
+                                      : parseInt(String(vidRaw), 10)
+                                    : NaN;
                                 ifaceParams = {
                                   interfaces: selected.map((name) => ({
                                     name,
                                     mode: 'access' as const,
+                                    ...(!Number.isNaN(accessVlan)
+                                      ? { access_vlan: accessVlan }
+                                      : {}),
                                   })),
                                 };
                               } else if (schemaAction === 'configure_acl') {
@@ -1416,15 +1526,27 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
                               } else {
                                 ifaceParams = { interfaces_to_shutdown: selected };
                               }
+                              const mergedIface: Record<string, unknown> = {
+                                ...previewAccumulatedParams,
+                                ...parsedParams,
+                                ...ifaceParams,
+                              };
+                              if (effectiveTargetHosts?.length) {
+                                mergedIface.target_hosts = effectiveTargetHosts;
+                              }
+                              setPreviewAccumulatedParams(mergedIface);
+                              if (effectiveTargetHosts?.length) {
+                                setPreviewLockedTargetHosts(effectiveTargetHosts);
+                              }
                               const res = await ansibleApi.previewIntent({
                                 intent_description: intentText,
-                                target_hosts: target_hosts?.length ? target_hosts : undefined,
+                                target_hosts: effectiveTargetHosts,
                                 vendor: vendor || undefined,
                                 feature: feature || undefined,
                                 provider: ansibleModel.provider,
                                 model: ansibleModel.model,
                                 ollama_base_url: ansibleModel.ollama_base_url ?? undefined,
-                                params: ifaceParams,
+                                params: mergedIface,
                               }, { signal: ac.signal });
                               abortControllerRef.current = null;
                               setMessages(prev => prev.filter(m => m.id !== progressId));
@@ -1475,28 +1597,32 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
                             {(() => {
                               const f = paramsDisambiguation.fields[paramsDisambiguationStep];
                               if (!f) return null;
+                              const vk = previewFieldValueKey(f);
                               return (
-                                <div key={f.field}>
+                                <div key={vk}>
+                                  {f.label ? (
+                                    <div className="text-xs text-amber-600/90 dark:text-amber-400/90 mb-1">{f.label}</div>
+                                  ) : null}
                                   <label className="text-sm text-base-content/90 block mb-0.5">{f.question}</label>
                                   {f.field === 'target_devices' || f.field === 'interfaces' ? (
                                     <input
                                       type="text"
                                       className="input input-sm input-bordered w-full font-mono"
                                       placeholder="e.g. Acc_1, Acc_2 or Gi0/1, Gi0/2"
-                                      value={(paramsDisambiguationValues[f.field] as string) ?? ''}
-                                      onChange={(e) => setParamsDisambiguationValues((prev) => ({ ...prev, [f.field]: e.target.value }))}
+                                      value={(paramsDisambiguationValues[vk] as string) ?? ''}
+                                      onChange={(e) => setParamsDisambiguationValues((prev) => ({ ...prev, [vk]: e.target.value }))}
                                     />
                                   ) : (
                                     <input
                                       type={f.field === 'vlan_id' || f.field === 'process_id' ? 'number' : 'text'}
                                       className="input input-sm input-bordered w-full font-mono"
                                       placeholder={f.field === 'vlan_id' ? '1-4094' : ''}
-                                      value={String((paramsDisambiguationValues[f.field] ?? '') as string | number)}
+                                      value={String((paramsDisambiguationValues[vk] ?? '') as string | number)}
                                       onChange={(e) => {
                                         const v = e.target.value;
                                         setParamsDisambiguationValues((prev) => ({
                                           ...prev,
-                                          [f.field]: f.field === 'vlan_id' || f.field === 'process_id' ? (v ? parseInt(v, 10) : '') : v,
+                                          [vk]: f.field === 'vlan_id' || f.field === 'process_id' ? (v ? parseInt(v, 10) : '') : v,
                                         }));
                                       }}
                                     />
@@ -1538,7 +1664,7 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
                                 disabled={
                                   paramsDisambiguation.fields.some(
                                     (f) => {
-                                      const v = paramsDisambiguationValues[f.field];
+                                      const v = paramsDisambiguationValues[previewFieldValueKey(f)];
                                       if (v === undefined || v === '' || v === null) return true;
                                       if (Array.isArray(v) && v.length === 0) return true;
                                       if (typeof v === 'number' && Number.isNaN(v)) return true;
@@ -1549,17 +1675,44 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
                                 onClick={async () => {
                                   if (!paramsDisambiguation) return;
                                   const intentText = paramsDisambiguation.intentText;
-                                  const params: Record<string, unknown> = {};
+                                  const primaryParams: Record<string, unknown> = {};
+                                  const secondaryPatches: Record<number, Record<string, unknown>> = {};
                                   paramsDisambiguation.fields.forEach((f) => {
-                                    const v = paramsDisambiguationValues[f.field];
-                                    if (v !== undefined && v !== '' && v !== null) {
+                                    const vk = previewFieldValueKey(f);
+                                    const v = paramsDisambiguationValues[vk];
+                                    if (v === undefined || v === '' || v === null) return;
+                                    if (Array.isArray(v) && v.length === 0) return;
+                                    const sidx = f.secondary_intent_index;
+                                    if (sidx !== undefined && sidx !== null) {
+                                      if (!secondaryPatches[sidx]) secondaryPatches[sidx] = {};
                                       if (f.field === 'target_devices' && typeof v === 'string') {
-                                        params.target_hosts = v.split(/[\s,]+/).map((s) => s.trim()).filter(Boolean);
+                                        secondaryPatches[sidx].target_hosts = v.split(/[\s,]+/).map((s) => s.trim()).filter(Boolean);
                                       } else {
-                                        params[f.field] = v;
+                                        secondaryPatches[sidx][f.field] = v;
                                       }
+                                    } else if (f.field === 'target_devices' && typeof v === 'string') {
+                                      primaryParams.target_hosts = v.split(/[\s,]+/).map((s) => s.trim()).filter(Boolean);
+                                    } else {
+                                      primaryParams[f.field] = v;
                                     }
                                   });
+                                  const prevSecondary = (previewAccumulatedParams.secondary_intents as Array<Record<string, unknown>>) || [];
+                                  const mergedSecondary = [...prevSecondary];
+                                  for (const [idxStr, patch] of Object.entries(secondaryPatches)) {
+                                    const idx = parseInt(idxStr, 10);
+                                    const prev = mergedSecondary[idx] || {};
+                                    const p0 = (prev.parameters as Record<string, unknown>) || {};
+                                    mergedSecondary[idx] = {
+                                      ...prev,
+                                      action: prev.action || 'configure_interface',
+                                      feature: prev.feature || 'interface',
+                                      parameters: { ...p0, ...patch },
+                                    };
+                                  }
+                                  const params: Record<string, unknown> = { ...primaryParams };
+                                  if (Object.keys(secondaryPatches).length) {
+                                    params.secondary_intents = mergedSecondary;
+                                  }
                                   const msgId = paramsDisambiguation.messageId;
                                   setParamsDisambiguation(null);
                                   setParamsDisambiguationValues({});
@@ -1577,16 +1730,29 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
                                   const ac = new AbortController();
                                   abortControllerRef.current = ac;
                                   try {
-                                    const { vendor, feature, target_hosts } = parseIntent(intentText);
+                                    const { vendor, feature, params: parsedParams } = parseIntent(intentText);
+                                    const merged: Record<string, unknown> = {
+                                      ...previewAccumulatedParams,
+                                      ...parsedParams,
+                                      ...params,
+                                    };
+                                    const th =
+                                      previewLockedTargetHosts.length > 0
+                                        ? previewLockedTargetHosts
+                                        : safeParsedHostsForPreview(intentText);
+                                    if (th?.length) {
+                                      merged.target_hosts = th;
+                                    }
+                                    setPreviewAccumulatedParams(merged);
                                     const res = await ansibleApi.previewIntent({
                                       intent_description: intentText,
-                                      target_hosts: target_hosts?.length ? target_hosts : undefined,
+                                      target_hosts: th,
                                       vendor: vendor || undefined,
                                       feature: feature || undefined,
                                       provider: ansibleModel.provider,
                                       model: ansibleModel.model,
                                       ollama_base_url: ansibleModel.ollama_base_url ?? undefined,
-                                      params: Object.keys(params).length ? params : undefined,
+                                      params: merged,
                                     }, { signal: ac.signal });
                                     abortControllerRef.current = null;
                                     setMessages(prev => prev.filter(m => m.id !== generatingId));

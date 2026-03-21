@@ -57,6 +57,57 @@ function formatAnsibleApiError(e: unknown): string {
   return msg;
 }
 
+function pushInterfaceNamesFromList(arr: unknown, out: string[]): void {
+  if (!Array.isArray(arr)) return;
+  for (const x of arr) {
+    if (typeof x === 'string' && x.trim()) out.push(x.trim());
+    else if (x && typeof x === 'object' && 'name' in (x as object)) {
+      const n = String((x as { name?: string }).name || '').trim();
+      if (n) out.push(n);
+    }
+  }
+}
+
+/**
+ * Names for "Target interfaces" chips: primary parameters and every `secondary_intents` slice
+ * (composite create_vlan + configure_interface keeps interfaces on the secondary).
+ */
+function extractTargetInterfaceNamesFromParsedIntent(
+  parsed: Record<string, unknown> | null | undefined,
+): string[] {
+  if (!parsed) return [];
+  const out: string[] = [];
+  const p = (parsed as { parameters?: Record<string, unknown> }).parameters ?? {};
+  if (Array.isArray(p.interfaces_to_shutdown)) {
+    pushInterfaceNamesFromList(p.interfaces_to_shutdown, out);
+  }
+  if (Array.isArray(p.interfaces)) {
+    pushInterfaceNamesFromList(p.interfaces, out);
+  }
+  const secondaries = (parsed as { secondary_intents?: unknown }).secondary_intents;
+  if (Array.isArray(secondaries)) {
+    for (const sec of secondaries) {
+      if (!sec || typeof sec !== 'object') continue;
+      const sp = (sec as { parameters?: Record<string, unknown> }).parameters ?? {};
+      if (Array.isArray(sp.interfaces_to_shutdown)) {
+        pushInterfaceNamesFromList(sp.interfaces_to_shutdown, out);
+      }
+      if (Array.isArray(sp.interfaces)) {
+        pushInterfaceNamesFromList(sp.interfaces, out);
+      }
+    }
+  }
+  const seen = new Set<string>();
+  const dedup: string[] = [];
+  for (const x of out) {
+    if (!seen.has(x)) {
+      seen.add(x);
+      dedup.push(x);
+    }
+  }
+  return dedup;
+}
+
 export interface SchemaEditableField {
   field: string;
   label: string;
@@ -134,6 +185,11 @@ export function PlaybookStudioOverlay({
   const [vlanNativeVlan, setVlanNativeVlan] = useState<number>(1);
   /** Last preview API parsed_intent — used so create-and-plan sends correct feature (avoid heuristic "general"). */
   const [previewParsedIntent, setPreviewParsedIntent] = useState<Record<string, unknown> | null>(null);
+  const previewParsedIntentRef = useRef<Record<string, unknown> | null>(null);
+  const skipNextInventoryRefreshRef = useRef(true);
+  useEffect(() => {
+    previewParsedIntentRef.current = previewParsedIntent;
+  }, [previewParsedIntent]);
   const [resultPayload, setResultPayload] = useState<{
     jobId: number;
     content: string;
@@ -163,18 +219,16 @@ export function PlaybookStudioOverlay({
       setSelectedRefs(res.references || []);
       setReasoning(res.reasoning || []);
       setPolicyApproved(res.policy_approved ?? false);
-      setTargetHosts(
-        res.target_hosts?.length ? res.target_hosts : target_hosts?.length ? target_hosts : []
-      );
       {
-        const p = (res.parsed_intent as any)?.parameters ?? {};
-        let ifaces: unknown[] = Array.isArray(p.interfaces_to_shutdown) ? p.interfaces_to_shutdown : [];
-        if (!ifaces.length && Array.isArray(p.interfaces)) {
-          if (p.interfaces.every((x: unknown) => typeof x === 'string')) ifaces = p.interfaces;
-          else ifaces = p.interfaces.map((x: { name?: string }) => x?.name).filter(Boolean) as string[];
-        }
-        setTargetInterfaces(ifaces.map(String));
+        const fromPreview = res.target_hosts?.length ? res.target_hosts : target_hosts?.length ? target_hosts : [];
+        const rd = (res.parsed_intent as { resolved_devices?: string[] } | null)?.resolved_devices;
+        setTargetHosts(Array.isArray(rd) && rd.length > 0 ? rd : fromPreview);
       }
+      setTargetInterfaces(
+        extractTargetInterfaceNamesFromParsedIntent(
+          (res.parsed_intent as Record<string, unknown>) ?? null,
+        ),
+      );
       setPlannedAllInterfacesPreview(
         ((res.parsed_intent as any)?.planned_all_interfaces_preview as any) ?? null
       );
@@ -189,6 +243,7 @@ export function PlaybookStudioOverlay({
       setPreviewParsedIntent((res.parsed_intent as Record<string, unknown>) ?? null);
       setInterfaceBindingMode('no');
       setVlanSelectedInterfaces(new Set());
+      skipNextInventoryRefreshRef.current = true;
       setStep('confirm');
     } catch (e: unknown) {
       setErrorMessage(formatAnsibleApiError(e));
@@ -211,15 +266,11 @@ export function PlaybookStudioOverlay({
       setReasoning(secondaryLine ? [...baseReasoning, secondaryLine] : baseReasoning);
       setPolicyApproved(initialPreviewResult.policy_approved ?? false);
       setTargetHosts(initialPreviewResult.target_hosts?.length ? initialPreviewResult.target_hosts : []);
-      {
-        const p = (initialPreviewResult.parsed_intent as any)?.parameters ?? {};
-        let ifaces: unknown[] = Array.isArray(p.interfaces_to_shutdown) ? p.interfaces_to_shutdown : [];
-        if (!ifaces.length && Array.isArray(p.interfaces)) {
-          if (p.interfaces.every((x: unknown) => typeof x === 'string')) ifaces = p.interfaces;
-          else ifaces = p.interfaces.map((x: { name?: string }) => x?.name).filter(Boolean) as string[];
-        }
-        setTargetInterfaces(ifaces.map(String));
-      }
+      setTargetInterfaces(
+        extractTargetInterfaceNamesFromParsedIntent(
+          (initialPreviewResult.parsed_intent as Record<string, unknown>) ?? null,
+        ),
+      );
       setPlannedAllInterfacesPreview(
         ((initialPreviewResult.parsed_intent as any)?.planned_all_interfaces_preview as any) ?? null
       );
@@ -232,6 +283,7 @@ export function PlaybookStudioOverlay({
       );
       setInterfacesForSelection(initialPreviewResult.interfaces_for_selection ?? null);
       setPreviewParsedIntent((initialPreviewResult.parsed_intent as Record<string, unknown>) ?? null);
+      skipNextInventoryRefreshRef.current = true;
       setStep('confirm');
     } else {
       runPreview();
@@ -299,16 +351,10 @@ export function PlaybookStudioOverlay({
     }
   }, []);
 
-  const handleConfirm = useCallback(async () => {
-    setStep('generating');
-    setErrorMessage(null);
-    const { vendor, feature: heuristicFeature, params: baseParams } = parseIntent(intentDescription);
-    const parsedFeat = String((previewParsedIntent?.feature as string) || '').trim().toLowerCase();
-    const fromCategories = categories.find((c) => c && c !== 'general');
-    const feature =
-      parsedFeat ||
-      (fromCategories && fromCategories !== 'general' ? fromCategories : '') ||
-      heuristicFeature;
+  /** Same payload the backend expects for preview + create-and-plan (inventory override reads top-level `interfaces`). */
+  const buildStudioMergedParams = useCallback((): Record<string, unknown> => {
+    const { params: baseParams } = parseIntent(intentDescription);
+    const pip = previewParsedIntentRef.current;
     const params: Record<string, unknown> = { ...(baseParams || {}) };
     Object.entries(schemaParamValues).forEach(([k, v]) => {
       if (v === '' || v === undefined) return;
@@ -318,8 +364,103 @@ export function PlaybookStudioOverlay({
     if (targetHosts.length > 0) {
       params.target_hosts = targetHosts;
     }
+    const parsedAction = String((pip?.action as string) || '')
+      .toLowerCase()
+      .replace(/-/g, '_');
+    const secondariesFromPreview = Array.isArray(
+      (pip as { secondary_intents?: unknown } | null)?.secondary_intents,
+    )
+      ? ((pip as { secondary_intents: unknown[] }).secondary_intents as Array<{
+          action?: string;
+          feature?: string;
+          parameters?: Record<string, unknown>;
+        }>)
+      : [];
+
+    if (secondariesFromPreview.length) {
+      params._secondary_intents = secondariesFromPreview.map((s) => ({
+        ...s,
+        parameters: { ...(s.parameters || {}) },
+      }));
+    }
+
     if (targetInterfaces.length > 0) {
-      params.interfaces_to_shutdown = targetInterfaces;
+      const vidRaw = params.vlan_id ?? schemaParamValues.vlan_id;
+      const vid =
+        typeof vidRaw === 'number'
+          ? vidRaw
+          : vidRaw !== undefined && vidRaw !== ''
+            ? parseInt(String(vidRaw), 10)
+            : NaN;
+      const accessVlan = Number.isFinite(vid) && !Number.isNaN(vid) ? vid : undefined;
+
+      if (parsedAction === 'shutdown_interface') {
+        params.interfaces_to_shutdown = targetInterfaces;
+      } else if (parsedAction === 'configure_interface') {
+        params.interfaces = targetInterfaces.map((name) => ({
+          name,
+          mode: 'access' as const,
+          ...(accessVlan !== undefined ? { access_vlan: accessVlan } : {}),
+        }));
+      } else if (parsedAction === 'create_vlan') {
+        // Primary create_vlan must carry interfaces so backend inventory override + VLAN summary match the UI chips.
+        params.interfaces = targetInterfaces.map((name) => ({
+          name,
+          mode: 'access' as const,
+          ...(accessVlan !== undefined ? { access_vlan: accessVlan } : {}),
+        }));
+        const ifaceIdx = secondariesFromPreview.findIndex(
+          (s) =>
+            String(s?.action || '')
+              .toLowerCase()
+              .replace(/-/g, '_') === 'configure_interface' ||
+            String(s?.feature || '').toLowerCase() === 'interface',
+        );
+        if (ifaceIdx >= 0) {
+          const base = (params._secondary_intents as typeof secondariesFromPreview) || [];
+          params._secondary_intents = base.map((s, i) => {
+            if (i !== ifaceIdx) return s;
+            const p0 = (s.parameters || {}) as Record<string, unknown>;
+            return {
+              ...s,
+              parameters: {
+                ...p0,
+                interfaces: targetInterfaces.map((name) => ({
+                  name,
+                  mode: 'access',
+                  ...(accessVlan !== undefined ? { access_vlan: accessVlan } : {}),
+                })),
+              },
+            };
+          });
+        }
+      } else {
+        const ifaceIdx = secondariesFromPreview.findIndex(
+          (s) =>
+            String(s?.action || '')
+              .toLowerCase()
+              .replace(/-/g, '_') === 'configure_interface' ||
+            String(s?.feature || '').toLowerCase() === 'interface',
+        );
+        if (ifaceIdx >= 0) {
+          const base = (params._secondary_intents as typeof secondariesFromPreview) || [];
+          params._secondary_intents = base.map((s, i) => {
+            if (i !== ifaceIdx) return s;
+            const p0 = (s.parameters || {}) as Record<string, unknown>;
+            return {
+              ...s,
+              parameters: {
+                ...p0,
+                interfaces: targetInterfaces.map((name) => ({
+                  name,
+                  mode: 'access',
+                  ...(accessVlan !== undefined ? { access_vlan: accessVlan } : {}),
+                })),
+              },
+            };
+          });
+        }
+      }
     }
     if (interfaceBindingMode !== 'no' && vlanSelectedInterfaces.size > 0) {
       const names = Array.from(vlanSelectedInterfaces);
@@ -330,13 +471,122 @@ export function PlaybookStudioOverlay({
         params.interfaces = names.map((name) => ({ name, mode: 'trunk', allowed_vlans: allowed, native_vlan: vlanNativeVlan }));
       }
     }
+    return params;
+  }, [
+    intentDescription,
+    parseIntent,
+    targetHosts,
+    targetInterfaces,
+    schemaParamValues,
+    schemaEditableFields,
+    interfaceBindingMode,
+    vlanSelectedInterfaces,
+    vlanAccessVlan,
+    vlanAllowedVlans,
+    vlanNativeVlan,
+  ]);
+
+  const getStudioVendorFeature = useCallback(() => {
+    const { vendor, feature: heuristicFeature } = parseIntent(intentDescription);
+    const pip = previewParsedIntentRef.current;
+    const parsedFeat = String((pip?.feature as string) || '').trim().toLowerCase();
+    const fromCategories = categories.find((c) => c && c !== 'general');
+    const feature =
+      parsedFeat ||
+      (fromCategories && fromCategories !== 'general' ? fromCategories : '') ||
+      heuristicFeature;
+    return { vendor, feature };
+  }, [intentDescription, parseIntent, categories]);
+
+  /** Re-run preview with current chips + schema so inventory validation and reasoning stay in sync (no stale Gi… errors). */
+  const refreshPreviewWithMergedParams = useCallback(async () => {
+    if (!open || !intentDescription.trim()) return;
+    const pip = previewParsedIntentRef.current;
+    if (!pip) return;
+    const { vendor, feature } = getStudioVendorFeature();
+    const params = buildStudioMergedParams();
+    try {
+      const res = await ansibleApi.previewIntent({
+        intent_description: intentDescription,
+        target_hosts: targetHosts.length ? targetHosts : undefined,
+        vendor: vendor || undefined,
+        feature: feature || undefined,
+        provider: ansibleModel.provider,
+        model: ansibleModel.model,
+        ollama_base_url: ansibleModel.ollama_base_url ?? undefined,
+        params,
+      });
+      setReasoning(res.reasoning || []);
+      setPolicyApproved(res.policy_approved ?? false);
+      setPreviewParsedIntent((res.parsed_intent as Record<string, unknown>) ?? null);
+      setInterfacesForSelection((res as { interfaces_for_selection?: typeof interfacesForSelection }).interfaces_for_selection ?? null);
+      setErrorMessage(null);
+    } catch {
+      /* ignore transient refresh errors */
+    }
+  }, [
+    open,
+    intentDescription,
+    targetHosts,
+    buildStudioMergedParams,
+    getStudioVendorFeature,
+    ansibleModel.provider,
+    ansibleModel.model,
+    ansibleModel.ollama_base_url,
+  ]);
+
+  useEffect(() => {
+    skipNextInventoryRefreshRef.current = true;
+  }, [open, intentDescription]);
+
+  useEffect(() => {
+    if (!open || step !== 'confirm') return;
+    if (!previewParsedIntentRef.current) return;
+    if (skipNextInventoryRefreshRef.current) {
+      skipNextInventoryRefreshRef.current = false;
+      return;
+    }
+    const t = window.setTimeout(() => {
+      void refreshPreviewWithMergedParams();
+    }, 750);
+    return () => window.clearTimeout(t);
+  }, [
+    open,
+    step,
+    targetInterfaces,
+    targetHosts,
+    schemaParamValues,
+    interfaceBindingMode,
+    vlanAccessVlan,
+    vlanAllowedVlans,
+    vlanNativeVlan,
+    vlanSelectedInterfaces,
+    refreshPreviewWithMergedParams,
+  ]);
+
+  const handleConfirm = useCallback(async () => {
+    setStep('generating');
+    setErrorMessage(null);
+    const { vendor, feature } = getStudioVendorFeature();
+    const params = buildStudioMergedParams();
     const firstRefPath = selectedRefs[0]?.path;
     if (firstRefPath) {
       loadReferenceContent(firstRefPath);
     } else {
       setReferenceContent('# No reference template selected');
     }
-    const hostsToUse = targetHosts.length ? targetHosts : ['all'];
+    const fromParamsHosts = Array.isArray(params.target_hosts)
+      ? (params.target_hosts as string[]).filter((h) => typeof h === 'string' && h.trim())
+      : [];
+    const hostsToUse = targetHosts.length > 0 ? targetHosts : fromParamsHosts;
+    if (hostsToUse.length === 0) {
+      setStep('confirm');
+      Toast.error(
+        'No target devices',
+        'Select at least one device in Target inventory (or run preview so hosts are filled), then generate.',
+      );
+      return;
+    }
     const ac = new AbortController();
     abortControllerRef.current = ac;
     try {
@@ -374,7 +624,16 @@ export function PlaybookStudioOverlay({
       setStep('error');
       Toast.error('Generation failed', msg);
     }
-  }, [intentDescription, selectedRefs, targetHosts, targetInterfaces, schemaParamValues, schemaEditableFields, interfaceBindingMode, vlanSelectedInterfaces, vlanAccessVlan, vlanAllowedVlans, vlanNativeVlan, ansibleModel, parseIntent, loadReferenceContent, onPlaybookReady, previewParsedIntent, categories]);
+  }, [
+    getStudioVendorFeature,
+    buildStudioMergedParams,
+    selectedRefs,
+    targetHosts,
+    intentDescription,
+    ansibleModel,
+    loadReferenceContent,
+    onPlaybookReady,
+  ]);
 
   if (!open) return null;
 

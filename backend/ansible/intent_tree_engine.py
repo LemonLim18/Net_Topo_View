@@ -167,6 +167,7 @@ def evaluate_intent_tree(
     parsed_intent: Dict[str, Any],
     resolved_hosts: List[str],
     db_manager: Any,
+    explicit_targets_from_request: bool = False,
 ) -> IntentTreeResult:
     """
     Evaluate Phase 1 rules and return execution flags.
@@ -174,6 +175,12 @@ def evaluate_intent_tree(
     Note: this intentionally does not replace the existing JSON schema validation.
     It only provides early root-first enforcement and deterministic execution flags
     that templates can consume.
+
+    **explicit_targets_from_request:** When True (user chose hostnames in the UI or
+    ``target_hosts`` was sent on the API request), we must **not** set
+    ``needs_target_devices`` based on bulk-resolution heuristics — otherwise a
+    legitimate multi-select (e.g. 3 devices) is mistaken for an unclear bulk
+    parse and the client is asked to pick targets again in a loop.
     """
     res = IntentTreeResult(
         needs_target_devices=False,
@@ -267,12 +274,16 @@ def evaluate_intent_tree(
             res.params_disambiguation = {"question": "Please provide the following.", "fields": missing_fields}
 
     # 1) Root-first: ensure target devices are clear enough to proceed.
-    res.needs_target_devices = _deduce_needs_target_devices(
-        intent_description=intent_description,
-        resolved_devices=list(resolved_hosts or []),
-        device_deduction=device_deduction if isinstance(device_deduction, dict) else None,
-        db_manager=db_manager,
-    )
+    # Do not second-guess explicit API/UI target lists (see docstring).
+    if explicit_targets_from_request:
+        res.needs_target_devices = False
+    else:
+        res.needs_target_devices = _deduce_needs_target_devices(
+            intent_description=intent_description,
+            resolved_devices=list(resolved_hosts or []),
+            device_deduction=device_deduction if isinstance(device_deduction, dict) else None,
+            db_manager=db_manager,
+        )
 
     # 2) "All interfaces" expansion
     wants_all = intent_requests_all_interfaces(intent_description)
