@@ -31,6 +31,50 @@ class TestSecondaryIntentInterfaceCollection(unittest.TestCase):
         self.assertIn("Ethernet0/1", names)
 
 
+class TestStripStaleSecondaryAfterPrimaryAuthoritative(unittest.TestCase):
+    def test_clears_secondary_interfaces_when_primary_interfaces_sent(self):
+        from ansible.multi_intent_operations import strip_stale_secondary_params_after_primary_authoritative
+
+        parsed_intent = {
+            "secondary_intents": [
+                {
+                    "action": "configure_interface",
+                    "feature": "interface",
+                    "parameters": {
+                        "interfaces": [{"name": "GigabitEthernet1/0/1", "mode": "access"}],
+                    },
+                }
+            ]
+        }
+        req_params = {"interfaces": [{"name": "Ethernet0/2", "mode": "access"}]}
+        strip_stale_secondary_params_after_primary_authoritative(parsed_intent, req_params)
+        sec_params = (parsed_intent["secondary_intents"][0] or {}).get("parameters") or {}
+        self.assertNotIn("interfaces", sec_params)
+
+    def test_skips_strip_when_secondary_slice_has_explicit_patch_in_req(self):
+        """Patch list marks this slice as user-edited; strip must not remove its interfaces."""
+        from ansible.multi_intent_operations import strip_stale_secondary_params_after_primary_authoritative
+
+        parsed_intent = {
+            "secondary_intents": [
+                {
+                    "action": "configure_interface",
+                    "feature": "interface",
+                    "parameters": {
+                        "interfaces": [{"name": "GigabitEthernet1/0/1", "mode": "access"}],
+                    },
+                }
+            ]
+        }
+        req_params = {
+            "interfaces": [{"name": "Ethernet0/2", "mode": "access"}],
+            "secondary_intents": [{"parameters": {"interfaces": [{"name": "Ethernet0/3", "mode": "trunk"}]}}],
+        }
+        strip_stale_secondary_params_after_primary_authoritative(parsed_intent, req_params)
+        sec_params = (parsed_intent["secondary_intents"][0] or {}).get("parameters") or {}
+        self.assertEqual(sec_params.get("interfaces", [{}])[0].get("name"), "GigabitEthernet1/0/1")
+
+
 class TestSecondaryIntentPreviewMerge(unittest.TestCase):
     def test_configure_interface_secondary_adds_interfaces_field(self):
         from ansible.api import _append_secondary_intent_schema_disambiguation

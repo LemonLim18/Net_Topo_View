@@ -7,8 +7,8 @@ TODO-LIST:
 1. Remember to add the dropdown list for selection as the addition of new entities/entries inside the preview modal dialog. This information can be retrieved from the planned network context.
 2. As well inside the preview modal, only the parameters in that categories-specific intent tree(VLAN) (which all the operations under the same categories(VLAN) would share the same field attributes/parameters) will be shown/the other categories(e.g ACL, static route, etc)will be hidden. While the operation-specific schema for each operation under the same category would determine which fields are required and which are considered as optional for that particular operation.
 3. Remember to figure out why the recommended device option list includes the unexpected awe and dsa. Is it stored inside the hidden local DB?
-4. The active file being opened right now, will cause the movement of tab to the viewport of the user.
-5. Make the Ansible button stop button round abit and avoid showing the red
+4. The active file being opened right now, will cause the movement of tab to the viewport of the user. [Done]
+5. Make the Ansible button stop button round abit and avoid showing the red [Done]
 
 
 AI Prompt Rule:

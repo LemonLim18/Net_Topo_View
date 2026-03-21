@@ -43,15 +43,16 @@ from ansible.context_entity_validation import (
     validate_interface_params_against_context,
 )
 from ansible.intent_validation import (
+    SECONDARY_INTENT_CONDITIONAL_DISAMBIGUATION_BY_ACTION,
     coerce_vlan_database_only_intent,
     get_editable_fields_for_schema,
     get_schema_for_parsed_intent,
     interface_intent_params_satisfied,
     is_vlan_database_only_intent,
+    merge_prompt_aware_disambiguation_for_schema,
     resolve_missing_fields,
     user_prompt_requests_vlan_interface_binding,
     validate_completeness,
-    vlan_schema_fields_missing_from_user_prompt_respecting_params,
 )
 from ansible.intent_validation import _intent_to_flat_fields, _is_empty as _param_is_empty
 from ansible.intent_tree_engine import evaluate_intent_tree
@@ -62,6 +63,10 @@ from ansible.reference_resolver import (
     validate_vlan_intent,
     vendors_from_db,
     vendors_from_planning_context,
+)
+from ansible.multi_intent_operations import (
+    refresh_preview_vlan_interfaces_reasoning_block,
+    strip_stale_secondary_params_after_primary_authoritative,
 )
 from ansible.planning_context import (
     build_scoped_planning_context,
@@ -1209,7 +1214,7 @@ def _resolve_backend_intent_request(req, user: dict) -> tuple["PlanAnsibleReques
     raw_secondary = params_dict.pop("_secondary_intents", None)
     parsed_dict["secondary_intents"] = _normalize_secondary_intents(raw_secondary)
     parsed_dict["parameters"] = params_dict
-    _strip_stale_secondary_interface_params_when_primary_interfaces_are_user_selected(
+    strip_stale_secondary_params_after_primary_authoritative(
         parsed_dict,
         req.params,
     )
@@ -3776,116 +3781,6 @@ def _merge_req_params_secondary_intents_into_parsed_intent(
     parsed_intent["secondary_intents"] = existing
 
 
-def _strip_stale_secondary_interface_params_when_primary_interfaces_are_user_selected(
-    parsed_intent: Dict[str, Any],
-    req_params: Optional[Dict[str, Any]],
-) -> None:
-    """
-    When the client sends explicit primary ``interfaces`` / ``interfaces_config`` (picker /
-    Studio), remove ``interfaces`` / ``interfaces_config`` from **secondary_intents** slices
-    that still carry LLM-invented names from the prompt (e.g. GigabitEthernet1/0/1).
-
-    Otherwise inventory validation collects names from both primary (Ethernet0/2) and
-    secondary (Gi…) and fails even though the user already corrected the primary list.
-
-    If ``req_params.secondary_intents`` includes a slice patch whose ``parameters`` already
-    set ``interfaces`` / ``interfaces_config``, that slice is left unchanged.
-    """
-    if not req_params:
-        return
-    user_if = req_params.get("interfaces") or req_params.get("interfaces_config")
-    if user_if is None:
-        return
-    if isinstance(user_if, list) and len(user_if) == 0:
-        return
-
-    secs = list(parsed_intent.get("secondary_intents") or [])
-    if not secs:
-        return
-
-    patch_list = req_params.get("secondary_intents")
-    has_patch_list = isinstance(patch_list, list) and len(patch_list) > 0
-
-    for i, sec in enumerate(secs):
-        if not isinstance(sec, dict):
-            continue
-        if has_patch_list and i < len(patch_list) and isinstance(patch_list[i], dict):
-            pp = dict(patch_list[i].get("parameters") or {})
-            if pp.get("interfaces") or pp.get("interfaces_config"):
-                continue
-        sp = dict(sec.get("parameters") or {})
-        if not sp.get("interfaces") and not sp.get("interfaces_config"):
-            continue
-        sp.pop("interfaces", None)
-        sp.pop("interfaces_config", None)
-        sec["parameters"] = sp
-    parsed_intent["secondary_intents"] = secs
-
-
-def _configure_interface_conditional_disambiguation_fields(
-    parameters: Dict[str, Any],
-) -> List[Dict[str, Any]]:
-    """
-    Shared access/trunk/subnet follow-up questions for configure_interface (primary or secondary).
-    """
-    shared_fields: List[Dict[str, Any]] = []
-    p2 = dict(parameters or {})
-    interfaces = p2.get("interfaces") or []
-    if not isinstance(interfaces, list) or not interfaces:
-        return shared_fields
-    default_mode = str(p2.get("default_mode") or "").strip().lower() or None
-    modes: set[str] = set()
-    missing_access_vlan = False
-    missing_trunk_vlans = False
-    ip_addrs: set[str] = set()
-    missing_subnet_mask = False
-
-    for iface in interfaces:
-        if not isinstance(iface, dict):
-            continue
-        mode = str(iface.get("mode") or default_mode or "").strip().lower()
-        if mode:
-            modes.add(mode)
-        if mode == "access":
-            if iface.get("access_vlan") in (None, "", []):
-                missing_access_vlan = True
-        elif mode == "trunk":
-            tv = iface.get("trunk_vlans")
-            if tv in (None, "", []):
-                missing_trunk_vlans = True
-        ip_address = iface.get("ip_address")
-        if ip_address not in (None, ""):
-            ip_addrs.add(str(ip_address))
-            if iface.get("subnet_mask") in (None, ""):
-                missing_subnet_mask = True
-
-    if len(modes) == 1:
-        only_mode = next(iter(modes))
-        if only_mode == "access" and missing_access_vlan:
-            shared_fields.append(
-                {
-                    "field": "access_vlan",
-                    "question": "Which access VLAN should be applied to all selected interfaces?",
-                }
-            )
-        if only_mode == "trunk" and missing_trunk_vlans:
-            shared_fields.append(
-                {
-                    "field": "trunk_vlans",
-                    "question": "Which trunk VLANs should be allowed on all selected interfaces? (comma-separated)",
-                }
-            )
-
-    if missing_subnet_mask and len(ip_addrs) == 1:
-        shared_fields.append(
-            {
-                "field": "subnet_mask",
-                "question": "Subnet mask for the provided interface IP address(es)?",
-            }
-        )
-    return shared_fields
-
-
 def _append_secondary_intent_schema_disambiguation(
     parsed_intent: Dict[str, Any],
     resolved_hosts: List[str],
@@ -3947,8 +3842,9 @@ def _append_secondary_intent_schema_disambiguation(
             seen.add(key)
 
         schema_action_key = (sec_schema.get("action") or "").strip().lower().replace("-", "_")
-        if schema_action_key == "configure_interface":
-            for e in _configure_interface_conditional_disambiguation_fields(sec_params):
+        hook = SECONDARY_INTENT_CONDITIONAL_DISAMBIGUATION_BY_ACTION.get(schema_action_key)
+        if hook:
+            for e in hook(sec_params):
                 key = (e["field"], idx)
                 if key in seen:
                     continue
@@ -3994,56 +3890,6 @@ def _normalize_secondary_intents(raw: Any) -> List[Dict[str, Any]]:
     return out
 
 
-def _merge_vlan_user_prompt_disambiguation(
-    intent_description: str,
-    schema: Optional[Dict[str, Any]],
-    params_disambiguation: Optional[Dict[str, Any]],
-    *,
-    parameters: Optional[Dict[str, Any]] = None,
-    trusted_param_keys: Optional[Set[str]] = None,
-) -> Optional[Dict[str, Any]]:
-    """
-    For ``create_vlan`` (primary or a secondary_intents slice), ask for vlan_id/vlan_name
-    the user did not clearly state in natural language — driven by intent schema, not by
-    regex-matching the raw prompt for the words \"create vlan\".
-
-    When the user supplies values via the preview wizard, ``parameters`` contains them but
-    ``intent_description`` does not change; we must not re-ask those fields.
-    """
-    if not schema:
-        return params_disambiguation
-    sa = (schema.get("action") or "").strip().lower().replace("-", "_")
-    if sa != "create_vlan":
-        return params_disambiguation
-    force_field_names = vlan_schema_fields_missing_from_user_prompt_respecting_params(
-        intent_description or "", parameters, trusted_param_keys=trusted_param_keys
-    )
-    if not force_field_names:
-        return params_disambiguation
-    questions_vlan = schema.get("questions") or {}
-    fallback_questions = {
-        "vlan_id": "Which VLAN ID (1-4094)?",
-        "vlan_name": "VLAN name?",
-    }
-    new_entries = [
-        {
-            "field": fname,
-            "question": questions_vlan.get(fname) or fallback_questions.get(fname) or f"Please provide: {fname}",
-        }
-        for fname in force_field_names
-    ]
-    fields_list: List[Dict[str, Any]] = list((params_disambiguation or {}).get("fields") or [])
-    seen_fields = {f["field"] for f in fields_list}
-    for e in new_entries:
-        if e["field"] not in seen_fields:
-            fields_list.append(e)
-            seen_fields.add(e["field"])
-    return {
-        "question": (params_disambiguation or {}).get("question") or "Please provide the following.",
-        "fields": fields_list,
-    }
-
-
 def _annotate_reasoning_interfaces_with_planned_inventory(
     reasoning: List[str],
     *,
@@ -4077,54 +3923,6 @@ def _annotate_reasoning_interfaces_with_planned_inventory(
         ):
             reasoning[idx] = replacement
             return
-
-
-def _refresh_vlan_interfaces_reasoning_from_merged_params(
-    reasoning: List[str],
-    *,
-    merged_params: Dict[str, Any],
-    resolved_hosts: List[str],
-    schema_action: str,
-    feature_lower: str,
-) -> None:
-    """
-    ``_preview_parse_and_rag`` appends **Interfaces to configure** from the LLM parse only.
-    After ``preview_intent`` merges ``req.params`` (wizard / target inventory / interface picker),
-    replace that block so the UI shows the same interface names as ``parameters`` (e.g. Ethernet0/2),
-    not a stale GigabitEthernet guess from the prompt.
-    """
-    sa = str(schema_action or "").strip().lower().replace("-", "_")
-    fl = str(feature_lower or "").strip().lower()
-    if sa != "create_vlan" and fl != "vlan":
-        return
-    preview_intent = {
-        "params": merged_params,
-        "target_hosts": list(resolved_hosts or []),
-    }
-    ifaces_summary = get_vlan_interfaces_summary(preview_intent)
-    if ifaces_summary:
-        lines = []
-        for s in ifaces_summary:
-            vlan_str = ", ".join(str(v) for v in s.get("vlans") or [])
-            mode = (s.get("mode") or "access").lower()
-            lines.append(
-                f"  - **{s.get('interface')}**: {mode}"
-                + (f", VLANs {vlan_str}" if vlan_str else "")
-            )
-        new_block = "- **Interfaces to configure:**\n" + "\n".join(lines)
-    else:
-        new_block = "- **Interfaces to configure:** (none — VLAN creation only)"
-    for idx, block in enumerate(reasoning):
-        if not isinstance(block, str):
-            continue
-        if "**Interfaces to configure:**" not in block:
-            continue
-        if "cross-checked with planned inventory" in block:
-            continue
-        if "Planned interfaces (all-interfaces scope)" in block:
-            continue
-        reasoning[idx] = new_block
-        return
 
 
 def _preview_parse_and_rag(
@@ -4540,7 +4338,7 @@ async def preview_intent(
         _coerce_params_for_validation(p)
         parsed_intent["parameters"] = p
         _merge_req_params_secondary_intents_into_parsed_intent(parsed_intent, req.params)
-        _strip_stale_secondary_interface_params_when_primary_interfaces_are_user_selected(
+        strip_stale_secondary_params_after_primary_authoritative(
             parsed_intent,
             req.params,
         )
@@ -4787,14 +4585,14 @@ async def preview_intent(
                 "fields": disambiguation_fields,
             }
 
-        # Conditional interface leaves for configure_interface (access/trunk/VLAN + ip/subnet).
+        # Conditional leaves per schema action (e.g. configure_interface access/trunk/subnet).
         # JSON-Schema conditional errors are not converted into UI questions automatically,
-        # so we provide best-effort controller-side disambiguation for shared values.
+        # so we provide best-effort controller-side disambiguation via
+        # ``SECONDARY_INTENT_CONDITIONAL_DISAMBIGUATION_BY_ACTION`` (primary + secondary slices).
         schema_action_key = (schema.get("action") or "").strip().lower().replace("-", "_")
-        if schema_action_key == "configure_interface":
-            shared_fields = _configure_interface_conditional_disambiguation_fields(
-                dict(parsed_intent.get("parameters") or {})
-            )
+        _cond_hook = SECONDARY_INTENT_CONDITIONAL_DISAMBIGUATION_BY_ACTION.get(schema_action_key)
+        if _cond_hook:
+            shared_fields = _cond_hook(dict(parsed_intent.get("parameters") or {}))
             if shared_fields:
                 fields_list: List[Dict[str, Any]] = list((params_disambiguation or {}).get("fields") or [])
                 seen_fields = {f.get("field") for f in fields_list if isinstance(f, dict)}
@@ -4821,7 +4619,7 @@ async def preview_intent(
             return True
 
         _trusted_param_keys = {str(k) for k, v in req.params.items() if _trusted_preview_param_value(v)}
-    params_disambiguation = _merge_vlan_user_prompt_disambiguation(
+    params_disambiguation = merge_prompt_aware_disambiguation_for_schema(
         req.intent_description or "",
         schema,
         params_disambiguation,
@@ -4838,7 +4636,7 @@ async def preview_intent(
                 "parameters": dict(sec.get("parameters") or {}),
             }
         )
-        params_disambiguation = _merge_vlan_user_prompt_disambiguation(
+        params_disambiguation = merge_prompt_aware_disambiguation_for_schema(
             req.intent_description or "",
             sec_schema,
             params_disambiguation,
@@ -5137,7 +4935,7 @@ async def preview_intent(
             logger.debug("Preview static_route next_hop validation failed: %s", exc)
 
     _params_for_reasoning = dict(parsed_intent.get("parameters") or {})
-    _refresh_vlan_interfaces_reasoning_from_merged_params(
+    refresh_preview_vlan_interfaces_reasoning_block(
         reasoning,
         merged_params=_params_for_reasoning,
         resolved_hosts=list(resolved_hosts or []),

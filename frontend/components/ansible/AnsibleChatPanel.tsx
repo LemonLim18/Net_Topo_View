@@ -1937,12 +1937,14 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
               <Paperclip className="w-4 h-4" />
             </button>
             {/* Send or Stop button */}
+            {/* {isGenerating ? ( */}
             {isGenerating ? (
               <button
                 type="button"
                 onClick={handleStop}
                 title="Stop generation"
-                className="px-1.5 rounded-full border-none shrink-0 self-end transition-colors btn btn-sm bg-red-600 hover:bg-red-700 text-white"
+                className="btn btn-ghost rounded-full btn-sm btn-square text-red-600 hover:bg-red-600/20"
+                aria-label="Stop"
               >
                 <Square className="w-4 h-4 fill-current" />
               </button>

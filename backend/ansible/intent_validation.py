@@ -10,7 +10,7 @@ import json
 import logging
 import re
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 logger = logging.getLogger("ansible.intent_validation")
 
@@ -658,6 +658,134 @@ def vlan_schema_fields_missing_from_user_prompt_respecting_params(
         else:
             result.append(f)
     return result
+
+
+# ---------------------------------------------------------------------------
+# Multi-intent / single-prompt: conditional follow-up fields per schema action
+# ---------------------------------------------------------------------------
+# Extend by registering callables: ``parameters`` dict -> list of
+# ``{"field", "question"}`` for the chat wizard (primary or secondary slices).
+
+
+def configure_interface_conditional_disambiguation_fields(
+    parameters: Dict[str, Any],
+) -> List[Dict[str, Any]]:
+    """
+    Shared access/trunk/subnet follow-up questions for ``configure_interface`` (primary or secondary).
+    """
+    shared_fields: List[Dict[str, Any]] = []
+    p2 = dict(parameters or {})
+    interfaces = p2.get("interfaces") or []
+    if not isinstance(interfaces, list) or not interfaces:
+        return shared_fields
+    default_mode = str(p2.get("default_mode") or "").strip().lower() or None
+    modes: set[str] = set()
+    missing_access_vlan = False
+    missing_trunk_vlans = False
+    ip_addrs: set[str] = set()
+    missing_subnet_mask = False
+
+    for iface in interfaces:
+        if not isinstance(iface, dict):
+            continue
+        mode = str(iface.get("mode") or default_mode or "").strip().lower()
+        if mode:
+            modes.add(mode)
+        if mode == "access":
+            if iface.get("access_vlan") in (None, "", []):
+                missing_access_vlan = True
+        elif mode == "trunk":
+            tv = iface.get("trunk_vlans")
+            if tv in (None, "", []):
+                missing_trunk_vlans = True
+        ip_address = iface.get("ip_address")
+        if ip_address not in (None, ""):
+            ip_addrs.add(str(ip_address))
+            if iface.get("subnet_mask") in (None, ""):
+                missing_subnet_mask = True
+
+    if len(modes) == 1:
+        only_mode = next(iter(modes))
+        if only_mode == "access" and missing_access_vlan:
+            shared_fields.append(
+                {
+                    "field": "access_vlan",
+                    "question": "Which access VLAN should be applied to all selected interfaces?",
+                }
+            )
+        if only_mode == "trunk" and missing_trunk_vlans:
+            shared_fields.append(
+                {
+                    "field": "trunk_vlans",
+                    "question": "Which trunk VLANs should be allowed on all selected interfaces? (comma-separated)",
+                }
+            )
+
+    if missing_subnet_mask and len(ip_addrs) == 1:
+        shared_fields.append(
+            {
+                "field": "subnet_mask",
+                "question": "Subnet mask for the provided interface IP address(es)?",
+            }
+        )
+    return shared_fields
+
+
+SECONDARY_INTENT_CONDITIONAL_DISAMBIGUATION_BY_ACTION: Dict[str, Callable[[Dict[str, Any]], List[Dict[str, Any]]]] = {
+    "configure_interface": configure_interface_conditional_disambiguation_fields,
+}
+
+
+def merge_prompt_aware_disambiguation_for_schema(
+    intent_description: str,
+    schema: Optional[Dict[str, Any]],
+    params_disambiguation: Optional[Dict[str, Any]],
+    *,
+    parameters: Optional[Dict[str, Any]] = None,
+    trusted_param_keys: Optional[Set[str]] = None,
+) -> Optional[Dict[str, Any]]:
+    """
+    Merge operation-specific wizard fields when the user did not state certain parameters in
+    natural language, while respecting values supplied via ``req.params`` (trusted keys).
+
+    **Extensibility:** add a branch per ``schema['action']`` (e.g. ``create_vlan`` today).
+    Secondary slices use the same function with that slice's schema.
+    """
+    if not schema:
+        return params_disambiguation
+    sa = (schema.get("action") or "").strip().lower().replace("-", "_")
+    if sa == "create_vlan":
+        force_field_names = vlan_schema_fields_missing_from_user_prompt_respecting_params(
+            intent_description or "", parameters, trusted_param_keys=trusted_param_keys
+        )
+        if not force_field_names:
+            return params_disambiguation
+        questions_vlan = schema.get("questions") or {}
+        fallback_questions = {
+            "vlan_id": "Which VLAN ID (1-4094)?",
+            "vlan_name": "VLAN name?",
+        }
+        new_entries = [
+            {
+                "field": fname,
+                "question": questions_vlan.get(fname)
+                or fallback_questions.get(fname)
+                or f"Please provide: {fname}",
+            }
+            for fname in force_field_names
+        ]
+        fields_list: List[Dict[str, Any]] = list((params_disambiguation or {}).get("fields") or [])
+        seen_fields = {f["field"] for f in fields_list}
+        for e in new_entries:
+            if e["field"] not in seen_fields:
+                fields_list.append(e)
+                seen_fields.add(e["field"])
+        return {
+            "question": (params_disambiguation or {}).get("question") or "Please provide the following.",
+            "fields": fields_list,
+        }
+    # Future: elif sa == "configure_ospf": ...
+    return params_disambiguation
 
 
 def user_prompt_requests_vlan_interface_binding(description: str) -> bool:

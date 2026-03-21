@@ -1,4 +1,4 @@
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useState, useEffect, useRef } from 'react';
 import Editor from '@monaco-editor/react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -23,14 +23,39 @@ interface PlaybookEditorProps {
   onRegenerate:    () => void;
 }
 
+
+/** Helper to prefix generic names (playbook.yml, main.yml) with job_ID parent for clarity */
+const getDisplayName = (tab: AnsibleTab) => {
+  if (tab.name !== 'playbook.yml' && tab.name !== 'main.yml') return tab.name;
+  const path = (tab.path || tab.id || '').replace(/\\/g, '/');
+  const parts = path.split('/');
+  if (parts.length >= 2) {
+    const parent = parts[parts.length - 2];
+    if (parent.startsWith('job_')) return `${parent}/${tab.name}`;
+  }
+  return tab.name;
+};
+
 const PlaybookEditor: React.FC<PlaybookEditorProps> = ({
   tabs, activeTabId, job, isChecking = false,
   userRole,   onTabSelect, onTabClose, onChange, onSave,
   onCheck, onApprove, onDeploy, onRegenerate,
 }) => {
+  const activeTabRef = useRef<HTMLDivElement>(null);
   const activeTab = tabs.find(t => t.id === activeTabId) ?? null;
   const isAdmin   = userRole === 'admin';
   const isOp      = userRole === 'admin' || userRole === 'operator';
+  
+  // Auto-scroll active tab into view
+  useEffect(() => {
+    if (activeTabRef.current) {
+      activeTabRef.current.scrollIntoView({
+        behavior: 'smooth',
+        block: 'nearest',
+        inline: 'center',
+      });
+    }
+  }, [activeTabId, tabs.length]);
 
   // Only show markdown preview when user explicitly chooses Preview (right-click or toolbar)
   const [mdPreviewTabId, setMdPreviewTabId] = useState<string | null>(null);
@@ -89,6 +114,7 @@ const PlaybookEditor: React.FC<PlaybookEditorProps> = ({
         {tabs.map(tab => (
           <div
             key={tab.id}
+            ref={tab.id === activeTabId ? activeTabRef : null}
             className={`flex items-center gap-1.5 px-3 py-2 text-xs border-r border-base-300 cursor-pointer shrink-0 transition-colors ${
               tab.id === activeTabId
                 ? 'bg-base-200 text-base-content font-semibold'
@@ -98,7 +124,7 @@ const PlaybookEditor: React.FC<PlaybookEditorProps> = ({
             onContextMenu={(e) => openTabContextMenu(e, tab.id)}
           >
             {tab.isReadOnly && <Lock className="h-3 w-3 opacity-40" />}
-            <span className="max-w-[160px] truncate">{tab.name}</span>
+            <span className="max-w-40 truncate" title={tab.path || tab.id}>{getDisplayName(tab)}</span>
             {tab.isDirty && <span className="w-1.5 h-1.5 rounded-full bg-warning shrink-0" title="Unsaved changes" />}
             <button
               className="hover:text-error ml-0.5 opacity-50 hover:opacity-100"
