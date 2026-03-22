@@ -160,6 +160,41 @@ export const buildVlanPreselectChips = buildPlannedInventoryPreselectChips;
  * Pre-check planned-inventory names that match chips (exact, then fuzzy).
  * Works for `interfaces_for_selection` and `interfaces_disambiguation` (same `devices` shape).
  */
+/**
+ * Pre-check inventory names per device so selecting Ethernet0/3 on SW-A does not
+ * auto-select Ethernet0/3 on SW-B (same interface name, different host).
+ */
+export function preselectPlannedInventoryInterfacesByDevice(
+  chips: string[],
+  picklist: PlannedInventoryInterfacePicklist,
+): Record<string, Set<string>> {
+  const out: Record<string, Set<string>> = {};
+  if (!picklist?.devices?.length || !chips.length) return out;
+  for (const d of picklist.devices) {
+    const hn = String(d.hostname || '').trim();
+    if (!hn) continue;
+    const names = (d.interfaces || []).map((i) => String(i.name || '').trim()).filter(Boolean);
+    const set = new Set<string>();
+    for (const chip of chips) {
+      const c = chip.trim();
+      if (!c) continue;
+      const exact = names.find((n) => n.toLowerCase() === c.toLowerCase());
+      if (exact) {
+        set.add(exact);
+        continue;
+      }
+      for (const name of names) {
+        if (interfaceNameMatchesChipForPreselect(chip, name)) {
+          set.add(name);
+          break;
+        }
+      }
+    }
+    out[hn] = set;
+  }
+  return out;
+}
+
 export function preselectPlannedInventoryInterfaces(
   chips: string[],
   picklist: PlannedInventoryInterfacePicklist,

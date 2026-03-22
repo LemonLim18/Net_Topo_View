@@ -981,6 +981,31 @@ export const ansibleApi = {
         /** ambiguous_hint | not_in_inventory | missing_targets */
         disambiguation_kind?: string;
       } | null;
+      /** Operation-specific intent schema inspection (primary + secondary slices). */
+      intent_schema_inspector?: {
+        slices?: Array<{
+          role: string;
+          index: number;
+          title: string;
+          action?: string | null;
+          feature?: string | null;
+          schema_action?: string | null;
+          schema_file?: string | null;
+          missing_required?: string[];
+          validation_errors?: string[];
+          fields?: Array<{
+            schema_field: string;
+            param_key: string;
+            label: string;
+            required: boolean;
+            status: string;
+            value_preview: string;
+            question?: string;
+          }>;
+          note?: string | null;
+        }>;
+        error?: string;
+      };
     }>('/ansible/preview-intent', { method: 'POST', body: JSON.stringify(req), signal: opts?.signal }),
 
   /** List all reference playbook paths (for add-reference in Playbook Studio). */

@@ -21,11 +21,11 @@
 **Current Behavior:**  
 
 
-- [ ] Create VLAN 200 named **Guest** and set native VLAN 200 on GigabitEthernet1/0/3  
+- [ /] Create VLAN 200 named **Guest** and set native VLAN 200 on GigabitEthernet1/0/3  
 **Current Behavior:**  
 
 
-- [ ] Create VLAN on devices *(generic / ambiguous test)*  
+- [ /] Create VLAN on devices *(generic / ambiguous test)*  
 **Current Behavior:**  
 
 

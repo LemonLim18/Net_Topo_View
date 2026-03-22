@@ -28,7 +28,8 @@ from pydantic import BaseModel, Field
 
 logger = logging.getLogger("llm.intent")
 
-_ROLE_ALIASES = {
+# Fallback if intent_keywords.yml is missing or empty (keep in sync with intent_keywords.yml).
+_ROLE_ALIASES_FALLBACK = {
     "access": "access",
     "access_switch": "access",
     "access-switch": "access",
@@ -47,7 +48,7 @@ _ROLE_ALIASES = {
     "network-device": "network-device",
 }
 
-_VENDOR_ALIASES = {
+_VENDOR_ALIASES_FALLBACK = {
     "cisco": "cisco_ios",
     "cisco-ios": "cisco_ios",
     "cisco_ios": "cisco_ios",
@@ -62,6 +63,39 @@ _VENDOR_ALIASES = {
     "huawei_vrp": "huawei_vrp",
     "vrp": "huawei_vrp",
 }
+
+
+def _role_aliases() -> Dict[str, str]:
+    try:
+        from ansible.intent_artifacts import get_role_aliases
+
+        m = get_role_aliases()
+        if m:
+            return m
+    except Exception:
+        pass
+    return _ROLE_ALIASES_FALLBACK
+
+
+def _vendor_aliases() -> Dict[str, str]:
+    try:
+        from ansible.intent_artifacts import get_vendor_aliases
+
+        m = get_vendor_aliases()
+        if m:
+            return m
+    except Exception:
+        pass
+    return _VENDOR_ALIASES_FALLBACK
+
+
+def _create_vlan_fast_path_match(msg: str) -> bool:
+    try:
+        from ansible.intent_artifacts import message_matches_create_vlan_imperative_fast_path
+
+        return message_matches_create_vlan_imperative_fast_path(msg)
+    except Exception:
+        return False
 
 
 def _natural_key(value: str) -> list[Any]:
@@ -218,6 +252,15 @@ Each element of "secondary_intents" (if any): {{ "action": "e.g. configure_ospf"
 ## Compact required/optional per operation (from intent_schemas; do not guess values)
 {required_params_hint}
 
+## Intent graph — categories and operations (operations tie to YAML schemas above)
+{intent_graph_summary}
+
+## Category parameter vocabulary (field names; which are required depends on chosen action)
+{category_vocabulary}
+
+## Keyword / classifier hints (editable in intent_keywords.yml)
+{intent_keywords_digest}
+
 ## Current Network Topology
 {topology_context}
 
@@ -286,6 +329,23 @@ class IntentParser:
             quick.raw_user_input = user_message
             return json.dumps(quick.model_dump(), default=str)
 
+        # Fast-path: imperative VLAN DB creation ("Create VLAN on …") — no LLM latency
+        quick_cv = self._try_rule_based_create_vlan(user_message)
+        if quick_cv:
+            quick_cv.id = str(uuid.uuid4())[:8]
+            quick_cv.raw_user_input = user_message
+            quick_cv.resolved_devices = self._resolve_devices(quick_cv)
+            quick_cv.parameters = dict(quick_cv.parameters or {})
+            quick_cv.parameters["device_deduction"] = self._deduce_device_reason(
+                user_message, quick_cv.resolved_devices
+            )
+            if quick_cv.is_config_change() and not quick_cv.resolved_devices:
+                quick_cv.requires_disambiguation = True
+                quick_cv.disambiguation_message = (
+                    "Specify target device hostnames for this VLAN (e.g. from planned inventory)."
+                )
+            return json.dumps(quick_cv.model_dump(), default=str)
+
         # Build template schema context for the prompt
         template_schemas = self._get_template_schemas()
         try:
@@ -299,10 +359,28 @@ class IntentParser:
             operation_reference = "(not available)"
             required_params_hint = "(none)"
 
+        try:
+            from ansible.intent_artifacts import (
+                get_category_vocabulary_for_prompt,
+                get_intent_graph_summary_for_prompt,
+                get_intent_keywords_digest_for_prompt,
+            )
+
+            category_vocabulary = get_category_vocabulary_for_prompt()
+            intent_graph_summary = get_intent_graph_summary_for_prompt()
+            intent_keywords_digest = get_intent_keywords_digest_for_prompt()
+        except Exception:
+            category_vocabulary = "(category vocabulary unavailable)"
+            intent_graph_summary = "(intent graph unavailable)"
+            intent_keywords_digest = "(keyword digest unavailable)"
+
         prompt = _PARSE_PROMPT.format(
             template_schemas=template_schemas,
             operation_reference=operation_reference,
             required_params_hint=required_params_hint,
+            category_vocabulary=category_vocabulary,
+            intent_graph_summary=intent_graph_summary,
+            intent_keywords_digest=intent_keywords_digest,
             topology_context=topology_context or "(no topology loaded)",
             user_message=user_message,
         )
@@ -374,6 +452,16 @@ class IntentParser:
 
         intent.parameters = dict(intent.parameters or {})
 
+        # Heuristic: "Create VLAN …" misclassified as query/clarify with feature vlan
+        if _create_vlan_fast_path_match(user_message):
+            if intent.feature == "vlan" and (
+                intent.action in ("clarify", "unknown", "")
+                or intent.intent_type == IntentType.QUERY
+            ):
+                intent.intent_type = IntentType.CONFIGURE
+                intent.action = "create_vlan"
+                intent.feature = "vlan"
+
         # Heuristic: some clearly imperative config requests are sometimes
         # misclassified by the LLM as query/clarify. For example:
         #   "Shutdown the interfaces"
@@ -429,14 +517,26 @@ class IntentParser:
     # ----- Rule-based fast path -----
 
     def _try_rule_based(self, msg: str) -> Optional[ParsedIntent]:
-        """Handle obvious query/audit intents without LLM."""
+        """Handle obvious query/audit intents without LLM (patterns from intent_keywords.yml)."""
         lower = msg.lower().strip()
+        try:
+            from ansible.intent_artifacts import get_audit_keywords, get_query_rule_based_patterns
 
-        query_patterns = [
-            "show topology", "list devices", "list all devices",
-            "show devices", "what is the topology", "show path",
-            "find path", "show interfaces", "how many devices",
-        ]
+            query_patterns = get_query_rule_based_patterns()
+            audit_words = get_audit_keywords()
+        except Exception:
+            query_patterns = [
+                "show topology",
+                "list devices",
+                "list all devices",
+                "show devices",
+                "what is the topology",
+                "show path",
+                "find path",
+                "show interfaces",
+                "how many devices",
+            ]
+            audit_words = ["audit", "security scan", "cis benchmark", "compliance check"]
         for pat in query_patterns:
             if pat in lower:
                 return ParsedIntent(
@@ -446,7 +546,7 @@ class IntentParser:
                     justification="Information query",
                 )
 
-        if any(w in lower for w in ("audit", "security scan", "cis benchmark", "compliance check")):
+        if any(w in lower for w in audit_words):
             return ParsedIntent(
                 intent_type=IntentType.AUDIT,
                 action="security_audit",
@@ -455,6 +555,21 @@ class IntentParser:
             )
 
         return None
+
+    def _try_rule_based_create_vlan(self, msg: str) -> Optional[ParsedIntent]:
+        """
+        Rule-based create_vlan intent for short imperative VLAN-database prompts.
+        """
+        if not _create_vlan_fast_path_match(msg):
+            return None
+        return ParsedIntent(
+            intent_type=IntentType.CONFIGURE,
+            action="create_vlan",
+            feature="vlan",
+            risk_level=RiskLevel.MEDIUM,
+            justification="Rule-based: imperative create VLAN (VLAN database) request",
+            parameters={},
+        )
 
     # ----- Helpers -----
 
@@ -850,14 +965,14 @@ def _normalize_vendor(value: Any) -> str:
     lowered = str(value or "").strip().lower().replace(" ", "_")
     if not lowered:
         return ""
-    return _VENDOR_ALIASES.get(lowered, lowered)
+    return _vendor_aliases().get(lowered, lowered)
 
 
 def _normalize_role(value: Any) -> str:
     lowered = str(value or "").strip().lower().replace(" ", "_")
     if not lowered:
         return ""
-    return _ROLE_ALIASES.get(lowered, lowered)
+    return _role_aliases().get(lowered, lowered)
 
 
 def _normalize_site(value: Any) -> str:

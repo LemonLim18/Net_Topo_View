@@ -1,0 +1,17 @@
+---
+# Cisco IOS only. Same behavior as multi_vendor: VLAN-only when no interfaces; data-driven interfaces when intent has them.
+# Variables: vlan_id, vlan_name, target_hosts, interfaces_config_with_vlan (from get_template_vars).
+- name: Configure VLANs on access switches
+  hosts: "Acc_Cisco_1"
+  gather_facts: no
+  ignore_unreachable: true
+  tasks:
+    - name: Ensure VLAN 64 exists (Cisco IOS)
+      cisco.ios.ios_vlans:
+        config:
+          - vlan_id: "64"
+            name: "HR"
+            state: active
+        state: merged
+      when: inventory_hostname in groups.get('vendor_cisco_ios', [])
+

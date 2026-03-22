@@ -1,0 +1,16 @@
+category: ospf
+display_name: OSPF
+description: OSPF process, router ID, networks/areas, passive interfaces, redistribution.
+parameter_vocabulary:
+  - name: process_id
+    description: OSPF process ID.
+  - name: networks
+    description: Networks to advertise with area assignment.
+  - name: router_id
+    description: OSPF router ID (optional).
+  - name: area_definitions
+    description: Optional structured area config.
+  - name: passive_interfaces
+    description: Interfaces to mark passive (optional).
+  - name: redistribution
+    description: Redistribution into OSPF (optional).

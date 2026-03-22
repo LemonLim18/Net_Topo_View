@@ -1,0 +1,88 @@
+# Editable keyword and heuristic lists for intent classification (rule-based paths + LLM hints).
+# Loaded by intent_artifacts.py and llm/intent.py — keep in sync with docs/intent_operation_reference.md.
+
+version: 1
+
+# Substrings: if any appears in lowercased message, rule-based query intent (no LLM).
+query_rule_based_patterns:
+  - show topology
+  - list devices
+  - list all devices
+  - show devices
+  - what is the topology
+  - show path
+  - find path
+  - show interfaces
+  - how many devices
+
+# If any appears: rule-based audit intent.
+audit_keywords:
+  - audit
+  - security scan
+  - cis benchmark
+  - compliance check
+
+# Imperative "create VLAN" fast path (skip LLM) — see llm/intent.py
+create_vlan_fast_path:
+  query_message_prefixes:
+    - what
+    - how
+    - show
+    - list
+    - explain
+    - describe
+    - why
+    - when
+    - where
+  regex_must_match: "\\bcreate\\s+vlan\\b"
+  regex_exclude_multi_task: "\\b(and|then)\\s+.*\\b(configure|shutdown|ospf|acl|add\\s+a\\s+route|static\\s+route|routing)\\b"
+  regex_exclude_port_binding: "\\band\\b.+\\b(gi|gigabit|ethernet|interface|trunk|access|native\\s+vlan|port-channel)\\b"
+
+# Broad device scope: user explicitly asked for whole fleet — do not treat bulk resolve as ambiguous.
+broad_device_scope:
+  literal_phrases:
+    - all access
+    - all core
+    - all distribution
+    - every switch
+    - every device
+    - entire network
+    - whole network
+  regex_patterns:
+    - "\\ball\\b.*\\b(switch|switches|device|devices)\\b"
+    - "\\b(access|distribution|dist|core)\\s+(switch|switches)\\b"
+
+# Device role normalization (scope.device_role)
+role_aliases:
+  access: access
+  access_switch: access
+  access-switch: access
+  switch: access
+  switches: access
+  distribution: distribution
+  distribution_switch: distribution
+  distribution-switch: distribution
+  dist: distribution
+  core: core
+  core_router: core
+  core-router: core
+  router: core
+  routers: core
+  firewall: firewall
+  network-device: network-device
+
+# Vendor strings → internal vendor_filter
+vendor_aliases:
+  cisco: cisco_ios
+  cisco-ios: cisco_ios
+  cisco_ios: cisco_ios
+  cisco-xe: cisco_ios
+  cisco_xe: cisco_ios
+  juniper: juniper_junos
+  juniper-junos: juniper_junos
+  juniper_junos: juniper_junos
+  junos: juniper_junos
+  huawei: huawei_vrp
+  huawei-vrp: huawei_vrp
+  huawei_vrp: huawei_vrp
+  vrp: huawei_vrp

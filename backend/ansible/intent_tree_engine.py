@@ -1,22 +1,31 @@
 """
-Declarative Intent Tree engine.
+Intent Parsing Tree engine (runtime slice).
 
-Scope (Phase 1): enforce root-first device scope and handle "all interfaces" expansion,
-including conditional interface leaf checks (best-effort; the controller may also rely
-on existing JSON schema + UI overlays).
+- Root-first device scope (unclear bulk resolution) and “all interfaces” expansion flags.
+- Early missing-parameter questions for non-interface operations come from
+  ``intent_schemas/*.yml`` via ``build_params_disambiguation_fields_from_intent`` —
+  **not** duplicated per category in Python. ``configure_interface`` / ``shutdown_interface``
+  are excluded here so ``api.py`` can drive inventory pickers and ``requires_resolution``.
+- Broad device-scope phrases live in ``intent_keywords.yml`` (``intent_artifacts``).
+- Declared category → operation map: ``intent_graph.yml`` (validated by
+  ``python -m ansible.validate_intent_artifacts``).
 """
 
 from __future__ import annotations
 
 import json
 import logging
-import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from ansible.context_entity_validation import (
     intent_requests_all_interfaces,
+)
+from ansible.intent_artifacts import intent_explicitly_requests_broad_device_scope
+from ansible.intent_validation import (
+    build_params_disambiguation_fields_from_intent,
+    get_schema_for_parsed_intent,
 )
 
 logger = logging.getLogger("ansible.intent_tree_engine")
@@ -47,32 +56,6 @@ class IntentTreeResult:
         }
 
 
-def _intent_explicitly_requests_broad_device_scope(intent_description: str) -> bool:
-    """
-    Mirror the "do not clear targets when user explicitly asked for whole scope" heuristic.
-    This is intentionally conservative.
-    """
-    t = re.sub(r"\s+", " ", (intent_description or "").strip().lower())
-    if not t:
-        return False
-    if re.search(r"\ball\b", t) and any(w in t for w in ("switch", "switches", "device", "devices")):
-        return True
-    for phrase in (
-        "all access",
-        "all core",
-        "all distribution",
-        "every switch",
-        "every device",
-        "entire network",
-        "whole network",
-    ):
-        if phrase in t:
-            return True
-    if re.search(r"\b(access|distribution|dist|core)\s+(switch|switches)\b", t):
-        return True
-    return False
-
-
 def _deduce_needs_target_devices(
     intent_description: str,
     resolved_devices: List[str],
@@ -87,7 +70,7 @@ def _deduce_needs_target_devices(
     """
     if len(resolved_devices) < 2:
         return False
-    if _intent_explicitly_requests_broad_device_scope(intent_description):
+    if intent_explicitly_requests_broad_device_scope(intent_description):
         return False
 
     try:
@@ -197,81 +180,23 @@ def evaluate_intent_tree(
     params = parsed_intent.get("parameters") or parsed_intent.get("params") or {}
     device_deduction = parsed_intent.get("device_deduction") or {}
 
-    # Phase 2/3 (partial): category required leaf questions (before controller/schema).
-    # This is not a full schema replacement; we just surface missing required leaves
-    # as UI questions early so we can fail fast before any LLM playbook generation.
-    action = str(parsed_intent.get("action") or "").strip().lower().replace("-", "_")
-    feature = str(parsed_intent.get("feature") or "").strip().lower().replace("-", "_")
-
-    def _is_missing(v: Any) -> bool:
-        if v is None:
-            return True
-        if isinstance(v, str):
-            return v.strip() == ""
-        if isinstance(v, list):
-            return len(v) == 0
-        return False
-
-    # ACL
-    if not res.params_disambiguation and (action == "configure_acl" or feature == "acl"):
-        missing_fields: List[Dict[str, str]] = []
-        if _is_missing(params.get("acl_name")):
-            missing_fields.append({"field": "acl_name", "question": "ACL name or number?"})
-        if _is_missing(params.get("acl_type")):
-            missing_fields.append({"field": "acl_type", "question": "ACL type (ipv4, ipv6, mac, or l2)?"})
-        if _is_missing(params.get("rules")):
-            missing_fields.append(
-                {"field": "rules", "question": "ACL rules (permit/deny, protocol, src/dst) or template name?"}
-            )
-        if missing_fields:
-            res.params_disambiguation = {"question": "Please provide the following.", "fields": missing_fields}
-
-    # QoS
-    if not res.params_disambiguation and (action == "configure_qos" or feature == "qos"):
-        missing_fields = []
-        if _is_missing(params.get("policy_name")):
-            missing_fields.append({"field": "policy_name", "question": "QoS policy name?"})
-        if _is_missing(params.get("qos_type")):
-            missing_fields.append({"field": "qos_type", "question": "QoS construct type (class-map, policy-map, or service-policy)?"})
-        if _is_missing(params.get("classification_rules")):
-            missing_fields.append(
-                {"field": "classification_rules", "question": "Classification (match DSCP/ACL/COS/IP) and actions?"}
-            )
-        if missing_fields:
-            res.params_disambiguation = {"question": "Please provide the following.", "fields": missing_fields}
-
-    # OSPF
-    if not res.params_disambiguation and (action == "configure_ospf" or feature == "ospf"):
-        missing_fields = []
-        if _is_missing(params.get("process_id")):
-            missing_fields.append({"field": "process_id", "question": "OSPF process ID?"})
-        if _is_missing(params.get("networks")):
-            missing_fields.append(
-                {"field": "networks", "question": "Which networks (CIDR) to advertise and in which area?"}
-            )
-        if missing_fields:
-            res.params_disambiguation = {"question": "Please provide the following.", "fields": missing_fields}
-
-    # static_route / routing
-    if not res.params_disambiguation and (action == "configure_static_route" or feature in ("static_route", "routing")):
-        destination = params.get("destination")
-        next_hop = params.get("next_hop")
-        missing_fields = []
-        if _is_missing(destination):
-            missing_fields.append({"field": "destination", "question": "Destination prefix (CIDR, e.g. 0.0.0.0/0)?"})
-        if _is_missing(next_hop):
-            missing_fields.append({"field": "next_hop", "question": "Next hop IP or egress interface?"})
-        if missing_fields:
-            res.params_disambiguation = {"question": "Please provide the following.", "fields": missing_fields}
-
-    # VLAN
-    if not res.params_disambiguation and (action == "create_vlan" or feature == "vlan"):
-        vlan_id = params.get("vlan_id")
-        missing_fields = []
-        if _is_missing(vlan_id):
-            missing_fields.append({"field": "vlan_id", "question": "Which VLAN ID (1-4094)?"})
-        if missing_fields:
-            res.params_disambiguation = {"question": "Please provide the following.", "fields": missing_fields}
+    # Missing required fields from operation-specific intent_schemas/*.yml (single source of truth).
+    intent_for_schema: Dict[str, Any] = {
+        "action": parsed_intent.get("action"),
+        "feature": parsed_intent.get("feature"),
+        "parameters": dict(params) if isinstance(params, dict) else {},
+        "resolved_devices": list(resolved_hosts or []),
+    }
+    # Interface operations: let api.py preview/plan handle resolution, inventory pickers, and
+    # requires_resolution — avoid early 422 from tree-only missing interfaces list.
+    tree_fields: List[Dict[str, str]] = []
+    _sch = get_schema_for_parsed_intent(intent_for_schema)
+    if _sch:
+        _sa = str(_sch.get("action") or "").strip().lower().replace("-", "_")
+        if _sa not in ("configure_interface", "shutdown_interface"):
+            tree_fields = build_params_disambiguation_fields_from_intent(intent_for_schema)
+    if tree_fields:
+        res.params_disambiguation = {"question": "Please provide the following.", "fields": tree_fields}
 
     # 1) Root-first: ensure target devices are clear enough to proceed.
     # Do not second-guess explicit API/UI target lists (see docstring).

@@ -1,15 +1,30 @@
 {
+  "_meta": {
+    "description": "Legacy structural hints for tools and humans. Authoritative required/optional parameters are ONLY in intent_schemas/<action>.yml. Category → operations mapping: intent_graph.yml. Editable keywords: intent_keywords.yml.",
+    "see_also": [
+      "intent_graph.yml",
+      "intent_keywords.yml",
+      "category_schemas/",
+      "intent_schemas/"
+    ]
+  },
   "intent_tree": {
     "target_devices": {
       "required": true,
-      "description": "Devices where the operation will be applied",
+      "description": "Devices where the operation will be applied (same concept as API target_hosts after mapping).",
       "resolution": {
         "source": ["user_input", "inventory", "topology"],
         "strategy": ["exact_match", "group_match", "numeric_selector_resolution"]
       }
     },
+    "vlan": {
+      "documentation_only": true,
+      "note": "VLAN database operation create_vlan — required vlan_id, vlan_name, target_devices per intent_schemas/create_vlan.yml",
+      "interface_expansion": "L2 port work uses configure_interface under category interface"
+    },
     "interface": {
-      "required_fields": ["interfaces"],
+      "documentation_only": true,
+      "note": "Operations shutdown_interface, configure_interface — see intent_schemas/*.yml",
       "children": {
         "interfaces": {
           "expand_if": "interfaces == 'all'",
@@ -30,51 +45,21 @@
         }
       }
     },
-    "vlan": {
-      "required_fields": ["vlan_id"],
-      "fields": {
-        "vlan_id": { "required": true },
-        "vlan_name": { "required": false }
-      }
-    },
     "static_route": {
-      "required_fields": ["destination", "next_hop"],
-      "fields": {
-        "destination": { "required": true },
-        "next_hop": { "required": true },
-        "admin_distance": { "required": false },
-        "vrf_name": { "required": false }
-      }
+      "documentation_only": true,
+      "note": "Operation configure_static_route — see intent_schemas/configure_static_route.yml"
     },
     "acl": {
-      "required_fields": ["acl_name", "acl_type", "rules"],
-      "fields": {
-        "acl_name": { "required": true },
-        "acl_type": { "required": true },
-        "rules": { "required": true },
-        "apply_to": { "required": false }
-      }
+      "documentation_only": true,
+      "note": "Operation configure_acl — see intent_schemas/configure_acl.yml"
     },
     "qos": {
-      "required_fields": ["policy_name", "qos_type", "classification_rules"],
-      "fields": {
-        "policy_name": { "required": true },
-        "qos_type": { "required": true },
-        "classification_rules": { "required": true },
-        "interface_apply": { "required": false }
-      }
+      "documentation_only": true,
+      "note": "Operation configure_qos — see intent_schemas/configure_qos.yml"
     },
     "ospf": {
-      "required_fields": ["process_id", "networks"],
-      "fields": {
-        "process_id": { "required": true },
-        "networks": { "required": true },
-        "router_id": { "required": false },
-        "area_definitions": { "required": false },
-        "passive_interfaces": { "required": false },
-        "redistribution": { "required": false }
-      }
+      "documentation_only": true,
+      "note": "Operation configure_ospf — see intent_schemas/configure_ospf.yml"
     }
   }
 }
-

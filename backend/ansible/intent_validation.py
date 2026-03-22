@@ -396,6 +396,29 @@ def validate_completeness(
     return missing, errors
 
 
+def build_params_disambiguation_fields_from_intent(intent: Dict[str, Any]) -> List[Dict[str, str]]:
+    """
+    Build chat/preview wizard fields from the operation-specific intent schema only
+    (required fields missing on ``intent``). Uses ``schema_field_to_param_key`` so
+    API keys match Studio (e.g. target_devices → target_hosts).
+
+    Used by ``intent_tree_engine`` for early fail-fast alignment with ``intent_schemas/*.yml``.
+    """
+    schema = get_schema_for_parsed_intent(intent)
+    if not schema:
+        return []
+    missing, _ = validate_completeness(intent, schema)
+    if not missing:
+        return []
+    questions = schema.get("questions") or {}
+    out: List[Dict[str, str]] = []
+    for sf in missing:
+        param_key = schema_field_to_param_key(schema, sf)
+        q = questions.get(sf) or f"Please provide: {param_key}"
+        out.append({"field": param_key, "question": str(q)})
+    return out
+
+
 def resolve_missing_fields(
     intent: Dict[str, Any],
     schema: Dict[str, Any],
@@ -512,6 +535,79 @@ def resolve_missing_fields(
             })
 
     return intent, ask_user_fields, resolution_trace
+
+
+def extract_create_vlan_params_from_natural_language(text: str) -> Dict[str, Any]:
+    """
+    Deterministic extraction of ``vlan_id`` / ``vlan_name`` from user text when the LLM
+    leaves ``parameters`` empty (common with prompts like “access switch 1, 2, and 3”).
+    Only fills keys that are clearly present in the description.
+    """
+    out: Dict[str, Any] = {}
+    if not text or not str(text).strip():
+        return out
+    raw = str(text).strip()
+    tl = raw.lower()
+    # Prefer "create vlan N" / "vlan N" (1–4094); avoid relying on trailing "switch 1, 2, 3" digits.
+    m = re.search(r"\b(?:create\s+)?vlan\s+(\d{1,4})\b", tl, re.I)
+    if not m:
+        m = re.search(r"\bvlan\s*-?\s*id\s*[=:\s#]+\s*(\d{1,4})\b", tl, re.I)
+    if not m:
+        m = re.search(r"\bvlan\s*[=:#]+\s*(\d{1,4})\b", tl, re.I)
+    if m:
+        try:
+            vid = int(m.group(1))
+            if 1 <= vid <= 4094:
+                out["vlan_id"] = vid
+        except ValueError:
+            pass
+    # Named / called / name: (allow mixed-case and common punctuation; stop at comma/space)
+    nm = re.search(r"\bnamed\s+[\"']?([^\s,;]+)", raw, re.I)
+    if not nm:
+        nm = re.search(r"\bcalled\s+[\"']?([^\s,;]+)", raw, re.I)
+    if not nm:
+        nm = re.search(r"\bname\s*[=:]\s*[\"']?([^\s,;]+)", raw, re.I)
+    if nm:
+        name = nm.group(1).strip().strip("\"'.,;")
+        if name and not name.isdigit():
+            out["vlan_name"] = name
+    return out
+
+
+def merge_extracted_vlan_params_into_parsed_intent(
+    parsed_intent: Dict[str, Any],
+    intent_description: str,
+) -> None:
+    """Merge :func:`extract_create_vlan_params_from_natural_language` into ``parsed_intent['parameters']``."""
+    feat = str(parsed_intent.get("feature") or "").strip().lower().replace("-", "_")
+    act = str(parsed_intent.get("action") or "").strip().lower().replace("-", "_")
+    if feat != "vlan":
+        return
+    if act not in ("create_vlan", ""):
+        return
+    ext = extract_create_vlan_params_from_natural_language(intent_description or "")
+    if not ext:
+        return
+    p = dict(parsed_intent.get("parameters") or {})
+    if "vlan_id" in ext and not _params_satisfies_create_vlan_field(p, "vlan_id"):
+        p["vlan_id"] = ext["vlan_id"]
+    if "vlan_name" in ext and not _params_satisfies_create_vlan_field(p, "vlan_name"):
+        p["vlan_name"] = ext["vlan_name"]
+    parsed_intent["parameters"] = p
+
+
+def merge_extracted_vlan_params_into_flat_params(
+    params: Dict[str, Any],
+    intent_description: str,
+) -> None:
+    """Same as merge into primary parameters dict (plan-ansible / create-and-plan ``req.params``)."""
+    ext = extract_create_vlan_params_from_natural_language(intent_description or "")
+    if not ext:
+        return
+    if "vlan_id" in ext and not _params_satisfies_create_vlan_field(params, "vlan_id"):
+        params["vlan_id"] = ext["vlan_id"]
+    if "vlan_name" in ext and not _params_satisfies_create_vlan_field(params, "vlan_name"):
+        params["vlan_name"] = ext["vlan_name"]
 
 
 def user_prompt_mentions_vlan_id(text: str) -> bool:
@@ -1011,6 +1107,17 @@ def get_required_params_hint_for_prompt() -> str:
     return "\n".join(lines)
 
 
+def schema_field_to_param_key(schema: Dict[str, Any], schema_field: str) -> str:
+    """
+    Map YAML schema field name to API / UI parameter key (single source of truth with Studio).
+    E.g. target_devices → target_hosts; shutdown schema "interfaces" → interfaces_to_shutdown.
+    """
+    field_to_param: Dict[str, str] = {"target_devices": "target_hosts"}
+    if (schema.get("action") or "").strip().lower().replace("-", "_") == "shutdown_interface":
+        field_to_param["interfaces"] = "interfaces_to_shutdown"
+    return field_to_param.get(schema_field, schema_field)
+
+
 def get_editable_fields_for_schema(schema: Dict[str, Any]) -> List[Dict[str, Any]]:
     """
     Return a list of editable fields for UI (e.g. PlaybookStudioOverlay confirm step).
@@ -1019,14 +1126,9 @@ def get_editable_fields_for_schema(schema: Dict[str, Any]) -> List[Dict[str, Any
     required = set(schema.get("required") or [])
     optional = set(schema.get("optional") or [])
     questions = schema.get("questions") or {}
-    # Normalize field names that map to params (e.g. target_devices -> target_hosts in API)
-    field_to_param: Dict[str, str] = {"target_devices": "target_hosts"}
-    # Shutdown schema YAML uses "interfaces" but API/LLM use interfaces_to_shutdown; align with Target Interfaces chips
-    if (schema.get("action") or "").strip().lower().replace("-", "_") == "shutdown_interface":
-        field_to_param["interfaces"] = "interfaces_to_shutdown"
     out: List[Dict[str, Any]] = []
     for field in list(required) + [f for f in optional if f not in required]:
-        param_key = field_to_param.get(field, field)
+        param_key = schema_field_to_param_key(schema, field)
         label = (questions.get(field) or param_key.replace("_", " ")).strip()
         if label.endswith("?"):
             label = label[:-1]
@@ -1040,3 +1142,153 @@ def get_editable_fields_for_schema(schema: Dict[str, Any]) -> List[Dict[str, Any
             "type": type_hint,
         })
     return out
+
+
+def _format_inspector_value_preview(value: Any) -> str:
+    """Short string for preview modal / API (lists of scalars → comma-separated)."""
+    if value is None:
+        return ""
+    if isinstance(value, list):
+        if value and all(not isinstance(x, (dict, list)) for x in value):
+            return ", ".join(str(x) for x in value)
+        try:
+            return json.dumps(value, default=str)
+        except Exception:
+            return str(value)
+    if isinstance(value, dict):
+        try:
+            return json.dumps(value, default=str)
+        except Exception:
+            return str(value)
+    return str(value)
+
+
+def _build_one_schema_inspector_slice(
+    slice_intent: Dict[str, Any],
+    *,
+    role: str,
+    index: int,
+    title: str,
+) -> Dict[str, Any]:
+    """
+    One primary or secondary intent: resolved schema file, required/optional fields,
+    current values, missing required, validation errors (for Playbook Studio / API).
+    """
+    action_raw = str(slice_intent.get("action") or "").strip()
+    feature_raw = str(slice_intent.get("feature") or "").strip()
+    schema = get_schema_for_parsed_intent(slice_intent)
+    if not schema:
+        return {
+            "role": role,
+            "index": index,
+            "title": title,
+            "action": action_raw or None,
+            "feature": feature_raw or None,
+            "schema_action": None,
+            "schema_file": None,
+            "missing_required": [],
+            "validation_errors": [],
+            "fields": [],
+            "note": "No intent schema matched this slice (unknown action/feature or non-config intent).",
+        }
+
+    schema_action = str(schema.get("action") or "").strip() or action_raw
+    schema_file = f"{schema_action}.yml" if schema_action else None
+    type_key = schema_action or ""
+    missing, errors = validate_completeness(
+        slice_intent,
+        schema,
+        action_or_feature=type_key if type_key else None,
+    )
+    flat = _intent_to_flat_fields(slice_intent, schema)
+    required_set = set(schema.get("required") or [])
+    optional_set = set(schema.get("optional") or [])
+    questions = schema.get("questions") or {}
+    ordered_fields: List[str] = list(schema.get("required") or [])
+    for f in schema.get("optional") or []:
+        if f not in required_set:
+            ordered_fields.append(f)
+
+    fields_out: List[Dict[str, Any]] = []
+    for sf in ordered_fields:
+        param_key = schema_field_to_param_key(schema, sf)
+        raw_val = flat.get(sf)
+        empty = _is_empty(raw_val)
+        if sf in required_set:
+            status = "missing" if empty else "filled"
+        else:
+            status = "optional_empty" if empty else "filled"
+        label = str(questions.get(sf) or param_key.replace("_", " ")).strip()
+        if label.endswith("?"):
+            label = label[:-1]
+        fields_out.append({
+            "schema_field": sf,
+            "param_key": param_key,
+            "label": label,
+            "required": sf in required_set,
+            "status": status,
+            "value_preview": _format_inspector_value_preview(raw_val) if not empty else "",
+            "question": questions.get(sf),
+        })
+
+    return {
+        "role": role,
+        "index": index,
+        "title": title,
+        "action": action_raw or None,
+        "feature": feature_raw or None,
+        "schema_action": schema_action,
+        "schema_file": schema_file,
+        "missing_required": list(missing),
+        "validation_errors": list(errors or []),
+        "fields": fields_out,
+        "note": None,
+    }
+
+
+def build_intent_schema_inspector_payload(
+    parsed_intent: Dict[str, Any],
+    *,
+    resolved_hosts: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    """
+    Google-Form-style inspection payload: primary + each secondary_intents slice with
+    operation-specific YAML schema fields, required vs optional, values, and gaps.
+    """
+    rh = list(parsed_intent.get("resolved_devices") or resolved_hosts or [])
+    slices: List[Dict[str, Any]] = []
+
+    primary_intent = {
+        "action": parsed_intent.get("action"),
+        "feature": parsed_intent.get("feature"),
+        "parameters": dict(parsed_intent.get("parameters") or {}),
+        "resolved_devices": rh,
+    }
+    slices.append(
+        _build_one_schema_inspector_slice(
+            primary_intent,
+            role="primary",
+            index=0,
+            title="Primary operation",
+        )
+    )
+
+    for idx, sec in enumerate(parsed_intent.get("secondary_intents") or []):
+        if not isinstance(sec, dict):
+            continue
+        sec_intent = {
+            "action": sec.get("action"),
+            "feature": sec.get("feature"),
+            "parameters": dict(sec.get("parameters") or {}),
+            "resolved_devices": rh,
+        }
+        slices.append(
+            _build_one_schema_inspector_slice(
+                sec_intent,
+                role="secondary",
+                index=idx + 1,
+                title=f"Secondary operation #{idx + 1}",
+            )
+        )
+
+    return {"slices": slices}

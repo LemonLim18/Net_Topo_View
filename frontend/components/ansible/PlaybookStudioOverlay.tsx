@@ -22,6 +22,7 @@ import {
   extractTargetInterfaceNamesFromParsedIntent,
   preselectPlannedInventoryInterfaces,
 } from '../../src/utils/interfaceInventoryPreselect';
+import { parseNativeVlanNumberFromPrompt, userPromptSuggestsNativeVlanIntent } from '../../src/utils/vlanPromptHints';
 import type { AnsibleGeneratedArtifactFile } from '../../typesLLM';
 
 const FEATURES_DISPLAY: Record<string, string> = {
@@ -100,29 +101,6 @@ function userPromptSuggestsTrunkPortIntent(text: string): boolean {
   if (/\btrunk\s+VLANs?\b/.test(t)) return true;
   if (/\btrunk\b/.test(t) && /\b(port|interface|gi|gigabit|ethernet|eth)\b/.test(t)) return true;
   return false;
-}
-
-/** Native VLAN is a trunk concept — not access VLAN (overrides wrong LLM mode: access + access_vlan). */
-function userPromptSuggestsNativeVlanIntent(text: string): boolean {
-  const t = (text || '').trim().toLowerCase();
-  if (!t) return false;
-  if (/\bnative\s+vlan\b/.test(t)) return true;
-  if (/\bset\s+native\s+vlan\b/.test(t)) return true;
-  if (/\bnative-vlan\b/.test(t)) return true;
-  if (/\bpvid\b/.test(t) && /\bvlan\b/.test(t)) return true;
-  return false;
-}
-
-/** Extract first "native VLAN <n>" number from prompt text. */
-function parseNativeVlanNumberFromPrompt(text: string): number | null {
-  const m =
-    text.match(/\bnative\s+vlan\s+(\d{1,4})\b/i) ||
-    text.match(/\bnative\s+vlan\s*[:\s]+(\d{1,4})/i) ||
-    text.match(/\bset\s+native\s+vlan\s+(\d{1,4})\b/i);
-  if (!m) return null;
-  const n = parseInt(m[1], 10);
-  if (Number.isNaN(n) || n < 1 || n > 4094) return null;
-  return n;
 }
 
 /** Initial Playbook Studio binding mode + VLAN fields from preview + natural language (fixes LLM access vs user trunk). */
@@ -238,11 +216,85 @@ function inferInterfaceBindingFromParsedIntent(
   return base;
 }
 
+function intentInspectorStatusBadgeClass(status: string): string {
+  if (status === 'missing') return 'badge-error badge-outline';
+  if (status === 'filled') return 'badge-success badge-outline';
+  return 'badge-ghost';
+}
+
+function intentInspectorStatusLabel(status: string): string {
+  if (status === 'missing') return 'Required — missing';
+  if (status === 'filled') return 'Filled';
+  if (status === 'optional_empty') return 'Optional — empty';
+  return status;
+}
+
+/** Prefer chat wizard / accumulated preview params over LLM-only parsed_intent.parameters. */
+function buildSchemaParamValuesFromSources(
+  fields: SchemaEditableField[],
+  parsedParams: Record<string, unknown>,
+  authoritative?: Record<string, unknown> | null,
+): Record<string, string | number> {
+  const auth =
+    authoritative && typeof authoritative === 'object' ? authoritative : {};
+  const out: Record<string, string | number> = {};
+  for (const f of fields) {
+    const key = f.field;
+    const a = auth[key];
+    const p = parsedParams[key];
+    const hasAuth =
+      a !== undefined &&
+      a !== null &&
+      a !== '' &&
+      !(typeof a === 'number' && Number.isNaN(a));
+    const raw = hasAuth ? a : p;
+    if (raw === undefined || raw === null || raw === '') {
+      out[key] = '';
+      continue;
+    }
+    if (f.type === 'number' || key === 'vlan_id' || key === 'process_id') {
+      const n = typeof raw === 'number' ? raw : parseInt(String(raw), 10);
+      out[key] = Number.isNaN(n) ? '' : n;
+    } else {
+      out[key] = String(raw);
+    }
+  }
+  return out;
+}
+
 export interface SchemaEditableField {
   field: string;
   label: string;
   required: boolean;
   type: string;
+}
+
+/** Mirrors `build_intent_schema_inspector_payload` from the preview-intent API. */
+export interface IntentSchemaInspectorSlice {
+  role: string;
+  index: number;
+  title: string;
+  action?: string | null;
+  feature?: string | null;
+  schema_action?: string | null;
+  schema_file?: string | null;
+  missing_required?: string[];
+  validation_errors?: string[];
+  fields?: Array<{
+    schema_field: string;
+    param_key: string;
+    label: string;
+    required: boolean;
+    status: string;
+    value_preview: string;
+    question?: string;
+  }>;
+  note?: string | null;
+}
+
+export interface IntentSchemaInspectorPayload {
+  slices?: IntentSchemaInspectorSlice[];
+  error?: string;
 }
 
 export interface PlaybookStudioOverlayProps {
@@ -260,6 +312,7 @@ export interface PlaybookStudioOverlayProps {
     schema_editable_fields?: SchemaEditableField[];
     interfaces_for_selection?: { question: string; devices: { hostname: string; interfaces: { name: string }[] }[] };
     secondary_intent_previews?: Array<{ intent_index: number; action: string; feature: string; missing_fields?: string[] }>;
+    intent_schema_inspector?: IntentSchemaInspectorPayload;
   } | null;
   onPlaybookReady: (payload: {
     jobId: number;
@@ -270,6 +323,8 @@ export interface PlaybookStudioOverlayProps {
   }) => void;
   ansibleModel: { provider: string; model: string; ollama_base_url?: string | null };
   parseIntent: (text: string) => { vendor: string; feature: string; target_hosts: string[]; params?: Record<string, any> };
+  /** Chat wizards (devices, params, interfaces) — wins over parsed_intent for form defaults. */
+  authoritativeMergedParams?: Record<string, unknown> | null;
 }
 
 type Step = 'thinking' | 'confirm' | 'generating' | 'result' | 'error';
@@ -282,6 +337,7 @@ export function PlaybookStudioOverlay({
   onPlaybookReady,
   ansibleModel,
   parseIntent,
+  authoritativeMergedParams = null,
 }: PlaybookStudioOverlayProps) {
   const [step, setStep] = useState<Step>('thinking');
   const [categories, setCategories] = useState<string[]>([]);
@@ -316,6 +372,8 @@ export function PlaybookStudioOverlay({
   /** Last preview API parsed_intent — used so create-and-plan sends correct feature (avoid heuristic "general"). */
   const [previewParsedIntent, setPreviewParsedIntent] = useState<Record<string, unknown> | null>(null);
   const previewParsedIntentRef = useRef<Record<string, unknown> | null>(null);
+  const [intentSchemaInspector, setIntentSchemaInspector] = useState<IntentSchemaInspectorPayload | null>(null);
+  /** Skip the first debounced refresh after a fresh preview (avoid duplicate POST on open). */
   const skipNextInventoryRefreshRef = useRef(true);
   useEffect(() => {
     previewParsedIntentRef.current = previewParsedIntent;
@@ -365,11 +423,10 @@ export function PlaybookStudioOverlay({
       setSchemaEditableFields(res.schema_editable_fields ?? []);
       const params = (res.parsed_intent as any)?.parameters ?? {};
       setSchemaParamValues(
-        Object.fromEntries(
-          (res.schema_editable_fields ?? []).map((f) => [f.field, params[f.field] ?? ''])
-        )
+        buildSchemaParamValuesFromSources(res.schema_editable_fields ?? [], params, authoritativeMergedParams),
       );
       setInterfacesForSelection((res as any).interfaces_for_selection ?? null);
+      setIntentSchemaInspector((res as { intent_schema_inspector?: IntentSchemaInspectorPayload }).intent_schema_inspector ?? null);
       setPreviewParsedIntent((res.parsed_intent as Record<string, unknown>) ?? null);
       {
         const parsedPi = (res.parsed_intent as Record<string, unknown>) ?? null;
@@ -390,10 +447,11 @@ export function PlaybookStudioOverlay({
       skipNextInventoryRefreshRef.current = true;
       setStep('confirm');
     } catch (e: unknown) {
+      setIntentSchemaInspector(null);
       setErrorMessage(formatAnsibleApiError(e));
       setStep('error');
     }
-  }, [intentDescription, ansibleModel, parseIntent]);
+  }, [intentDescription, ansibleModel, parseIntent, authoritativeMergedParams]);
 
   useEffect(() => {
     if (!open || !intentDescription.trim()) return;
@@ -409,7 +467,20 @@ export function PlaybookStudioOverlay({
           : null;
       setReasoning(secondaryLine ? [...baseReasoning, secondaryLine] : baseReasoning);
       setPolicyApproved(initialPreviewResult.policy_approved ?? false);
-      setTargetHosts(initialPreviewResult.target_hosts?.length ? initialPreviewResult.target_hosts : []);
+      {
+        const authH = Array.isArray(authoritativeMergedParams?.target_hosts)
+          ? (authoritativeMergedParams!.target_hosts as unknown[]).filter(
+              (h): h is string => typeof h === 'string' && Boolean(String(h).trim()),
+            )
+          : [];
+        setTargetHosts(
+          authH.length > 0
+            ? authH
+            : initialPreviewResult.target_hosts?.length
+              ? initialPreviewResult.target_hosts
+              : [],
+        );
+      }
       setTargetInterfaces(
         extractTargetInterfaceNamesFromParsedIntent(
           (initialPreviewResult.parsed_intent as Record<string, unknown>) ?? null,
@@ -421,11 +492,14 @@ export function PlaybookStudioOverlay({
       setSchemaEditableFields(initialPreviewResult.schema_editable_fields ?? []);
       const params = (initialPreviewResult.parsed_intent as any)?.parameters ?? {};
       setSchemaParamValues(
-        Object.fromEntries(
-          (initialPreviewResult.schema_editable_fields ?? []).map((f) => [f.field, params[f.field] ?? ''])
-        )
+        buildSchemaParamValuesFromSources(
+          initialPreviewResult.schema_editable_fields ?? [],
+          params,
+          authoritativeMergedParams,
+        ),
       );
       setInterfacesForSelection(initialPreviewResult.interfaces_for_selection ?? null);
+      setIntentSchemaInspector(initialPreviewResult.intent_schema_inspector ?? null);
       setPreviewParsedIntent((initialPreviewResult.parsed_intent as Record<string, unknown>) ?? null);
       {
         const parsedPi = (initialPreviewResult.parsed_intent as Record<string, unknown>) ?? null;
@@ -444,7 +518,7 @@ export function PlaybookStudioOverlay({
     } else {
       runPreview();
     }
-  }, [open, intentDescription, runPreview, initialPreviewResult]);
+  }, [open, intentDescription, runPreview, initialPreviewResult, authoritativeMergedParams]);
 
   // When backend expanded "all interfaces" via planned network context, pre-fill the UI chips
   // so user can review/select from real interface names (no free-text typing).
@@ -708,6 +782,7 @@ export function PlaybookStudioOverlay({
       setPolicyApproved(res.policy_approved ?? false);
       setPreviewParsedIntent((res.parsed_intent as Record<string, unknown>) ?? null);
       setInterfacesForSelection((res as { interfaces_for_selection?: typeof interfacesForSelection }).interfaces_for_selection ?? null);
+      setIntentSchemaInspector((res as { intent_schema_inspector?: IntentSchemaInspectorPayload }).intent_schema_inspector ?? null);
       setErrorMessage(null);
     } catch {
       /* ignore transient refresh errors */
@@ -722,10 +797,6 @@ export function PlaybookStudioOverlay({
     ansibleModel.model,
     ansibleModel.ollama_base_url,
   ]);
-
-  useEffect(() => {
-    skipNextInventoryRefreshRef.current = true;
-  }, [open, intentDescription]);
 
   useEffect(() => {
     if (!open || step !== 'confirm') return;
@@ -751,6 +822,10 @@ export function PlaybookStudioOverlay({
     vlanSelectedInterfaces,
     refreshPreviewWithMergedParams,
   ]);
+
+  useEffect(() => {
+    skipNextInventoryRefreshRef.current = true;
+  }, [open, intentDescription]);
 
   const handleConfirm = useCallback(async () => {
     setStep('generating');
@@ -900,6 +975,104 @@ export function PlaybookStudioOverlay({
                       ))}
                     </div>
                   )}
+                </div>
+              )}
+              {(intentSchemaInspector?.error || (intentSchemaInspector?.slices && intentSchemaInspector.slices.length > 0)) && (
+                <div className="mb-4 rounded-lg border border-primary/30 bg-primary/5 overflow-hidden">
+                  <div className="px-3 py-2 border-b border-primary/20 bg-primary/10">
+                    <p className="text-xs font-semibold text-base-content flex items-center gap-2">
+                      <FileCode className="w-3.5 h-3.5 text-primary" />
+                      Intent schema inspection
+                    </p>
+                    <p className="text-[11px] text-base-content/60 mt-0.5">
+                      Operation-specific YAML schema per detected slice (primary + secondary). Required vs optional follows each action — same category can differ by operation.
+                    </p>
+                  </div>
+                  <div className="p-3 space-y-4 max-h-[min(50vh,420px)] overflow-y-auto">
+                    {intentSchemaInspector?.error ? (
+                      <p className="text-xs text-warning">Could not build schema inspector: {intentSchemaInspector.error}</p>
+                    ) : null}
+                    {(intentSchemaInspector?.slices || []).map((slice) => (
+                      <div
+                        key={`${slice.role}-${slice.index}`}
+                        className="rounded-lg border border-base-300 bg-base-100/80 overflow-hidden"
+                      >
+                        <div className="px-2 py-1.5 bg-base-200/80 border-b border-base-300 flex flex-wrap items-center gap-2">
+                          <span className="text-xs font-semibold text-base-content">{slice.title}</span>
+                          <span className="badge badge-xs badge-outline capitalize">{slice.role}</span>
+                          {slice.schema_file ? (
+                            <span className="text-[10px] font-mono text-base-content/70" title="intent_schemas file">
+                              {slice.schema_file}
+                            </span>
+                          ) : null}
+                        </div>
+                        <div className="px-2 py-1.5 text-[11px] text-base-content/80 flex flex-wrap gap-x-3 gap-y-1">
+                          <span>
+                            <span className="text-base-content/50">action</span>{' '}
+                            <code className="text-xs bg-base-200 px-1 rounded">{slice.action ?? '—'}</code>
+                          </span>
+                          <span>
+                            <span className="text-base-content/50">feature</span>{' '}
+                            <code className="text-xs bg-base-200 px-1 rounded">{slice.feature ?? '—'}</code>
+                          </span>
+                          {slice.schema_action ? (
+                            <span>
+                              <span className="text-base-content/50">schema action</span>{' '}
+                              <code className="text-xs bg-base-200 px-1 rounded">{slice.schema_action}</code>
+                            </span>
+                          ) : null}
+                        </div>
+                        {slice.note ? <p className="px-2 pb-2 text-xs text-base-content/60">{slice.note}</p> : null}
+                        {slice.missing_required && slice.missing_required.length > 0 ? (
+                          <p className="px-2 pb-1 text-xs text-error">
+                            Missing required:{' '}
+                            <span className="font-mono">{slice.missing_required.join(', ')}</span>
+                          </p>
+                        ) : null}
+                        {slice.validation_errors && slice.validation_errors.length > 0 ? (
+                          <ul className="px-2 pb-2 text-xs text-warning list-disc list-inside">
+                            {slice.validation_errors.map((err, i) => (
+                              <li key={i}>{err}</li>
+                            ))}
+                          </ul>
+                        ) : null}
+                        {slice.fields && slice.fields.length > 0 ? (
+                          <div className="overflow-x-auto border-t border-base-300">
+                            <table className="table table-xs w-full">
+                              <thead>
+                                <tr className="bg-base-200/50">
+                                  <th className="text-[10px] uppercase tracking-wide">Field</th>
+                                  <th className="text-[10px] uppercase tracking-wide">Param key</th>
+                                  <th className="text-[10px] uppercase tracking-wide">Required</th>
+                                  <th className="text-[10px] uppercase tracking-wide">Status</th>
+                                  <th className="text-[10px] uppercase tracking-wide">Value</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {slice.fields.map((row) => (
+                                  <tr key={row.schema_field}>
+                                    <td className="align-top text-xs font-medium">{row.label}</td>
+                                    <td className="align-top">
+                                      <code className="text-[10px] bg-base-200 px-1 rounded">{row.param_key}</code>
+                                    </td>
+                                    <td className="align-top">{row.required ? 'Yes' : 'No'}</td>
+                                    <td className="align-top">
+                                      <span className={`badge badge-xs ${intentInspectorStatusBadgeClass(row.status)}`}>
+                                        {intentInspectorStatusLabel(row.status)}
+                                      </span>
+                                    </td>
+                                    <td className="align-top text-[11px] font-mono break-all max-w-[200px]">
+                                      {row.value_preview || (row.status === 'missing' ? '—' : '')}
+                                    </td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        ) : null}
+                      </div>
+                    ))}
+                  </div>
                 </div>
               )}
               <div className="mb-4">

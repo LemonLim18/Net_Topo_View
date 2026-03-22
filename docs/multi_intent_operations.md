@@ -19,8 +19,10 @@ One natural-language message can yield a **primary** `parsed_intent` plus **`sec
 ## Extending a new category
 
 1. Add **`intent_schemas/<action>.yml`** and **`.schema.json`** as for any single operation.
-2. **Completeness** is automatic: `_append_secondary_intent_schema_disambiguation` loads `get_schema_for_parsed_intent` per slice and runs `validate_completeness`.
-3. If the operation needs **extra wizard fields** based on filled parameters (like `configure_interface`), register:
+2. Register the **`action`** under a category in **`backend/ansible/intent_graph.yml`** and run **`python -m ansible.validate_intent_artifacts`**.
+3. Optionally add **`backend/ansible/category_schemas/<category>.yml`** vocabulary for the LLM parser.
+4. **Completeness** is automatic: `_append_secondary_intent_schema_disambiguation` loads `get_schema_for_parsed_intent` per slice and runs `validate_completeness`.
+5. If the operation needs **extra wizard fields** based on filled parameters (like `configure_interface`), register:
 
    ```python
    SECONDARY_INTENT_CONDITIONAL_DISAMBIGUATION_BY_ACTION["your_action"] = your_conditional_fn
@@ -28,7 +30,7 @@ One natural-language message can yield a **primary** `parsed_intent` plus **`sec
 
    The callable receives **`parameters`** for that slice and returns `{"field", "question"}` dicts.
 
-4. If the operation needs **prompt vs trusted-params** logic (like VLAN ID/name not in the raw message), add a branch in **`merge_prompt_aware_disambiguation_for_schema`** keyed by `schema["action"]`, reusing the same `trusted_param_keys` pattern as `create_vlan`.
-5. If primary + secondary both carry **duplicate binding keys** (e.g. interface lists) and the user corrects primary via the UI, adjust **`AUTHORITATIVE_PRIMARY_INTERFACE_KEYS`** / **`DEFAULT_SECONDARY_INTERFACE_OVERLAP_KEYS`** in `multi_intent_operations.py` only when the same conflict pattern applies.
+6. If the operation needs **prompt vs trusted-params** logic (like VLAN ID/name not in the raw message), add a branch in **`merge_prompt_aware_disambiguation_for_schema`** keyed by `schema["action"]`, reusing the same `trusted_param_keys` pattern as `create_vlan`.
+7. If primary + secondary both carry **duplicate binding keys** (e.g. interface lists) and the user corrects primary via the UI, adjust **`AUTHORITATIVE_PRIMARY_INTERFACE_KEYS`** / **`DEFAULT_SECONDARY_INTERFACE_OVERLAP_KEYS`** in `multi_intent_operations.py` only when the same conflict pattern applies.
 
 See also **`docs/intent_operation_reference.md`** (multi-operation section).

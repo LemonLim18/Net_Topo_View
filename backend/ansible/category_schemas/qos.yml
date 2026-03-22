@@ -1,0 +1,12 @@
+category: qos
+display_name: QoS
+description: Classification, policy maps, service policy attachment.
+parameter_vocabulary:
+  - name: policy_name
+    description: Policy or class-map identifier.
+  - name: qos_type
+    description: class-map, policy-map, service-policy, etc.
+  - name: classification_rules
+    description: Match criteria (DSCP, ACL, COS, IP) and actions.
+  - name: interface_apply
+    description: Optional interfaces to attach service policy.

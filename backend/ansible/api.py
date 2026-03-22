@@ -46,11 +46,14 @@ from ansible.context_entity_validation import (
 )
 from ansible.intent_validation import (
     SECONDARY_INTENT_CONDITIONAL_DISAMBIGUATION_BY_ACTION,
+    build_intent_schema_inspector_payload,
     coerce_vlan_database_only_intent,
     get_editable_fields_for_schema,
     get_schema_for_parsed_intent,
     interface_intent_params_satisfied,
     is_vlan_database_only_intent,
+    merge_extracted_vlan_params_into_flat_params,
+    merge_extracted_vlan_params_into_parsed_intent,
     merge_prompt_aware_disambiguation_for_schema,
     resolve_missing_fields,
     user_prompt_requests_vlan_interface_binding,
@@ -270,6 +273,16 @@ _NON_HOSTNAME_WORDS = frozenset({
     "vlan", "named", "test", "create", "huaweicreate", "ciscocreate", "junipercreate",
     "interface", "interfaces",  # feature names that must not be treated as device hostnames
     "switch", "switches",  # e.g. from "Access Switch 1, 2, and 3" — not a hostname
+    # Prompt boilerplate: "Create VLAN on devices" → do not treat "devices" as a hostname
+    "device", "devices", "host", "hosts", "router", "routers", "network",
+    # "on access switch 1,2,3" — token "access" must not expand to all access devices via _resolve_target_hosts
+    "access",
+    "core",
+    "distribution",
+    "dist",
+    "edge",
+    "leaf",
+    "spine",
 })
 
 
@@ -397,24 +410,9 @@ def _resolve_target_hosts(target_hosts: List[str]) -> List[str]:
                     seen.add(h)
                     expanded.append(h)
             continue
-        if t in ("access", "access_switches"):
-            for h in all_hostnames:
-                if is_access(h) and h not in seen:
-                    seen.add(h)
-                    expanded.append(h)
-            continue
-        if t == "core":
-            for h in all_hostnames:
-                if is_core(h) and h not in seen:
-                    seen.add(h)
-                    expanded.append(h)
-            continue
-        if t in ("distribution", "dist"):
-            for h in all_hostnames:
-                if is_distribution(h) and h not in seen:
-                    seen.add(h)
-                    expanded.append(h)
-            continue
+        # Do **not** expand bare tokens "access", "core", "dist", "distribution" — phrases like
+        # "on access switch 1, 2, and 3" leak the word "access" and would fan out to every access
+        # device. Role-wide scope still works via compound tokens above ("all" + "access", etc.).
         # Skip tokens that are known non-hostname words (e.g. from "for Cisco and Huawei")
         if t in _NON_HOSTNAME_WORDS:
             continue
@@ -896,6 +894,36 @@ def _markdown_section_2_target_devices(
     return devices_block
 
 
+def _merge_client_authoritative_preview_params(
+    parsed_intent: Dict[str, Any],
+    req_params: Optional[Dict[str, Any]],
+) -> None:
+    """
+    Overlay ``req.params`` onto ``parsed_intent['parameters']`` immediately before the
+    response is built so wizard / chat answers win over LLM placeholders. Keeps
+    ``intent_schema_inspector`` and Playbook Studio fields aligned with user input.
+    """
+    if not req_params:
+        return
+    p = dict(parsed_intent.get("parameters") or {})
+    for k, v in req_params.items():
+        if k in ("secondary_intents", "_secondary_intents"):
+            continue
+        if v is None:
+            continue
+        if isinstance(v, str) and not str(v).strip():
+            continue
+        if isinstance(v, list) and len(v) == 0:
+            continue
+        if isinstance(v, dict) and len(v) == 0:
+            continue
+        p[k] = v
+    parsed_intent["parameters"] = p
+    th = req_params.get("target_hosts")
+    if isinstance(th, list) and any(str(h).strip() for h in th):
+        parsed_intent["resolved_devices"] = [str(h).strip() for h in th if str(h).strip()]
+
+
 def _sync_preview_device_deduction_and_reasoning(
     parsed_intent: Dict[str, Any],
     reasoning: List[str],
@@ -1206,16 +1234,19 @@ def _resolve_backend_intent_request(req, user: dict) -> tuple["PlanAnsibleReques
             },
         )
 
+    plan_params_merged = dict(parsed.parameters or {})
+    if str(parsed.feature or "").strip().lower() == "vlan":
+        merge_extracted_vlan_params_into_flat_params(plan_params_merged, req.intent_description or "")
     plan_req = PlanAnsibleRequest(
         intent_description=req.intent_description,
         target_hosts=parsed.resolved_devices,
         vendor=normalize_vendor(parsed.vendor or infer_vendor_hint(parsed.resolved_devices, _db)),
         feature=parsed.feature,
-        params=dict(parsed.parameters or {}),
+        params=plan_params_merged,
         max_interfaces=getattr(req, "max_interfaces", 5),
         requires_resolution=getattr(parsed, "requires_resolution", False),
-        auto_refine=getattr(req, "auto_refine", True),
-        max_refinement_attempts=getattr(req, "max_refinement_attempts", 3),
+        auto_refine=getattr(req, "auto_refine", False),
+        max_refinement_attempts=getattr(req, "max_refinement_attempts", 1),
         verify_with_dry_run=getattr(req, "verify_with_dry_run", False),
         provider=req.provider,
         model=req.model,
@@ -1224,6 +1255,8 @@ def _resolve_backend_intent_request(req, user: dict) -> tuple["PlanAnsibleReques
     )
     parsed_dict = parsed.model_dump()
     params_dict = dict(parsed_dict.get("parameters") or {})
+    if str(parsed_dict.get("feature") or "").strip().lower() == "vlan":
+        merge_extracted_vlan_params_into_flat_params(params_dict, req.intent_description or "")
     raw_secondary = params_dict.pop("_secondary_intents", None)
     parsed_dict["secondary_intents"] = _normalize_secondary_intents(raw_secondary)
     parsed_dict["parameters"] = params_dict
@@ -1535,8 +1568,9 @@ class PlanAnsibleRequest(BaseModel):
     feature:            str = ""
     params:             Dict[str, Any] = {}
     max_interfaces:     int = 5
-    auto_refine:        bool = True
-    max_refinement_attempts: int = 3
+    # Default off / single attempt: iterative LLM refinement is slow; Studio can re-generate if needed.
+    auto_refine:        bool = False
+    max_refinement_attempts: int = 1
     verify_with_dry_run: bool = False
     provider:           Optional[str] = None  # "gemini" | "ollama" for playbook LLM
     model:              Optional[str] = None
@@ -1556,6 +1590,27 @@ class PreviewIntentRequest(BaseModel):
     ollama_base_url:    Optional[str] = None
     params:             Optional[Dict[str, Any]] = None  # e.g. interfaces_to_shutdown after user selects from menu
     safe_mode:          Optional[bool] = None  # when None, server uses ANSIBLE_SAFE_MODE_DEFAULT (default true)
+
+
+def _coalesce_explicit_preview_target_hosts(req: PreviewIntentRequest) -> List[str]:
+    """
+    Prefer API / UI target lists over LLM ``resolved_devices``.
+
+    Top-level ``target_hosts`` wins when non-empty; otherwise use ``params.target_hosts``
+    or ``params.target_devices`` (wizard flows sometimes send only ``params``).
+    """
+    raw: List[Any] = []
+    top = list(req.target_hosts or [])
+    if top:
+        raw = top
+    elif req.params:
+        th = req.params.get("target_hosts")
+        td = req.params.get("target_devices")
+        if th is not None:
+            raw = th if isinstance(th, list) else [th]
+        elif td is not None:
+            raw = td if isinstance(td, list) else [td]
+    return [str(h).strip() for h in raw if str(h).strip()]
 
 
 class CheckResult(BaseModel):
@@ -1616,6 +1671,7 @@ async def plan_ansible(
     effective_vendor = normalize_vendor(req.vendor or infer_vendor_hint(resolved_hosts, _db))
     plan_params = dict(req.params or {})
     if str(req.feature or "").strip().lower() == "vlan":
+        merge_extracted_vlan_params_into_flat_params(plan_params, req.intent_description or "")
         _vlan_user_if = bool(plan_params.get("interfaces") or plan_params.get("interfaces_config"))
         _vlan_coerce = {"action": "", "feature": "vlan", "parameters": plan_params}
         if coerce_vlan_database_only_intent(
@@ -1664,7 +1720,7 @@ async def plan_ansible(
                     r["text"]
                     for r in _agent._retriever.retrieve(
                         query,
-                        k=5,
+                        k=3,
                         vendor_filter=effective_vendor or None,
                         doc_type_filter="ansible_reference",
                     )
@@ -1673,9 +1729,9 @@ async def plan_ansible(
                 if not kb_snippets:
                     kb_snippets = [
                         r["text"]
-                        for r in _agent._retriever.retrieve(query, k=3)
+                        for r in _agent._retriever.retrieve(query, k=2)
                     ]
-                kb_snippets = kb_snippets[:3]
+                kb_snippets = kb_snippets[:2]
         except Exception as exc:
             logger.debug("Vector-RAG retrieval skipped: %s", exc)
     intent = {
@@ -4109,7 +4165,13 @@ def _preview_parse_and_rag(
     else:
         resolved = _resolve_target_hosts(parsed_resolved)
     resolved = _narrow_resolved_by_hostnames_in_prompt(intent_description, resolved, _db)
-    resolved, _numeric_subset_note = _apply_numeric_subset_fallback(intent_description, resolved)
+    # Do not re-map "access switch 1,2,3" when the client already sent explicit hostnames —
+    # numeric subset would shrink the list and append §1c reasoning that then contradicts
+    # ``req.params.target_hosts`` / coalesced API targets (e.g. six picks vs three inferred).
+    if explicit_targets_from_ui:
+        _numeric_subset_note = ""
+    else:
+        resolved, _numeric_subset_note = _apply_numeric_subset_fallback(intent_description, resolved)
     switch_disambiguation_early = _switch_role_disambiguation(intent_description)
     _dd_pre = _deduce_target_devices(intent_description, resolved, explicit_user_targets=explicit_targets_from_ui)
     _map_pre: List[Dict[str, Any]] = list(_dd_pre.get("mapping") or [])
@@ -4277,12 +4339,12 @@ def _preview_parse_and_rag(
             rag_vendor_filter = effective_vendor if single_vendor else None
             raw = _agent._retriever.retrieve(
                 query,
-                k=6,
+                k=4,
                 vendor_filter=rag_vendor_filter,
                 doc_type_filter="ansible_reference",
             )
             if not raw:
-                raw = _agent._retriever.retrieve(query, k=4, vendor_filter=rag_vendor_filter)
+                raw = _agent._retriever.retrieve(query, k=3, vendor_filter=rag_vendor_filter)
             rag_note = f"- RAG retrieved **{len(raw)}** ansible_reference chunk(s). Matching playbook paths are listed below."
             seen_paths: set[str] = set()
             for r in raw:
@@ -4412,7 +4474,36 @@ async def preview_intent(
             td = req.params["target_devices"]
             parsed_intent["resolved_devices"] = td if isinstance(td, list) else [td] if td else list(parsed_intent.get("resolved_devices") or [])
 
-    resolved_hosts = list(parsed_intent.get("resolved_devices") or [])
+    # Authoritative device scope: when the client sends explicit hostnames (chat picker,
+    # Studio chips, or params), replace any bulk LLM ``resolved_devices`` and drop stale
+    # device-confirmation reasoning from the parse phase.
+    _explicit_coalesced = _coalesce_explicit_preview_target_hosts(req)
+    if _explicit_coalesced:
+        _resolved_explicit = _resolve_target_hosts(_explicit_coalesced)
+        if _db is not None:
+            _valid_hosts, _ = _filter_resolved_hosts_to_planned_inventory(_resolved_explicit, _db)
+            _resolved_explicit = list(_valid_hosts)
+        if _resolved_explicit:
+            parsed_intent["resolved_devices"] = list(_resolved_explicit)
+            resolved_hosts = list(_resolved_explicit)
+            parsed_intent.pop("pending_devices_disambiguation", None)
+            parsed_intent["inventory_unknown_device_tokens"] = []
+            reasoning[:] = [
+                r
+                for r in reasoning
+                if not (
+                    isinstance(r, str)
+                    and (
+                        r.startswith("### 1c. Target device(s) need confirmation")
+                        or r.startswith("### 1c. Select target device(s)")
+                        or r.startswith("### 1c. Target scope (numeric selection)")
+                    )
+                )
+            ]
+        else:
+            resolved_hosts = list(parsed_intent.get("resolved_devices") or [])
+    else:
+        resolved_hosts = list(parsed_intent.get("resolved_devices") or [])
     # Re-check vague bulk resolution after param merge (stale resolved_hosts from _preview_parse_and_rag otherwise).
     _explicit_targets_in_request = bool(
         req.target_hosts
@@ -4436,6 +4527,9 @@ async def preview_intent(
         parsed_intent["resolved_devices"] = []
         resolved_hosts = []
         parsed_intent["device_deduction"] = _deduce_target_devices(req.intent_description, [])
+
+    # Deterministic VLAN id/name from natural language (LLM often drops them on long device phrases).
+    merge_extracted_vlan_params_into_parsed_intent(parsed_intent, req.intent_description or "")
 
     # Tree engine (Phase 1): root-first enforcement before schema validation.
     tree_res = None
@@ -4481,29 +4575,9 @@ async def preview_intent(
             parsed_intent["resolved_devices"] = []
             resolved_hosts = []
 
-    # Fail fast for tree-required leaves surfaced as UI questions.
-    if (
-        tree_res
-        and not tree_res.needs_target_devices
-        and tree_res.params_disambiguation
-        and tree_res.params_disambiguation.get("fields")
-    ):
-        fields = list(tree_res.params_disambiguation.get("fields") or [])
-        missing_fields = [f.get("field") for f in fields if isinstance(f, dict) and f.get("field")]
-        questions = [
-            {"field": f.get("field"), "question": f.get("question")}
-            for f in fields
-            if isinstance(f, dict) and f.get("field") and f.get("question")
-        ]
-        if missing_fields and questions:
-            raise HTTPException(
-                422,
-                detail={
-                    "message": "Missing required parameters. Please provide them via preview (params) or clarify your intent.",
-                    "missing_fields": missing_fields,
-                    "questions": questions,
-                },
-            )
+    # Tree may flag missing required params (e.g. create_vlan vlan_id/name). Do **not** 422 here:
+    # AnsibleChatPanel expects HTTP 200 + ``params_disambiguation`` to run the in-chat wizard
+    # before opening Playbook Studio.
 
     _preview_user_iface = bool(
         req.params
@@ -5237,6 +5311,11 @@ async def preview_intent(
             "params_disambiguation": None,
         })
 
+    # Authoritative client params (wizard / chat) win over LLM; then align Section 2 + inspector hosts.
+    _merge_client_authoritative_preview_params(parsed_intent, req.params)
+    rd_final = parsed_intent.get("resolved_devices")
+    if isinstance(rd_final, list) and any(str(h).strip() for h in rd_final):
+        resolved_hosts = [str(h).strip() for h in rd_final if str(h).strip()]
     _sync_preview_device_deduction_and_reasoning(
         parsed_intent,
         reasoning,
@@ -5244,6 +5323,16 @@ async def preview_intent(
         resolved_hosts,
         explicit_user_targets=_explicit_targets_in_request,
     )
+
+    intent_schema_inspector: Dict[str, Any] = {"slices": []}
+    try:
+        intent_schema_inspector = build_intent_schema_inspector_payload(
+            parsed_intent,
+            resolved_hosts=resolved_hosts,
+        )
+    except Exception as exc:
+        logger.debug("build_intent_schema_inspector_payload failed: %s", exc, exc_info=True)
+        intent_schema_inspector = {"slices": [], "error": str(exc)}
 
     return {
         "categories": categories,
@@ -5263,6 +5352,7 @@ async def preview_intent(
         "secondary_intent_previews": secondary_intent_previews,
         "params_need_context_fix": params_need_context_fix,
         "devices_disambiguation": devices_disambiguation,
+        "intent_schema_inspector": intent_schema_inspector,
     }
 
 
@@ -5309,8 +5399,8 @@ class CreateAndPlanRequest(BaseModel):
     # When enabled, the generated playbook is validated with an Ansible check-mode
     # dry-run (no deployment/execution).
     verify_with_dry_run: bool = False
-    auto_refine:        bool = True
-    max_refinement_attempts: int = 3
+    auto_refine:        bool = False
+    max_refinement_attempts: int = 1
     provider:           Optional[str] = None  # "gemini" | "ollama" for playbook LLM
     model:              Optional[str] = None
     ollama_base_url:    Optional[str] = None
