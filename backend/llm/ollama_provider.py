@@ -11,7 +11,7 @@ Configuration
 Set these environment variables (or pass to constructor):
 
     OLLAMA_BASE_URL  → e.g. http://192.168.1.251:11434  (default: http://localhost:11434)
-    OLLAMA_MODEL     → e.g. llama3.2:3b                  (default: llama3.2)
+    OLLAMA_MODEL     → e.g. qwen2.5-coder:3b             (default: qwen2.5-coder:3b)
     OLLAMA_TIMEOUT   → request timeout in seconds          (default: 120)
 
 Usage::
@@ -35,8 +35,10 @@ from llm.provider import LLMProvider, LLMMessage, LLMResponse, ToolCall
 logger = logging.getLogger("llm.ollama")
 
 _DEFAULT_BASE_URL = "http://localhost:11434"
-_DEFAULT_MODEL    = "llama3.2"
-_DEFAULT_TIMEOUT  = 120
+# Default local coding model (Ollama tag); override with OLLAMA_MODEL.
+_DEFAULT_MODEL = "qwen2.5-coder:3b"
+DEFAULT_OLLAMA_MODEL = _DEFAULT_MODEL
+_DEFAULT_TIMEOUT = 120
 
 
 class OllamaProvider(LLMProvider):

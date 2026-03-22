@@ -1,0 +1,61 @@
+category_key: qos
+display_name: QoS
+category_description: Quality of Service (QoS) traffic policies.
+legacy_feature: qos
+shared_fields: []
+
+operations:
+  create_qos_policy:
+    action: create_qos_policy
+    feature: qos
+    required_parameters: [policy_name, target_devices]
+    implicit_requires_targets: true
+    optional_parameters: [classes, actions, description]
+    keyword_triggers:
+      - "create qos"
+      - "qos policy"
+    rules:
+      - "Device-level QoS policy object (class-map / policy-map style)."
+
+  apply_qos_policy_to_interface:
+    action: apply_qos_policy_to_interface
+    feature: qos
+    required_parameters: [policy_name, interfaces, target_devices]
+    implicit_requires_targets: true
+    optional_parameters: [direction, service_policy]
+    keyword_triggers:
+      - "apply qos"
+      - "service policy"
+      - "inbound"
+      - "outbound"
+    rules:
+      - "Attach named policy to one or more interfaces."
+
+  configure_qos:
+    action: configure_qos
+    feature: qos
+    required_parameter_groups:
+      any_of:
+        - [policy_name, target_devices]
+        - [interfaces, target_devices]
+    implicit_requires_targets: true
+    optional_parameters:
+      - marking_dscp
+      - qos_class
+      - traffic_type
+      - classifier
+      - direction
+      - police_rate
+      - shape_rate
+    keyword_triggers:
+      - "qos"
+      - "service policy"
+      - "service-policy"
+      - "police"
+      - "shape"
+      - "dscp"
+      - "prioritize"
+    dependencies:
+      - "When using interfaces-only group, include marking/classifier hints (e.g. DSCP, voice) when possible."
+    rules:
+      - "Device policy and/or per-interface QoS; prefer create_qos_policy / apply_qos_policy_to_interface when unambiguous."

@@ -1,0 +1,28 @@
+category_key: vlan
+display_name: VLAN
+category_description: Manage Virtual LAN (VLAN) configurations.
+legacy_feature: vlan
+shared_fields: []
+
+operations:
+  create_vlan:
+    action: create_vlan
+    feature: vlan
+    required_parameters: [vlans]
+    implicit_requires_targets: true
+    keyword_triggers:
+      - "create vlan"
+      - "add vlan"
+      - "new vlan"
+      - "vlan database"
+    rules:
+      - "Use parameters.vlans as a non-empty list of objects: { id: <vlan_id>, name: <vlan_name> }."
+      - "VLAN database only when user does not name specific ports; use create_vlan not interface port ops."
+      - "If user also assigns ports, primary create_vlan + secondary interface operation (assign_vlan_to_access_port, assign_vlan_to_trunk_port, or set_native_vlan)."
+
+  configure_interface:
+    action: configure_interface
+    feature: interface
+    required_parameters: [interfaces]
+    rules:
+      - "Legacy generic L2/L3 interface changes; prefer fine-grained operations when possible."

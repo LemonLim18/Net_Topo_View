@@ -926,6 +926,8 @@ export const ansibleApi = {
       model?: string;
       ollama_base_url?: string;
       params?: Record<string, unknown>; // e.g. interfaces_to_shutdown, vlan_id, vlan_name, target_hosts
+      /** Skip vector RAG (faster Ansible AI chat); Studio refresh still runs full RAG. */
+      skip_rag?: boolean;
     },
     opts?: { signal?: AbortSignal }
   ) =>
@@ -1007,6 +1009,97 @@ export const ansibleApi = {
         error?: string;
       };
     }>('/ansible/preview-intent', { method: 'POST', body: JSON.stringify(req), signal: opts?.signal }),
+
+  /** Intent catalog YAML (categories, operations) for Intent Parse workbench. */
+  getIntentCatalog: () =>
+    request<{
+      version: number;
+      global_fields: Record<string, unknown>;
+      keyword_map: Record<string, unknown>;
+      categories: Array<{
+        key: string;
+        display_name: string;
+        category_description?: string;
+        legacy_feature?: string;
+        shared_fields?: Array<{ name: string; data_type?: string; required?: boolean }>;
+        operations: Array<{
+          name: string;
+          action?: string;
+          feature?: string;
+          required_parameters: string[];
+          rules: string[];
+        }>;
+      }>;
+      canonical_adapter: { mappings: string[] };
+    }>('/ansible/intent-catalog'),
+
+  /** Parse + pipeline trace (split, cross-check, interactive asks) for workbench demo. */
+  intentParseWorkbench: (req: {
+    prompt: string;
+    provider?: string;
+    model?: string;
+    ollama_base_url?: string;
+  }) =>
+    request<{
+      parsed_intent_json: string;
+      parsed_intent: Record<string, unknown>;
+      pipeline: Record<string, unknown>;
+    }>('/ansible/intent-parse-workbench', { method: 'POST', body: JSON.stringify(req) }),
+
+  /** Whitelist of intent_catalog YAML paths (for workbench editor). */
+  listIntentCatalogEditableFiles: () =>
+    request<{ paths: string[] }>('/ansible/intent-catalog/editable-files'),
+
+  getIntentCatalogFile: (filePath: string) =>
+    request<{ path: string; content: string }>(
+      `/ansible/intent-catalog/file/${encodeURIComponent(filePath)}`
+    ),
+
+  /** Admin only — writes disk under backend/ansible/intent_catalog/ */
+  putIntentCatalogFile: (filePath: string, content: string) =>
+    request<{ path: string; status: string }>(
+      `/ansible/intent-catalog/file/${encodeURIComponent(filePath)}`,
+      { method: 'PUT', body: JSON.stringify({ content }) }
+    ),
+
+  /** Structured category schema from local YAML (form UI, not raw editor). */
+  getIntentCategoryUiModel: (categoryKey: string) =>
+    request<{
+      category_key: string;
+      display_name: string;
+      category_description: string;
+      legacy_feature: string;
+      shared_fields: Array<{ name: string; data_type: string; required: boolean }>;
+      operations: Array<{
+        name: string;
+        action: string;
+        feature: string;
+        required_parameters: string[];
+        rules: string[];
+      }>;
+    }>(`/ansible/intent-catalog/category/${encodeURIComponent(categoryKey)}/ui-model`),
+
+  /** Admin only — saves categories/{key}.yaml and reloads catalog. */
+  putIntentCategoryUiModel: (
+    categoryKey: string,
+    body: {
+      display_name: string;
+      category_description?: string;
+      legacy_feature?: string;
+      shared_fields: Array<{ name: string; data_type: string; required: boolean }>;
+      operations: Array<{
+        name: string;
+        action: string;
+        feature: string;
+        required_parameters: string[];
+        rules: string[];
+      }>;
+    }
+  ) =>
+    request<{ category_key: string; status: string }>(
+      `/ansible/intent-catalog/category/${encodeURIComponent(categoryKey)}/ui-model`,
+      { method: 'PUT', body: JSON.stringify(body) }
+    ),
 
   /** List all reference playbook paths (for add-reference in Playbook Studio). */
   listReferencePaths: () =>

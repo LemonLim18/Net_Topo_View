@@ -1,0 +1,29 @@
+# Authoritative global fields for structured intents (REFACTOR_INTENT_PARSER.md).
+# Downstream maps target_devices → scope.device_hostnames + resolved_devices via inventory.
+
+version: 1
+
+global_fields:
+  target_devices:
+    type: array
+    required: true
+    description: >
+      Hostnames or inventory scope; resolved against planned context.
+      LLM should list explicit hostnames when known; empty when unknown.
+  category:
+    type: string
+    required: false
+    description: vlan | interface | acl | qos | static_route | ospf | general
+  operation:
+    type: string
+    required: false
+    description: Legacy playbook action (create_vlan, configure_interface, …)
+  prompt_raw:
+    type: string
+    required: true
+  missing_fields:
+    type: array
+    required: false
+  invalid_fields:
+    type: array
+    required: false

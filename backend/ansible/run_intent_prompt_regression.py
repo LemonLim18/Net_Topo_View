@@ -495,7 +495,7 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--base-url", default=os.getenv("INTENT_REGRESSION_BASE_URL", "http://localhost:8000"))
     ap.add_argument("--provider", default=os.getenv("INTENT_REGRESSION_PROVIDER", "ollama"))
-    ap.add_argument("--model", default=os.getenv("INTENT_REGRESSION_MODEL", "qwen3b"))
+    ap.add_argument("--model", default=os.getenv("INTENT_REGRESSION_MODEL", "qwen2.5-coder:3b"))
     ap.add_argument("--ollama-base-url", default=os.getenv("INTENT_REGRESSION_OLLAMA_BASE_URL", None))
     ap.add_argument("--timeout-s", type=int, default=int(os.getenv("INTENT_REGRESSION_TIMEOUT_S", "120")))
     ap.add_argument("--log-dir", default=os.getenv("INTENT_REGRESSION_LOG_DIR", "intent_regression_logs"))

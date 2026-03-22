@@ -100,17 +100,18 @@ class NetworkAgent:
         """
         Args:
             db_manager:  DatabaseManager instance for live topology.
-            provider:    Custom LLMProvider (default: GeminiProvider).
-            api_key:     Gemini API key (if using default provider).
-            model:       Model name override.
+            provider:    Custom LLMProvider (default: from ``LLM_PROVIDER`` / ``get_llm_provider()``).
+            api_key:     Ignored unless you construct ``GeminiProvider`` yourself.
+            model:       Ignored unless you pass a custom ``provider``.
             retriever:   Optional KnowledgeRetriever for M21 Vector RAG.
         """
         # Initialize LLM provider
         if provider:
             self._provider = provider
         else:
-            from llm.gemini_provider import GeminiProvider
-            self._provider = GeminiProvider(api_key=api_key, model=model)
+            from llm.provider import get_llm_provider
+
+            self._provider = get_llm_provider()
 
         # Initialize context builder
         self._context = ContextBuilder(db_manager=db_manager)

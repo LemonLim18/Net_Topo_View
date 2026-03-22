@@ -53,7 +53,6 @@ from dashboard.api import router as dashboard_router, setup_dashboard
 try:
     from ansible.api import router as ansible_router, setup_ansible
     from ansible.builder import PlaybookBuilder
-    from llm.gemini_provider import GeminiProvider as _GeminiProvider
     _ANSIBLE_ENABLED = True
 except ImportError:
     ansible_router = None   # type: ignore[assignment]
@@ -396,7 +395,10 @@ async def lifespan(app: FastAPI):
         logger.warning("Network state auto-embedder init failed: %s", exc)
         _state_embedder = None
 
-    agent = NetworkAgent(db, retriever=retriever)
+    from llm.provider import get_llm_provider
+
+    _main_llm = get_llm_provider()
+    agent = NetworkAgent(db, retriever=retriever, provider=_main_llm)
     refresh_state = get_refresh_state_manager()
     refresh_state.register_handler(
         "live_topology",
@@ -429,8 +431,7 @@ async def lifespan(app: FastAPI):
     # M22 — Ansible-first orchestration layer
     _builder = None
     if _ANSIBLE_ENABLED:
-        _provider = _GeminiProvider(api_key=os.getenv("GEMINI_API_KEY"))
-        _builder = PlaybookBuilder(_provider)
+        _builder = PlaybookBuilder(_main_llm)
         setup_ansible(_builder, agent, pipeline, db)
         logger.info("Ansible orchestration layer initialized (M22)")
 

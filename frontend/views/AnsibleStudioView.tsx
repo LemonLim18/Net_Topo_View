@@ -3,6 +3,7 @@ import AnsibleFileTree                              from '../components/ansible/
 import PlaybookEditor                               from '../components/ansible/PlaybookEditor';
 import JobStatusBar                                 from '../components/ansible/JobStatusBar';
 import AnsibleChatPanel                             from '../components/ansible/AnsibleChatPanel';
+import IntentParseWorkbench                         from '../components/ansible/IntentParseWorkbench';
 import SSHConnectModal                             from '../components/SSHConnectModal';
 import type { SSHTab }                             from '../components/SSHTerminalPanel';
 import { ansibleApi, configApi, sshApi }          from '../src/services/api';
@@ -204,6 +205,9 @@ const AnsibleStudioView: React.FC<AnsibleStudioViewProps> = ({ user }) => {
   const [pendingHostname, setPendingHostname] = useState('');
   const [pendingHost, setPendingHost]         = useState('');
   const [modalOpen, setModalOpen]             = useState(false);
+
+  /** Center column: playbook editor vs Intent Parse workbench (REFACTOR_FRONTEND.md). */
+  const [centerStudioMode, setCenterStudioMode] = useState<'playbook' | 'intent'>('playbook');
 
   const handleStatusBarResize = useCallback((deltaY: number) => {
     setStatusBarHeight((h) =>
@@ -629,22 +633,42 @@ const AnsibleStudioView: React.FC<AnsibleStudioViewProps> = ({ user }) => {
 
         {/* Centre: Editor + job status + terminal (terminal scoped here, not behind chat) */}
         <div className="flex flex-col grow min-w-0 overflow-hidden">
+          <div className="flex gap-1 px-2 py-1 border-b border-base-300 bg-base-100 shrink-0 text-xs">
+            <button
+              type="button"
+              className={`btn btn-xs ${centerStudioMode === 'playbook' ? 'btn-primary' : 'btn-ghost'}`}
+              onClick={() => setCenterStudioMode('playbook')}
+            >
+              Playbook
+            </button>
+            <button
+              type="button"
+              className={`btn btn-xs ${centerStudioMode === 'intent' ? 'btn-primary' : 'btn-ghost'}`}
+              onClick={() => setCenterStudioMode('intent')}
+            >
+              Intent parse
+            </button>
+          </div>
           <div className="grow min-h-0 overflow-hidden">
-            <PlaybookEditor
-              tabs={tabs}
-              activeTabId={activeTabId}
-              onTabSelect={handleTabSelect}
-              onTabClose={closeTab}
-              onChange={updateTabContent}
-              onSave={() => handleSave()}
-              onCheck={handleCheck}
-              onApprove={handleApprove}
-              onDeploy={handleDeploy}
-              onRegenerate={handleRegenerate}
-              job={job}
-              isChecking={isChecking}
-              userRole={userRole}
-            />
+            {centerStudioMode === 'playbook' ? (
+              <PlaybookEditor
+                tabs={tabs}
+                activeTabId={activeTabId}
+                onTabSelect={handleTabSelect}
+                onTabClose={closeTab}
+                onChange={updateTabContent}
+                onSave={() => handleSave()}
+                onCheck={handleCheck}
+                onApprove={handleApprove}
+                onDeploy={handleDeploy}
+                onRegenerate={handleRegenerate}
+                job={job}
+                isChecking={isChecking}
+                userRole={userRole}
+              />
+            ) : (
+              <IntentParseWorkbench userRole={userRole} />
+            )}
           </div>
           <VerticalResizeHandle onResize={handleStatusBarResize} />
           <div

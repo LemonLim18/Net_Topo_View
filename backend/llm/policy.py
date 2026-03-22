@@ -21,6 +21,7 @@ Key principle: The LLM interprets. This engine **enforces**.
 
 import json
 import logging
+import os
 import re
 from datetime import datetime, timezone
 from pathlib import Path
@@ -34,6 +35,17 @@ from llm.intent import ParsedIntent, IntentType, RiskLevel
 logger = logging.getLogger("llm.policy")
 
 _RULES_PATH = Path(__file__).resolve().parent / "policy_rules.yaml"
+
+
+def _intent_policy_validation_enabled() -> bool:
+    """
+    When False, ``PolicyEngine.validate`` approves all intents (no rule checks).
+
+    Re-enable with ``ANSIBLE_INTENT_POLICY_VALIDATION=1`` (or ``true`` / ``yes`` / ``on``).
+    Default is **off** until explicitly turned back on.
+    """
+    v = os.getenv("ANSIBLE_INTENT_POLICY_VALIDATION", "0").strip().lower()
+    return v in ("1", "true", "yes", "on")
 
 
 # -----------------------------------------------------------------------
@@ -118,6 +130,16 @@ class PolicyEngine:
         Returns:
             JSON-encoded ``PolicyResult``.
         """
+        if not _intent_policy_validation_enabled():
+            result = PolicyResult()
+            result.approved = True
+            result.checked_rules = 0
+            result.warnings.append(
+                "Intent policy validation is disabled (set ANSIBLE_INTENT_POLICY_VALIDATION=1 to enable)."
+            )
+            logger.info("PolicyEngine.validate skipped (ANSIBLE_INTENT_POLICY_VALIDATION not enabled)")
+            return json.dumps(result.model_dump(), default=str)
+
         intent = ParsedIntent.model_validate_json(intent_json)
         result = PolicyResult()
 

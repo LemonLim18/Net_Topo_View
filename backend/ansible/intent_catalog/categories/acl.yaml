@@ -1,0 +1,54 @@
+category_key: acl
+display_name: ACL
+category_description: Access Control Lists (ACLs) for security policies.
+legacy_feature: acl
+shared_fields: []
+
+operations:
+  # Fine-grained — adapter maps to legacy configure_acl; validation uses _canonical_operation.
+  create_acl:
+    action: create_acl
+    feature: acl
+    required_parameters: [acl_name, rules, target_devices]
+    implicit_requires_targets: true
+    optional_parameters: [description, acl_type, sequence]
+    keyword_triggers:
+      - "create acl"
+      - "access-list"
+      - "permit"
+      - "deny"
+    rules:
+      - "Define ACL entries in parameters.rules (non-empty); bind to targets."
+
+  apply_acl_to_interface:
+    action: apply_acl_to_interface
+    feature: acl
+    required_parameters: [acl_name, interfaces, target_devices]
+    implicit_requires_targets: true
+    optional_parameters: [acl_direction, direction]
+    keyword_triggers:
+      - "apply acl"
+      - "inbound"
+      - "outbound"
+    rules:
+      - "Apply existing ACL to interfaces; set direction inbound/outbound on each interface or acl_direction."
+
+  configure_acl:
+    action: configure_acl
+    feature: acl
+    required_parameter_groups:
+      any_of:
+        - [acl_name, rules, target_devices]
+        - [acl_name, interfaces, target_devices]
+    implicit_requires_targets: true
+    optional_parameters: [description, acl_type, acl_direction, sequence]
+    keyword_triggers:
+      - "access-list"
+      - "access list"
+      - "acl"
+      - "permit"
+      - "deny"
+    dependencies:
+      - "Use create_acl / apply_acl_to_interface in prompts when the task is only rules or only attachment."
+    rules:
+      - "Either define rules (create) or attach to interfaces (apply); targets must resolve to planned inventory."

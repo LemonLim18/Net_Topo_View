@@ -4,9 +4,9 @@ import { Loader2, RefreshCw, ServerCog } from 'lucide-react';
 import { llmApi } from '../src/services/api';
 import type { LlmRuntimeProviderDescriptor, LlmRuntimeState } from '../src/services/api';
 import { Toast } from '../src/utils/swal';
+import { DEFAULT_LLM_PROVIDER, DEFAULT_OLLAMA_BASE_URL } from '../src/config';
 
 const OLLAMA_BASE_URL_STORAGE_KEY = 'llmRuntimeSelector.ollamaBaseUrl';
-const DEFAULT_OLLAMA_BASE_URL = 'http://192.168.1.252:11434';
 
 interface LLMRuntimeSelectorProps {
   compact?: boolean;
@@ -25,7 +25,11 @@ const prettifyModelName = (providerName: string, modelName: string) => {
     if (modelName === 'gemini-2.5-flash') return 'Gemini 2.5 Flash | Recommended';
     if (modelName === 'gemini-2.5-pro') return 'Gemini 2.5 Pro';
   }
-  return providerName === 'ollama' ? `${modelName} | Ollama VM` : modelName;
+  if (providerName === 'ollama') {
+    if (modelName === 'qwen2.5-coder:3b') return 'Qwen 2.5 Coder 3B | Ollama (local)';
+    return `${modelName} | Ollama (local)`;
+  }
+  return modelName;
 };
 
 export const LLMRuntimeSelector: React.FC<LLMRuntimeSelectorProps> = ({
@@ -33,7 +37,7 @@ export const LLMRuntimeSelector: React.FC<LLMRuntimeSelectorProps> = ({
   className = '',
 }) => {
   const [runtime, setRuntime] = useState<LlmRuntimeState | null>(null);
-  const [selectedProvider, setSelectedProvider] = useState('gemini');
+  const [selectedProvider, setSelectedProvider] = useState(DEFAULT_LLM_PROVIDER);
   const [selectedModel, setSelectedModel] = useState('');
   const [ollamaBaseUrl, setOllamaBaseUrl] = useState(() => localStorage.getItem(OLLAMA_BASE_URL_STORAGE_KEY) || DEFAULT_OLLAMA_BASE_URL);
   const [isLoading, setIsLoading] = useState(true);
@@ -46,7 +50,7 @@ export const LLMRuntimeSelector: React.FC<LLMRuntimeSelectorProps> = ({
     try {
       const nextRuntime = await llmApi.getRuntime(browseUrl);
       setRuntime(nextRuntime);
-      setSelectedProvider(nextRuntime.active_provider || 'gemini');
+      setSelectedProvider(nextRuntime.active_provider || DEFAULT_LLM_PROVIDER);
       setSelectedModel(nextRuntime.active_model || '');
       const ollamaDescriptor = nextRuntime.providers.find((provider) => provider.name === 'ollama');
       const nextBaseUrl = ollamaDescriptor?.base_url || browseUrl;
@@ -158,7 +162,7 @@ export const LLMRuntimeSelector: React.FC<LLMRuntimeSelectorProps> = ({
 
   const handleModelChange = (nextValue: string) => {
     const [providerName, modelName] = nextValue.split('::', 2);
-    setSelectedProvider(providerName || 'gemini');
+    setSelectedProvider(providerName || DEFAULT_LLM_PROVIDER);
     setSelectedModel(modelName || '');
   };
 

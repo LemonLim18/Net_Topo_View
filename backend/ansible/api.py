@@ -30,7 +30,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import StreamingResponse
 from starlette.concurrency import run_in_threadpool
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from ansible.bundle_artifacts import AnsibleArtifactBundle, bundle_from_dict
 from ansible.context_entity_validation import (
@@ -89,6 +89,19 @@ from config_engine.safety import validate_playbook_yaml
 
 logger = logging.getLogger("ansible.api")
 
+
+def _default_manifest_llm_provider() -> str:
+    v = (os.getenv("LLM_PROVIDER") or "ollama").strip().lower()
+    return v if v in ("ollama", "gemini") else "ollama"
+
+
+def _default_manifest_llm_model() -> str:
+    if _default_manifest_llm_provider() == "gemini":
+        return os.getenv("GEMINI_MODEL") or "gemini-2.5-flash"
+    from llm.ollama_provider import DEFAULT_OLLAMA_MODEL
+
+    return os.getenv("OLLAMA_MODEL") or DEFAULT_OLLAMA_MODEL
+
 router = APIRouter(prefix="/ansible", tags=["Ansible Orchestration (M22)"])
 
 # ── Lazy-loaded shared instances (injected by backend.py) ───────────────────
@@ -101,6 +114,26 @@ _db       = None   # DatabaseManager
 def _get_safe_mode_default() -> bool:
     """Server default for safe_mode when request omits it. Config: ANSIBLE_SAFE_MODE_DEFAULT (default true)."""
     return os.getenv("ANSIBLE_SAFE_MODE_DEFAULT", "true").strip().lower() in ("true", "1", "yes")
+
+
+def _plan_ansible_include_agent_full_context() -> bool:
+    """
+    NetworkAgent.build_full_context() (topology / digest injection) is expensive and often marginal
+    when planning_context + kb_snippets already constrain the LLM.
+
+    **Default: disabled** (unset or empty). Set ``ANSIBLE_PLAN_AGENT_FULL_CONTEXT=1`` to re-enable.
+    """
+    return os.getenv("ANSIBLE_PLAN_AGENT_FULL_CONTEXT", "").strip().lower() in ("true", "1", "yes")
+
+
+def _plan_ansible_include_vector_rag() -> bool:
+    """
+    Chroma / embedding retrieval for ``kb_snippets`` during plan-ansible.
+
+    **Default: enabled.** Set ``ANSIBLE_PLAN_VECTOR_RAG=0`` to skip (faster LLM plans; weaker doc hints).
+    """
+    v = os.getenv("ANSIBLE_PLAN_VECTOR_RAG", "true").strip().lower()
+    return v not in ("0", "false", "no", "off")
 
 
 def _coerce_params_for_validation(params: Dict[str, Any]) -> None:
@@ -894,9 +927,29 @@ def _markdown_section_2_target_devices(
     return devices_block
 
 
+def _strip_device_picker_shortlist_after_confirmation(parsed_intent: Optional[Dict[str, Any]]) -> None:
+    """
+    Once ``resolved_devices`` is populated (UI picker / target_hosts), drop layer-switch
+    shortlist keys so pipeline trace and the next preview do not loop on ``select_planned_devices``.
+    """
+    if not parsed_intent or not isinstance(parsed_intent, dict):
+        return
+    rd = parsed_intent.get("resolved_devices") or []
+    if not isinstance(rd, list) or not any(str(x).strip() for x in rd):
+        return
+    p = dict(parsed_intent.get("parameters") or {})
+    if "_target_device_candidates" not in p and "_target_device_candidate_reason" not in p:
+        return
+    p.pop("_target_device_candidates", None)
+    p.pop("_target_device_candidate_reason", None)
+    parsed_intent["parameters"] = p
+
+
 def _merge_client_authoritative_preview_params(
     parsed_intent: Dict[str, Any],
     req_params: Optional[Dict[str, Any]],
+    *,
+    db_manager: Any = None,
 ) -> None:
     """
     Overlay ``req.params`` onto ``parsed_intent['parameters']`` immediately before the
@@ -919,9 +972,60 @@ def _merge_client_authoritative_preview_params(
             continue
         p[k] = v
     parsed_intent["parameters"] = p
+
+    def _planned_only(hosts: List[str]) -> List[str]:
+        h = [str(x).strip() for x in hosts if str(x).strip()]
+        if not h or db_manager is None:
+            return h
+        try:
+            ok, _bad = _filter_resolved_hosts_to_planned_inventory(h, db_manager)
+            return list(ok)
+        except Exception:
+            return h
+
+    prev_rd = [str(h).strip() for h in (parsed_intent.get("resolved_devices") or []) if str(h).strip()]
     th = req_params.get("target_hosts")
+    td = req_params.get("target_devices")
+
+    def _pick_targets(raw_hosts: List[str]) -> List[str]:
+        ok_raw = _planned_only(raw_hosts)
+        ok_prev = _planned_only(prev_rd)
+        if ok_raw:
+            return ok_raw
+        if ok_prev:
+            return ok_prev
+        return raw_hosts
+
     if isinstance(th, list) and any(str(h).strip() for h in th):
-        parsed_intent["resolved_devices"] = [str(h).strip() for h in th if str(h).strip()]
+        raw = [str(h).strip() for h in th if str(h).strip()]
+        chosen = _pick_targets(raw)
+        parsed_intent["resolved_devices"] = list(chosen)
+        p2 = dict(parsed_intent.get("parameters") or {})
+        p2["target_hosts"] = list(chosen)
+        p2["target_devices"] = list(chosen)
+        p2.pop("_target_device_candidates", None)
+        p2.pop("_target_device_candidate_reason", None)
+        parsed_intent["parameters"] = p2
+    elif isinstance(td, list) and any(str(h).strip() for h in td):
+        raw = [str(h).strip() for h in td if str(h).strip()]
+        chosen = _pick_targets(raw)
+        parsed_intent["resolved_devices"] = list(chosen)
+        p2 = dict(parsed_intent.get("parameters") or {})
+        p2["target_hosts"] = list(chosen)
+        p2["target_devices"] = list(chosen)
+        p2.pop("_target_device_candidates", None)
+        p2.pop("_target_device_candidate_reason", None)
+        parsed_intent["parameters"] = p2
+    elif isinstance(td, str) and td.strip():
+        raw = [td.strip()]
+        chosen = _pick_targets(raw)
+        parsed_intent["resolved_devices"] = list(chosen)
+        p2 = dict(parsed_intent.get("parameters") or {})
+        p2["target_hosts"] = list(chosen)
+        p2["target_devices"] = list(chosen)
+        p2.pop("_target_device_candidates", None)
+        p2.pop("_target_device_candidate_reason", None)
+        parsed_intent["parameters"] = p2
 
 
 def _sync_preview_device_deduction_and_reasoning(
@@ -1184,6 +1288,17 @@ def _resolve_backend_intent_request(req, user: dict) -> tuple["PlanAnsibleReques
         parsed.vendor = resolved_vendor
     elif not parsed.vendor:
         parsed.vendor = infer_vendor_hint(parsed.resolved_devices, _db)
+
+    # Parser may set requires_disambiguation for "pick target hostnames" while resolved_devices
+    # is still empty. After merging API target_hosts / params.target_hosts, hostnames are
+    # authoritative — clear stale flags so create-and-plan does not 422 in a loop.
+    if parsed.resolved_devices and any(str(h).strip() for h in parsed.resolved_devices):
+        parsed.requires_disambiguation = False
+        parsed.disambiguation_message = ""
+        _p = dict(parsed.parameters or {})
+        _p.pop("_target_device_candidates", None)
+        _p.pop("_target_device_candidate_reason", None)
+        parsed.parameters = _p
 
     if parsed.requires_disambiguation:
         raise HTTPException(422, parsed.disambiguation_message or "Intent requires disambiguation before planning.")
@@ -1590,6 +1705,8 @@ class PreviewIntentRequest(BaseModel):
     ollama_base_url:    Optional[str] = None
     params:             Optional[Dict[str, Any]] = None  # e.g. interfaces_to_shutdown after user selects from menu
     safe_mode:          Optional[bool] = None  # when None, server uses ANSIBLE_SAFE_MODE_DEFAULT (default true)
+    # When True, skip vector/embedding RAG (fast path for Ansible AI chat). Category+vendor disk scan still fills references.
+    skip_rag:           bool = False
 
 
 def _coalesce_explicit_preview_target_hosts(req: PreviewIntentRequest) -> List[str]:
@@ -1695,45 +1812,50 @@ async def plan_ansible(
         feature=planning_feature or req.feature,
     )
 
-    # Pull live RAG context from the agent (read-only)
+    # Optional agent RAG for LLM playbook path. Reference-first **vlan** / **interface** skip
+    # vector retrieval here (deferred only if we need LLM fallback). ``build_full_context`` is
+    # **off by default for all features** (ANSIBLE_PLAN_AGENT_FULL_CONTEXT=1 to enable).
     rag_context = ""
     kb_snippets: list[str] = []
-    if _agent is not None:
-        try:
-            # Context-Injection RAG: live topology digest from ContextBuilder
-            rag_context = _agent._context.build_full_context(
-                device_hostnames=resolved_hosts,
-                query=req.intent_description,
-            )
-        except Exception as exc:
-            logger.warning("Could not fetch RAG context: %s", exc)
+    plan_feature_for_rag = str(req.feature or "").strip().lower()
+    skip_upfront_vector_rag = plan_feature_for_rag in ("vlan", "interface")
+    include_full_ctx = _plan_ansible_include_agent_full_context()
+    include_vector_rag = _plan_ansible_include_vector_rag()
+    if _agent is not None and not skip_upfront_vector_rag:
+        if include_full_ctx:
+            try:
+                rag_context = _agent._context.build_full_context(
+                    device_hostnames=resolved_hosts,
+                    query=req.intent_description,
+                )
+            except Exception as exc:
+                logger.warning("Could not fetch RAG context: %s", exc)
 
-        # Vector-RAG: retrieve by intent + feature/vendor so LLM gets right reference playbooks
-        try:
-            if hasattr(_agent, "_retriever") and _agent._retriever:
-                query = req.intent_description
-                if req.feature:
-                    query = f"{query} Ansible playbook reference feature {req.feature}"
-                if effective_vendor:
-                    query = f"{query} vendor {effective_vendor}"
-                kb_snippets = [
-                    r["text"]
-                    for r in _agent._retriever.retrieve(
-                        query,
-                        k=3,
-                        vendor_filter=effective_vendor or None,
-                        doc_type_filter="ansible_reference",
-                    )
-                ]
-                # If no ansible_reference docs found, fall back to unfiltered retrieval
-                if not kb_snippets:
+        if include_vector_rag:
+            try:
+                if hasattr(_agent, "_retriever") and _agent._retriever:
+                    query = req.intent_description
+                    if req.feature:
+                        query = f"{query} Ansible playbook reference feature {req.feature}"
+                    if effective_vendor:
+                        query = f"{query} vendor {effective_vendor}"
                     kb_snippets = [
                         r["text"]
-                        for r in _agent._retriever.retrieve(query, k=2)
+                        for r in _agent._retriever.retrieve(
+                            query,
+                            k=3,
+                            vendor_filter=effective_vendor or None,
+                            doc_type_filter="ansible_reference",
+                        )
                     ]
-                kb_snippets = kb_snippets[:2]
-        except Exception as exc:
-            logger.debug("Vector-RAG retrieval skipped: %s", exc)
+                    if not kb_snippets:
+                        kb_snippets = [
+                            r["text"]
+                            for r in _agent._retriever.retrieve(query, k=2)
+                        ]
+                    kb_snippets = kb_snippets[:2]
+            except Exception as exc:
+                logger.debug("Vector-RAG retrieval skipped: %s", exc)
     intent = {
         "description":   req.intent_description,
         "target_hosts":  resolved_hosts,
@@ -2286,6 +2408,42 @@ async def plan_ansible(
     use_bundle = bool(getattr(builder, "supports_role_bundle", lambda *_: False)(req.feature))
     if is_vlan or is_interface:
         use_bundle = False
+    if orchestration is None and _agent is not None and skip_upfront_vector_rag:
+        # Deferred RAG: reference path missed and we need LLM (e.g. interface VLAN/IP fallback).
+        if include_full_ctx and not rag_context:
+            try:
+                rag_context = _agent._context.build_full_context(
+                    device_hostnames=resolved_hosts,
+                    query=req.intent_description,
+                )
+            except Exception as exc:
+                logger.warning("Could not fetch RAG context (deferred): %s", exc)
+        if include_vector_rag and not kb_snippets:
+            try:
+                if hasattr(_agent, "_retriever") and _agent._retriever:
+                    query = req.intent_description
+                    if req.feature:
+                        query = f"{query} Ansible playbook reference feature {req.feature}"
+                    if effective_vendor:
+                        query = f"{query} vendor {effective_vendor}"
+                    kb_snippets = [
+                        r["text"]
+                        for r in _agent._retriever.retrieve(
+                            query,
+                            k=3,
+                            vendor_filter=effective_vendor or None,
+                            doc_type_filter="ansible_reference",
+                        )
+                    ]
+                    if not kb_snippets:
+                        kb_snippets = [
+                            r["text"]
+                            for r in _agent._retriever.retrieve(query, k=2)
+                        ]
+                    kb_snippets = kb_snippets[:2]
+            except Exception as exc:
+                logger.debug("Deferred vector-RAG retrieval skipped: %s", exc)
+
     if orchestration is None:
         try:
             if use_bundle:
@@ -2359,8 +2517,8 @@ async def plan_ansible(
                     {
                         "job_id": job_id,
                         "target_hosts": resolved_hosts,
-                        "provider": req.provider or "gemini",
-                        "model": req.model or "",
+                        "provider": req.provider or _default_manifest_llm_provider(),
+                        "model": req.model or _default_manifest_llm_model(),
                         "artifact_type": "bundle",
                         "inventory_reconciled": bool(planning_meta.get("reconciled")),
                     }
@@ -4043,6 +4201,146 @@ def _annotate_reasoning_interfaces_with_planned_inventory(
             return
 
 
+def _merge_intent_pipeline_interactive_asks(
+    parsed_intent: Dict[str, Any],
+    params_disambiguation: Optional[Dict[str, Any]],
+    devices_disambiguation: Optional[Dict[str, Any]],
+    db_manager: Any,
+    *,
+    preview_resolved_hosts: Optional[List[str]] = None,
+) -> tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
+    """
+    Map refactored pipeline ``interactive_asks`` + cross-check into chat/preview wizards
+    (devices_disambiguation, params_disambiguation) when the main preview path did not already set them.
+    """
+    trace = parsed_intent.get("intent_pipeline") or {}
+    asks = trace.get("interactive_asks") or []
+    if not asks:
+        return params_disambiguation, devices_disambiguation
+
+    out_dd = devices_disambiguation
+    out_pd = params_disambiguation
+
+    # Chat / Target inventory picks are authoritative: never surface stale pipeline device asks.
+    authoritative_planned_targets = False
+    if preview_resolved_hosts and db_manager is not None:
+        try:
+            rh = [str(h).strip() for h in preview_resolved_hosts if str(h).strip()]
+            if rh:
+                ok, bad = _filter_resolved_hosts_to_planned_inventory(rh, db_manager)
+                authoritative_planned_targets = bool(ok) and not bad and len(ok) == len(rh)
+        except Exception:
+            authoritative_planned_targets = False
+
+    for ask in asks:
+        kind = str(ask.get("kind") or "")
+        if authoritative_planned_targets and kind in ("invalid_inventory", "select_planned_devices"):
+            continue
+        if kind == "invalid_inventory" and not out_dd and db_manager is not None:
+            candidates = [str(x) for x in (ask.get("suggestions") or []) if str(x).strip()]
+            if not candidates:
+                candidates = _all_inventory_hostnames_sorted(db_manager)
+            if candidates:
+                out_dd = {
+                    "ambiguous_devices": [],
+                    "missing_devices": [],
+                    "unknown_inventory_aliases": [str(ask.get("unknown_device_name") or ask.get("field") or "target_devices")],
+                    "ask_user_selection": True,
+                    "multi_select": bool(ask.get("multi_select", True)),
+                    "planned_network_context": bool(ask.get("planned_network_context", True)),
+                    "candidate_devices": candidates,
+                    "disambiguation_kind": "not_in_inventory",
+                    "question": str(
+                        ask.get("question")
+                        or "That device was not found in the planned network context. Pick valid device(s)."
+                    ),
+                }
+        elif kind == "select_planned_devices" and not out_dd and db_manager is not None:
+            shortlist = [str(x) for x in (ask.get("suggestions") or []) if str(x).strip()]
+            full_list = _all_inventory_hostnames_sorted(db_manager)
+            if shortlist or full_list:
+                out_dd = {
+                    "ambiguous_devices": [],
+                    "missing_devices": [],
+                    "unknown_inventory_aliases": ["target_devices"],
+                    "ask_user_selection": True,
+                    "multi_select": bool(ask.get("multi_select", True)),
+                    "planned_network_context": bool(ask.get("planned_network_context", True)),
+                    "candidate_shortlist": bool(ask.get("candidate_shortlist", True)),
+                    "candidate_devices": shortlist,
+                    "full_planned_devices": full_list,
+                    "disambiguation_kind": "select_from_planned_network",
+                    "question": str(
+                        ask.get("question")
+                        or "Select target device(s) from the planned network."
+                    ),
+                }
+        elif kind == "missing_required":
+            field = str(ask.get("field") or "").strip()
+            if not field:
+                continue
+            existing_fields = [
+                f for f in (out_pd or {}).get("fields") or [] if isinstance(f, dict)
+            ]
+            seen = {str(f.get("field")) for f in existing_fields}
+            if field in seen:
+                continue
+            row = {"field": field, "question": str(ask.get("question") or f"Please provide: {field}")}
+            if out_pd:
+                out_pd = {
+                    "question": str(out_pd.get("question") or "Please provide the following."),
+                    "fields": existing_fields + [row],
+                }
+            else:
+                out_pd = {"question": "Please provide the following.", "fields": [row]}
+
+    return out_pd, out_dd
+
+
+def _preview_references_category_disk_scan(
+    categories: List[str],
+    effective_vendor: str,
+    *,
+    single_vendor: bool,
+    multi_vendor_targets: bool,
+) -> List[Dict[str, Any]]:
+    """
+    Resolve reference playbook paths from intent categories + vendor by scanning ``reference/``
+    on disk — same fallback as full RAG preview, without embedding retrieval (much faster).
+    """
+    references: List[Dict[str, Any]] = []
+    seen_paths_fb: Set[str] = set()
+    ev = (effective_vendor or "").strip().lower().replace("-", "_")
+    if single_vendor:
+        fallback_vendors = [ev] if ev else ["multi_vendor"]
+    elif multi_vendor_targets:
+        fallback_vendors = ["multi_vendor"]
+    else:
+        fallback_vendors = ["multi_vendor", ev] if ev else ["multi_vendor"]
+    for feat in [c.strip().lower().replace("-", "_") for c in categories if c]:
+        for vend in fallback_vendors:
+            vend = (vend or "").strip().lower().replace("-", "_")
+            if not vend:
+                continue
+            for playbook_name in ("playbook_template.yml", "playbook.yml"):
+                path = f"reference/{feat}/{vend}/{playbook_name}"
+                if path in seen_paths_fb:
+                    continue
+                ref_path = (ANSIBLE_BASE.joinpath(*path.split("/"))).resolve()
+                if ref_path.is_file():
+                    seen_paths_fb.add(path)
+                    references.append(
+                        {
+                            "doc_name": ref_path.name,
+                            "feature": feat,
+                            "vendor": vend,
+                            "path": path,
+                        }
+                    )
+                    break
+    return references
+
+
 def _preview_parse_and_rag(
     intent_description: str,
     target_hosts: List[str],
@@ -4052,6 +4350,8 @@ def _preview_parse_and_rag(
     model: Optional[str],
     ollama_base_url: Optional[str],
     request_params: Optional[Dict[str, Any]] = None,
+    *,
+    skip_rag: bool = False,
 ) -> tuple[list[str], list[dict], dict, bool, list[str], list[str]]:
     """
     Parse intent (lightweight: no policy raise) and run RAG for ansible_reference.
@@ -4086,6 +4386,14 @@ def _preview_parse_and_rag(
         secondary_list = _normalize_secondary_intents(raw_secondary)
         parsed_dict["secondary_intents"] = secondary_list
         parsed_dict["parameters"] = params_dict
+        if params_dict.get("_intent_parse_error"):
+            reasoning.insert(
+                0,
+                "### ⚠️ Intent parser (v2) failed\n"
+                "- The refactored parser could not complete (LLM error, timeout, or invalid JSON). "
+                "Check your API key or Ollama URL/model, or increase `INTENT_PARSE_LLM_TIMEOUT_SEC`. "
+                "Optional fallback: set `INTENT_USE_LEGACY_PARSER=1` for the old monolithic prompt.\n",
+            )
         for sec in secondary_list:
             f = (sec.get("feature") or "").strip()
             if f and f not in categories:
@@ -4328,7 +4636,19 @@ def _preview_parse_and_rag(
     reasoning.append("### 3. Vendor & templates\n" + vendor_block)
 
     references: list[dict] = []
-    if _agent is not None and hasattr(_agent, "_retriever") and _agent._retriever:
+    if skip_rag:
+        references = _preview_references_category_disk_scan(
+            categories,
+            effective_vendor,
+            single_vendor=single_vendor,
+            multi_vendor_targets=multi_vendor_targets,
+        )
+        reasoning.append(
+            "### 4. Reference templates (RAG)\n"
+            f"- **Fast preview:** skipped vector/embedding search; **{len(references)}** template path(s) from category + vendor. "
+            "Playbook Studio runs full RAG when you change targets or after debounced refresh."
+        )
+    elif _agent is not None and hasattr(_agent, "_retriever") and _agent._retriever:
         try:
             query = intent_description
             if categories:
@@ -4406,6 +4726,29 @@ def _preview_parse_and_rag(
         reasoning.append("### 4. Reference templates (RAG)\n- RAG retriever is not available. Add reference templates manually if needed.")
 
     parsed_dict["device_deduction"] = device_deduction
+    # Refactored pipeline trace (segments, categories, catalog validation, cross-check, interactive asks).
+    if parsed_dict:
+        if resolved and any(str(x).strip() for x in resolved):
+            _strip_device_picker_shortlist_after_confirmation(parsed_dict)
+        try:
+            from ansible.intent_pipeline.orchestrator import build_pipeline_trace, merge_cross_check_into_dict
+
+            _tr = build_pipeline_trace(intent_description, parsed_dict, _db)
+            parsed_dict["intent_pipeline"] = _tr
+            parsed_dict = merge_cross_check_into_dict(parsed_dict, _tr["cross_check"])
+            _seg = _tr.get("segment_summary") or ""
+            _cbs = _tr.get("categories_by_segment")
+            if _seg or _cbs:
+                reasoning.insert(
+                    1,
+                    "### 1a. Intent pipeline (refactored)\n"
+                    f"- **Split / summary:** {_seg or 'single segment'}\n"
+                    f"- **Categories per segment:** `{_cbs}`\n"
+                    f"- **Catalog missing fields:** {_tr.get('catalog_missing_fields') or []}\n",
+                )
+        except Exception as _ipt_exc:
+            logger.debug("Attach intent_pipeline in preview: %s", _ipt_exc)
+
     # Disambiguation: ambiguous "Switch 1 and Switch 2" without role keywords (computed earlier).
     if switch_disambiguation_early:
         parsed_dict["disambiguation"] = switch_disambiguation_early
@@ -4444,6 +4787,7 @@ async def preview_intent(
         model=req.model,
         ollama_base_url=req.ollama_base_url,
         request_params=req.params,
+        skip_rag=bool(req.skip_rag),
     )
     # Merge request params (e.g. interfaces_to_shutdown, vlan_id, vlan_name, target_hosts) into parsed intent
     if req.params:
@@ -4473,6 +4817,7 @@ async def preview_intent(
         elif req.params.get("target_devices"):
             td = req.params["target_devices"]
             parsed_intent["resolved_devices"] = td if isinstance(td, list) else [td] if td else list(parsed_intent.get("resolved_devices") or [])
+        _strip_device_picker_shortlist_after_confirmation(parsed_intent)
 
     # Authoritative device scope: when the client sends explicit hostnames (chat picker,
     # Studio chips, or params), replace any bulk LLM ``resolved_devices`` and drop stale
@@ -4504,6 +4849,7 @@ async def preview_intent(
             resolved_hosts = list(parsed_intent.get("resolved_devices") or [])
     else:
         resolved_hosts = list(parsed_intent.get("resolved_devices") or [])
+    _strip_device_picker_shortlist_after_confirmation(parsed_intent)
     # Re-check vague bulk resolution after param merge (stale resolved_hosts from _preview_parse_and_rag otherwise).
     _explicit_targets_in_request = bool(
         req.target_hosts
@@ -4790,6 +5136,27 @@ async def preview_intent(
         params_disambiguation,
     )
 
+    # Rebuild pipeline trace after merges so cross-check / asks match authoritative targets + params.
+    if parsed_intent and _db is not None:
+        try:
+            from ansible.intent_pipeline.orchestrator import build_pipeline_trace, merge_cross_check_into_dict
+
+            _rh_sync = [str(h).strip() for h in (resolved_hosts or []) if str(h).strip()]
+            parsed_intent["resolved_devices"] = list(_rh_sync)
+            _tr_fresh = build_pipeline_trace(req.intent_description or "", parsed_intent, _db)
+            parsed_intent["intent_pipeline"] = _tr_fresh
+            parsed_intent = merge_cross_check_into_dict(parsed_intent, _tr_fresh["cross_check"])
+        except Exception as _tr_refresh_exc:
+            logger.debug("Refresh intent_pipeline before interactive merge: %s", _tr_refresh_exc)
+
+    params_disambiguation, devices_disambiguation = _merge_intent_pipeline_interactive_asks(
+        parsed_intent,
+        params_disambiguation,
+        devices_disambiguation,
+        _db,
+        preview_resolved_hosts=list(resolved_hosts or []),
+    )
+
     # Refresh params after schema/VLAN mutations; clear stale LLM flag when interfaces are present.
     params = dict(parsed_intent.get("parameters") or {})
     if interface_intent_params_satisfied(params):
@@ -4812,6 +5179,15 @@ async def preview_intent(
                 f"vendor={parsed_intent.get('vendor') or '(auto)'}"
             ).strip(),
         })
+        _ip_tr = parsed_intent.get("intent_pipeline")
+        if isinstance(_ip_tr, dict) and (_ip_tr.get("segment_summary") or _ip_tr.get("categories_by_segment")):
+            reasoning_steps.append({
+                "title": "1a. Pipeline — segments & categories",
+                "detail": (
+                    f"{_ip_tr.get('segment_summary', '')} | "
+                    f"categories_by_segment={_ip_tr.get('categories_by_segment')}"
+                ).strip(),
+            })
     except Exception:
         pass
     # Step 2: device resolution summary.
@@ -5312,7 +5688,7 @@ async def preview_intent(
         })
 
     # Authoritative client params (wizard / chat) win over LLM; then align Section 2 + inspector hosts.
-    _merge_client_authoritative_preview_params(parsed_intent, req.params)
+    _merge_client_authoritative_preview_params(parsed_intent, req.params, db_manager=_db)
     rd_final = parsed_intent.get("resolved_devices")
     if isinstance(rd_final, list) and any(str(h).strip() for h in rd_final):
         resolved_hosts = [str(h).strip() for h in rd_final if str(h).strip()]
@@ -5323,6 +5699,23 @@ async def preview_intent(
         resolved_hosts,
         explicit_user_targets=_explicit_targets_in_request,
     )
+
+    # Drop parser-only device disambiguation flags once hostnames are confirmed (picker / params).
+    if resolved_hosts and any(str(h).strip() for h in resolved_hosts):
+        parsed_intent["requires_disambiguation"] = False
+        parsed_intent["disambiguation_message"] = ""
+        # Do not keep a params wizard row asking for targets when hostnames are already resolved.
+        if params_disambiguation:
+            _target_field_names = frozenset({"target_devices", "target_hosts"})
+            _pf = [
+                f
+                for f in (params_disambiguation.get("fields") or [])
+                if isinstance(f, dict) and str(f.get("field") or "") not in _target_field_names
+            ]
+            if _pf:
+                params_disambiguation = {**params_disambiguation, "fields": _pf}
+            else:
+                params_disambiguation = None
 
     intent_schema_inspector: Dict[str, Any] = {"slices": []}
     try:
@@ -5353,6 +5746,385 @@ async def preview_intent(
         "params_need_context_fix": params_need_context_fix,
         "devices_disambiguation": devices_disambiguation,
         "intent_schema_inspector": intent_schema_inspector,
+    }
+
+
+class IntentParseWorkbenchRequest(BaseModel):
+    """Lightweight intent parse + pipeline trace for the Intent Parse workbench (no RAG / create-and-plan)."""
+
+    prompt:            str
+    provider:          Optional[str] = None
+    model:             Optional[str] = None
+    ollama_base_url:   Optional[str] = None
+
+
+INTENT_CATALOG_ROOT = ANSIBLE_BASE / "intent_catalog"
+_TOP_LEVEL_INTENT_YAML = frozenset({"global_fields.yaml", "keyword_map.yaml", "operation_adapter.yaml"})
+
+
+def _intent_catalog_allowed_relative_paths() -> List[str]:
+    """Whitelisted editable paths under ``intent_catalog/`` (UI file picker)."""
+    root = INTENT_CATALOG_ROOT
+    if not root.is_dir():
+        return []
+    out: List[str] = []
+    for name in sorted(_TOP_LEVEL_INTENT_YAML):
+        if (root / name).is_file():
+            out.append(name)
+    cat_dir = root / "categories"
+    if cat_dir.is_dir():
+        for p in sorted(cat_dir.glob("*.yaml")):
+            out.append(f"categories/{p.name}")
+    return out
+
+
+def _resolve_intent_catalog_file(rel: str) -> tuple[Path, str]:
+    """
+    Validate relative path and return (absolute Path, normalized rel with /).
+    Raises HTTPException on traversal or unknown file.
+    """
+    raw = (rel or "").strip().replace("\\", "/").strip("/")
+    if not raw.endswith(".yaml") or ".." in raw.split("/"):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Invalid intent catalog path")
+    parts = raw.split("/")
+    if len(parts) == 1:
+        if parts[0] not in _TOP_LEVEL_INTENT_YAML:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "Unknown intent catalog file")
+    elif len(parts) == 2 and parts[0] == "categories":
+        if not re.match(r"^[a-z0-9_-]+\.yaml$", parts[1], re.I):
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "Invalid category YAML name")
+    else:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Intent catalog path not allowed")
+
+    full = (INTENT_CATALOG_ROOT.joinpath(*parts)).resolve()
+    try:
+        full.relative_to(INTENT_CATALOG_ROOT.resolve())
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Path escapes intent_catalog") from exc
+    if raw not in _intent_catalog_allowed_relative_paths():
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Intent catalog file not in allowlist or missing on disk")
+    return full, raw
+
+
+class IntentCatalogFileWriteRequest(BaseModel):
+    """Replace an intent catalog YAML file (admin only)."""
+
+    content: str
+
+
+class IntentCatalogSharedFieldModel(BaseModel):
+    name: str = Field(min_length=1, max_length=128)
+    data_type: str = "string"
+    required: bool = False
+
+
+class IntentCatalogOperationUIModel(BaseModel):
+    name: str = Field(min_length=1, max_length=128)
+    action: str = ""
+    feature: str = ""
+    required_parameters: List[str] = Field(default_factory=list)
+    implicit_requires_targets: bool = False
+    rules: List[str] = Field(default_factory=list)
+
+
+class IntentCatalogCategoryUIPutBody(BaseModel):
+    """Structured category file payload (saved to ``categories/{key}.yaml``)."""
+
+    display_name: str = Field(min_length=1, max_length=200)
+    category_description: str = ""
+    legacy_feature: str = ""
+    shared_fields: List[IntentCatalogSharedFieldModel] = Field(default_factory=list)
+    operations: List[IntentCatalogOperationUIModel] = Field(default_factory=list)
+
+
+def _intent_catalog_payload() -> Dict[str, Any]:
+    """Serialize ``intent_catalog/`` + operation adapter for the workbench tree UI."""
+    from ansible.intent_pipeline.operation_adapter import list_canonical_operations
+    from ansible.intent_pipeline.schema_loader import load_intent_catalog
+
+    catalog = load_intent_catalog()
+    categories_out: List[Dict[str, Any]] = []
+    for key in sorted(catalog.categories.keys()):
+        cat = catalog.categories[key]
+        ops = cat.get("operations") or {}
+        shared = cat.get("shared_fields") or []
+        if not isinstance(shared, list):
+            shared = []
+        categories_out.append(
+            {
+                "key": key,
+                "display_name": cat.get("display_name") or key,
+                "category_description": cat.get("category_description") or "",
+                "legacy_feature": cat.get("legacy_feature"),
+                "shared_fields": shared,
+                "operations": [
+                    {
+                        "name": oname,
+                        "action": (spec or {}).get("action"),
+                        "feature": (spec or {}).get("feature"),
+                        "required_parameters": (spec or {}).get("required_parameters") or [],
+                        "rules": (spec or {}).get("rules") or [],
+                    }
+                    for oname, spec in ops.items()
+                ],
+            }
+        )
+    return {
+        "version": 1,
+        "global_fields": catalog.global_fields,
+        "keyword_map": catalog.keyword_map,
+        "categories": categories_out,
+        "canonical_adapter": {"mappings": list_canonical_operations()},
+    }
+
+
+def _parse_intent_for_workbench(
+    prompt: str,
+    provider: Optional[str],
+    model: Optional[str],
+    ollama_base_url: Optional[str],
+) -> str:
+    from llm.intent import IntentParser
+
+    topo = _build_intent_parse_context(prompt)
+    prov = _provider_for_request(provider, model, ollama_base_url)
+    parser = IntentParser(provider=prov, db_manager=_db)
+    return parser.parse(prompt, topology_context=topo)
+
+
+@router.get(
+    "/intent-catalog",
+    summary="Intent catalog (categories, operations, keyword map) for Intent Parse workbench",
+)
+async def get_intent_catalog_endpoint(user: dict = Depends(get_current_user)):
+    try:
+        return _intent_catalog_payload()
+    except Exception as exc:
+        logger.warning("intent-catalog failed: %s", exc)
+        raise HTTPException(503, f"Intent catalog unavailable: {exc}") from exc
+
+
+_CATEGORY_KEY_RE = re.compile(r"^[a-z0-9_-]+$", re.I)
+
+
+def _validate_intent_category_put_body(category_key: str, body: IntentCatalogCategoryUIPutBody) -> None:
+    from ansible.intent_catalog_serde import DATA_TYPES
+
+    _ident_re = re.compile(r"^[a-z][a-z0-9_]*$", re.I)
+    names_sf = [sf.name.strip() for sf in body.shared_fields]
+    if len(names_sf) != len(set(names_sf)):
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Duplicate shared field names")
+    for nm in names_sf:
+        if not _ident_re.match(nm):
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                f"Invalid shared field name (start with letter, then letters/digits/_): {nm!r}",
+            )
+    for sf in body.shared_fields:
+        dt = (sf.data_type or "string").lower()
+        if dt not in DATA_TYPES:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                f"Invalid data_type for field {sf.name!r}: {sf.data_type!r}",
+            )
+    op_names = [op.name.strip() for op in body.operations]
+    if len(op_names) != len(set(op_names)):
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Duplicate operation names")
+    for op in body.operations:
+        if not _ident_re.match(op.name):
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                f"Invalid operation name (start with letter, then letters/digits/_): {op.name!r}",
+            )
+        rp = [str(x).strip() for x in (op.required_parameters or []) if str(x).strip()]
+        if len(rp) != len(set(rp)):
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                f"Duplicate required_parameters for operation {op.name!r}",
+            )
+
+
+@router.get(
+    "/intent-catalog/category/{category_key}/ui-model",
+    summary="Structured category schema for admin UI (from local YAML file)",
+)
+async def get_intent_category_ui_model(
+    category_key: str,
+    user: dict = Depends(get_current_user),
+):
+    from ansible.intent_catalog_serde import load_category_ui_dict
+
+    if not _CATEGORY_KEY_RE.match(category_key):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Invalid category key")
+    try:
+        return load_category_ui_dict(category_key)
+    except FileNotFoundError:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Category file not found") from None
+    except Exception as exc:
+        logger.warning("intent category ui-model read failed: %s", exc)
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
+
+
+@router.put(
+    "/intent-catalog/category/{category_key}/ui-model",
+    summary="Save category schema to local YAML (admin only); reloads catalog",
+)
+async def put_intent_category_ui_model(
+    category_key: str,
+    body: IntentCatalogCategoryUIPutBody,
+    user: dict = Depends(require_role("admin")),
+):
+    import yaml
+
+    from ansible.intent_catalog_serde import (
+        build_category_yaml_document,
+        category_yaml_path,
+        dump_category_yaml,
+    )
+    from ansible.intent_pipeline.schema_loader import reload_catalog
+
+    if not _CATEGORY_KEY_RE.match(category_key):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Invalid category key")
+    _validate_intent_category_put_body(category_key, body)
+
+    path = category_yaml_path(category_key)
+    if not path.is_file():
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Category file not found")
+
+    ui_dict: Dict[str, Any] = {
+        "category_key": category_key,
+        "display_name": body.display_name,
+        "category_description": body.category_description or "",
+        "legacy_feature": (body.legacy_feature or "").strip() or category_key,
+        "shared_fields": [sf.model_dump() for sf in body.shared_fields],
+        "operations": [op.model_dump() for op in body.operations],
+    }
+    doc = build_category_yaml_document(ui_dict)
+    text = dump_category_yaml(doc)
+    try:
+        yaml.safe_load(text)
+    except Exception as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, f"Invalid YAML after build: {exc}") from exc
+
+    backup = path.read_text(encoding="utf-8")
+    try:
+        path.write_text(text, encoding="utf-8")
+        reload_catalog()
+    except Exception as exc:
+        try:
+            path.write_text(backup, encoding="utf-8")
+            reload_catalog()
+        except Exception as restore_exc:
+            logger.error("Intent category restore failed after bad save: %s", restore_exc)
+        logger.warning("Intent category save rejected: %s", exc)
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            f"Catalog reload failed after save (file restored): {exc}",
+        ) from exc
+
+    logger.info("Intent category ui-model saved by %s: %s", user.get("username"), category_key)
+    return {"category_key": category_key, "status": "saved"}
+
+
+@router.get(
+    "/intent-catalog/editable-files",
+    summary="List intent_catalog/*.yaml paths editable from the Intent Parse workbench",
+)
+async def list_intent_catalog_editable_files(user: dict = Depends(get_current_user)):
+    return {"paths": _intent_catalog_allowed_relative_paths()}
+
+
+@router.get(
+    "/intent-catalog/file/{file_path:path}",
+    summary="Read raw YAML from intent_catalog (global, keyword_map, categories, operation_adapter)",
+)
+async def read_intent_catalog_file(
+    file_path: str,
+    user: dict = Depends(get_current_user),
+):
+    full, norm = _resolve_intent_catalog_file(file_path)
+    if not full.is_file():
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "File not found")
+    return {"path": norm, "content": full.read_text(encoding="utf-8")}
+
+
+@router.put(
+    "/intent-catalog/file/{file_path:path}",
+    summary="Write intent_catalog YAML; validates YAML and reloads in-memory catalog (admin only)",
+)
+async def write_intent_catalog_file(
+    file_path: str,
+    req:  IntentCatalogFileWriteRequest,
+    user: dict = Depends(require_role("admin")),
+):
+    import yaml
+
+    from ansible.intent_pipeline.operation_adapter import reload_operation_adapter
+    from ansible.intent_pipeline.schema_loader import reload_catalog
+
+    full, norm = _resolve_intent_catalog_file(file_path)
+    try:
+        yaml.safe_load(req.content or "")
+    except Exception as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, f"Invalid YAML: {exc}") from exc
+
+    backup = full.read_text(encoding="utf-8") if full.is_file() else ""
+    try:
+        full.write_text(req.content or "", encoding="utf-8")
+        reload_operation_adapter()
+        reload_catalog()
+    except Exception as exc:
+        try:
+            full.write_text(backup, encoding="utf-8")
+            reload_operation_adapter()
+            reload_catalog()
+        except Exception as restore_exc:
+            logger.error("Intent catalog restore failed after bad save: %s", restore_exc)
+        logger.warning("Intent catalog save rejected: %s", exc)
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            f"Catalog reload failed after save (file restored): {exc}",
+        ) from exc
+
+    logger.info("Intent catalog file updated by %s: %s", user.get("username"), norm)
+    return {"path": norm, "status": "saved"}
+
+
+@router.post(
+    "/intent-parse-workbench",
+    summary="Parse a prompt with the refactored pipeline trace (split, categories, cross-check, asks)",
+)
+async def intent_parse_workbench(
+    req:  IntentParseWorkbenchRequest,
+    user: dict = Depends(get_current_user),
+):
+    from llm.intent import ParsedIntent
+
+    from ansible.intent_pipeline.orchestrator import enrich_preview_response
+
+    try:
+        raw = await run_in_threadpool(
+            _parse_intent_for_workbench,
+            req.prompt or "",
+            req.provider,
+            req.model,
+            req.ollama_base_url,
+        )
+    except Exception as exc:
+        logger.warning("intent-parse-workbench parse failed: %s", exc)
+        raise HTTPException(422, f"Intent parse failed: {exc}") from exc
+
+    try:
+        parsed = ParsedIntent.model_validate_json(raw)
+    except Exception as exc:
+        raise HTTPException(422, f"Invalid parsed intent JSON: {exc}") from exc
+
+    flat = parsed.model_dump()
+    enriched = enrich_preview_response(flat, req.prompt or "", _db)
+    return {
+        "parsed_intent_json": raw,
+        "parsed_intent": enriched["parsed_intent"],
+        "pipeline": enriched["pipeline"],
     }
 
 

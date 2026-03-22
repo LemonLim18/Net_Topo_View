@@ -1,0 +1,149 @@
+# Canonical fine-grained operations (REFACTOR_INTENT_PARSER.md §1) → legacy playbook actions.
+# Used when the LLM / extractor emits canonical_operation + canonical_parameters.
+
+version: 1
+
+mappings:
+  # VLAN
+  create_vlan:
+    legacy_action: create_vlan
+    legacy_feature: vlan
+  rename_vlan:
+    legacy_action: create_vlan
+    legacy_feature: vlan
+    notes: "Treat as create_vlan with vlan_id + vlan_name"
+  delete_vlan:
+    legacy_action: create_vlan
+    legacy_feature: vlan
+    notes: "Use desired_state absent in parameters when supported"
+  assign_vlan_to_access_port:
+    legacy_action: configure_interface
+    legacy_feature: interface
+    parameter_aliases:
+      target_interfaces: interfaces
+    notes: "interfaces[].mode=access, access_vlan from vlan_id"
+  assign_vlan_to_trunk_port:
+    legacy_action: configure_interface
+    legacy_feature: interface
+    parameter_aliases:
+      target_interfaces: interfaces
+    notes: "interfaces[].mode=trunk, trunk_vlans from allowed list"
+  set_native_vlan:
+    legacy_action: configure_interface
+    legacy_feature: interface
+    parameter_aliases:
+      target_interfaces: interfaces
+    notes: "interfaces[].mode=trunk, native_vlan for PVID"
+  configure_trunk_vlans:
+    legacy_action: configure_interface
+    legacy_feature: interface
+    parameter_aliases:
+      target_interfaces: interfaces
+    notes: "interfaces[].mode=trunk, trunk_vlans from allowed_vlans"
+  remove_vlan_from_interface:
+    legacy_action: configure_interface
+    legacy_feature: interface
+
+  # INTERFACE (canonical)
+  create_or_update_interface:
+    legacy_action: configure_interface
+    legacy_feature: interface
+  set_interface_description:
+    legacy_action: configure_interface
+    legacy_feature: interface
+  set_interface_admin_state:
+    legacy_action: shutdown_interface
+    legacy_feature: interface
+    notes: "Map admin_state down → shutdown"
+  assign_l3_address:
+    legacy_action: configure_interface
+    legacy_feature: interface
+  configure_l2_access_port:
+    legacy_action: configure_interface
+    legacy_feature: interface
+  configure_l2_trunk_port:
+    legacy_action: configure_interface
+    legacy_feature: interface
+  configure_port_channel:
+    legacy_action: configure_interface
+    legacy_feature: interface
+
+  # ACL
+  create_acl:
+    legacy_action: configure_acl
+    legacy_feature: acl
+  add_acl_rule:
+    legacy_action: configure_acl
+    legacy_feature: acl
+  update_acl_rule:
+    legacy_action: configure_acl
+    legacy_feature: acl
+  delete_acl_rule:
+    legacy_action: configure_acl
+    legacy_feature: acl
+  apply_acl_to_interface:
+    legacy_action: configure_acl
+    legacy_feature: acl
+  remove_acl_from_interface:
+    legacy_action: configure_acl
+    legacy_feature: acl
+
+  # QoS
+  create_qos_policy:
+    legacy_action: configure_qos
+    legacy_feature: qos
+  add_qos_class:
+    legacy_action: configure_qos
+    legacy_feature: qos
+  define_qos_action:
+    legacy_action: configure_qos
+    legacy_feature: qos
+  apply_qos_policy_to_interface:
+    legacy_action: configure_qos
+    legacy_feature: qos
+  update_qos_class:
+    legacy_action: configure_qos
+    legacy_feature: qos
+  remove_qos_policy_from_interface:
+    legacy_action: configure_qos
+    legacy_feature: qos
+
+  # Static route
+  add_static_route:
+    legacy_action: configure_static_route
+    legacy_feature: static_route
+  delete_static_route:
+    legacy_action: configure_static_route
+    legacy_feature: static_route
+  update_static_route:
+    legacy_action: configure_static_route
+    legacy_feature: static_route
+  add_default_route:
+    legacy_action: configure_static_route
+    legacy_feature: static_route
+  add_floating_static_route:
+    legacy_action: configure_static_route
+    legacy_feature: static_route
+
+  # OSPF
+  enable_ospf_process:
+    legacy_action: configure_ospf
+    legacy_feature: ospf
+  advertise_network:
+    legacy_action: configure_ospf
+    legacy_feature: ospf
+  enable_ospf_on_interface:
+    legacy_action: configure_ospf
+    legacy_feature: ospf
+  set_ospf_router_id:
+    legacy_action: configure_ospf
+    legacy_feature: ospf
+  configure_passive_interface:
+    legacy_action: configure_ospf
+    legacy_feature: ospf
+  configure_ospf_redistribute:
+    legacy_action: configure_ospf
+    legacy_feature: ospf
+  remove_ospf_configuration:
+    legacy_action: configure_ospf
+    legacy_feature: ospf

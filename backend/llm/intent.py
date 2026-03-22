@@ -17,12 +17,12 @@ Key principle: the LLM interprets, the system enforces.
 
 import json
 import logging
+import os
 import re
-from difflib import SequenceMatcher
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from pydantic import BaseModel, Field
 
@@ -89,13 +89,224 @@ def _vendor_aliases() -> Dict[str, str]:
     return _VENDOR_ALIASES_FALLBACK
 
 
+def is_generic_vlan_on_devices_message(msg: str) -> bool:
+    """Prompts like 'Create VLAN on devices' — never infer targets; ask for everything."""
+    lower = (msg or "").lower().strip()
+    if re.search(r"\bcreate\s+vlan\b", lower) and re.search(r"\bon\s+devices?\b", lower):
+        return True
+    return False
+
+
+def parse_vlan_database_params_from_text(msg: str) -> Dict[str, Any]:
+    """
+    Extract VLAN id (+ name when present) from imperative create-VLAN text.
+
+    Used by the rule-based create_vlan fast path so catalog validation sees ``vlans``
+    when the user already stated id/name in the prompt.
+    """
+    raw = (msg or "").strip()
+    if not raw:
+        return {}
+    lower = raw.lower()
+    if is_generic_vlan_on_devices_message(msg):
+        return {}
+    m = re.search(r"\bcreate\s+vlan\s+(\d{1,4})\b", lower, re.IGNORECASE)
+    if not m:
+        m = re.search(r"\badd\s+vlan\s+(\d{1,4})\b", lower, re.IGNORECASE)
+    if not m:
+        return {}
+    try:
+        vid = int(m.group(1))
+    except ValueError:
+        return {}
+    if vid < 1 or vid > 4094:
+        return {}
+    name = f"VLAN {vid}"
+    nm = re.search(
+        r"(?:named|called)\s+(.+?)(?=\s+on\b|\s+for\b|\s+and\s+set\b|\s+and\s+apply\b|\s*$)",
+        raw,
+        re.IGNORECASE | re.DOTALL,
+    )
+    if nm:
+        chunk = nm.group(1).strip()
+        chunk = re.sub(r"\*+", "", chunk).strip()
+        chunk = chunk.strip('"').strip("'").strip()
+        if chunk:
+            name = chunk
+    return {"vlans": [{"id": vid, "name": name}]}
+
+
+def _inventory_switch_index(hostname: str) -> Optional[int]:
+    """Best numeric suffix on inventory-style hostnames (e.g. Acc_Cisco_3 → 3)."""
+    h = (hostname or "").strip()
+    m = re.search(r"_(\d+)$", h)
+    if m:
+        return int(m.group(1))
+    m = re.search(r"(\d+)$", h)
+    if m:
+        return int(m.group(1))
+    return None
+
+
+def extract_layer_switch_role_and_numbers(msg: str) -> Optional[Tuple[str, List[int]]]:
+    """
+    Detect phrases like "access switch 1, 2, and 3" / "distribution switch 1, 2" / "core switch 1".
+
+    Returns (normalized_role, [indices]) or None. Does not resolve to hostnames — callers
+    map to inventory for UI candidate lists only.
+    """
+    lower = re.sub(r"\s+", " ", (msg or "").lower())
+    role: Optional[str] = None
+    if re.search(r"\baccess\s+switch(?:es)?\b", lower):
+        role = "access"
+    elif re.search(r"\b(?:distribution|dist)\s+switch(?:es)?\b", lower):
+        role = "distribution"
+    elif re.search(r"\bcore\s+switch(?:es)?\b", lower):
+        role = "core"
+    if not role:
+        return None
+    m = re.search(
+        r"\b(?:access|distribution|dist|core)\s+switch(?:es)?\s+(.+)$",
+        lower,
+        re.IGNORECASE,
+    )
+    if not m:
+        return None
+    tail = m.group(1)
+    nums = [int(x) for x in re.findall(r"\b(\d+)\b", tail)]
+    if not nums:
+        return None
+    seen: set[int] = set()
+    ordered: List[int] = []
+    for n in nums:
+        if n not in seen:
+            seen.add(n)
+            ordered.append(n)
+    return role, ordered
+
+
+def enumerate_layer_switch_device_candidates(msg: str, inventory_records: List[Dict[str, Any]]) -> List[str]:
+    """
+    Map layer+number wording to hostnames that share role + trailing index — **candidates only**.
+
+    Never treated as confirmed ``resolved_devices``; UI must multi-select against planned inventory.
+    """
+    hit = extract_layer_switch_role_and_numbers(msg)
+    if not hit:
+        return []
+    want_role, want_nums = hit
+    want_set = set(want_nums)
+    out: List[str] = []
+    seen_h: set[str] = set()
+    for record in inventory_records or []:
+        host = str(record.get("hostname") or "").strip()
+        if not host or host in seen_h:
+            continue
+        rec_role = _normalize_role(record.get("role"))
+        if not rec_role:
+            rec_role = _role_from_hostname(host)
+        if rec_role != want_role:
+            continue
+        idx = _inventory_switch_index(host)
+        if idx is None or idx not in want_set:
+            continue
+        seen_h.add(host)
+        out.append(host)
+    return sorted(out, key=_natural_key)
+
+
 def _create_vlan_fast_path_match(msg: str) -> bool:
+    if is_generic_vlan_on_devices_message(msg):
+        return False
     try:
         from ansible.intent_artifacts import message_matches_create_vlan_imperative_fast_path
 
         return message_matches_create_vlan_imperative_fast_path(msg)
     except Exception:
         return False
+
+
+_ALIAS_FILE_PATH = Path(__file__).resolve().parent.parent / "ansible" / "intent_catalog" / "device_alias_hints.yaml"
+_DEVICE_ALIAS_MAP: Optional[Dict[str, List[str]]] = None
+
+
+def _load_device_alias_map() -> Dict[str, List[str]]:
+    global _DEVICE_ALIAS_MAP
+    if _DEVICE_ALIAS_MAP is not None:
+        return _DEVICE_ALIAS_MAP
+    out: Dict[str, List[str]] = {}
+    try:
+        if _ALIAS_FILE_PATH.is_file():
+            import yaml
+
+            raw = yaml.safe_load(_ALIAS_FILE_PATH.read_text(encoding="utf-8")) or {}
+            aliases = (raw.get("aliases") or {}) if isinstance(raw, dict) else {}
+            for k, v in aliases.items():
+                key = str(k).strip().upper()
+                if isinstance(v, list):
+                    out[key] = [str(x).strip() for x in v if str(x).strip()]
+                elif v:
+                    out[key] = [str(v).strip()]
+    except Exception as exc:
+        logger.debug("device_alias_hints load failed: %s", exc)
+    _DEVICE_ALIAS_MAP = out
+    return out
+
+
+def _extract_explicit_device_tokens(raw: str) -> List[str]:
+    """Short tokens (SW1, R1) or inventory-style hostnames; no fuzzy inventory sweep."""
+    text = raw or ""
+    found: List[str] = []
+    seen: set[str] = set()
+    for m in re.finditer(r"\b([Ss][Ww]|[Rr])(\d+)\b", text):
+        prefix = "SW" if m.group(1).lower().startswith("s") else "R"
+        tok = f"{prefix}{m.group(2)}"
+        key = tok.upper()
+        if key not in seen:
+            seen.add(key)
+            found.append(tok)
+    for m in re.finditer(r"\b([A-Za-z][A-Za-z0-9]*(?:_[A-Za-z][A-Za-z0-9]*)+_\d+)\b", text):
+        tok = m.group(1)
+        if tok.upper() not in seen:
+            seen.add(tok.upper())
+            found.append(tok)
+    return found
+
+
+def _resolve_device_tokens_to_inventory(
+    tokens: List[str],
+    inventory_by_hostname: Dict[str, Any],
+    all_hosts: List[str],
+) -> List[str]:
+    if not tokens:
+        return []
+    aliases = _load_device_alias_map()
+    pool = list(dict.fromkeys(list(inventory_by_hostname.keys()) + list(all_hosts)))
+    pool_l = {str(h).lower(): h for h in pool if h}
+    resolved: List[str] = []
+    seen: set[str] = set()
+    for raw_tok in tokens:
+        t = str(raw_tok).strip()
+        if not t:
+            continue
+        prefers: List[str] = []
+        for akey, alist in aliases.items():
+            if akey.lower() == t.upper():
+                prefers.extend(alist)
+        hosts_try = prefers if prefers else [t]
+        placed = False
+        for cand in hosts_try:
+            cl = cand.lower()
+            if cl in pool_l:
+                h = pool_l[cl]
+                if h not in seen:
+                    seen.add(h)
+                    resolved.append(h)
+                placed = True
+                break
+        if placed:
+            continue
+    return resolved
 
 
 def _natural_key(value: str) -> list[Any]:
@@ -108,48 +319,6 @@ def _natural_key(value: str) -> list[Any]:
         else:
             out.append(part.lower())
     return out
-
-
-def _extract_selector_numbers(raw: str) -> list[int]:
-    """
-    Extract all device selector numbers from phrases like
-    "access switch 1, 2 and 3" or "switch 1, 2, 3" → [1, 2, 3].
-    Only looks at the number list immediately after role/switch keywords.
-    """
-    lower = (raw or "").lower()
-    if not any(w in lower for w in ("switch", "switches", "access", "distribution", "core")):
-        return []
-    # First, handle patterns where a single "switch" keyword is followed by a list:
-    # "access switch 1, 2 and 3" or "switch 1, 2, 3"
-    m = re.search(
-        r"(?:access\s+switch(?:es)?|distribution\s+switch(?:es)?|core\s+switch(?:es)?|switch(?:es)?)\s+(\d+(?:\s*(?:,\s*|and\s+)\s*\d+)*)",
-        lower,
-        re.IGNORECASE,
-    )
-    nums: list[int] = []
-    if m:
-        nums.extend(int(n) for n in re.findall(r"\d+", m.group(1)))
-
-    # Also handle phrases where "switch" is repeated before each number:
-    # e.g. "switch 1 and switch 2", "access switch 1, switch 2 and switch 3"
-    for match in re.finditer(
-        r"(?:access|distribution|core)?\s*switch(?:es)?\s+(\d+)",
-        lower,
-        re.IGNORECASE,
-    ):
-        try:
-            nums.append(int(match.group(1)))
-        except (TypeError, ValueError):
-            continue
-
-    # Preserve order of appearance while de-duplicating
-    seen: set[int] = set()
-    ordered = []
-    for n in nums:
-        if n not in seen:
-            seen.add(n)
-            ordered.append(n)
-    return ordered
 
 
 # -----------------------------------------------------------------------
@@ -212,6 +381,30 @@ class ParsedIntent(BaseModel):
         return self.intent_type in (IntentType.CONFIGURE, IntentType.DEPLOY)
 
 
+def _intent_v2_parse_failure_data(user_message: str, exc: BaseException) -> Dict[str, Any]:
+    """Structured intent when the refactored parser/LLM path fails (no legacy fallback)."""
+    msg = str(exc).strip() or type(exc).__name__
+    return {
+        "intent_type": "query",
+        "action": "unknown",
+        "feature": "",
+        "vendor": "",
+        "parameters": {
+            "_intent_parse_error": True,
+            "_parse_error_detail": msg[:2000],
+        },
+        "scope": {"device_hostnames": [], "all_devices": False},
+        "risk_level": "low",
+        "justification": f"Intent parser (v2) could not complete: {msg[:500]}",
+        "requires_disambiguation": True,
+        "disambiguation_message": (
+            "The refactored intent parser failed. Check your LLM (API key, or Ollama base URL/model). "
+            "Optional one-off fallback: set environment variable INTENT_USE_LEGACY_PARSER=1. "
+            f"Detail: {msg[:400]}"
+        ),
+    }
+
+
 # -----------------------------------------------------------------------
 # Prompt for constrained LLM parsing
 # -----------------------------------------------------------------------
@@ -270,14 +463,11 @@ Each element of "secondary_intents" (if any): {{ "action": "e.g. configure_ospf"
 3. **Scope by layer**: If the user says "access switches", "all access", or "access layer only", set scope.device_role to "access" and leave all_devices false. If they say "distribution" or "core" only, set device_role to "distribution" or "core" respectively. Use all_devices true only when they clearly mean the entire network (e.g. "all devices", "every switch in the network").
 4. **Subset by number**: If the user specifies a subset by number, combine the role with the number to choose only those devices from that role group. Example: "access switch 3" means the 3rd access device in the role list, not all access switches. "access switch 1, 2, and 3" means device_hostnames = ["<first access device>", "<second access device>", "<third access device>"]. Do NOT set only device_role — that would target all devices of that role.
 5. **Generic switch words**: If the user says just "switches" without a role, do NOT set all_devices=true; require disambiguation instead.
-6. **VLAN database vs VLAN on ports**: If the user only asks to **create** / **add** a VLAN (ID and name) on devices/switches and does **not** mention specific ports, access/trunk, allowed VLANs, or interface names (Gi/Ethernet/ge-), **action must be `create_vlan`** and **feature must be `vlan`**. **Never** use `configure_interface` for that. **Never** invent `parameters.interfaces` or `Host:Interface` strings.
-7. **VLAN on interfaces (ports only)**: If the user asks to assign VLANs to ports (access/trunk/native/allowed) or names interfaces **but does not ask to create a new VLAN in the switching database**, use **action `configure_interface`** and **feature `interface`** (not `feature: vlan`).
-7b. **Composite in one prompt — create VLAN AND configure ports** (multi-intent): If the user combines **both** (e.g. "Create VLAN 100 named HR and configure GigabitEthernet1/0/1 as access", or "Add VLAN 30 … on Gi… as access VLAN"), you MUST **not** collapse this into a single `configure_interface` intent. Use:
-   - **Primary intent**: `action`: **`create_vlan`**, `feature`: **`vlan`**, `parameters`: **`vlan_id`**, **`vlan_name`**, **`target_devices`** / scope (VLAN DB step; **no** `parameters.interfaces` on the primary).
-   - **`secondary_intents`**: one object with `action`: **`configure_interface`**, `feature`: **`interface`**, `parameters`: **`interfaces`** (list of objects with `name`, `mode` e.g. `access`, `access_vlan` = the VLAN ID from the primary).
-   Order: VLAN database creation is always the **primary** `create_vlan` task when both appear; port binding is **secondary**. If the user lists multiple unrelated tasks (e.g. VLAN + OSPF), same pattern: primary = first task, others in `secondary_intents`.
-   - **Trunk vs access on the port**: If the user says **trunk**, **trunk port**, **allow on trunk**, or **allowed VLANs on a trunk**, each interface in **`secondary_intents` `parameters.interfaces`** MUST use **`mode`: `trunk`** and **`trunk_vlans`** (array of VLAN IDs — include the new VLAN ID at minimum). Do **not** use **`mode`: `access`** for those phrases.
-   - **Native VLAN (critical)**: Phrases like **native VLAN**, **set native VLAN**, **native-vlan** refer to the **untagged / PVID VLAN on a trunk** — **not** an access port VLAN. Use **`mode`: `trunk`**, **`native_vlan`**: <id>, and **`trunk_vlans`** / **`allowed_vlans`** (include at least the VLAN IDs that must be carried; often include the same ID as `native_vlan` when the user ties both to one VLAN). **Never** use **`mode`: `access`** with **`access_vlan`** when the user explicitly says **native VLAN**. Example: "Create VLAN 200 named Guest and set native VLAN 200 on Gi1/0/3" → **primary** `create_vlan` for the VLAN DB, **secondary** `configure_interface` with **`mode`: `trunk`**, **`native_vlan`**: 200, **`trunk_vlans`**: [200].
+6. **VLAN database vs VLAN on ports**: If the user only asks to **create** / **add** a VLAN (ID and name) on devices/switches and does **not** mention specific ports, access/trunk, allowed VLANs, or interface names (Gi/Ethernet/ge-), **action must be `create_vlan`** and **feature must be `vlan`**. Use **`parameters.vlans`**: `[{{"id": <vlan_id>, "name": "<vlan_name>"}}]` (not separate `vlan_id`/`vlan_name` keys). **Never** invent `parameters.interfaces` on the primary.
+7. **VLAN on interfaces (ports only)**: If the user assigns VLANs to ports without a separate VLAN-DB step, use **`assign_vlan_to_access_port`**, **`assign_vlan_to_trunk_port`**, or **`set_native_vlan`** with **`feature`: `interface`** and **`parameters.interfaces`** as appropriate (access vs trunk vs native).
+7b. **Composite — create VLAN AND configure ports** (multi-intent): Primary **`create_vlan`** / **`vlan`** with **`parameters.vlans`** and targets in `scope.device_hostnames` or `parameters.target_devices` when known. **`secondary_intents`**: one object with **`action`** **`assign_vlan_to_access_port`** (access), **`assign_vlan_to_trunk_port`** (allowed VLANs on trunk), or **`set_native_vlan`** (native/PVID), **`feature`**: **`interface`**, **`parameters.interfaces`** with `name`, `mode`, `access_vlan` / `trunk_vlans` / `native_vlan`. Do **not** use vague `configure_interface` when the operation is clearly one of the above.
+   - **Trunk allowed VLANs**: **`assign_vlan_to_trunk_port`**, **`mode`: `trunk`**, **`trunk_vlans`** includes the new VLAN id.
+   - **Native VLAN**: **`set_native_vlan`** or trunk interface with **`native_vlan`** and **`mode`: `trunk`** — **never** `mode`: `access` for native VLAN phrases.
 8. For CONFIGURE intents, you MUST fill in "feature" and "parameters" matching the operation reference above.
 9. **Interface actions**: Use action **shutdown_interface** for shutdown / admin-down / "turn off interfaces". Use action **configure_interface** for L2/L3 interface changes (access/trunk/routed, VLANs, IPs) when not a simple shutdown. For shutdown without listed interfaces, set parameters.interfaces_to_shutdown to null or omit, and set "requires_resolution": true. For configure_interface without listed interfaces, omit parameters.interfaces or set null and set "requires_resolution": true.
 10. If you cannot determine the target device, set intent_type="query", action="clarify", \
@@ -320,7 +510,6 @@ class IntentParser:
         type is ``str`` (JSON-encoded ``ParsedIntent``).
         """
         import uuid
-        import asyncio
 
         # Fast-path: simple queries that don't need LLM
         quick = self._try_rule_based(user_message)
@@ -334,19 +523,144 @@ class IntentParser:
         if quick_cv:
             quick_cv.id = str(uuid.uuid4())[:8]
             quick_cv.raw_user_input = user_message
-            quick_cv.resolved_devices = self._resolve_devices(quick_cv)
+            generic_vlan = is_generic_vlan_on_devices_message(user_message)
             quick_cv.parameters = dict(quick_cv.parameters or {})
+            if generic_vlan:
+                quick_cv.resolved_devices = []
+                quick_cv.parameters["_generic_vlan_prompt"] = True
+            else:
+                records = self._inventory_records()
+                layer_cand = enumerate_layer_switch_device_candidates(user_message, records)
+                if layer_cand:
+                    quick_cv.parameters = dict(quick_cv.parameters or {})
+                    quick_cv.parameters["_target_device_candidates"] = layer_cand
+                    quick_cv.parameters["_target_device_candidate_reason"] = (
+                        "Prompt uses access/distribution/core switch numbers — pick confirmed "
+                        "device(s) from this shortlist or from the full planned network list."
+                    )
+                    quick_cv.requires_disambiguation = True
+                    quick_cv.disambiguation_message = (
+                        "Select target device(s) from planned inventory. "
+                        "Role/number wording is not treated as an exact hostname match."
+                    )
+                # Exact inventory / alias only — never auto-fill resolved_devices from layer-number heuristics.
+                quick_cv.resolved_devices = self._resolve_devices(quick_cv)
+            self._normalize_vlan_parameters(quick_cv)
             quick_cv.parameters["device_deduction"] = self._deduce_device_reason(
-                user_message, quick_cv.resolved_devices
+                user_message,
+                quick_cv.resolved_devices,
+                generic_prompt=generic_vlan,
+                layer_candidates=bool(
+                    (quick_cv.parameters or {}).get("_target_device_candidates")
+                ),
             )
-            if quick_cv.is_config_change() and not quick_cv.resolved_devices:
+            # Layer-switch shortlist already set requires_disambiguation + message — do not overwrite.
+            _layer_shortlist_pending = bool(
+                (quick_cv.parameters or {}).get("_target_device_candidates")
+            )
+            if (
+                quick_cv.is_config_change()
+                and not quick_cv.resolved_devices
+                and not generic_vlan
+                and not _layer_shortlist_pending
+            ):
                 quick_cv.requires_disambiguation = True
                 quick_cv.disambiguation_message = (
                     "Specify target device hostnames for this VLAN (e.g. from planned inventory)."
                 )
+            try:
+                from ansible.intent_pipeline.validator import annotate_missing_fields
+
+                dumped = annotate_missing_fields(quick_cv.model_dump())
+                quick_cv.parameters = dict(dumped.get("parameters") or {})
+                quick_cv.requires_resolution = bool(dumped.get("requires_resolution"))
+            except Exception:
+                pass
             return json.dumps(quick_cv.model_dump(), default=str)
 
-        # Build template schema context for the prompt
+        # Refactored pipeline (intent_catalog/) — default. Legacy monolithic parser is **opt-in** only:
+        #   INTENT_USE_LEGACY_PARSER=1
+        # If v2 fails and legacy is off, return a structured failure intent (no silent fallback).
+        legacy_ok = self._legacy_intent_parser_allowed()
+        if self._provider and self._intent_pipeline_v2_enabled():
+            try:
+                from ansible.intent_pipeline.intent_splitter import split_multi_intent
+                from ansible.intent_pipeline.orchestrator import prepare_llm_input_dict
+                from ansible.intent_pipeline.prompt_builder import (
+                    build_multi_intent_user_prompt,
+                    build_v2_user_prompt,
+                    detect_categories_for_message,
+                )
+
+                segments = split_multi_intent(user_message)
+                if len(segments) > 1:
+                    union_cats: List[str] = []
+                    seen_cat: set[str] = set()
+                    for seg in segments:
+                        cats_seg, _ = detect_categories_for_message(seg)
+                        for c in cats_seg:
+                            if c not in seen_cat:
+                                seen_cat.add(c)
+                                union_cats.append(c)
+                    excerpt = self._get_template_schemas_for_categories(union_cats)
+                    prompt_v2 = build_multi_intent_user_prompt(
+                        segments,
+                        topology_context or "",
+                        excerpt,
+                        union_cats,
+                    )
+                else:
+                    cats, _ = detect_categories_for_message(user_message)
+                    excerpt = self._get_template_schemas_for_categories(cats)
+                    prompt_v2 = build_v2_user_prompt(
+                        user_message,
+                        topology_context or "",
+                        excerpt,
+                        cats,
+                    )
+                raw_json = self._run_llm_sync(prompt_v2)
+                data = self._data_from_llm_raw(raw_json)
+                data = prepare_llm_input_dict(data)
+                return self._finalize_intent_from_parsed_data(data, user_message)
+            except Exception as exc:
+                logger.warning("Intent pipeline v2 failed (%s)", exc, exc_info=True)
+                if not legacy_ok:
+                    return self._finalize_intent_from_parsed_data(
+                        _intent_v2_parse_failure_data(user_message, exc),
+                        user_message,
+                    )
+        elif self._provider and not self._intent_pipeline_v2_enabled() and not legacy_ok:
+            return self._finalize_intent_from_parsed_data(
+                _intent_v2_parse_failure_data(
+                    user_message,
+                    RuntimeError("INTENT_PIPELINE_V2 is disabled; re-enable it or set INTENT_USE_LEGACY_PARSER=1."),
+                ),
+                user_message,
+            )
+
+        # Legacy: full prompt (only when INTENT_USE_LEGACY_PARSER=1)
+        if not legacy_ok:
+            if self._provider:
+                return self._finalize_intent_from_parsed_data(
+                    _intent_v2_parse_failure_data(
+                        user_message,
+                        RuntimeError("Legacy intent parser disabled (INTENT_USE_LEGACY_PARSER not set)."),
+                    ),
+                    user_message,
+                )
+            raw_json = json.dumps({
+                "intent_type": "query",
+                "action": "unknown",
+                "feature": "",
+                "vendor": "",
+                "parameters": {},
+                "scope": {"device_hostnames": [], "all_devices": False},
+                "risk_level": "low",
+                "justification": user_message,
+            })
+            data = self._data_from_llm_raw(raw_json)
+            return self._finalize_intent_from_parsed_data(data, user_message)
+
         template_schemas = self._get_template_schemas()
         try:
             from ansible.intent_validation import (
@@ -385,25 +699,9 @@ class IntentParser:
             user_message=user_message,
         )
 
-        # Call LLM synchronously (we're inside a tool execution context)
         if self._provider:
-            from llm.provider import LLMMessage
-            loop: Any = None
-            try:
-                loop = asyncio.get_running_loop()
-            except RuntimeError:
-                loop = None
-
-            if loop and loop.is_running():
-                # Already inside an async context — use a thread
-                import concurrent.futures
-                with concurrent.futures.ThreadPoolExecutor() as pool:
-                    future = pool.submit(asyncio.run, self._call_llm(prompt))
-                    raw_json = future.result(timeout=30)
-            else:
-                raw_json = asyncio.run(self._call_llm(prompt))
+            raw_json = self._run_llm_sync(prompt)
         else:
-            # No provider — return a generic query intent
             raw_json = json.dumps({
                 "intent_type": "query",
                 "action": "unknown",
@@ -415,44 +713,178 @@ class IntentParser:
                 "justification": user_message,
             })
 
-        # Parse and validate
-        try:
-            data = json.loads(raw_json)
-        except json.JSONDecodeError:
-            # LLM returned garbage — extract JSON substring
-            data = self._extract_json(raw_json)
+        data = self._data_from_llm_raw(raw_json)
+        return self._finalize_intent_from_parsed_data(data, user_message)
 
+    def _intent_pipeline_v2_enabled(self) -> bool:
+        return os.getenv("INTENT_PIPELINE_V2", "true").lower() in ("1", "true", "yes", "on")
+
+    def _legacy_intent_parser_allowed(self) -> bool:
+        """Monolithic legacy prompt+graph parser — opt-in only (default off for v2-only testing)."""
+        return os.getenv("INTENT_USE_LEGACY_PARSER", "").lower() in ("1", "true", "yes", "on")
+
+    def _run_llm_sync(self, prompt: str) -> str:
+        """Call the LLM from sync context (handles nested event loops)."""
+        import asyncio
+
+        try:
+            timeout_sec = float(os.getenv("INTENT_PARSE_LLM_TIMEOUT_SEC", "90"))
+        except ValueError:
+            timeout_sec = 90.0
+
+        loop: Any = None
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+
+        if loop and loop.is_running():
+            import concurrent.futures
+
+            with concurrent.futures.ThreadPoolExecutor() as pool:
+                future = pool.submit(asyncio.run, self._call_llm(prompt))
+                return future.result(timeout=timeout_sec)
+        return asyncio.run(self._call_llm(prompt))
+
+    def _data_from_llm_raw(self, raw_json: str) -> dict:
+        try:
+            return json.loads(raw_json)
+        except json.JSONDecodeError:
+            return self._extract_json(raw_json)
+
+    def _sync_scope_target_devices(self, data: dict) -> None:
+        """Align scope.device_hostnames with parameters.target_devices when one side is empty."""
+        scope = data.setdefault("scope", {})
+        if not isinstance(scope, dict):
+            data["scope"] = {}
+            scope = data["scope"]
+        params = data.get("parameters")
+        if not isinstance(params, dict):
+            return
+        td = params.get("target_devices")
+        hosts = scope.get("device_hostnames") or []
+        has_hosts = bool(hosts and any(str(h).strip() for h in hosts))
+        if td is not None and not has_hosts:
+            if isinstance(td, list):
+                scope["device_hostnames"] = [str(x).strip() for x in td if str(x).strip()]
+            elif str(td).strip():
+                scope["device_hostnames"] = [str(td).strip()]
+            data["scope"] = scope
+        hosts2 = scope.get("device_hostnames") or []
+        if data.get("action") == "create_vlan" and hosts2 and not params.get("target_devices"):
+            params = dict(params)
+            params["target_devices"] = [str(h).strip() for h in hosts2 if str(h).strip()]
+            data["parameters"] = params
+
+    def _get_template_schemas_for_categories(self, category_keys: List[str]) -> str:
+        """Smaller template JSON block for v2 prompt (faster + less noise than all features)."""
+        feature_set: set[str] = set()
+        for ck in category_keys:
+            if ck == "vlan":
+                feature_set.update(["vlan", "interface"])
+            else:
+                feature_set.add(ck)
+        try:
+            from config_engine.renderer import TemplateRenderer
+
+            renderer = TemplateRenderer()
+            templates = renderer.list_templates()
+            schemas_dir = Path(__file__).resolve().parent.parent / "config_engine" / "schemas"
+            lines: list[str] = []
+            seen: set[str] = set()
+            for t in templates:
+                feat = t.get("feature", "")
+                if not feat or feat in seen or feat not in feature_set:
+                    continue
+                schema_path = schemas_dir / f"{feat}.json"
+                if schema_path.exists():
+                    seen.add(feat)
+                    schema = json.loads(schema_path.read_text())
+                    lines.append(f"### {feat}\n```json\n{json.dumps(schema, indent=2)}\n```")
+            if lines:
+                return "\n\n".join(lines)
+        except Exception as exc:
+            logger.warning("Could not load subset template schemas: %s", exc)
+        return self._get_template_schemas()
+
+    def _normalize_vlan_parameters(self, intent: ParsedIntent) -> None:
+        """Map legacy vlan_id/vlan_name into parameters.vlans[] for catalog validation."""
+        if intent.action != "create_vlan" or intent.feature != "vlan":
+            return
+        p = dict(intent.parameters or {})
+        vl = p.get("vlans")
+        if isinstance(vl, list) and len(vl) > 0:
+            intent.parameters = p
+            return
+        if p.get("vlan_id") is None and not str(p.get("vlan_name") or "").strip():
+            intent.parameters = p
+            return
+        row: Dict[str, Any] = {}
+        if p.get("vlan_id") is not None:
+            row["id"] = p["vlan_id"]
+        if p.get("vlan_name") is not None:
+            row["name"] = p["vlan_name"]
+        if row:
+            p["vlans"] = [row]
+        intent.parameters = p
+
+    def _finalize_intent_from_parsed_data(self, data: dict, user_message: str) -> str:
+        """Shared post-LLM path: sync fields, topology resolution, then catalog validation."""
+        import uuid
+
+        self._sync_scope_target_devices(data)
         intent = self._build_intent(data, user_message)
         intent.id = str(uuid.uuid4())[:8]
 
-        # Resolve device scope against live topology
-        intent.resolved_devices = self._resolve_devices(intent)
-        # Backend numeric/role fallback:
-        # - NEVER overrides explicit hostnames with conflicting guesses
-        # - CAN fill in *missing* devices when selector-based resolution is more specific.
-        fallback_devices = self._fallback_devices_from_text(user_message)
-        if fallback_devices:
-            # If the user explicitly selected switches by number (e.g. "access switch 1, 2, 3"),
-            # always prefer the backend's selector-based mapping over a broad LLM result
-            # such as "all access switches".
-            selector_numbers = _extract_selector_numbers(user_message)
-            if selector_numbers:
-                intent.resolved_devices = fallback_devices
-            else:
-                resolved_set = set(intent.resolved_devices or [])
-                fallback_set = set(fallback_devices or [])
-                if not resolved_set:
-                    # No devices from the LLM/topology resolution → use backend fallback.
-                    intent.resolved_devices = fallback_devices
-                else:
-                    # If all currently resolved devices are a subset of the fallback set and
-                    # the fallback has strictly more devices, then promote the fuller fallback list.
-                    if resolved_set.issubset(fallback_set) and len(fallback_set) > len(resolved_set):
-                        intent.resolved_devices = fallback_devices
+        generic_vlan = is_generic_vlan_on_devices_message(user_message)
+
+        if generic_vlan and intent.action == "create_vlan" and intent.feature == "vlan":
+            intent.resolved_devices = []
+            intent.parameters = dict(intent.parameters or {})
+            intent.parameters["_generic_vlan_prompt"] = True
+        else:
+            intent.resolved_devices = self._resolve_devices(intent)
 
         intent.parameters = dict(intent.parameters or {})
+        # create_vlan: "access switch 1, 2, 3" style → candidate shortlist only (admin confirms).
+        if (
+            self._db
+            and not generic_vlan
+            and intent.action == "create_vlan"
+            and intent.feature == "vlan"
+        ):
+            if not intent.parameters.get("_target_device_candidates"):
+                lc = enumerate_layer_switch_device_candidates(
+                    user_message, self._inventory_records()
+                )
+                if lc:
+                    intent.parameters["_target_device_candidates"] = lc
+                    intent.parameters["_target_device_candidate_reason"] = (
+                        "Prompt references access/distribution/core switch numbers — "
+                        "confirm device(s) from this shortlist or the full planned network."
+                    )
+            if intent.parameters.get("_target_device_candidates") and not intent.resolved_devices:
+                intent.requires_disambiguation = True
+                if not (intent.disambiguation_message or "").strip():
+                    intent.disambiguation_message = (
+                        "Select target device(s) from planned inventory; role/number text is not an exact hostname."
+                    )
 
-        # Heuristic: "Create VLAN …" misclassified as query/clarify with feature vlan
+        self._normalize_vlan_parameters(intent)
+        if (
+            intent.action == "create_vlan"
+            and intent.feature == "vlan"
+            and not generic_vlan
+        ):
+            p = dict(intent.parameters or {})
+            vlist = p.get("vlans")
+            if not (isinstance(vlist, list) and len(vlist) > 0):
+                extra = parse_vlan_database_params_from_text(user_message)
+                if extra.get("vlans"):
+                    p["vlans"] = extra["vlans"]
+                    intent.parameters = p
+                    self._normalize_vlan_parameters(intent)
+
         if _create_vlan_fast_path_match(user_message):
             if intent.feature == "vlan" and (
                 intent.action in ("clarify", "unknown", "")
@@ -462,14 +894,16 @@ class IntentParser:
                 intent.action = "create_vlan"
                 intent.feature = "vlan"
 
-        # Heuristic: some clearly imperative config requests are sometimes
-        # misclassified by the LLM as query/clarify. For example:
-        #   "Shutdown the interfaces"
-        # should be treated as an interface shutdown/configure action so that
-        # downstream schema validation and params_disambiguation can run.
         lower_msg = user_message.lower()
         looks_like_shutdown_interfaces = (
-            any(kw in lower_msg for kw in ("shutdown the interfaces", "shut down the interfaces", "turn off the interfaces"))
+            any(
+                kw in lower_msg
+                for kw in (
+                    "shutdown the interfaces",
+                    "shut down the interfaces",
+                    "turn off the interfaces",
+                )
+            )
             or ("shutdown" in lower_msg and "interface" in lower_msg)
             or ("shut down" in lower_msg and "interface" in lower_msg)
         )
@@ -480,8 +914,12 @@ class IntentParser:
             if not intent.feature:
                 intent.feature = "interface"
 
-        intent.parameters["device_deduction"] = self._deduce_device_reason(user_message, intent.resolved_devices)
-        # If feature is interface and user did not specify interfaces, require explicit resolution (no silent fallback).
+        intent.parameters["device_deduction"] = self._deduce_device_reason(
+            user_message,
+            intent.resolved_devices,
+            generic_prompt=bool(generic_vlan and intent.action == "create_vlan" and intent.feature == "vlan"),
+            layer_candidates=bool((intent.parameters or {}).get("_target_device_candidates")),
+        )
         if intent.feature == "interface" and intent.is_config_change():
             ifaces = intent.parameters.get("interfaces_to_shutdown") or intent.parameters.get("interfaces")
             if not ifaces or (isinstance(ifaces, list) and not any(str(x).strip() for x in ifaces)):
@@ -489,17 +927,34 @@ class IntentParser:
                 logger.info("No interfaces provided by user for interface intent; requires_resolution=true")
 
         if intent.is_config_change() and not intent.resolved_devices:
-            intent.requires_disambiguation = True
-            intent.disambiguation_message = (
-                f"Could not resolve target devices for this intent. "
-                f"Scope: {intent.scope.model_dump()}. "
-                f"Please specify device hostnames explicitly (e.g. R1, SW1)."
-            )
+            if generic_vlan and intent.action == "create_vlan":
+                intent.requires_disambiguation = False
+                intent.disambiguation_message = ""
+            else:
+                intent.requires_disambiguation = True
+                if not (intent.disambiguation_message or "").strip():
+                    intent.disambiguation_message = (
+                        f"Could not resolve target devices for this intent. "
+                        f"Scope: {intent.scope.model_dump()}. "
+                        f"Please specify device hostnames explicitly (e.g. R1, SW1)."
+                    )
+
+        try:
+            from ansible.intent_pipeline.validator import annotate_missing_fields
+
+            flat = annotate_missing_fields(intent.model_dump())
+            intent.parameters = dict(flat.get("parameters") or {})
+            intent.requires_resolution = bool(flat.get("requires_resolution"))
+        except Exception:
+            pass
 
         logger.info(
             "Parsed intent: type=%s action=%s feature=%s devices=%s risk=%s",
-            intent.intent_type, intent.action, intent.feature,
-            intent.resolved_devices, intent.risk_level,
+            intent.intent_type,
+            intent.action,
+            intent.feature,
+            intent.resolved_devices,
+            intent.risk_level,
         )
         return json.dumps(intent.model_dump(), default=str)
 
@@ -559,16 +1014,18 @@ class IntentParser:
     def _try_rule_based_create_vlan(self, msg: str) -> Optional[ParsedIntent]:
         """
         Rule-based create_vlan intent for short imperative VLAN-database prompts.
+        Fills ``parameters.vlans`` from the user text when id (and optional name) are present.
         """
         if not _create_vlan_fast_path_match(msg):
             return None
+        params = dict(parse_vlan_database_params_from_text(msg))
         return ParsedIntent(
             intent_type=IntentType.CONFIGURE,
             action="create_vlan",
             feature="vlan",
             risk_level=RiskLevel.MEDIUM,
             justification="Rule-based: imperative create VLAN (VLAN database) request",
-            parameters={},
+            parameters=params,
         )
 
     # ----- Helpers -----
@@ -655,6 +1112,8 @@ class IntentParser:
         if isinstance(secondary, list) and secondary:
             params["_secondary_intents"] = secondary
         requires_resolution = bool(data.get("requires_resolution", False))
+        requires_disambiguation = bool(data.get("requires_disambiguation", False))
+        disambiguation_message = str(data.get("disambiguation_message") or "")
         return ParsedIntent(
             intent_type=intent_type,
             action=data.get("action", "unknown"),
@@ -665,114 +1124,61 @@ class IntentParser:
             risk_level=risk_level,
             justification=data.get("justification", ""),
             raw_user_input=user_message,
+            requires_disambiguation=requires_disambiguation,
+            disambiguation_message=disambiguation_message,
             requires_resolution=requires_resolution,
         )
 
-    def _fallback_devices_from_text(self, raw: str) -> list[str]:
-        """
-        Best-effort backend fallback for role + number phrasing.
-
-        This keeps device selection anchored to the prompt wording when the LLM
-        omits hostnames or over-generalizes a switch group.
-        """
-        if not self._db:
-            return []
-
-        lower = (raw or "").lower()
-        role = ""
-        if "access" in lower:
-            role = "access"
-        elif "distribution" in lower or "dist" in lower:
-            role = "distribution"
-        elif "core" in lower:
-            role = "core"
-
-        selector_numbers = _extract_selector_numbers(raw)
-        if not role and not selector_numbers and "switches" not in lower:
-            return []
-
-        records = self._inventory_records()
-        ordered_hosts: list[str] = []
-        for record in records:
-            host = str(record.get("hostname") or "").strip()
-            if not host:
-                continue
-            record_role = _normalize_role(record.get("role"))
-            if not record_role:
-                record_role = _role_from_hostname(host)
-            if role and record_role != role:
-                continue
-            ordered_hosts.append(host)
-
-        ordered_hosts = sorted(ordered_hosts, key=_natural_key)
-
-        if not ordered_hosts:
-            ordered_hosts = [r.get("hostname") for r in records if r.get("hostname")]
-            ordered_hosts = sorted([str(h).strip() for h in ordered_hosts if str(h).strip()], key=_natural_key)
-
-        if not ordered_hosts:
-            return []
-
-        def score_host(host: str, num: int) -> tuple[float, list[Any]]:
-            host_l = host.lower()
-            score = 0.0
-            if role and role in host_l:
-                score += 2.0
-            if re.search(rf"(?:^|[^0-9]){num}(?:[^0-9]|$)", host_l):
-                score += 4.0
-            score += SequenceMatcher(None, f"{role or 'switch'} {num}", host_l).ratio()
-            return score, _natural_key(host)
-
-        # "switches" with no role means all switches in scope.
-        if "switches" in lower and not role and not selector_numbers:
-            return ordered_hosts
-
-        if role and not selector_numbers:
-            return ordered_hosts
-
-        if selector_numbers:
-            # For a single selector like "access switch 3", return only the best match.
-            if len(selector_numbers) == 1:
-                ranked = sorted(ordered_hosts, key=lambda h: score_host(h, selector_numbers[0]), reverse=True)
-                return ranked[:1] if ranked else []
-            # For multiple selectors, return one host per selector in prompt order.
-            chosen: list[str] = []
-            seen = set()
-            for n in selector_numbers:
-                ranked = sorted(ordered_hosts, key=lambda h: score_host(h, n), reverse=True)
-                if ranked:
-                    host = ranked[0]
-                    if host not in seen:
-                        seen.add(host)
-                        chosen.append(host)
-            if chosen:
-                return chosen
-
-        return []
-
-    def _deduce_device_reason(self, raw: str, resolved_hosts: list[str]) -> dict[str, Any]:
+    def _deduce_device_reason(
+        self,
+        raw: str,
+        resolved_hosts: list[str],
+        *,
+        generic_prompt: bool = False,
+        layer_candidates: bool = False,
+    ) -> dict[str, Any]:
         """Return a readable explanation of why each resolved host was chosen."""
-        lower = (raw or "").lower()
+        if generic_prompt:
+            return {
+                "deduced": [],
+                "mapping": [],
+                "why": "Generic VLAN prompt — specify VLAN id, name, and target devices explicitly.",
+                "generic_prompt": True,
+            }
+        if layer_candidates:
+            return {
+                "deduced": [],
+                "mapping": [],
+                "why": (
+                    "Layer/switch-number phrase detected — see _target_device_candidates for a shortlist; "
+                    "confirm device(s) in UI (not auto-resolved)."
+                ),
+            }
+        if not resolved_hosts:
+            return {
+                "deduced": [],
+                "mapping": [],
+                "why": "No target devices resolved from the prompt (exact inventory / alias only).",
+            }
+        lower_raw = (raw or "").lower()
         mapping: list[dict[str, Any]] = []
+        tokens = _extract_explicit_device_tokens(raw or "")
+        alias_map = _load_device_alias_map()
         for host in resolved_hosts:
             host_lower = host.lower()
             reasons: list[str] = []
-            if "access" in lower and ("acc" in host_lower or "access" in host_lower):
-                reasons.append("matched role=access")
-            if "distribution" in lower and ("dist" in host_lower or "distribution" in host_lower):
-                reasons.append("matched role=distribution")
-            if "core" in lower and "core" in host_lower:
-                reasons.append("matched role=core")
-            num = _number_from_hostname(host)
-            if num is not None and str(num) in lower:
-                reasons.append("matched prompt number")
+            if any(str(t).lower() == host_lower or str(t).upper() == host.upper() for t in tokens):
+                reasons.append("explicit device token in prompt matched inventory hostname (exact)")
+            for alias_key, hinted in alias_map.items():
+                if host in hinted and alias_key.lower() in lower_raw:
+                    reasons.append(f"device_alias_hints entry '{alias_key}' mapped to this hostname")
             if not reasons:
-                reasons.append("matched by inventory/name similarity")
+                reasons.append("exact hostname match from scope.device_hostnames or topology inventory")
             mapping.append({"hostname": host, "reason": "; ".join(reasons)})
         return {
             "deduced": resolved_hosts,
             "mapping": mapping,
-            "why": "Backend selected the closest inventory names from the prompt wording.",
+            "why": "Only exact planned-inventory hostnames (or device_alias_hints) — no fuzzy or role/number guessing.",
         }
 
     def _resolve_devices(self, intent: ParsedIntent) -> List[str]:
@@ -813,14 +1219,6 @@ class IntentParser:
                     logger.warning("Device '%s' not found in topology", h_clean or h)
             # When user said "access switches" (etc.), filter to that role
             requested_role = _normalize_role(intent.scope.device_role)
-            if not requested_role and intent.raw_user_input:
-                requested_role = _infer_role_from_user_input(intent.raw_user_input)
-            # Fallback: list has both Acc_ and Core_/Dist_ → assume "access only" and keep Acc_*
-            if not requested_role and resolved:
-                has_access = any(_role_from_hostname(n) == "access" for n in resolved)
-                has_other = any(_role_from_hostname(n) in ("distribution", "core") for n in resolved)
-                if has_access and has_other:
-                    requested_role = "access"
             if requested_role and resolved:
                 role_filtered = [
                     name for name in resolved
@@ -831,17 +1229,25 @@ class IntentParser:
                     logger.info("Filtered to %s role: %d devices", requested_role, len(resolved))
             return resolved
 
+        # 1b. Explicit short tokens (SW1, R1, Acc_Cisco_1, …) — alias map + exact inventory only
+        toks = _extract_explicit_device_tokens(intent.raw_user_input or "")
+        if toks:
+            got = _resolve_device_tokens_to_inventory(toks, inventory_by_hostname, all_hosts)
+            if got:
+                return got
+
         # 2. all_devices flag
         if intent.scope.all_devices:
             return sorted(inventory_by_hostname.keys() or all_hosts)
 
-        # 3. Role / building / vendor filter — query planned inventory
+        # 3. Role / building / vendor filter — never return whole inventory without a filter
         try:
             requested_vendor = _normalize_vendor(intent.scope.vendor_filter or intent.vendor)
             requested_role = _normalize_role(intent.scope.device_role)
-            if not requested_role and intent.raw_user_input:
-                requested_role = _infer_role_from_user_input(intent.raw_user_input)
             requested_site = _normalize_site(intent.scope.building)
+
+            if not requested_role and not requested_vendor and not requested_site:
+                return []
 
             resolved: List[str] = []
             for hostname, record in inventory_by_hostname.items():
@@ -917,34 +1323,6 @@ def _role_from_hostname(hostname: str) -> str:
     if lower.startswith("core_"):
         return "core"
     return ""
-
-
-def _infer_role_from_user_input(raw: str) -> str:
-    """Infer device_role from user text when the LLM did not set scope.device_role (e.g. 'access switches' -> access)."""
-    lower = (raw or "").lower()
-    if "access" in lower and ("switch" in lower or "layer" in lower or "only" in lower):
-        return "access"
-    if "access switch" in lower or "access switches" in lower or "all access" in lower:
-        return "access"
-    if "distribution" in lower or " dist " in lower or "dist switch" in lower:
-        return "distribution"
-    if "core" in lower and ("switch" in lower or "router" in lower or "layer" in lower):
-        return "core"
-    return ""
-
-
-def _number_from_hostname(hostname: str) -> Optional[int]:
-    """Extract the most useful numeric suffix from a hostname."""
-    if not hostname:
-        return None
-    m = re.search(r"_(\d+)$", hostname)
-    if m:
-        return int(m.group(1))
-    m = re.search(r"(\d+)$", hostname)
-    if m:
-        return int(m.group(1))
-    nums = re.findall(r"\d+", hostname)
-    return int(nums[0]) if nums else None
 
 
 def _role_matches(

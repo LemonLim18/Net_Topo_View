@@ -12,10 +12,14 @@ import { parseNativeVlanNumberFromPrompt, userPromptSuggestsNativeVlanIntent } f
 import type { LlmRuntimeState } from '../../src/services/api';
 import type { AnsibleGeneratedArtifactFile, AnsibleMessage, AnsibleJob, AnsibleProposedEdit } from '../../typesLLM';
 import { PlaybookStudioOverlay, type IntentSchemaInspectorPayload } from './PlaybookStudioOverlay';
+import {
+  DEFAULT_LLM_PROVIDER,
+  DEFAULT_OLLAMA_BASE_URL,
+  DEFAULT_OLLAMA_MODEL,
+} from '../../src/config';
 
 const ANSIBLE_MODEL_STORAGE_KEY = 'ansibleStudio.selectedModel';
 const OLLAMA_BASE_URL_STORAGE_KEY = 'llmRuntimeSelector.ollamaBaseUrl';
-const DEFAULT_OLLAMA_BASE_URL = 'http://192.168.1.252:11434';
 
 function prettifyModelLabel(providerName: string, modelName: string): string {
   if (providerName === 'gemini') {
@@ -23,7 +27,11 @@ function prettifyModelLabel(providerName: string, modelName: string): string {
     if (modelName === 'gemini-2.5-pro') return 'Gemini 2.5 Pro';
     return modelName;
   }
-  return providerName === 'ollama' ? `${modelName} | Ollama` : modelName;
+  if (providerName === 'ollama') {
+    if (modelName === 'qwen2.5-coder:3b') return 'Qwen 2.5 Coder 3B | Ollama (local)';
+    return `${modelName} | Ollama (local)`;
+  }
+  return modelName;
 }
 
 interface AnsibleChatPanelProps {
@@ -246,7 +254,11 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
   const [isDragOver, setIsDragOver]     = useState(false);
   const [attachedFiles, setAttachedFiles] = useState<{ name: string; content: string; lang: string; size: number; truncated: boolean }[]>([]);
   const [runtime, setRuntime]           = useState<LlmRuntimeState | null>(null);
-  const [ansibleModel, setAnsibleModel] = useState<AnsibleModelSelection>({ provider: 'gemini', model: 'gemini-2.5-flash', ollama_base_url: null });
+  const [ansibleModel, setAnsibleModel] = useState<AnsibleModelSelection>(() =>
+    DEFAULT_LLM_PROVIDER === 'gemini'
+      ? { provider: 'gemini', model: 'gemini-2.5-flash', ollama_base_url: null }
+      : { provider: 'ollama', model: DEFAULT_OLLAMA_MODEL, ollama_base_url: DEFAULT_OLLAMA_BASE_URL },
+  );
   const [modelSearch, setModelSearch]   = useState('');
   const [modelDropdownOpen, setModelDropdownOpen] = useState(false);
   const [isRebuildingRag, setIsRebuildingRag] = useState(false);
@@ -336,9 +348,11 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
           }
         }
       } catch (_) { /* ignore */ }
+      const prov = r.active_provider || DEFAULT_LLM_PROVIDER;
+      const fallbackModel = prov === 'gemini' ? 'gemini-2.5-flash' : DEFAULT_OLLAMA_MODEL;
       setAnsibleModel({
-        provider: r.active_provider || 'gemini',
-        model: r.active_model || 'gemini-2.5-flash',
+        provider: prov,
+        model: r.active_model || fallbackModel,
         ollama_base_url: r.active_base_url ?? null,
       });
     }).catch(() => { /* keep defaults */ });
@@ -711,6 +725,7 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
           provider: ansibleModel.provider,
           model: ansibleModel.model,
           ollama_base_url: ansibleModel.ollama_base_url ?? undefined,
+          skip_rag: true,
         },
         { signal: ac.signal },
       );
@@ -849,7 +864,7 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
       setPreviewLockedTargetHosts([]);
       setPreviewAccumulatedParams({});
       const loadingId = crypto.randomUUID();
-      const loadingPhases = ['Reviewing the user intent', 'Clarifying for some missing information', 'Loading ...'];
+      const loadingPhases = ['Parsing intent…', 'Resolving targets…', 'Almost done…'];
       setMessages(prev => [...prev, {
         id: loadingId,
         role: 'assistant',
@@ -864,12 +879,12 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
         setMessages(prev => prev.map((m) =>
           m.id === loadingId ? { ...m, content: loadingPhases[1] } : m
         ));
-      }, 900);
+      }, 450);
       const t2 = setTimeout(() => {
         setMessages(prev => prev.map((m) =>
           m.id === loadingId ? { ...m, content: loadingPhases[2] } : m
         ));
-      }, 2800);
+      }, 1800);
       loadingPhaseTimeoutRef.current = [t1, t2];
       const { vendor, feature, params: lightParams } = parseIntent(text);
       const initialHosts = safeParsedHostsForPreview(text);
@@ -885,6 +900,7 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
           provider: ansibleModel.provider,
           model: ansibleModel.model,
           ollama_base_url: ansibleModel.ollama_base_url ?? undefined,
+          skip_rag: true,
         }, { signal: ac.signal });
         loadingPhaseTimeoutRef.current.forEach(clearTimeout);
         loadingPhaseTimeoutRef.current = [];
@@ -1000,6 +1016,7 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
         provider: ansibleModel.provider,
         model: ansibleModel.model,
         ollama_base_url: ansibleModel.ollama_base_url ?? undefined,
+        skip_rag: true,
       }, { signal: ac.signal });
       abortControllerRef.current = null;
       setMessages(prev => prev.filter(m => m.id !== loadingId));
@@ -1649,6 +1666,7 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
                                 model: ansibleModel.model,
                                 ollama_base_url: ansibleModel.ollama_base_url ?? undefined,
                                 params: mergedIface,
+                                skip_rag: true,
                               }, { signal: ac.signal });
                               abortControllerRef.current = null;
                               setMessages(prev => prev.filter(m => m.id !== progressId));
@@ -1887,6 +1905,7 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
                                       model: ansibleModel.model,
                                       ollama_base_url: ansibleModel.ollama_base_url ?? undefined,
                                       params: merged,
+                                      skip_rag: true,
                                     }, { signal: ac.signal });
                                     abortControllerRef.current = null;
                                     setMessages(prev => prev.filter(m => m.id !== generatingId));

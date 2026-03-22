@@ -1,0 +1,83 @@
+category_key: ospf
+display_name: OSPF
+category_description: OSPF dynamic routing configuration.
+legacy_feature: ospf
+shared_fields: []
+
+operations:
+  enable_ospf_process:
+    action: enable_ospf_process
+    feature: ospf
+    required_parameters: [process_id, target_devices]
+    implicit_requires_targets: true
+    optional_parameters: [router_id]
+    keyword_triggers:
+      - "enable ospf"
+      - "router ospf"
+    rules:
+      - "Start OSPF process on devices."
+
+  advertise_network:
+    action: advertise_network
+    feature: ospf
+    required_parameters: [process_id, ospf_networks, target_devices]
+    implicit_requires_targets: true
+    optional_parameters: [router_id, area]
+    keyword_triggers:
+      - "ospf network"
+      - "area 0"
+      - "advertise"
+    rules:
+      - "ospf_networks: list of { prefix/prefix_length, area } per device context."
+
+  configure_passive_interface:
+    action: configure_passive_interface
+    feature: ospf
+    required_parameters: [process_id, passive_interfaces, target_devices]
+    implicit_requires_targets: true
+    optional_parameters: [router_id]
+    keyword_triggers:
+      - "passive"
+      - "passive-interface"
+    rules:
+      - "Mark interface(s) passive for OSPF."
+
+  configure_ospf_redistribute:
+    action: configure_ospf_redistribute
+    feature: ospf
+    required_parameters: [process_id, redistribute, target_devices]
+    implicit_requires_targets: true
+    optional_parameters: [metrics, route_map]
+    keyword_triggers:
+      - "redistribut"
+      - "redistribute static"
+    rules:
+      - "Redistribute protocols into OSPF (e.g. static, connected)."
+
+  configure_ospf:
+    action: configure_ospf
+    feature: ospf
+    required_parameter_groups:
+      any_of:
+        - [process_id, target_devices]
+        - [process_id, ospf_networks, target_devices]
+        - [process_id, router_id, ospf_networks, target_devices]
+        - [process_id, passive_interfaces, target_devices]
+        - [process_id, redistribute, target_devices]
+        - [process_id, router_id, target_devices]
+    implicit_requires_targets: true
+    optional_parameters:
+      - router_id
+      - ospf_networks
+      - networks
+      - passive_interfaces
+      - redistribute
+      - areas
+    keyword_triggers:
+      - "ospf"
+      - "router ospf"
+      - "routing process"
+    dependencies:
+      - "Prefer enable_ospf_process, advertise_network, configure_passive_interface, configure_ospf_redistribute when the sentence is specific."
+    rules:
+      - "OSPF process, areas, networks, passive interfaces, redistribution as user specifies."

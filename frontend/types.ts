@@ -81,6 +81,7 @@ export type ViewId =
   | 'incidents'
   | 'onboarding'
   | 'intent_history'
+  | 'intent_parser'
   | 'sdn_dashboard'
   | 'playbook_comparison'
   | 'approval_queue'

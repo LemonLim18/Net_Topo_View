@@ -98,16 +98,16 @@ def get_llm_provider() -> "LLMProvider":
     Return the configured LLM provider instance.
 
     Provider selection (via ``LLM_PROVIDER`` env var):
-        gemini  → GeminiProvider  (default)
-        ollama  → OllamaProvider
+        ollama  → OllamaProvider (default)
+        gemini  → GeminiProvider
     """
     import os
-    provider_name = os.getenv("LLM_PROVIDER", "gemini").lower()
+    provider_name = (os.getenv("LLM_PROVIDER") or "ollama").strip().lower()
 
-    if provider_name == "ollama":
-        from llm.ollama_provider import OllamaProvider
-        return OllamaProvider()
+    if provider_name == "gemini":
+        from llm.gemini_provider import GeminiProvider
+        return GeminiProvider()
 
-    # Default: Gemini
-    from llm.gemini_provider import GeminiProvider
-    return GeminiProvider()
+    # Default: local Ollama (see OLLAMA_MODEL, e.g. qwen2.5-coder:3b)
+    from llm.ollama_provider import OllamaProvider
+    return OllamaProvider()

@@ -14,6 +14,7 @@ import DriftView from '../views/DriftView';
 import IncidentDashboard from '../views/IncidentDashboard';
 import OnboardingView from '../views/OnboardingView';
 import IntentHistoryView from '../views/IntentHistoryView';
+import IntentParserView from '../views/IntentParserView';
 import SDNDashboardView from '../views/SDNDashboardView';
 import PlaybookComparisonView from '../views/PlaybookComparisonView';
 import ApprovalQueueView from '../views/ApprovalQueueView';
@@ -53,6 +54,7 @@ const isViewId = (value: string | null): value is ViewId => {
     'incidents',
     'onboarding',
     'intent_history',
+    'intent_parser',
     'sdn_dashboard',
     'playbook_comparison',
     'approval_queue',
@@ -221,6 +223,8 @@ const App: React.FC = () => {
       // Phase 1 — Intent Lifecycle Management
       case 'intent_history':
         return <IntentHistoryView setView={setView} />;
+      case 'intent_parser':
+        return <IntentParserView />;
 
       // Phase 3 — SDN Controller Dashboard
       case 'sdn_dashboard':

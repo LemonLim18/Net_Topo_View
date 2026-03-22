@@ -159,6 +159,7 @@ const Sidebar: React.FC<SidebarProps> = ({ currentView, setView, user, onLogout,
         >
           {/* <MenuItem id="net_chat" label="Network Copilot" icon={BotMessageSquare} /> */}
           <MenuItem id="ansible_studio" label="Ansible Studio" icon={Workflow} />
+          <MenuItem id="intent_parser" label="Intent Parser" icon={BotMessageSquare} />
           <MenuItem id="intent_history" label="Intent History" icon={History} />
           <MenuItem id="playbook_comparison" label="Playbook Compare" icon={Columns} />
           <MenuItem id="approval_queue" label="Approval Queue" icon={ListChecks} />

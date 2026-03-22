@@ -55,6 +55,7 @@ from rag.digital_twin import DIGITAL_TWIN_VERSION
 from llm import network_tools
 from llm.refresh_fabric import register_refresh_listener
 from rag.context_bundle import ContextBundleBuilder
+from llm.ollama_provider import DEFAULT_OLLAMA_MODEL
 
 logger = logging.getLogger("llm.api")
 
@@ -342,7 +343,7 @@ def _build_runtime_state(agent: Any, ollama_base_url: Optional[str] = None) -> D
 
 
 def _instantiate_runtime_provider(provider_name: str, model: Optional[str], ollama_base_url: Optional[str]):
-    normalized = str(provider_name or "gemini").strip().lower()
+    normalized = str(provider_name or os.getenv("LLM_PROVIDER") or "ollama").strip().lower()
     if normalized == "ollama":
         from llm.ollama_provider import OllamaProvider
 
@@ -626,11 +627,11 @@ async def ollama_playground(request: OllamaPlaygroundRequest):
     Bypasses standard agent context and grounding.
     """
     base_url = os.getenv("OLLAMA_BASE_URL", _DEFAULT_OLLAMA_VM_URL).rstrip("/")
-    model = request.model or os.getenv("OLLAMA_MODEL", "llama3.2")
-    
+    model = request.model or os.getenv("OLLAMA_MODEL") or DEFAULT_OLLAMA_MODEL
+
     from llm.ollama_provider import OllamaProvider
     from llm.provider import LLMMessage
-    
+
     provider = OllamaProvider(base_url=base_url, model=model)
     try:
         response = await provider.generate(
@@ -655,11 +656,11 @@ async def ollama_context_query(request: OllamaPlaygroundRequest):
     Provides a RAG-lite experience for the floating overlay.
     """
     base_url = os.getenv("OLLAMA_BASE_URL", _DEFAULT_OLLAMA_VM_URL).rstrip("/")
-    model = request.model or os.getenv("OLLAMA_MODEL", "llama3.2")
-    
+    model = request.model or os.getenv("OLLAMA_MODEL") or DEFAULT_OLLAMA_MODEL
+
     from llm.ollama_provider import OllamaProvider
     from llm.provider import LLMMessage
-    
+
     try:
         # 1. Fetch inventory snapshot
         agent = _get_agent()
