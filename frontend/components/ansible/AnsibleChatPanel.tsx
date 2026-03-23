@@ -407,6 +407,8 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
     messageId: string;
     question: string;
     candidateDevices: string[];
+    closestCandidates?: string[];
+    otherCandidates?: string[];
     intentText: string;
     kind?: string;
   } | null>(null);
@@ -696,6 +698,8 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
         | {
             question?: string;
             candidate_devices?: string[];
+            closest_candidates?: string[];
+            other_candidates?: string[];
             ask_user_selection?: boolean;
             disambiguation_kind?: string;
           }
@@ -728,6 +732,8 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
             devicesDis.question ||
             'Select one or more target devices from planned inventory, then continue.',
           candidateDevices: devicesDis.candidate_devices,
+          closestCandidates: devicesDis.closest_candidates,
+          otherCandidates: devicesDis.other_candidates,
           intentText,
           kind: devicesDis.disambiguation_kind,
         });
@@ -1104,7 +1110,10 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
     }
     const msgId = interfaceDisambiguation.messageId;
     const intentText = interfaceDisambiguation.intentText;
-    const schemaAction = (interfaceDisambiguation.schemaAction || 'shutdown_interface').toLowerCase();
+    const schemaAction = (
+      interfaceDisambiguation.schemaAction ||
+      ((previewAccumulatedParams.action as string | undefined) || 'configure_interface')
+    ).toLowerCase();
     setInterfaceDisambiguation(null);
     setMessages(prev => prev.filter(m => m.id !== msgId));
     setGenerating(true);
@@ -1961,24 +1970,71 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
                         </div>
                       ) : null}
                       <div className="flex flex-wrap gap-2 rounded border border-base-300 bg-base-300/50 p-2 max-h-52 overflow-y-auto">
-                        {deviceDisambiguation.candidateDevices.map((host) => (
-                          <label key={host} className="flex items-center gap-1.5 cursor-pointer">
-                            <input
-                              type="checkbox"
-                              checked={selectedDevices.has(host)}
-                              onChange={() => {
-                                setSelectedDevices((prev) => {
-                                  const next = new Set(prev);
-                                  if (next.has(host)) next.delete(host);
-                                  else next.add(host);
-                                  return next;
-                                });
-                              }}
-                              className="checkbox checkbox-sm checkbox-primary"
-                            />
-                            <span className="text-xs font-mono">{host}</span>
-                          </label>
-                        ))}
+                        {(deviceDisambiguation.closestCandidates?.length ?? 0) > 0 ? (
+                          <>
+                            <div className="w-full text-[11px] font-semibold text-primary/90">You might be referring:</div>
+                            {deviceDisambiguation.closestCandidates!.map((host) => (
+                              <label key={`closest-${host}`} className="flex items-center gap-1.5 cursor-pointer">
+                                <input
+                                  type="checkbox"
+                                  checked={selectedDevices.has(host)}
+                                  onChange={() => {
+                                    setSelectedDevices((prev) => {
+                                      const next = new Set(prev);
+                                      if (next.has(host)) next.delete(host);
+                                      else next.add(host);
+                                      return next;
+                                    });
+                                  }}
+                                  className="checkbox checkbox-sm checkbox-primary"
+                                />
+                                <span className="text-xs font-mono">{host}</span>
+                              </label>
+                            ))}
+                            {(deviceDisambiguation.otherCandidates?.length ?? 0) > 0 ? (
+                              <>
+                                <div className="w-full mt-1 text-[11px] font-semibold text-base-content/70">Devices not found?</div>
+                                {deviceDisambiguation.otherCandidates!.map((host) => (
+                                  <label key={`other-${host}`} className="flex items-center gap-1.5 cursor-pointer">
+                                    <input
+                                      type="checkbox"
+                                      checked={selectedDevices.has(host)}
+                                      onChange={() => {
+                                        setSelectedDevices((prev) => {
+                                          const next = new Set(prev);
+                                          if (next.has(host)) next.delete(host);
+                                          else next.add(host);
+                                          return next;
+                                        });
+                                      }}
+                                      className="checkbox checkbox-sm checkbox-primary"
+                                    />
+                                    <span className="text-xs font-mono">{host}</span>
+                                  </label>
+                                ))}
+                              </>
+                            ) : null}
+                          </>
+                        ) : (
+                          deviceDisambiguation.candidateDevices.map((host) => (
+                            <label key={host} className="flex items-center gap-1.5 cursor-pointer">
+                              <input
+                                type="checkbox"
+                                checked={selectedDevices.has(host)}
+                                onChange={() => {
+                                  setSelectedDevices((prev) => {
+                                    const next = new Set(prev);
+                                    if (next.has(host)) next.delete(host);
+                                    else next.add(host);
+                                    return next;
+                                  });
+                                }}
+                                className="checkbox checkbox-sm checkbox-primary"
+                              />
+                              <span className="text-xs font-mono">{host}</span>
+                            </label>
+                          ))
+                        )}
                       </div>
                       <div className="flex items-center gap-2">
                         <button type="button" className="btn btn-sm btn-ghost" onClick={() => {

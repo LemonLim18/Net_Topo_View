@@ -14,6 +14,18 @@ from llm.intent import (
     extract_layer_switch_role_and_numbers,
     parse_vlan_database_params_from_text,
 )
+from ansible.api import (
+    _extract_non_exact_device_aliases_from_prompt,
+    _is_management_interface,
+    _normalize_mismatched_qualified_interface_tokens,
+    _normalize_secondary_intents_qualified_interface_tokens,
+    _resolve_unknown_device_aliases,
+)
+from ansible.context_entity_validation import build_planned_all_interfaces_preview
+from ansible.intent_validation import configure_interface_conditional_disambiguation_fields
+from ansible.intent_validation import get_schema_for_parsed_intent, validate_completeness
+from ansible.intent_validation import merge_prompt_aware_disambiguation_for_schema
+from ansible.reference_resolver import fill_playbook_from_reference
 
 
 def test_parse_vlan_database_params_from_text():
@@ -384,3 +396,208 @@ def test_doc_example_prompts_split_or_single():
         segs = split_multi_intent(p)
         assert len(segs) >= 1
         assert all(len(x.strip()) > 0 for x in segs)
+
+
+class _AliasDev:
+    def __init__(self, hostname: str, role: str = "access"):
+        self.hostname = hostname
+        self.role = role
+
+
+class _AliasDb:
+    def __init__(self):
+        self._devices = [
+            _AliasDev("Acc_Cisco_1", "access"),
+            _AliasDev("Acc_Cisco_2", "access"),
+            _AliasDev("Acc_Huawei_3", "access"),
+            _AliasDev("Core_Cisco_1", "core"),
+        ]
+
+    def get_all_devices(self):
+        return list(self._devices)
+
+
+def test_unknown_alias_router2_requires_user_selection_instead_of_auto_map():
+    """
+    Non-exact aliases (e.g. "router 2") must not silently map to a canonical hostname.
+    Backend should always return disambiguation with closest + others sections.
+    """
+    auto, dd = _resolve_unknown_device_aliases(["router 2"], _AliasDb())
+    assert auto == []
+    assert isinstance(dd, dict)
+    assert dd.get("ask_user_selection") is True
+    closest = dd.get("closest_candidates") or []
+    others = dd.get("other_candidates") or []
+    assert "Acc_Cisco_2" in closest
+    assert "Core_Cisco_1" not in closest
+    assert "Core_Cisco_1" in others
+
+
+def test_extract_non_exact_device_aliases_detects_router_phrase():
+    aliases = _extract_non_exact_device_aliases_from_prompt(
+        "Shut down GigabitEthernet1/0/1 on router 2",
+        _AliasDb(),
+    )
+    assert "router 2" in [a.lower() for a in aliases]
+
+
+def test_normalize_mismatched_qualified_interface_tokens_strips_stale_device_hint():
+    params = {"interfaces_to_shutdown": ["Dist_Cisco_1:Ethernet1/0/1"]}
+    out = _normalize_mismatched_qualified_interface_tokens(params, ["Acc_Cisco_2"])
+    assert out["interfaces_to_shutdown"] == ["Ethernet1/0/1"]
+
+
+def test_normalize_secondary_intents_strips_stale_device_hint():
+    sec = [
+        {
+            "action": "shutdown_interface",
+            "parameters": {"interfaces_to_shutdown": ["Dist_Cisco_1:Ethernet1/0/1"]},
+        }
+    ]
+    out = _normalize_secondary_intents_qualified_interface_tokens(sec, ["Acc_Cisco_2"])
+    assert out[0]["parameters"]["interfaces_to_shutdown"] == ["Ethernet1/0/1"]
+
+
+def test_planned_all_interfaces_preview_excludes_management_and_has_no_note():
+    planning_context = {
+        "devices": [
+            {
+                "hostname": "Acc_Cisco_2",
+                "management_ip": "10.0.0.2",
+                "interfaces": [
+                    {"name": "Management0/0", "ip_address": "10.0.0.2"},
+                    {"name": "Ethernet0/1", "ip_address": "192.168.1.1"},
+                    {"name": "Ethernet0/2", "ip_address": "10.0.0.2"},
+                    {"name": "Console0"},
+                ],
+            }
+        ]
+    }
+    out = build_planned_all_interfaces_preview(planning_context, ["Acc_Cisco_2"])
+    names = [str(i.get("name") or "") for i in out["devices"][0]["interfaces"]]
+    assert names == ["Ethernet0/1"]
+    assert "note" not in out
+
+
+def test_configure_interface_does_not_force_access_vlan_question():
+    fields = configure_interface_conditional_disambiguation_fields(
+        {
+            "interfaces": [
+                {"name": "Acc_Cisco_1:Ethernet0/2", "mode": "access"},
+                {"name": "Acc_Cisco_1:Ethernet0/3", "mode": "access"},
+            ]
+        }
+    )
+    asked = {str(f.get("field") or "") for f in fields}
+    assert "access_vlan" not in asked
+
+
+def test_is_management_interface_matches_nested_ip_dict_and_cidr():
+    assert _is_management_interface(
+        {"name": "Ethernet0/0", "ip": {"address": "10.0.0.1/24"}},
+        "10.0.0.1",
+    ) is True
+
+
+def test_configure_interface_schema_allows_access_mode_without_access_vlan():
+    intent = {
+        "action": "configure_interface",
+        "feature": "interface",
+        "params": {
+            "target_hosts": ["Acc_Cisco_1"],
+            "interfaces": [{"name": "Ethernet0/2", "mode": "access"}],
+        },
+    }
+    schema = get_schema_for_parsed_intent(intent)
+    missing, errors = validate_completeness(intent, schema, action_or_feature="configure_interface")
+    assert errors == []
+    assert "access_vlan" not in missing
+
+
+def test_configure_interface_schema_allows_trunk_mode_without_trunk_vlans():
+    intent = {
+        "action": "configure_interface",
+        "feature": "interface",
+        "params": {
+            "target_hosts": ["Acc_Cisco_1"],
+            "interfaces": [{"name": "Acc_Cisco_1:Ethernet0/1", "mode": "trunk"}],
+        },
+    }
+    schema = get_schema_for_parsed_intent(intent)
+    missing, errors = validate_completeness(intent, schema, action_or_feature="configure_interface")
+    assert errors == []
+    assert "trunk_vlans" not in missing
+    assert "allowed_vlans" not in missing
+
+
+def test_reference_fill_strips_qualified_interface_names_for_cisco():
+    intent = {
+        "target_hosts": ["Acc_Cisco_1"],
+        "params": {
+            "interfaces": [
+                {
+                    "name": "Acc_Cisco_1:Ethernet0/2",
+                    "mode": "access",
+                    "enabled": True,
+                }
+            ]
+        },
+    }
+    rendered = fill_playbook_from_reference("interface", ["cisco_ios"], intent)
+    assert isinstance(rendered, str) and rendered
+    assert "Acc_Cisco_1:Ethernet0/2" not in rendered
+    assert "Ethernet0/2" in rendered
+
+
+def test_reference_fill_cisco_includes_access_mode_commands():
+    intent = {
+        "target_hosts": ["Acc_Cisco_1"],
+        "params": {
+            "interfaces": [
+                {
+                    "name": "Ethernet0/2",
+                    "mode": "access",
+                    "enabled": True,
+                }
+            ]
+        },
+    }
+    rendered = fill_playbook_from_reference("interface", ["cisco_ios"], intent)
+    assert isinstance(rendered, str) and rendered
+    assert "switchport mode access" in rendered
+
+
+def test_reference_fill_cisco_trunk_uses_add_semantics_and_dot1q():
+    intent = {
+        "target_hosts": ["Acc_Cisco_1"],
+        "params": {
+            "interfaces": [
+                {
+                    "name": "Ethernet1/0",
+                    "mode": "trunk",
+                    "trunk_vlans": [10, 20, 67],
+                    "enabled": True,
+                }
+            ]
+        },
+    }
+    rendered = fill_playbook_from_reference("interface", ["cisco_ios"], intent)
+    assert isinstance(rendered, str) and rendered
+    assert "switchport trunk encapsulation dot1q" in rendered
+    assert "switchport trunk allowed vlan add" in rendered
+
+
+def test_prompt_aware_disambiguation_skips_trunk_vlan_question_when_prompt_has_vlans():
+    schema = {"action": "configure_interface"}
+    params_dis = {
+        "question": "Please provide the following.",
+        "fields": [{"field": "trunk_vlans", "question": "Which VLAN IDs should be allowed on this trunk?"}],
+    }
+    out = merge_prompt_aware_disambiguation_for_schema(
+        "Configure Gi1/0/5 as trunk and allow VLANs 10, 20, 67 on SW1",
+        schema,
+        params_dis,
+        parameters={"interfaces": [{"name": "Gi1/0/5", "mode": "trunk"}]},
+    )
+    fields = list((out or {}).get("fields") or [])
+    assert all(str(f.get("field") or "") != "trunk_vlans" for f in fields if isinstance(f, dict))

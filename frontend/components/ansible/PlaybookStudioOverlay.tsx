@@ -1321,7 +1321,7 @@ export function PlaybookStudioOverlay({
               {categories.map((c) => c.toLowerCase()).includes('interface') && (
                 <div className="mb-4">
                   <p className="text-xs font-semibold text-base-content/70 uppercase tracking-wider mb-2">
-                    Target interfaces (e.g. to shutdown)
+                    Target interfaces
                   </p>
                   <p className="text-xs text-base-content/50 mb-2">Interfaces to apply the action to. Add or remove below.</p>
                   <div className="flex flex-wrap gap-2 items-center">
@@ -1340,10 +1340,6 @@ export function PlaybookStudioOverlay({
                     ))}
                     {plannedAllInterfacesPreview?.devices?.length ? (
                       <div className="w-full">
-                        <p className="text-xs text-base-content/60 mb-2">
-                          {plannedAllInterfacesPreview.note ||
-                            'Select interface(s) from planned context (management-style names excluded).'}
-                        </p>
                         <div className="dropdown dropdown-end">
                           <label tabIndex={0} className="btn btn-ghost btn-xs gap-0.5 cursor-pointer">
                             <Plus className="w-3 h-3" /> Add

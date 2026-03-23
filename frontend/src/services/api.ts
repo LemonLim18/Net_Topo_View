@@ -979,6 +979,8 @@ export const ansibleApi = {
         unknown_inventory_aliases?: string[];
         ask_user_selection?: boolean;
         candidate_devices?: string[];
+        closest_candidates?: string[];
+        other_candidates?: string[];
         question?: string;
         /** ambiguous_hint | not_in_inventory | missing_targets */
         disambiguation_kind?: string;

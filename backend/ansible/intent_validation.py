@@ -777,7 +777,6 @@ def configure_interface_conditional_disambiguation_fields(
         return shared_fields
     default_mode = str(p2.get("default_mode") or "").strip().lower() or None
     modes: set[str] = set()
-    missing_access_vlan = False
     missing_trunk_vlans = False
     ip_addrs: set[str] = set()
     missing_subnet_mask = False
@@ -789,8 +788,9 @@ def configure_interface_conditional_disambiguation_fields(
         if mode:
             modes.add(mode)
         if mode == "access":
-            if iface.get("access_vlan") in (None, "", []):
-                missing_access_vlan = True
+            # Access mode can be configured without forcing VLAN assignment.
+            # Keep VLAN follow-up optional unless explicitly requested elsewhere.
+            pass
         elif mode == "trunk":
             tv = iface.get("trunk_vlans")
             if tv in (None, "", []):
@@ -805,13 +805,6 @@ def configure_interface_conditional_disambiguation_fields(
 
     if len(modes) == 1:
         only_mode = next(iter(modes))
-        if only_mode == "access" and missing_access_vlan:
-            shared_fields.append(
-                {
-                    "field": "access_vlan",
-                    "question": "Which access VLAN should be applied to all selected interfaces?",
-                }
-            )
         if only_mode == "trunk" and missing_trunk_vlans:
             shared_fields.append(
                 {
@@ -856,6 +849,24 @@ def merge_prompt_aware_disambiguation_for_schema(
     if not schema:
         return params_disambiguation
     sa = (schema.get("action") or "").strip().lower().replace("-", "_")
+    def _extract_vlan_ids_from_prompt(text: str) -> List[int]:
+        t = str(text or "").strip().lower()
+        if not t:
+            return []
+        ids: List[int] = []
+        seen: Set[int] = set()
+        # VLAN 10, VLANs 10,20,67, allow vlan 10 20 67
+        for m in re.finditer(r"\bvlans?\b([^.;\n]*)", t):
+            seg = m.group(1) or ""
+            for tok in re.findall(r"\b\d{1,4}\b", seg):
+                try:
+                    v = int(tok)
+                except ValueError:
+                    continue
+                if 1 <= v <= 4094 and v not in seen:
+                    seen.add(v)
+                    ids.append(v)
+        return ids
     if sa == "create_vlan":
         force_field_names = vlan_schema_fields_missing_from_user_prompt_respecting_params(
             intent_description or "", parameters, trusted_param_keys=trusted_param_keys
@@ -886,6 +897,23 @@ def merge_prompt_aware_disambiguation_for_schema(
             "question": (params_disambiguation or {}).get("question") or "Please provide the following.",
             "fields": fields_list,
         }
+    if sa == "configure_interface":
+        # If user already stated allowed VLAN IDs in prompt, do not re-ask trunk_vlans.
+        vlan_ids_from_prompt = _extract_vlan_ids_from_prompt(intent_description or "")
+        if vlan_ids_from_prompt and params_disambiguation:
+            fields_list = list((params_disambiguation or {}).get("fields") or [])
+            fields_list = [
+                f for f in fields_list
+                if not (
+                    isinstance(f, dict)
+                    and str(f.get("field") or "").strip().lower() in ("trunk_vlans", "allowed_vlans")
+                )
+            ]
+            return {
+                "question": (params_disambiguation or {}).get("question") or "Please provide the following.",
+                "fields": fields_list,
+            }
+        return params_disambiguation
     # Future: elif sa == "configure_ospf": ...
     return params_disambiguation
 

@@ -611,6 +611,47 @@ def _extract_device_like_tokens(intent_description: str) -> List[str]:
     return out
 
 
+def _extract_non_exact_device_aliases_from_prompt(intent_description: str, db_manager: Any) -> List[str]:
+    """
+    Extract device aliases from prompt text that are NOT exact planned hostnames.
+    Used to force device picker before execution/preview when user typed alias-like names.
+    """
+    if not intent_description or db_manager is None:
+        return []
+    cmap = _db_hostname_lower_to_canonical(db_manager)
+    if not cmap:
+        return []
+
+    text = str(intent_description or "")
+    raw: List[str] = []
+    raw.extend(_extract_device_like_tokens(text))
+
+    phrase_patterns = [
+        r"\b(?:access|distribution|core)\s+switch\s+\d+\b",
+        r"\brouter\s+\d+\b",
+        r"\bswitch\s+\d+\b",
+        r"\bsw\s*\d+\b",
+        r"\br\s*\d+\b",
+    ]
+    for pat in phrase_patterns:
+        raw.extend(re.findall(pat, text, flags=re.IGNORECASE))
+
+    out: List[str] = []
+    seen: set[str] = set()
+    for tok in raw:
+        t = str(tok or "").strip()
+        if not t:
+            continue
+        tl = t.lower()
+        if tl in cmap:
+            continue
+        if tl in seen:
+            continue
+        seen.add(tl)
+        out.append(t)
+    return out
+
+
 def _build_devices_disambiguation(
     intent_description: str,
     resolved_hosts: List[str],
@@ -764,6 +805,23 @@ def _device_hint_ranked_matches(hint: str, all_hosts: List[str], max_candidates:
     return out
 
 
+def _pretty_device_hint_token(tok: str) -> str:
+    t = str(tok or "").strip()
+    if not t:
+        return t
+    low = t.lower().replace("-", "_").replace(" ", "_")
+    n = _number_from_hostname(low)
+    if n is None:
+        return t
+    if low.startswith("acc_") or low.startswith("access_") or low.startswith("accessswitch_"):
+        return f"Access Switch {n}"
+    if low.startswith("dist_") or low.startswith("distribution_"):
+        return f"Distribution Switch {n}"
+    if low.startswith("core_"):
+        return f"Core Switch {n}"
+    return t
+
+
 def _resolve_unknown_device_aliases(
     unknown_tokens: List[str],
     db_manager: Any,
@@ -772,8 +830,8 @@ def _resolve_unknown_device_aliases(
     Map aliases not equal to inventory hostnames (e.g. SW1) to real devices.
 
     Returns:
-      - auto_mapped: canonical hostnames when each hint resolves to exactly one strong match
-      - disambiguation: UI payload when 0 matches (full inventory) or 2+ plausible matches (shortlist)
+      - auto_mapped: canonical hostnames (intentionally empty for non-exact aliases)
+      - disambiguation: UI payload that always asks user selection for unknown aliases
     """
     cmap = _db_hostname_lower_to_canonical(db_manager)
     all_hosts = sorted(set(cmap.values()))
@@ -792,54 +850,100 @@ def _resolve_unknown_device_aliases(
     if not meaningful:
         return [], None
 
-    auto: List[str] = []
     ambiguous_union: List[str] = []
     need_full_inventory = False
+    closest_union: List[str] = []
+
+    # Deterministic role+number remap (vendor-agnostic) before fuzzy matching.
+    # Example: prompt/LLM emits "Acc_Cisco_3" but inventory has "Acc_Huawei_3".
+    role_num_map: Dict[Tuple[str, int], List[str]] = {}
+    try:
+        for d in db_manager.get_all_devices():
+            hn = str(getattr(d, "hostname", "") or "").strip()
+            if not hn:
+                continue
+            hlow = hn.lower()
+            role_raw = str(getattr(d, "role", "") or "").strip().lower()
+            role = ""
+            if role_raw in ("access", "access_switch") or hlow.startswith("acc_"):
+                role = "access"
+            elif role_raw in ("distribution", "dist") or hlow.startswith("dist_"):
+                role = "distribution"
+            elif role_raw in ("core", "core_switch") or hlow.startswith("core_"):
+                role = "core"
+            if not role:
+                continue
+            n = _number_from_hostname(hn)
+            if n is None:
+                continue
+            role_num_map.setdefault((role, n), []).append(hn)
+    except Exception:
+        role_num_map = {}
+
+    def _infer_role_num_from_token(tok: str) -> Tuple[Optional[str], Optional[int]]:
+        t = str(tok or "").strip().lower().replace("-", "_").replace(" ", "_")
+        role: Optional[str] = None
+        if t.startswith("acc_") or t.startswith("access_") or t.startswith("accessswitch_"):
+            role = "access"
+        elif t.startswith("dist_") or t.startswith("distribution_"):
+            role = "distribution"
+        elif t.startswith("core_"):
+            role = "core"
+        n = _number_from_hostname(t)
+        return role, n
 
     for tok in meaningful:
+        role_hint, n_hint = _infer_role_num_from_token(tok)
+        if role_hint is None and n_hint is not None:
+            # Generic aliases like "router 2": bias closest list by numeric suffix.
+            numeric_hits = [h for h in all_hosts if _number_from_hostname(h) == n_hint]
+            if numeric_hits:
+                for h in numeric_hits:
+                    if h not in ambiguous_union:
+                        ambiguous_union.append(h)
+                    if h not in closest_union:
+                        closest_union.append(h)
+                continue
+        if role_hint and n_hint is not None:
+            deterministic = role_num_map.get((role_hint, n_hint), [])
+            if len(deterministic) >= 1:
+                for h in deterministic:
+                    if h not in ambiguous_union:
+                        ambiguous_union.append(h)
+                    if h not in closest_union:
+                        closest_union.append(h)
+                continue
         cands = _device_hint_ranked_matches(tok, all_hosts)
+        for h in cands[:4]:
+            if h not in closest_union:
+                closest_union.append(h)
         if len(cands) == 0:
             need_full_inventory = True
-        elif len(cands) == 1:
-            h = cands[0]
-            if h not in auto:
-                auto.append(h)
         else:
             for h in cands:
                 if h not in ambiguous_union:
                     ambiguous_union.append(h)
 
-    q_toks = ", ".join(f"`{t}`" for t in meaningful)
+    q_toks = ", ".join(f"`{_pretty_device_hint_token(t)}`" for t in meaningful)
 
-    if need_full_inventory:
-        return [], {
-            "ambiguous_devices": [],
-            "missing_devices": list(meaningful),
-            "unknown_inventory_aliases": list(meaningful),
-            "ask_user_selection": True,
-            "candidate_devices": list(all_hosts),
-            "disambiguation_kind": "not_in_inventory",
-            "question": (
-                f"{q_toks} did not match any inventory hostname closely enough. "
-                "Select one or more target devices from planned inventory (multi-select), then continue."
-            ),
-        }
-
-    if ambiguous_union:
-        return [], {
-            "ambiguous_devices": list(ambiguous_union),
-            "missing_devices": list(meaningful),
-            "unknown_inventory_aliases": list(meaningful),
-            "ask_user_selection": True,
-            "candidate_devices": list(ambiguous_union),
-            "disambiguation_kind": "ambiguous_hint",
-            "question": (
-                f"Several devices in planned inventory could match {q_toks}. "
-                "Select which hostname(s) you meant (multi-select), then continue."
-            ),
-        }
-
-    return list(auto), None
+    # UX rule: if the user-provided device token is not an exact planned hostname,
+    # always ask for confirmation instead of silently auto-mapping.
+    closest_seed = closest_union if closest_union else ambiguous_union
+    closest = [h for h in closest_seed if h in all_hosts]
+    others = [h for h in all_hosts if h not in set(closest)]
+    return [], {
+        "ambiguous_devices": list(ambiguous_union),
+        "missing_devices": list(meaningful),
+        "unknown_inventory_aliases": list(meaningful),
+        "ask_user_selection": True,
+        "candidate_devices": list(closest + others) if closest else list(all_hosts),
+        "closest_candidates": list(closest),
+        "other_candidates": list(others),
+        "disambiguation_kind": "not_in_inventory" if need_full_inventory else "ambiguous_hint",
+        "question": (
+            f"The name you suggested `{q_toks}` is too ambiguous. You may make it clear for me by selecting the suggested devices in the inventory."
+        ),
+    }
 
 
 def _filter_resolved_hosts_to_planned_inventory(
@@ -886,6 +990,95 @@ def _build_devices_disambiguation_for_unknown_inventory_tokens(
         return None
     _, dd = _resolve_unknown_device_aliases(unknown_tokens, db_manager)
     return dd
+
+
+def _normalize_mismatched_qualified_interface_tokens(
+    params: Dict[str, Any],
+    selected_targets: List[str],
+) -> Dict[str, Any]:
+    """
+    If UI already selected target host(s), discard stale host prefixes from LLM-qualified
+    interface tokens that point to non-selected devices (e.g. Acc_Cisco_3:Gi1/0/3).
+    """
+    out = dict(params or {})
+    if not selected_targets:
+        return out
+    selected = {str(h).strip().lower() for h in selected_targets if str(h).strip()}
+    if not selected:
+        return out
+
+    def _normalize_name_token(token: Any) -> Any:
+        if not isinstance(token, str):
+            return token
+        t = token.strip()
+        if ":" not in t:
+            return token
+        left, right = t.split(":", 1)
+        if not right.strip():
+            return token
+        if left.strip().lower() not in selected:
+            return right.strip()
+        return token
+
+    for key in ("interfaces_to_shutdown", "passive_interfaces"):
+        v = out.get(key)
+        if isinstance(v, list):
+            out[key] = [_normalize_name_token(x) for x in v]
+
+    for key in ("apply_to", "interface_apply"):
+        v = out.get(key)
+        if isinstance(v, list):
+            cleaned: List[Any] = []
+            for x in v:
+                if not isinstance(x, str):
+                    cleaned.append(x)
+                    continue
+                parts = x.split()
+                if not parts:
+                    cleaned.append(x)
+                    continue
+                base = _normalize_name_token(parts[0])
+                tail = (" " + " ".join(parts[1:])) if len(parts) > 1 else ""
+                cleaned.append(f"{base}{tail}" if isinstance(base, str) else x)
+            out[key] = cleaned
+
+    for key in ("interfaces", "interfaces_config", "interface_binding"):
+        v = out.get(key)
+        if isinstance(v, list):
+            new_rows: List[Any] = []
+            for row in v:
+                if isinstance(row, dict):
+                    r0 = dict(row)
+                    if "name" in r0:
+                        r0["name"] = _normalize_name_token(r0.get("name"))
+                    new_rows.append(r0)
+                elif isinstance(row, str):
+                    new_rows.append(_normalize_name_token(row))
+                else:
+                    new_rows.append(row)
+            out[key] = new_rows
+    return out
+
+
+def _normalize_secondary_intents_qualified_interface_tokens(
+    secondary_intents: List[Dict[str, Any]],
+    selected_targets: List[str],
+) -> List[Dict[str, Any]]:
+    """
+    Normalize stale hostname-prefixed interface tokens in secondary intent params too.
+    Keeps UI-selected targets authoritative across multi-intent payloads.
+    """
+    out: List[Dict[str, Any]] = []
+    for sec in list(secondary_intents or []):
+        if not isinstance(sec, dict):
+            out.append(sec)
+            continue
+        row = dict(sec)
+        p = row.get("parameters")
+        if isinstance(p, dict):
+            row["parameters"] = _normalize_mismatched_qualified_interface_tokens(p, selected_targets)
+        out.append(row)
+    return out
 
 
 def _intent_explicitly_requests_broad_device_scope(intent_description: str) -> bool:
@@ -1315,6 +1508,12 @@ def _resolve_backend_intent_request(req, user: dict) -> tuple["PlanAnsibleReques
     else:
         parsed.resolved_devices = []
 
+    if parsed.parameters:
+        parsed.parameters = _normalize_mismatched_qualified_interface_tokens(
+            dict(parsed.parameters),
+            list(parsed.resolved_devices or []),
+        )
+
     parsed.resolved_devices = _narrow_resolved_by_hostnames_in_prompt(
         req.intent_description, list(parsed.resolved_devices or []), _db
     )
@@ -1322,6 +1521,28 @@ def _resolve_backend_intent_request(req, user: dict) -> tuple["PlanAnsibleReques
         req.intent_description, list(parsed.resolved_devices or [])
     )
     parsed.resolved_devices = _nr
+
+    user_explicit_targets_create = bool(req.target_hosts) or bool(explicit_targets)
+    _forced_aliases_create: List[str] = []
+    if not user_explicit_targets_create and _db is not None:
+        _forced_aliases_create = _extract_non_exact_device_aliases_from_prompt(req.intent_description, _db)
+    if _forced_aliases_create:
+        _auto_m, _dd = _resolve_unknown_device_aliases(_forced_aliases_create, _db)
+        if _dd:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail={
+                    "message": "Target device alias requires explicit confirmation from planned inventory.",
+                    "missing_fields": ["target_hosts"],
+                    "questions": [
+                        {
+                            "field": "target_hosts",
+                            "question": str(_dd.get("question") or "Select target device(s) from planned inventory."),
+                        }
+                    ],
+                    "devices_disambiguation": _dd,
+                },
+            )
 
     if _db is not None and parsed.resolved_devices and _db_hostname_lower_to_canonical(_db):
         _ok_hosts, _bad_hosts = _filter_resolved_hosts_to_planned_inventory(parsed.resolved_devices, _db)
@@ -1349,7 +1570,6 @@ def _resolve_backend_intent_request(req, user: dict) -> tuple["PlanAnsibleReques
         parsed.resolved_devices = _ok_hosts
 
     # User/studio explicitly chose targets — do not reject as "unclear bulk" (same idea as preview + tree).
-    user_explicit_targets_create = bool(req.target_hosts) or bool(explicit_targets)
 
     switch_disambiguation_create = _switch_role_disambiguation(req.intent_description)
     _map_create = _deduce_target_devices(
@@ -2157,9 +2377,19 @@ async def plan_ansible(
             interfaces = p.get("interfaces") or []
             conditional_missing: List[Dict[str, str]] = []
             if isinstance(interfaces, list) and interfaces:
+                prompt_vlan_ids: List[int] = []
+                _desc = str(req.intent_description or "").lower()
+                for _m in re.finditer(r"\bvlans?\b([^.;\n]*)", _desc):
+                    _seg = _m.group(1) or ""
+                    for _tok in re.findall(r"\b\d{1,4}\b", _seg):
+                        try:
+                            _v = int(_tok)
+                        except ValueError:
+                            continue
+                        if 1 <= _v <= 4094 and _v not in prompt_vlan_ids:
+                            prompt_vlan_ids.append(_v)
                 default_mode = str(p.get("default_mode") or "").strip().lower() or None
                 modes: set[str] = set()
-                missing_access_vlan = False
                 missing_trunk_vlans = False
                 ip_addrs: set[str] = set()
                 missing_subnet_mask = False
@@ -2170,10 +2400,7 @@ async def plan_ansible(
                     mode = str(iface.get("mode") or default_mode or "").strip().lower()
                     if mode:
                         modes.add(mode)
-                    if mode == "access":
-                        if iface.get("access_vlan") in (None, "", []):
-                            missing_access_vlan = True
-                    elif mode == "trunk":
+                    if mode == "trunk":
                         tv = iface.get("trunk_vlans")
                         if tv in (None, "", []):
                             missing_trunk_vlans = True
@@ -2185,19 +2412,24 @@ async def plan_ansible(
 
                 if len(modes) == 1:
                     only_mode = next(iter(modes))
-                    if only_mode == "access" and missing_access_vlan:
-                        conditional_missing.append({
-                            "field": "access_vlan",
-                            "question": "Which access VLAN should be applied to all selected interfaces?",
-                        })
                     if only_mode == "trunk" and missing_trunk_vlans:
-                        conditional_missing.append({
-                            "field": "trunk_vlans",
-                            "question": (
-                                "Which VLAN IDs should be allowed on this trunk? "
-                                "(Pick from the list when using chat preview — options follow intent and planned context.)"
-                            ),
-                        })
+                        if prompt_vlan_ids:
+                            for iface in interfaces:
+                                if not isinstance(iface, dict):
+                                    continue
+                                mode = str(iface.get("mode") or default_mode or "").strip().lower()
+                                if mode == "trunk" and iface.get("trunk_vlans") in (None, "", []):
+                                    iface["trunk_vlans"] = list(prompt_vlan_ids)
+                                    iface.pop("allowed_vlans", None)
+                            intent["params"]["interfaces"] = interfaces
+                        else:
+                            conditional_missing.append({
+                                "field": "trunk_vlans",
+                                "question": (
+                                    "Which VLAN IDs should be allowed on this trunk? "
+                                    "(Pick from the list when using chat preview — options follow intent and planned context.)"
+                                ),
+                            })
 
                 if missing_subnet_mask and len(ip_addrs) == 1:
                     conditional_missing.append({
@@ -2373,6 +2605,14 @@ async def plan_ansible(
 
     p_inv = intent.get("params") or {}
     _plan_secondary_intents: List[Dict[str, Any]] = list(intent.get("secondary_intents") or [])
+    if resolved_hosts:
+        p_inv = _normalize_mismatched_qualified_interface_tokens(p_inv, list(resolved_hosts))
+        _plan_secondary_intents = _normalize_secondary_intents_qualified_interface_tokens(
+            _plan_secondary_intents,
+            list(resolved_hosts),
+        )
+        intent["params"] = p_inv
+        intent["secondary_intents"] = list(_plan_secondary_intents)
     _plan_iface_override = explicit_interface_names_from_request_params(req.params) if req.params else []
 
     # Cross-check user-supplied interface names against planned inventory before template fill.
@@ -4088,8 +4328,17 @@ def _is_management_interface(iface: dict, device_management_ip: Optional[str]) -
     if any(m in name for m in _MGMT_INTERFACE_SUBSTRINGS):
         return True
     if device_management_ip:
-        iface_ip = str(iface.get("ip_address") or iface.get("ip") or "").strip()
-        if iface_ip and iface_ip == str(device_management_ip).strip():
+        iface_ip = str(iface.get("ip_address") or "").strip()
+        if not iface_ip:
+            ip_field = iface.get("ip")
+            if isinstance(ip_field, dict):
+                iface_ip = str(ip_field.get("address") or "").strip()
+            elif ip_field not in (None, ""):
+                iface_ip = str(ip_field).strip()
+        mgmt_ip = str(device_management_ip).strip()
+        iface_ip_only = iface_ip.split("/", 1)[0].strip() if iface_ip else ""
+        mgmt_ip_only = mgmt_ip.split("/", 1)[0].strip() if mgmt_ip else ""
+        if iface_ip_only and mgmt_ip_only and iface_ip_only == mgmt_ip_only:
             return True
     return False
 
@@ -4489,6 +4738,51 @@ def _preview_parse_and_rag(
     policy_approved = True
     reasoning: list[str] = []
 
+    def _sanitize_template_categories(
+        raw_categories: List[str],
+        primary_action: str,
+        primary_feature: str,
+        secondary_intents: List[Dict[str, Any]],
+    ) -> List[str]:
+        """
+        Keep template categories aligned with detected operations.
+        Prevent prompt words like 'router' from polluting an interface intent with 'routing'.
+        """
+        cleaned: List[str] = []
+        seen: Set[str] = set()
+        for c in raw_categories or []:
+            cs = str(c or "").strip().lower().replace("-", "_")
+            if not cs or cs in seen:
+                continue
+            seen.add(cs)
+            cleaned.append(cs)
+
+        pa = str(primary_action or "").strip().lower().replace("-", "_")
+        pf = str(primary_feature or "").strip().lower().replace("-", "_")
+        sec_features = {
+            str(s.get("feature") or "").strip().lower().replace("-", "_")
+            for s in (secondary_intents or [])
+            if isinstance(s, dict)
+        }
+        sec_actions = {
+            str(s.get("action") or "").strip().lower().replace("-", "_")
+            for s in (secondary_intents or [])
+            if isinstance(s, dict)
+        }
+        has_routing_secondary = bool(
+            sec_features & {"routing", "ospf", "static_route"}
+            or sec_actions & {"configure_ospf", "configure_static_route"}
+        )
+
+        # Primary interface operations should not drag routing category unless a real
+        # routing secondary intent exists.
+        if pf == "interface" and pa in {"shutdown_interface", "configure_interface"} and not has_routing_secondary:
+            cleaned = [c for c in cleaned if c != "routing"]
+            if "interface" not in cleaned:
+                cleaned.insert(0, "interface")
+
+        return cleaned
+
     try:
         parser = IntentParser(
             provider=_provider_for_request(provider, model, ollama_base_url),
@@ -4526,6 +4820,12 @@ def _preview_parse_and_rag(
         intent_type = getattr(parsed.intent_type, "value", parsed.intent_type)
         intent_action = parsed.action or "configure"
         intent_feature = (parsed.feature or "").strip() or (categories[0] if categories else "general")
+        categories = _sanitize_template_categories(
+            categories,
+            intent_action,
+            intent_feature,
+            secondary_list,
+        )
         reasoning.append(
             "### 1. Intent\n"
             f"- **Type:** {intent_type} · **Action:** {intent_action}\n"
@@ -4633,6 +4933,21 @@ def _preview_parse_and_rag(
     # Map LLM/user device hints to inventory: unique auto-map, ambiguous shortlist, or full inventory.
     pending_devices_disambiguation: Optional[Dict[str, Any]] = None
     inventory_unknown_device_tokens: List[str] = []
+    _forced_aliases_preview: List[str] = []
+    if _db is not None and not explicit_targets_from_ui:
+        _forced_aliases_preview = _extract_non_exact_device_aliases_from_prompt(intent_description, _db)
+    if _forced_aliases_preview:
+        _, _dd_forced = _resolve_unknown_device_aliases(_forced_aliases_preview, _db)
+        if _dd_forced:
+            resolved = []
+            pending_devices_disambiguation = _dd_forced
+            inventory_unknown_device_tokens = list(_forced_aliases_preview)
+            _rq_forced = str(_dd_forced.get("question") or "").strip()
+            reasoning.insert(
+                1,
+                "### 1c. Target device(s) need confirmation\n"
+                + (_rq_forced + "\n" if _rq_forced else "- Pick hostname(s) in the chat device picker or **Target inventory**.\n"),
+            )
     if _db is not None and resolved:
         _inv_valid, _inv_unknown = _filter_resolved_hosts_to_planned_inventory(resolved, _db)
         resolved = list(_inv_valid)
@@ -5530,14 +5845,9 @@ async def preview_intent(
                         params = p_show
             except Exception as _exp_exc:
                 logger.debug("Preview explicit all-interfaces expansion failed: %s", _exp_exc)
-            note = str(_pif.get("note") or "").strip()
             lines_pf: List[str] = [
                 "### 5. Planned interfaces (all-interfaces scope)",
             ]
-            if note:
-                lines_pf.append(f"- {note}")
-            else:
-                lines_pf.append("- From planned network context (management-style interfaces excluded):")
             for devp in _pif.get("devices") or []:
                 if not isinstance(devp, dict):
                     continue
@@ -5567,6 +5877,14 @@ async def preview_intent(
     _preview_secondary_intents: List[Dict[str, Any]] = list(
         parsed_intent.get("secondary_intents") or []
     )
+    if resolved_hosts:
+        params = _normalize_mismatched_qualified_interface_tokens(params, list(resolved_hosts))
+        parsed_intent["parameters"] = dict(params)
+        _preview_secondary_intents = _normalize_secondary_intents_qualified_interface_tokens(
+            _preview_secondary_intents,
+            list(resolved_hosts),
+        )
+        parsed_intent["secondary_intents"] = list(_preview_secondary_intents)
     _preview_iface_override = explicit_interface_names_from_request_params(req.params) if req.params else []
 
     if (
@@ -5693,6 +6011,11 @@ async def preview_intent(
     for _k in ("interfaces", "interface_binding", "mode", "trunk_vlans"):
         if _k in _params_for_reasoning:
             _pb_sync[_k] = _params_for_reasoning[_k]
+    if resolved_hosts:
+        _pb_sync = _normalize_mismatched_qualified_interface_tokens(
+            _pb_sync,
+            list(resolved_hosts or []),
+        )
     parsed_intent["parameters"] = _pb_sync
 
     if inv_validation_result is not None:
@@ -5981,13 +6304,13 @@ async def preview_intent(
     # Ensure schema inspector values reflect trunk-vs-access coercion derived from the user prompt
     # (UI chip state can lag behind the inferred binding semantics).
     try:
-        correct_vlan_interface_binding_from_trunk_prompt(intent_description or "", parsed_intent)
+        correct_vlan_interface_binding_from_trunk_prompt(req.intent_description or "", parsed_intent)
     except Exception as _trunk_fix_exc:
         logger.debug("trunk/interface_binding correction before schema inspector failed: %s", _trunk_fix_exc)
     try:
         _trunk_viol_preview = _force_trunk_mode_for_prompt_invariant(
             parsed_intent,
-            intent_description or "",
+            req.intent_description or "",
         )
         if _trunk_viol_preview:
             _ve = list(parsed_intent.get("validation_errors") or [])

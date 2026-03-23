@@ -32,19 +32,6 @@
         "required": ["name", "mode"],
         "allOf": [
           {
-            "if": { "properties": { "mode": { "const": "access" } } },
-            "then": { "required": ["access_vlan"] }
-          },
-          {
-            "if": { "properties": { "mode": { "const": "trunk" } } },
-            "then": {
-              "anyOf": [
-                { "required": ["trunk_vlans"] },
-                { "required": ["allowed_vlans"] }
-              ]
-            }
-          },
-          {
             "if": { "required": ["ip_address"] },
             "then": { "required": ["subnet_mask"] }
           }

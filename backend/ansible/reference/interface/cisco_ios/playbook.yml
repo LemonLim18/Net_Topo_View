@@ -8,7 +8,7 @@
   ignore_unreachable: true
   vars:
     interfaces_config: {{ interfaces_config_json }}
-    interfaces_admin_enabled: {{ interfaces_admin_enabled | default(false) }}
+    interfaces_admin_enabled: "{{ ((interfaces_admin_enabled | default(false) | string | trim | lower) in ['1', 'true', 'yes', 'on']) | string | lower }}"
 {% if interfaces_shutdown_use_nettopo %}
     # Per-host names from runner inventory (multi-target "all interfaces"); filter obvious mgmt names.
     {% raw %}
@@ -19,11 +19,31 @@
 {% endif %}
   tasks:
 {% raw %}
+    - name: Configure L2 interface mode (Cisco IOS)
+      cisco.ios.ios_config:
+        parents: "interface {{ item.name }}"
+        lines: "{{ [
+          ('switchport mode access' if (item.mode is defined and item.mode == 'access') else ''),
+          (('switchport access vlan ' ~ (item.access.vlan | string)) if (item.mode is defined and item.mode == 'access' and item.access is defined and item.access.vlan is defined) else ''),
+          ('switchport trunk encapsulation dot1q' if (item.mode is defined and item.mode == 'trunk') else ''),
+          ('switchport mode trunk' if (item.mode is defined and item.mode == 'trunk') else ''),
+          (('switchport trunk allowed vlan add ' ~ ((item.trunk.allowed_vlans | default([]) | map('string') | join(',')))) if (item.mode is defined and item.mode == 'trunk' and item.trunk is defined and item.trunk.allowed_vlans is defined) else ''),
+          (('switchport trunk native vlan ' ~ (item.trunk.native_vlan | string)) if (item.mode is defined and item.mode == 'trunk' and item.trunk is defined and item.trunk.native_vlan is defined) else '')
+        ] | reject('equalto', '') | list }}"
+      loop: "{{ interfaces_config | default([]) }}"
+      loop_control:
+        label: "{{ item.name }}"
+      when:
+        - inventory_hostname in groups.get('vendor_cisco_ios', [])
+        - (interfaces_config | default([])) | length > 0
+        - item.mode is defined
+        - item.mode in ['access', 'trunk']
+
     - name: Configure interface (Cisco IOS)
       cisco.ios.ios_interfaces:
         config:
           - name: "{{ item.name }}"
-            enabled: "{{ item.enabled | default(false) }}"
+            enabled: "{{ ((item.enabled | default(false) | string | trim | lower) in ['1', 'true', 'yes', 'on']) | string | lower }}"
         state: merged
       loop: "{{ interfaces_config | default([]) }}"
       loop_control:
@@ -36,7 +56,7 @@
       cisco.ios.ios_interfaces:
         config:
           - name: "{{ item }}"
-            enabled: "{{ interfaces_admin_enabled | default(false) }}"
+            enabled: "{{ ((interfaces_admin_enabled | default(false) | string | trim | lower) in ['1', 'true', 'yes', 'on']) | string | lower }}"
         state: merged
       loop: "{{ interfaces_to_shutdown | default([]) }}"
       loop_control:

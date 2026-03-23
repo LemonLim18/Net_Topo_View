@@ -368,7 +368,18 @@ def _normalize_intent_to_interface_shape(intent: Dict[str, Any]) -> Dict[str, An
 
     interfaces_config = params.get("interfaces_config")
     if isinstance(interfaces_config, list):
-        out["interfaces_config"] = [i for i in interfaces_config if isinstance(i, dict) and str(i.get("name") or "").strip()]
+        cleaned_cfg: List[Dict[str, Any]] = []
+        for i in interfaces_config:
+            if not isinstance(i, dict):
+                continue
+            name_raw = str(i.get("name") or "").strip()
+            if not name_raw:
+                continue
+            row = dict(i)
+            row["name"] = _strip_device_prefix_from_iface_name(name_raw, out["target_hosts"])
+            if str(row.get("name") or "").strip():
+                cleaned_cfg.append(row)
+        out["interfaces_config"] = cleaned_cfg
     else:
         out["interfaces_config"] = []
 
@@ -391,7 +402,10 @@ def _normalize_intent_to_interface_shape(intent: Dict[str, Any]) -> Dict[str, An
         if all(isinstance(x, dict) for x in raw_ifaces):
             cfg: list[dict] = []
             for x in raw_ifaces:
-                name = str(x.get("name") or x.get("interface") or "").strip()
+                name = _strip_device_prefix_from_iface_name(
+                    str(x.get("name") or x.get("interface") or "").strip(),
+                    out["target_hosts"],
+                )
                 if not name:
                     continue
                 enabled = None
@@ -486,7 +500,10 @@ def _normalize_intent_to_interface_shape(intent: Dict[str, Any]) -> Dict[str, An
 
     # Single interface fields
     if not out["interfaces_config"] and not out["interfaces_to_shutdown"]:
-        name = str(params.get("name") or params.get("interface") or "").strip()
+        name = _strip_device_prefix_from_iface_name(
+            str(params.get("name") or params.get("interface") or "").strip(),
+            out["target_hosts"],
+        )
         if name:
             if params.get("shutdown") is True:
                 out["interfaces_to_shutdown"] = [name]

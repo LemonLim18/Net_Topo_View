@@ -967,7 +967,7 @@ def build_planned_all_interfaces_preview(
     using the same mgmt-exclusion heuristics as reference templates.
     """
     if not planning_context or not hostnames:
-        return {"devices": [], "note": "No planning context or targets to preview."}
+        return {"devices": []}
     want = {str(h).strip() for h in hostnames if str(h).strip()}
     devices_out: List[Dict[str, Any]] = []
     for d in planning_context.get("devices") or []:
@@ -982,7 +982,4 @@ def build_planned_all_interfaces_preview(
                 "interfaces": [{"name": n} for n in ifaces],
             }
         )
-    return {
-        "devices": devices_out,
-        "note": "Lists exclude management-style interface names and interfaces whose IP matches the device management address (same rules as template expansion).",
-    }
+    return {"devices": devices_out}
