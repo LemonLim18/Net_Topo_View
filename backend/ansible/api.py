@@ -48,6 +48,8 @@ from ansible.intent_validation import (
     SECONDARY_INTENT_CONDITIONAL_DISAMBIGUATION_BY_ACTION,
     build_intent_schema_inspector_payload,
     coerce_vlan_database_only_intent,
+    correct_vlan_interface_binding_from_trunk_prompt,
+    extract_create_vlan_params_from_natural_language,
     get_editable_fields_for_schema,
     get_schema_for_parsed_intent,
     interface_intent_params_satisfied,
@@ -365,23 +367,51 @@ def _extract_vlan_interface_from_description(intent_description: str) -> Optiona
     if re.match(r"^\d+/\d+", iface_name) and "GigabitEthernet" not in text[: max(0, iface_match.start())].lower():
         if "gigabit" in text.lower() or "ge " in text.lower() or " gi" in text.lower():
             iface_name = "GigabitEthernet" + iface_name
-    # Trunk + allowed VLANs (only take list that appears after "trunk" to avoid capturing VLAN id from "VLAN 67")
-    trunk = "trunk" in text.lower()
+    # Trunk + allowed VLANs. VLAN ids often appear *before* "trunk" (e.g. "VLAN 10 … on trunk port Gi…").
+    tl = text.lower()
+    trunk = "trunk" in tl
     allowed: List[int] = []
     if trunk:
-        trunk_pos = text.lower().find("trunk")
+        trunk_pos = tl.find("trunk")
         tail = text[trunk_pos:] if trunk_pos >= 0 else text
         m = re.search(r"(?:allowed\s+)?(?:VLANs?\s+)?(\d+(?:\s*,\s*\d+)+)", tail, re.IGNORECASE)
         if m:
             for part in re.split(r"\s*,\s*", m.group(1)):
                 if part.strip().isdigit():
                     allowed.append(int(part.strip()))
+        # Single VLAN after "trunk" (e.g. "trunk … VLAN 10")
+        if not allowed:
+            m1 = re.search(
+                r"(?:vlan|vlans)\s*(\d{1,4})\b",
+                tail,
+                re.IGNORECASE,
+            )
+            if m1:
+                try:
+                    v = int(m1.group(1))
+                    if 1 <= v <= 4094:
+                        allowed = [v]
+                except ValueError:
+                    pass
+        # VLAN id from earlier in the sentence (create VLAN N … trunk port …)
+        if not allowed:
+            ext_vid = extract_create_vlan_params_from_natural_language(text).get("vlan_id")
+            if ext_vid is not None:
+                try:
+                    v = int(ext_vid)
+                    if 1 <= v <= 4094:
+                        allowed = [v]
+                except (TypeError, ValueError):
+                    pass
     if trunk and allowed:
         return {
             "interfaces": [iface_name],
             "mode": "trunk",
             "trunk_vlans": ",".join(str(v) for v in allowed),
         }
+    if trunk and iface_match:
+        # Trunk port named but no parsed VLAN list — still return trunk; vlan_id param / NL extract will fill later.
+        return {"interfaces": [iface_name], "mode": "trunk"}
     if not trunk and iface_match:
         # Access: interface mentioned without trunk -> access with VLAN from context (we don't have vlan id here; template will use vlan_id)
         return {"interfaces": [iface_name], "mode": "access"}
@@ -4414,6 +4444,7 @@ def _preview_parse_and_rag(
         # For VLAN, show which interfaces will be configured (mode + VLANs)
         is_vlan = (parsed.feature or "").strip().lower() == "vlan" or any((c or "").strip().lower() == "vlan" for c in categories)
         if is_vlan:
+            correct_vlan_interface_binding_from_trunk_prompt(intent_description, parsed_dict)
             preview_intent = {
                 "params": dict(parsed_dict.get("parameters") or {}),
                 "target_hosts": list(parsed_dict.get("resolved_devices") or []),
@@ -5016,6 +5047,60 @@ async def preview_intent(
             p["interfaces_admin_enabled"] = bool(admin_up and not admin_down)
             parsed_intent["parameters"] = p
 
+    # "Admin-down all interfaces" should never fall back to a free-text interfaces question.
+    # Make this prompt-authoritative: if the user intent text clearly requests shutdown of *all*
+    # interfaces, force the safe nettopo expansion path before completeness validation.
+    try:
+        prompt_l = str(req.intent_description or "").lower()
+        wants_all_ifaces = intent_requests_all_interfaces(req.intent_description or "")
+
+        admin_down_markers = (
+            "admin-down",
+            "admin down",
+            "shut down",
+            "shutdown",
+            "disable",
+            "turn off",
+            "bring down",
+            "administratively down",
+        )
+        admin_up_markers = (
+            "admin-up",
+            "admin up",
+            "turn on",
+            "enable",
+            "bring up",
+            "administratively up",
+        )
+        clearly_admin_down = wants_all_ifaces and any(m in prompt_l for m in admin_down_markers) and not any(
+            m in prompt_l for m in admin_up_markers
+        )
+
+        # Also respect explicit wildcard/all tokens if they were already present.
+        p_all = dict(parsed_intent.get("parameters") or {})
+        shutdown_val = p_all.get("interfaces_to_shutdown")
+        has_all_token = False
+        if isinstance(shutdown_val, list):
+            for x in shutdown_val:
+                if isinstance(x, str) and x.strip().lower() in ("all", "*", "any", "every"):
+                    has_all_token = True
+                    break
+                if isinstance(x, dict) and x.get("all") is True:
+                    has_all_token = True
+                    break
+        elif isinstance(shutdown_val, str):
+            has_all_token = shutdown_val.strip().lower() in ("all", "*", "any", "every")
+
+        if clearly_admin_down or (wants_all_ifaces and has_all_token) or (wants_all_ifaces and not shutdown_val):
+            # Force the correct action/schema so required-field checks won't ask for manual input.
+            parsed_intent["action"] = "shutdown_interface"
+            p_all["interfaces_shutdown_use_nettopo"] = True
+            if not p_all.get("interfaces_to_shutdown"):
+                p_all["interfaces_to_shutdown"] = ["ALL"]
+            parsed_intent["parameters"] = p_all
+    except Exception as _all_ifaces_exc:
+        logger.debug("all-interfaces shutdown pre-coercion failed: %s", _all_ifaces_exc)
+
     action_or_feature = (parsed_intent.get("action") or parsed_intent.get("feature") or "").strip() or None
     schema = get_schema_for_parsed_intent(parsed_intent)
     if schema:
@@ -5463,6 +5548,15 @@ async def preview_intent(
     _params_for_reasoning = merged_params_for_vlan_interfaces_reasoning(
         parsed_intent, _params_for_reasoning
     )
+    _reasoning_trunk_fix = {
+        "parameters": dict(_params_for_reasoning),
+        "secondary_intents": list(parsed_intent.get("secondary_intents") or []),
+    }
+    correct_vlan_interface_binding_from_trunk_prompt(
+        req.intent_description or "",
+        _reasoning_trunk_fix,
+    )
+    _params_for_reasoning = dict(_reasoning_trunk_fix["parameters"])
     refresh_preview_vlan_interfaces_reasoning_block(
         reasoning,
         merged_params=_params_for_reasoning,
@@ -5470,6 +5564,12 @@ async def preview_intent(
         schema_action=schema_action_iface,
         feature_lower=feat_lower_preview,
     )
+    # Keep schema inspector / response params aligned with trunk-corrected binding (Studio can resend access-shaped rows).
+    _pb_sync = dict(parsed_intent.get("parameters") or {})
+    for _k in ("interfaces", "interface_binding", "mode", "trunk_vlans"):
+        if _k in _params_for_reasoning:
+            _pb_sync[_k] = _params_for_reasoning[_k]
+    parsed_intent["parameters"] = _pb_sync
 
     if inv_validation_result is not None:
         parsed_intent["interfaces_inventory_validation"] = {
@@ -5716,6 +5816,13 @@ async def preview_intent(
                 params_disambiguation = {**params_disambiguation, "fields": _pf}
             else:
                 params_disambiguation = None
+
+    # Ensure schema inspector values reflect trunk-vs-access coercion derived from the user prompt
+    # (UI chip state can lag behind the inferred binding semantics).
+    try:
+        correct_vlan_interface_binding_from_trunk_prompt(intent_description or "", parsed_intent)
+    except Exception as _trunk_fix_exc:
+        logger.debug("trunk/interface_binding correction before schema inspector failed: %s", _trunk_fix_exc)
 
     intent_schema_inspector: Dict[str, Any] = {"slices": []}
     try:

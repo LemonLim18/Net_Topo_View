@@ -594,6 +594,7 @@ def merge_extracted_vlan_params_into_parsed_intent(
     if "vlan_name" in ext and not _params_satisfies_create_vlan_field(p, "vlan_name"):
         p["vlan_name"] = ext["vlan_name"]
     parsed_intent["parameters"] = p
+    correct_vlan_interface_binding_from_trunk_prompt(intent_description, parsed_intent)
 
 
 def merge_extracted_vlan_params_into_flat_params(
@@ -887,6 +888,188 @@ def merge_prompt_aware_disambiguation_for_schema(
         }
     # Future: elif sa == "configure_ospf": ...
     return params_disambiguation
+
+
+def user_prompt_indicates_trunk_l2_binding(description: str) -> bool:
+    """
+    True when the user clearly refers to trunk L2 (allowed VLANs on a trunk, trunk port, etc.).
+
+    Used to correct LLM/schema drift that defaults port binding to **access** when the prompt
+    says **trunk** (e.g. "Create VLAN 10 and allow it on trunk port Gi…" — VLAN id appears
+    before the word "trunk", so naive regexes miss allowed-VLAN extraction).
+    """
+    if not description or not str(description).strip():
+        return False
+    tl = re.sub(r"\s+", " ", str(description).strip().lower())
+    if re.search(r"\b(?:no|not|without)\s+trunk\b", tl):
+        return False
+    has_trunk = bool(re.search(r"\btrunk\b", tl))
+    # Explicit access-only port wording and no trunk mention → do not force trunk.
+    if (
+        re.search(r"\b(?:as\s+access|access\s+port|access\s+ports|access\s+vlan)\b", tl)
+        and not has_trunk
+    ):
+        return False
+    if has_trunk:
+        return True
+    if re.search(r"\ballowed?\s+vlan", tl) and re.search(
+        r"\b(?:on|over)\s+(?:the\s+)?trunk\b", tl
+    ):
+        return True
+    if re.search(r"allow\s+.+\s+on\s+trunk", tl):
+        return True
+    # Generic "allow VLAN on port/interface" wording usually means trunk allowed-VLANs,
+    # unless the prompt explicitly says access.
+    if (
+        re.search(r"\ballow(?:ed)?\b", tl)
+        and re.search(r"\b(?:vlan|vlans)\b", tl)
+        and re.search(r"\b(?:on|to)\s+(?:the\s+)?(?:port|ports|interface|interfaces)\b", tl)
+    ):
+        return True
+    return False
+
+
+def _effective_vlan_id_for_port_binding(parameters: Dict[str, Any], intent_description: str) -> Optional[int]:
+    """Best VLAN id for binding access/trunk lists (params + NL extract)."""
+    for raw in (parameters.get("vlan_id"),):
+        if raw is None or str(raw).strip() == "":
+            continue
+        try:
+            v = int(raw)
+            if 1 <= v <= 4094:
+                return v
+        except (TypeError, ValueError):
+            pass
+    vlans = parameters.get("vlans")
+    if isinstance(vlans, list) and vlans:
+        first = vlans[0]
+        if isinstance(first, dict):
+            vid = first.get("id")
+            if vid is not None:
+                try:
+                    v = int(vid)
+                    if 1 <= v <= 4094:
+                        return v
+                except (TypeError, ValueError):
+                    pass
+    ext = extract_create_vlan_params_from_natural_language(intent_description or "")
+    vid2 = ext.get("vlan_id")
+    if vid2 is not None:
+        try:
+            v = int(vid2)
+            if 1 <= v <= 4094:
+                return v
+        except (TypeError, ValueError):
+            pass
+    return None
+
+
+def _coerce_one_interface_dict_to_trunk_allowed(
+    item: Dict[str, Any],
+    vlan_id: Optional[int],
+) -> Dict[str, Any]:
+    out = dict(item)
+    mode = str(out.get("mode") or "").strip().lower()
+    av = out.get("access_vlan")
+    try:
+        av_int = int(av) if av is not None and str(av).strip() != "" else None
+    except (TypeError, ValueError):
+        av_int = None
+    if av_int is not None and not (1 <= av_int <= 4094):
+        av_int = None
+
+    tv_existing: List[int] = []
+    for key in ("trunk_vlans", "allowed_vlans"):
+        raw = out.get(key)
+        if raw is None:
+            continue
+        if isinstance(raw, str) and raw.strip().lower() == "all":
+            out["mode"] = "trunk"
+            return out
+        if isinstance(raw, list):
+            for x in raw:
+                try:
+                    xi = int(x)
+                    if 1 <= xi <= 4094:
+                        tv_existing.append(xi)
+                except (TypeError, ValueError):
+                    pass
+        elif isinstance(raw, str) and raw.strip():
+            for part in raw.replace(" ", "").split(","):
+                if part.isdigit():
+                    try:
+                        xi = int(part)
+                        if 1 <= xi <= 4094:
+                            tv_existing.append(xi)
+                    except ValueError:
+                        pass
+
+    if mode == "trunk" and tv_existing:
+        out["mode"] = "trunk"
+        out.pop("access_vlan", None)
+        if "trunk_vlans" not in out or not out.get("trunk_vlans"):
+            out["trunk_vlans"] = sorted(set(tv_existing))
+        return out
+
+    # access, missing mode, or trunk missing allowed list — normalize to trunk + VLAN list
+    out["mode"] = "trunk"
+    out.pop("access_vlan", None)
+    chosen = vlan_id or av_int
+    if chosen is not None:
+        merged = sorted(set(tv_existing + [chosen]))
+        out["trunk_vlans"] = merged
+    elif tv_existing:
+        out["trunk_vlans"] = sorted(set(tv_existing))
+    return out
+
+
+def _coerce_parameters_interfaces_for_trunk_prompt(
+    intent_description: str,
+    parameters: Dict[str, Any],
+) -> None:
+    if not user_prompt_indicates_trunk_l2_binding(intent_description):
+        return
+    vlan_id = _effective_vlan_id_for_port_binding(parameters, intent_description)
+    for key in ("interfaces", "interface_binding"):
+        raw_list = parameters.get(key)
+        if not isinstance(raw_list, list) or not raw_list:
+            continue
+        new_list: List[Any] = []
+        for item in raw_list:
+            if isinstance(item, dict):
+                new_list.append(_coerce_one_interface_dict_to_trunk_allowed(item, vlan_id))
+            elif isinstance(item, str) and item.strip():
+                name = item.strip()
+                row: Dict[str, Any] = {"name": name, "mode": "trunk"}
+                if vlan_id is not None:
+                    row["trunk_vlans"] = [vlan_id]
+                new_list.append(row)
+            else:
+                new_list.append(item)
+        parameters[key] = new_list
+
+
+def correct_vlan_interface_binding_from_trunk_prompt(
+    intent_description: str,
+    parsed_intent: Dict[str, Any],
+) -> None:
+    """
+    In-place fix: trunk wording in the user message + access-shaped interface rows from the LLM.
+    """
+    if not intent_description or not str(intent_description).strip():
+        return
+    if not isinstance(parsed_intent, dict):
+        return
+    p = parsed_intent.get("parameters")
+    if isinstance(p, dict) and (p.get("interfaces") or p.get("interface_binding")):
+        _coerce_parameters_interfaces_for_trunk_prompt(intent_description, p)
+        parsed_intent["parameters"] = p
+    for sec in parsed_intent.get("secondary_intents") or []:
+        if not isinstance(sec, dict):
+            continue
+        sp = sec.get("parameters")
+        if isinstance(sp, dict) and (sp.get("interfaces") or sp.get("interface_binding")):
+            _coerce_parameters_interfaces_for_trunk_prompt(intent_description, sp)
 
 
 def user_prompt_requests_vlan_interface_binding(description: str) -> bool:

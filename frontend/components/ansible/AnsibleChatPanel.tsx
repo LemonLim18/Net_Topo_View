@@ -166,6 +166,8 @@ export type PreviewParamField = {
   options?: number[];
 };
 
+type PlannedDeviceInterfaces = { hostname: string; interfaces: { name: string }[] };
+
 /** Value map key: disambiguate duplicate field names across primary vs secondary intents. */
 function previewFieldValueKey(f: PreviewParamField): string {
   if (f.secondary_intent_index !== undefined && f.secondary_intent_index !== null) {
@@ -317,6 +319,12 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
   const [previewLockedTargetHosts, setPreviewLockedTargetHosts] = useState<string[]>([]);
   /** Merged params (vlan_id/name, target_hosts, interfaces, …) so each follow-up preview does not drop prior answers. */
   const [previewAccumulatedParams, setPreviewAccumulatedParams] = useState<Record<string, unknown>>({});
+  /** Latest local planned context used for interface option pickers in params wizard. */
+  const [plannedPickerDevices, setPlannedPickerDevices] = useState<PlannedDeviceInterfaces[]>([]);
+  /** Device options for params wizard (target_devices) from planned context only. */
+  const [plannedPickerDeviceNames, setPlannedPickerDeviceNames] = useState<string[]>([]);
+  /** Dev-only guard so we don't spam repeated free-text fallback warnings. */
+  const freeTextGuardWarnedRef = useRef<Set<string>>(new Set());
   const [studioInitialPreview, setStudioInitialPreview] = useState<{
     categories: string[];
     references: { doc_name: string; feature: string; vendor: string; path: string }[];
@@ -538,6 +546,22 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
             disambiguation_kind?: string;
           }
         | undefined;
+      const pickerDevicesFromIface =
+        ((res?.interfaces_disambiguation?.devices as PlannedDeviceInterfaces[] | undefined) ||
+        (res?.interfaces_for_selection?.devices as PlannedDeviceInterfaces[] | undefined) ||
+        []);
+      if (pickerDevicesFromIface.length > 0) {
+        setPlannedPickerDevices(pickerDevicesFromIface);
+      }
+      const pickerDeviceNames = Array.from(
+        new Set([
+          ...pickerDevicesFromIface.map((d) => String(d.hostname || '').trim()).filter(Boolean),
+          ...((devicesDis?.candidate_devices || []).map((d) => String(d).trim()).filter(Boolean)),
+        ]),
+      );
+      if (pickerDeviceNames.length > 0) {
+        setPlannedPickerDeviceNames(pickerDeviceNames);
+      }
       if (
         devicesDis?.ask_user_selection &&
         Array.isArray(devicesDis.candidate_devices) &&
@@ -600,6 +624,54 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
       // handling interfaces first would hide the VLAN name step forever (early return).
       const paramsDis = res?.params_disambiguation;
       if (paramsDis?.fields?.length) {
+        const fieldsList = (paramsDis.fields || []) as Array<{ field?: string }>;
+        const askedFields = fieldsList.map((f) => String(f.field || "")).filter(Boolean);
+        const ifaceForSel = res?.interfaces_for_selection;
+        const wantsOnlyTargetDevices = askedFields.length === 1 && askedFields[0] === 'target_devices';
+
+        if (wantsOnlyTargetDevices) {
+          const plannedDevices: string[] =
+            (ifaceForSel?.devices ?? []).map((d: any) => String(d.hostname || '').trim()).filter((s: string) => Boolean(s));
+
+          if (plannedDevices.length > 0) {
+            const menuMsgId = crypto.randomUUID();
+            const candidateDevices = Array.from(new Set(plannedDevices));
+            setDeviceDisambiguation({
+              messageId: menuMsgId,
+              question: paramsDis.question || 'Select target device(s) from planned inventory, then continue.',
+              candidateDevices,
+              intentText,
+            });
+            setSelectedDevices(new Set());
+            setMessages((prev) => [
+              ...prev,
+              {
+                id: menuMsgId,
+                role: 'assistant',
+                content: paramsDis.question || 'Select target device(s) from planned inventory, then continue.',
+                timestamp: Date.now(),
+                deviceDisambiguation: {
+                  question: paramsDis.question,
+                  candidate_devices: candidateDevices,
+                },
+              } as AnsibleMessage,
+            ]);
+            return true;
+          }
+        }
+        const isOnlyInterfaceShutdownField =
+          askedFields.length > 0 &&
+          askedFields.every((f) => f === "interfaces_to_shutdown" || f === "interfaces");
+
+        // If backend already provides a planned inventory interface picker (multi-select),
+        // never show the free-text input. The interface picker must take precedence.
+        const ifaceDis = res?.interfaces_disambiguation;
+        if (
+          isOnlyInterfaceShutdownField &&
+          (ifaceDis?.devices?.length || ifaceForSel?.devices?.length)
+        ) {
+          // Do not handle here; fall through to the interface picker branch below.
+        } else {
         const menuMsgId = crypto.randomUUID();
         const fieldsList = (paramsDis.fields || []) as PreviewParamField[];
         const initVals: Record<string, string | number | string[] | number[]> = {};
@@ -640,41 +712,73 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
           } as AnsibleMessage,
         ]);
         return true;
+        }
       }
 
       const ifaceDis = res?.interfaces_disambiguation;
-      if (ifaceDis?.devices?.length) {
+      const ifaceForSel = res?.interfaces_for_selection;
+      const ifaceDevices = ifaceDis?.devices?.length ? ifaceDis.devices : ifaceForSel?.devices?.length ? ifaceForSel.devices : null;
+      if (ifaceDevices) {
+        const question =
+          ifaceDis?.question ||
+          ifaceForSel?.question ||
+          'Please select the interfaces you want to shutdown.';
         const menuMsgId = crypto.randomUUID();
-        const vNotice = ifaceDis.validation_notice as string | undefined;
+        const vNotice = ifaceDis?.validation_notice as string | undefined;
         setInterfaceDisambiguation({
           messageId: menuMsgId,
-          question: ifaceDis.question || 'Please select the interfaces you want to shutdown.',
-          devices: ifaceDis.devices,
+          question,
+          devices: ifaceDevices,
           intentText,
-          schemaAction: res?.schema_action,
+          schemaAction: (res as any)?.schema_action,
           validationNotice: vNotice,
-          invalidEntities: ifaceDis.invalid_entities,
-          paramsNeedContextFix: Boolean(ifaceDis.params_need_context_fix),
+          invalidEntities: (ifaceDis as any)?.invalid_entities,
+          paramsNeedContextFix: Boolean((ifaceDis as any)?.params_need_context_fix),
         });
         {
           const parsed = (res?.parsed_intent ?? null) as Record<string, unknown> | null;
           const chips = buildPlannedInventoryPreselectChips(parsed, {
-            extraInvalidEntities: ifaceDis.invalid_entities as unknown[] | undefined,
+            extraInvalidEntities: (ifaceDis as any)?.invalid_entities as unknown[] | undefined,
           });
           setSelectedInterfacesByDevice(
-            preselectPlannedInventoryInterfacesByDevice(chips, { devices: ifaceDis.devices }),
+            preselectPlannedInventoryInterfacesByDevice(chips, { devices: ifaceDevices }),
           );
         }
+
+        // If the prompt asks for "admin-down all interfaces", preselect *all* planned-context
+        // interfaces for each selected host (management IP interfaces are already excluded in the backend).
+        // This avoids the need for any free-text input.
+        const tl = (intentText || "").toLowerCase();
+        const wantsAllIfaces =
+          /admin[- ]?down all interfaces/i.test(tl) ||
+          /admin[- ]?down all the interfaces/i.test(tl) ||
+          /shutdown all interfaces/i.test(tl) ||
+          /shut down all interfaces/i.test(tl) ||
+          /disable all interfaces/i.test(tl) ||
+          /turn off all interfaces/i.test(tl) ||
+          /bring down all interfaces/i.test(tl) ||
+          (tl.includes("all interfaces") && !/turn on|enable|bring up|administratively up|admin[- ]?up/i.test(tl));
+        if (wantsAllIfaces) {
+          const allByDevice: Record<string, Set<string>> = {};
+          for (const d of ifaceDevices) {
+            const hn = String(d.hostname || "").trim();
+            if (!hn) continue;
+            const names = Array.isArray(d.interfaces) ? d.interfaces.map((i: any) => String(i.name || "").trim()).filter(Boolean) : [];
+            allByDevice[hn] = new Set(names);
+          }
+          setSelectedInterfacesByDevice(allByDevice);
+        }
+
         setMessages((prev) => [
           ...prev,
           {
             id: menuMsgId,
             role: 'assistant',
             content: vNotice
-              ? `${vNotice}\n\n${ifaceDis.question || 'Please select the interfaces to continue.'}`
-              : ifaceDis.question || 'Please select the interfaces to continue.',
+              ? `${vNotice}\n\n${question || 'Please select the interfaces to continue.'}`
+              : question || 'Please select the interfaces to continue.',
             timestamp: Date.now(),
-            interfaceDisambiguation: { question: ifaceDis.question, devices: ifaceDis.devices },
+            interfaceDisambiguation: { question, devices: ifaceDevices },
           } as AnsibleMessage,
         ]);
         return true;
@@ -712,6 +816,25 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
     try {
       const { vendor, feature, params: parsedParams } = parseIntent(intentText);
       const merged = { ...previewAccumulatedParams, ...parsedParams, target_hosts: hosts };
+
+      // For shutdown-all phrasing, never ask for interface text.
+      // Instead, instruct backend to expand from planned nettopo_interfaces (mgmt IP excluded)
+      // for the selected target host(s).
+      const tl = (intentText || "").toLowerCase();
+      const wantsShutdownAllInterfaces =
+        /admin\s*-?\s*down all (interfaces|interface)/i.test(tl) ||
+        /shutdown all interfaces/i.test(tl) ||
+        /shut down all interfaces/i.test(tl) ||
+        /disable all interfaces/i.test(tl) ||
+        /turn off all interfaces/i.test(tl) ||
+        /bring down all interfaces/i.test(tl);
+      if (wantsShutdownAllInterfaces) {
+        (merged as any).interfaces_shutdown_use_nettopo = true;
+        (merged as any).interfaces_to_shutdown = ["ALL"];
+        // Safety: explicitly set admin enabled false (shutdown).
+        (merged as any).interfaces_admin_enabled = false;
+      }
+
       setPreviewLockedTargetHosts(hosts);
       setPreviewAccumulatedParams(merged);
       const res = await ansibleApi.previewIntent(
@@ -1230,7 +1353,7 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
       <div className="flex items-center justify-between px-3 shrink-0 h-9 bg-base-300 border-b border-base-300">
         <div className="flex items-center gap-2">
           <Sparkles className="w-3.5 h-3.5 text-primary shrink-0" />
-          <span className="text-[11px] font-semibold tracking-wider uppercase text-base-content/90">Ansible AI</span>
+          <span className="text-[11px] font-semibold tracking-wider whitespace-nowrap uppercase text-base-content/90">Ansible AI</span>
           {/* VSCode-style model selector */}
           <div ref={modelDropdownRef} style={{ position: 'relative' }}>
             <button
@@ -1243,7 +1366,7 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
               }}
               className="hover:bg-[#2d2d2d]"
             >
-              <span style={{ maxWidth: 140, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{currentModelLabel}</span>
+              <span style={{ maxWidth: 60, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{currentModelLabel}</span>
               <ChevronDown style={{ width: 12, height: 12, opacity: modelDropdownOpen ? 1 : 0.7, transform: modelDropdownOpen ? 'rotate(180deg)' : 'none', transition: 'transform 0.15s' }} />
             </button>
             {modelDropdownOpen && (
@@ -1543,10 +1666,15 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
                               // During interface disambiguation, keep the user's selected devices authoritative;
                               // re-parsing the original text would reintroduce wrong tokens like "SW1".
                               const selectedHosts = Array.from(selectedDevices);
+                              const selectedHostsFromInterfaces = Object.entries(selectedInterfacesByDevice)
+                                .filter(([, set]) => set.size > 0)
+                                .map(([hostname]) => hostname);
                               const effectiveTargetHosts =
                                 selectedHosts.length > 0
                                   ? selectedHosts
-                                  : previewLockedTargetHosts.length > 0
+                                  : selectedHostsFromInterfaces.length > 0
+                                    ? selectedHostsFromInterfaces
+                                    : previewLockedTargetHosts.length > 0
                                     ? previewLockedTargetHosts
                                     : safeParsedHostsForPreview(intentText);
                               const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -1725,59 +1853,177 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
                                     <div className="text-xs text-amber-600/90 dark:text-amber-400/90 mb-1">{f.label}</div>
                                   ) : null}
                                   <label className="text-sm text-base-content/90 block mb-0.5">{f.question}</label>
-                                  {f.control === 'multi_select_integers' &&
-                                  Array.isArray(f.options) &&
-                                  f.options.length > 0 ? (
-                                    <div className="flex flex-wrap gap-2 rounded border border-base-300 bg-base-300/50 p-2 max-h-52 overflow-y-auto">
-                                      {f.options.map((n) => {
-                                        const cur = (paramsDisambiguationValues[vk] as number[] | undefined) ?? [];
-                                        const checked = cur.includes(n);
+                                  {(() => {
+                                    const normalizedField = String(f.field || '').toLowerCase();
+                                    const isTargetDeviceField =
+                                      normalizedField === 'target_devices' ||
+                                      normalizedField === 'target_hosts' ||
+                                      normalizedField.includes('device');
+                                    const isInterfaceField =
+                                      normalizedField === 'interfaces' ||
+                                      normalizedField === 'interfaces_to_shutdown' ||
+                                      normalizedField.includes('interface');
+                                    if (!isTargetDeviceField && !isInterfaceField) return null;
+
+                                    const selectedForTargetDevices = paramsDisambiguationValues[vk];
+                                    const selectedTargets: string[] = Array.isArray(selectedForTargetDevices)
+                                      ? selectedForTargetDevices.map((x) => String(x).trim()).filter(Boolean)
+                                      : typeof selectedForTargetDevices === 'string'
+                                        ? selectedForTargetDevices.split(/[\s,]+/).map((s) => s.trim()).filter(Boolean)
+                                        : previewLockedTargetHosts.length > 0
+                                          ? previewLockedTargetHosts
+                                          : Array.from(selectedDevices);
+
+                                    const filteredDevices =
+                                      isInterfaceField && selectedTargets.length > 0
+                                        ? plannedPickerDevices.filter((d) => selectedTargets.includes(d.hostname))
+                                        : plannedPickerDevices;
+                                    const candidateDevices =
+                                      plannedPickerDeviceNames.length > 0
+                                        ? plannedPickerDeviceNames
+                                        : filteredDevices.map((d) => d.hostname);
+
+                                    if (isTargetDeviceField) {
+                                      const cur = (paramsDisambiguationValues[vk] as string[] | undefined) ?? [];
+                                      return (
+                                        <div className="flex flex-wrap gap-2 rounded border border-base-300 bg-base-300/50 p-2 max-h-52 overflow-y-auto">
+                                          {candidateDevices.map((host) => {
+                                            const checked = cur.includes(host);
+                                            return (
+                                              <label key={`${vk}-${host}`} className="flex items-center gap-1.5 cursor-pointer">
+                                                <input
+                                                  type="checkbox"
+                                                  checked={checked}
+                                                  onChange={() => {
+                                                    setParamsDisambiguationValues((prev) => {
+                                                      const prevArr = (prev[vk] as string[] | undefined) ?? [];
+                                                      const next = prevArr.includes(host)
+                                                        ? prevArr.filter((x) => x !== host)
+                                                        : [...prevArr, host];
+                                                      return { ...prev, [vk]: next };
+                                                    });
+                                                  }}
+                                                  className="checkbox checkbox-sm checkbox-primary"
+                                                />
+                                                <span className="text-xs font-mono">{host}</span>
+                                              </label>
+                                            );
+                                          })}
+                                        </div>
+                                      );
+                                    }
+
+                                    const cur = (paramsDisambiguationValues[vk] as string[] | undefined) ?? [];
+                                    return (
+                                      <div className="space-y-2 rounded border border-base-300 bg-base-300/50 p-2 max-h-56 overflow-y-auto">
+                                        {filteredDevices.map((dev) => (
+                                          <div key={`${vk}-${dev.hostname}`} className="rounded border border-base-300 bg-base-100/50 p-2">
+                                            <div className="text-[11px] font-semibold text-base-content/80 mb-1">{dev.hostname}</div>
+                                            <div className="flex flex-wrap gap-2">
+                                              {(dev.interfaces || []).map((iface) => {
+                                                const q = `${dev.hostname}:${String(iface.name || '').trim()}`;
+                                                if (!q.endsWith(':')) {
+                                                  const checked = cur.includes(q);
+                                                  return (
+                                                    <label key={`${vk}-${q}`} className="flex items-center gap-1.5 cursor-pointer">
+                                                      <input
+                                                        type="checkbox"
+                                                        checked={checked}
+                                                        onChange={() => {
+                                                          setParamsDisambiguationValues((prev) => {
+                                                            const prevArr = (prev[vk] as string[] | undefined) ?? [];
+                                                            const next = prevArr.includes(q)
+                                                              ? prevArr.filter((x) => x !== q)
+                                                              : [...prevArr, q];
+                                                            return { ...prev, [vk]: next };
+                                                          });
+                                                        }}
+                                                        className="checkbox checkbox-sm checkbox-primary"
+                                                      />
+                                                      <span className="text-xs font-mono">{iface.name}</span>
+                                                    </label>
+                                                  );
+                                                }
+                                                return null;
+                                              })}
+                                            </div>
+                                          </div>
+                                        ))}
+                                      </div>
+                                    );
+                                  })() || (
+                                    f.control === 'multi_select_integers' &&
+                                    Array.isArray(f.options) &&
+                                    f.options.length > 0 ? (
+                                      <div className="flex flex-wrap gap-2 rounded border border-base-300 bg-base-300/50 p-2 max-h-52 overflow-y-auto">
+                                        {f.options.map((n) => {
+                                          const cur = (paramsDisambiguationValues[vk] as number[] | undefined) ?? [];
+                                          const checked = cur.includes(n);
+                                          return (
+                                            <label
+                                              key={`${vk}-${n}`}
+                                              className="flex items-center gap-1.5 cursor-pointer"
+                                            >
+                                              <input
+                                                type="checkbox"
+                                                checked={checked}
+                                                onChange={() => {
+                                                  setParamsDisambiguationValues((prev) => {
+                                                    const prevArr = (prev[vk] as number[] | undefined) ?? [];
+                                                    const next = prevArr.includes(n)
+                                                      ? prevArr.filter((x) => x !== n)
+                                                      : [...prevArr, n].sort((a, b) => a - b);
+                                                    return { ...prev, [vk]: next };
+                                                  });
+                                                }}
+                                                className="checkbox checkbox-sm checkbox-primary"
+                                              />
+                                              <span className="text-xs font-mono">VLAN {n}</span>
+                                            </label>
+                                          );
+                                        })}
+                                      </div>
+                                    ) : (() => {
+                                      const normalizedField = String(f.field || '').toLowerCase();
+                                      const isInterfaceOrDeviceRelated =
+                                        normalizedField.includes('interface') ||
+                                        normalizedField.includes('device') ||
+                                        normalizedField.includes('target_hosts') ||
+                                        normalizedField.includes('target_devices');
+                                      if (isInterfaceOrDeviceRelated) {
+                                        if (
+                                          process.env.NODE_ENV !== 'production' &&
+                                          !freeTextGuardWarnedRef.current.has(vk)
+                                        ) {
+                                          freeTextGuardWarnedRef.current.add(vk);
+                                          // Strict regression guard for interface/device clarifications.
+                                          console.warn(
+                                            `[AnsibleChatPanel] Free-text fallback blocked for "${f.field}" (${vk}).` +
+                                            ' Expected planned-context option picker.',
+                                          );
+                                        }
                                         return (
-                                          <label
-                                            key={`${vk}-${n}`}
-                                            className="flex items-center gap-1.5 cursor-pointer"
-                                          >
-                                            <input
-                                              type="checkbox"
-                                              checked={checked}
-                                              onChange={() => {
-                                                setParamsDisambiguationValues((prev) => {
-                                                  const prevArr = (prev[vk] as number[] | undefined) ?? [];
-                                                  const next = prevArr.includes(n)
-                                                    ? prevArr.filter((x) => x !== n)
-                                                    : [...prevArr, n].sort((a, b) => a - b);
-                                                  return { ...prev, [vk]: next };
-                                                });
-                                              }}
-                                              className="checkbox checkbox-sm checkbox-primary"
-                                            />
-                                            <span className="text-xs font-mono">VLAN {n}</span>
-                                          </label>
+                                          <div className="rounded border border-error/50 bg-error/10 px-3 py-2 text-xs text-error-content">
+                                            Interface/device clarification cannot use free text. No planned options were provided.
+                                          </div>
                                         );
-                                      })}
-                                    </div>
-                                  ) : f.field === 'target_devices' || f.field === 'interfaces' ? (
-                                    <input
-                                      type="text"
-                                      className="input input-sm input-bordered w-full font-mono"
-                                      placeholder="e.g. Acc_1, Acc_2 or Gi0/1, Gi0/2"
-                                      value={(paramsDisambiguationValues[vk] as string) ?? ''}
-                                      onChange={(e) => setParamsDisambiguationValues((prev) => ({ ...prev, [vk]: e.target.value }))}
-                                    />
-                                  ) : (
-                                    <input
-                                      type={f.field === 'vlan_id' || f.field === 'process_id' ? 'number' : 'text'}
-                                      className="input input-sm input-bordered w-full font-mono"
-                                      placeholder={f.field === 'vlan_id' ? '1-4094' : ''}
-                                      value={String((paramsDisambiguationValues[vk] ?? '') as string | number)}
-                                      onChange={(e) => {
-                                        const v = e.target.value;
-                                        setParamsDisambiguationValues((prev) => ({
-                                          ...prev,
-                                          [vk]: f.field === 'vlan_id' || f.field === 'process_id' ? (v ? parseInt(v, 10) : '') : v,
-                                        }));
-                                      }}
-                                    />
+                                      }
+                                      return (
+                                        <input
+                                          type={f.field === 'vlan_id' || f.field === 'process_id' ? 'number' : 'text'}
+                                          className="input input-sm input-bordered w-full font-mono"
+                                          placeholder={f.field === 'vlan_id' ? '1-4094' : ''}
+                                          value={String((paramsDisambiguationValues[vk] ?? '') as string | number)}
+                                          onChange={(e) => {
+                                            const v = e.target.value;
+                                            setParamsDisambiguationValues((prev) => ({
+                                              ...prev,
+                                              [vk]: f.field === 'vlan_id' || f.field === 'process_id' ? (v ? parseInt(v, 10) : '') : v,
+                                            }));
+                                          }}
+                                        />
+                                      );
+                                    })()
                                   )}
                                 </div>
                               );
@@ -1837,11 +2083,15 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
                                     const sidx = f.secondary_intent_index;
                                     if (sidx !== undefined && sidx !== null) {
                                       if (!secondaryPatches[sidx]) secondaryPatches[sidx] = {};
-                                      if (f.field === 'target_devices' && typeof v === 'string') {
+                                      if (f.field === 'target_devices' && Array.isArray(v)) {
+                                        secondaryPatches[sidx].target_hosts = v.map((s) => String(s).trim()).filter(Boolean);
+                                      } else if (f.field === 'target_devices' && typeof v === 'string') {
                                         secondaryPatches[sidx].target_hosts = v.split(/[\s,]+/).map((s) => s.trim()).filter(Boolean);
                                       } else {
                                         secondaryPatches[sidx][f.field] = v;
                                       }
+                                    } else if (f.field === 'target_devices' && Array.isArray(v)) {
+                                      primaryParams.target_hosts = v.map((s) => String(s).trim()).filter(Boolean);
                                     } else if (f.field === 'target_devices' && typeof v === 'string') {
                                       primaryParams.target_hosts = v.split(/[\s,]+/).map((s) => s.trim()).filter(Boolean);
                                     } else {

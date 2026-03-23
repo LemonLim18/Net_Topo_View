@@ -1,6 +1,7 @@
 """Unit tests for refactored intent pipeline (no LLM)."""
 
 from ansible.intent_pipeline.cross_check import cross_check_parsed_intent
+from ansible.intent_validation import correct_vlan_interface_binding_from_trunk_prompt
 from ansible.intent_pipeline.intent_splitter import split_multi_intent
 from ansible.intent_pipeline.operation_adapter import apply_operation_adapter
 from ansible.intent_pipeline.orchestrator import merge_multi_intent_llm_response, prepare_llm_input_dict
@@ -283,6 +284,77 @@ def test_cross_check_suppresses_narrative_scope_host_when_resolved_valid():
     assert row["hostname"] == "Acc_Cisco_1"
     assert row["value"] == "GigabitEthernet1/0/1"
     assert set(row["suggestions"]) == {"GigabitEthernet0/0/1", "FastEthernet0/1"}
+
+
+def test_trunk_prompt_coerces_access_shaped_vlan_binding():
+    """User says trunk port; LLM must not leave access + access_vlan for allowed-VLAN-on-trunk."""
+    pi = {
+        "parameters": {
+            "vlan_id": 10,
+            "vlan_name": "Jason",
+            "interfaces": [
+                {"name": "Acc_Cisco_1:Ethernet0/2", "mode": "access", "access_vlan": 10},
+            ],
+        },
+    }
+    correct_vlan_interface_binding_from_trunk_prompt(
+        "Create VLAN 10 and allow it on trunk port GigabitEthernet1/0/2 on SW1",
+        pi,
+    )
+    iface = pi["parameters"]["interfaces"][0]
+    assert iface.get("mode") == "trunk"
+    assert iface.get("trunk_vlans") == [10]
+    assert "access_vlan" not in iface
+
+
+def test_allow_vlan_on_port_phrase_coerces_to_trunk():
+    """Generic allow-on-port wording should map to trunk allowed VLAN semantics."""
+    pi = {
+        "parameters": {
+            "vlan_id": 10,
+            "interfaces": [
+                {"name": "Acc_Cisco_1:Ethernet0/3", "mode": "access", "access_vlan": 10},
+            ],
+        },
+    }
+    correct_vlan_interface_binding_from_trunk_prompt(
+        "Create VLAN 10 and allow it on port Ethernet0/3 on SW1",
+        pi,
+    )
+    iface = pi["parameters"]["interfaces"][0]
+    assert iface.get("mode") == "trunk"
+    assert iface.get("trunk_vlans") == [10]
+    assert "access_vlan" not in iface
+
+
+def test_trunk_prompt_coerces_interface_binding_key():
+    """interface_binding (create_vlan.yml) must also be normalized to trunk."""
+    pi = {
+        "parameters": {
+            "vlan_id": 10,
+            "vlan_name": "shenao",
+            "interface_binding": [
+                {"name": "Acc_Cisco_1:Ethernet0/1", "mode": "access", "access_vlan": 10},
+            ],
+        },
+    }
+    correct_vlan_interface_binding_from_trunk_prompt(
+        "Create VLAN 10 and allow it on trunk port Ethernet0/1 on SW1",
+        pi,
+    )
+    iface = pi["parameters"]["interface_binding"][0]
+    assert iface.get("mode") == "trunk"
+    assert iface.get("trunk_vlans") == [10]
+    assert "access_vlan" not in iface
+
+
+def test_intent_requests_all_interfaces_detection_interface_shutdown():
+    """Sanity check for wildcard detection used to avoid free-text interfaces_to_shutdown asks."""
+    from ansible.context_entity_validation import intent_requests_all_interfaces
+
+    assert intent_requests_all_interfaces("Admin-down all interfaces on SW1") is True
+    assert intent_requests_all_interfaces("shutdown all") is True
+    assert intent_requests_all_interfaces("shutdown Ethernet0/1") is False
 
 
 def test_cross_check_no_invalid_devices_when_resolved_valid_even_if_params_repeat_sw1():
