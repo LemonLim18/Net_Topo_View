@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react'
 import ReactMarkdown from 'react-markdown';
 import { DiffEditor } from '@monaco-editor/react';
 import { Send, Loader2, Bot, Sparkles, AlertCircle, FileCode, RotateCcw, ChevronRight, Paperclip, X, TriangleAlert, ChevronDown, Check, Undo2, RefreshCw, Square } from 'lucide-react';
-import { ansibleApi, llmApi, ragApi } from '../../src/services/api';
+import { ansibleApi, llmApi, netboxApi, ragApi } from '../../src/services/api';
 import { Toast } from '../../src/utils/swal';
 import {
   buildPlannedInventoryPreselectChips,
@@ -155,6 +155,73 @@ function safeParsedHostsForPreview(text: string): string[] | undefined {
   return filtered.length ? filtered : undefined;
 }
 
+function promptRequestsAllInterfaces(text: string): boolean {
+  const tl = String(text || '').toLowerCase();
+  return (
+    /admin[- ]?down all interfaces/i.test(tl) ||
+    /admin[- ]?down all the interfaces/i.test(tl) ||
+    /shutdown all interfaces/i.test(tl) ||
+    /shut down all interfaces/i.test(tl) ||
+    /disable all interfaces/i.test(tl) ||
+    /turn off all interfaces/i.test(tl) ||
+    /bring down all interfaces/i.test(tl) ||
+    /all interfaces/i.test(tl)
+  ) && !/turn on|enable|bring up|administratively up|admin[- ]?up/i.test(tl);
+}
+
+function userPromptSuggestsTrunkPortIntent(text: string): boolean {
+  const t = String(text || '').trim().toLowerCase();
+  if (!t) return false;
+  if (/\b(?:no|not|without)\s+trunk\b/.test(t)) return false;
+  if (/\btrunk\b/.test(t)) return true;
+  if (/\ballow(?:ed)?\s+vlan/.test(t)) return true;
+  if (/\btagged\b/.test(t)) return true;
+  if (/\bon\s+(?:the\s+)?trunk\b/.test(t)) return true;
+  return false;
+}
+
+function userPromptSuggestsAccessPortIntent(text: string): boolean {
+  const t = String(text || '').trim().toLowerCase();
+  if (!t) return false;
+  if (/\baccess\s+port\b/.test(t)) return true;
+  if (/\bas\s+access\b/.test(t)) return true;
+  if (/\baccess\s+vlan\b/.test(t)) return true;
+  return false;
+}
+
+function hasAuthoritativeInterfaceSelection(params: Record<string, unknown>): boolean {
+  if (!params || typeof params !== 'object') return false;
+  const hasList = (v: unknown) => Array.isArray(v) && v.length > 0;
+  if (
+    hasList(params.interfaces_to_shutdown) ||
+    hasList(params.interfaces) ||
+    hasList(params.interfaces_config) ||
+    hasList(params.apply_to) ||
+    hasList(params.interface_apply) ||
+    hasList(params.passive_interfaces) ||
+    typeof params.next_hop === 'string'
+  ) {
+    return true;
+  }
+  const sec = params.secondary_intents;
+  if (Array.isArray(sec)) {
+    return sec.some((s) => {
+      if (!s || typeof s !== 'object') return false;
+      const p = (s as { parameters?: Record<string, unknown> }).parameters || {};
+      return (
+        hasList(p.interfaces_to_shutdown) ||
+        hasList(p.interfaces) ||
+        hasList(p.interfaces_config) ||
+        hasList(p.apply_to) ||
+        hasList(p.interface_apply) ||
+        hasList(p.passive_interfaces) ||
+        typeof p.next_hop === 'string'
+      );
+    });
+  }
+  return false;
+}
+
 /** Backend preview param wizard field (primary or secondary_intents slice). */
 export type PreviewParamField = {
   field: string;
@@ -167,6 +234,35 @@ export type PreviewParamField = {
 };
 
 type PlannedDeviceInterfaces = { hostname: string; interfaces: { name: string }[] };
+
+function mergePlannedDeviceInterfaces(
+  prev: PlannedDeviceInterfaces[],
+  next: PlannedDeviceInterfaces[],
+): PlannedDeviceInterfaces[] {
+  const byHost = new Map<string, Set<string>>();
+  for (const row of prev) {
+    const host = String(row.hostname || '').trim();
+    if (!host) continue;
+    byHost.set(
+      host,
+      new Set((row.interfaces || []).map((i) => String(i.name || '').trim()).filter(Boolean)),
+    );
+  }
+  for (const row of next) {
+    const host = String(row.hostname || '').trim();
+    if (!host) continue;
+    const set = byHost.get(host) || new Set<string>();
+    for (const iface of row.interfaces || []) {
+      const name = String(iface.name || '').trim();
+      if (name) set.add(name);
+    }
+    byHost.set(host, set);
+  }
+  return Array.from(byHost.entries()).map(([hostname, set]) => ({
+    hostname,
+    interfaces: Array.from(set).map((name) => ({ name })),
+  }));
+}
 
 /** Value map key: disambiguate duplicate field names across primary vs secondary intents. */
 function previewFieldValueKey(f: PreviewParamField): string {
@@ -325,6 +421,9 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
   const [plannedPickerDeviceNames, setPlannedPickerDeviceNames] = useState<string[]>([]);
   /** Dev-only guard so we don't spam repeated free-text fallback warnings. */
   const freeTextGuardWarnedRef = useRef<Set<string>>(new Set());
+  /** Guard auto-submit for all-interfaces prompts per disambiguation message. */
+  const autoSubmittedInterfaceDisambiguationRef = useRef<Set<string>>(new Set());
+  const previewAccumulatedParamsRef = useRef<Record<string, unknown>>({});
   const [studioInitialPreview, setStudioInitialPreview] = useState<{
     categories: string[];
     references: { doc_name: string; feature: string; vendor: string; path: string }[];
@@ -335,6 +434,61 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
     parsed_intent: Record<string, unknown>;
     intent_schema_inspector?: IntentSchemaInspectorPayload;
   } | null>(null);
+
+  useEffect(() => {
+    previewAccumulatedParamsRef.current = previewAccumulatedParams;
+  }, [previewAccumulatedParams]);
+
+  // Auto-fill params wizard interface fields when user explicitly asks for "all interfaces".
+  // This avoids forcing another manual interface selection step.
+  useEffect(() => {
+    if (!paramsDisambiguation || paramsDisambiguation.fields.length === 0) return;
+    const f = paramsDisambiguation.fields[paramsDisambiguationStep];
+    if (!f) return;
+    const fk = String(f.field || '').toLowerCase();
+    const isIfaceField = fk === 'interfaces' || fk === 'interfaces_to_shutdown' || fk.includes('interface');
+    if (!isIfaceField) return;
+    if (!promptRequestsAllInterfaces(paramsDisambiguation.intentText)) return;
+
+    const targetDevicesVal =
+      Object.entries(paramsDisambiguationValues).find(([k]) => k.startsWith('target_devices'))?.[1] ?? null;
+    const selectedTargets: string[] = Array.isArray(targetDevicesVal)
+      ? targetDevicesVal.map((x) => String(x).trim()).filter(Boolean)
+      : typeof targetDevicesVal === 'string'
+        ? targetDevicesVal.split(/[\s,]+/).map((s) => s.trim()).filter(Boolean)
+        : previewLockedTargetHosts.length > 0
+          ? previewLockedTargetHosts
+          : Array.from(selectedDevices);
+
+    const scoped = selectedTargets.length > 0
+      ? plannedPickerDevices.filter((d) => selectedTargets.includes(d.hostname))
+      : plannedPickerDevices;
+    const devices = scoped.length > 0 ? scoped : plannedPickerDevices;
+    if (devices.length === 0) return;
+
+    const allQualified = devices.flatMap((d) =>
+      (d.interfaces || [])
+        .map((i) => String(i.name || '').trim())
+        .filter((name) => Boolean(name) && !/management|mgmt/i.test(name))
+        .map((name) => `${d.hostname}:${name}`),
+    );
+    if (allQualified.length === 0) return;
+
+    const vk = previewFieldValueKey(f);
+    const cur = (paramsDisambiguationValues[vk] as string[] | undefined) ?? [];
+    const curKey = [...cur].sort().join('||');
+    const nextKey = [...allQualified].sort().join('||');
+    if (curKey === nextKey) return;
+
+    setParamsDisambiguationValues((prev) => ({ ...prev, [vk]: allQualified }));
+  }, [
+    paramsDisambiguation,
+    paramsDisambiguationStep,
+    paramsDisambiguationValues,
+    previewLockedTargetHosts,
+    selectedDevices,
+    plannedPickerDevices,
+  ]);
 
   // Load LLM runtime (Gemini + Ollama models) and restore Ansible model selection
   useEffect(() => {
@@ -551,7 +705,7 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
         (res?.interfaces_for_selection?.devices as PlannedDeviceInterfaces[] | undefined) ||
         []);
       if (pickerDevicesFromIface.length > 0) {
-        setPlannedPickerDevices(pickerDevicesFromIface);
+        setPlannedPickerDevices((prev) => mergePlannedDeviceInterfaces(prev, pickerDevicesFromIface));
       }
       const pickerDeviceNames = Array.from(
         new Set([
@@ -719,6 +873,11 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
       const ifaceForSel = res?.interfaces_for_selection;
       const ifaceDevices = ifaceDis?.devices?.length ? ifaceDis.devices : ifaceForSel?.devices?.length ? ifaceForSel.devices : null;
       if (ifaceDevices) {
+        const alreadyAnswered = hasAuthoritativeInterfaceSelection(previewAccumulatedParamsRef.current);
+        const hasInvalid = Array.isArray((ifaceDis as any)?.invalid_entities) && (ifaceDis as any).invalid_entities.length > 0;
+        if (alreadyAnswered && !hasInvalid) {
+          return false;
+        }
         const question =
           ifaceDis?.question ||
           ifaceForSel?.question ||
@@ -749,15 +908,7 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
         // interfaces for each selected host (management IP interfaces are already excluded in the backend).
         // This avoids the need for any free-text input.
         const tl = (intentText || "").toLowerCase();
-        const wantsAllIfaces =
-          /admin[- ]?down all interfaces/i.test(tl) ||
-          /admin[- ]?down all the interfaces/i.test(tl) ||
-          /shutdown all interfaces/i.test(tl) ||
-          /shut down all interfaces/i.test(tl) ||
-          /disable all interfaces/i.test(tl) ||
-          /turn off all interfaces/i.test(tl) ||
-          /bring down all interfaces/i.test(tl) ||
-          (tl.includes("all interfaces") && !/turn on|enable|bring up|administratively up|admin[- ]?up/i.test(tl));
+        const wantsAllIfaces = promptRequestsAllInterfaces(tl);
         if (wantsAllIfaces) {
           const allByDevice: Record<string, Set<string>> = {};
           for (const d of ifaceDevices) {
@@ -815,19 +966,52 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
     abortControllerRef.current = ac;
     try {
       const { vendor, feature, params: parsedParams } = parseIntent(intentText);
-      const merged = { ...previewAccumulatedParams, ...parsedParams, target_hosts: hosts };
+      const merged = { ...parsedParams, ...previewAccumulatedParams, target_hosts: hosts };
+
+      // Fallback hydration: when preview response omits interfaces_for_selection/interfaces_disambiguation,
+      // build per-host interface options from local planned topology so params wizard never renders blank.
+      try {
+        const topo = await netboxApi.getLocalPlannedTopology();
+        const nodes = (topo?.nodes || {}) as Record<string, any>;
+        const picked = hosts
+          .map((hostname) => {
+            const node = nodes[hostname];
+            if (!node) return null;
+            const mgmtIp = String(node.mgmt_ip || '').trim();
+            const rawIfaceMaps = Array.isArray(node.interfaceList) ? node.interfaceList : [];
+            const firstMap = (rawIfaceMaps.find((x: unknown) => x && typeof x === 'object') || {}) as Record<string, unknown>;
+            const ifNames = Object.entries(firstMap)
+              .filter(([rawName, rawIp]) => {
+                const name = String(rawName || '').trim();
+                if (!name) return false;
+                const ip = String(rawIp || '').trim();
+                if (/management|mgmt/i.test(name)) return false;
+                if (mgmtIp && ip && ip === mgmtIp) return false;
+                return true;
+              })
+              .map(([rawName]) => String(rawName).trim())
+              .filter(Boolean);
+            return {
+              hostname,
+              interfaces: ifNames.map((name) => ({ name })),
+            };
+          })
+          .filter((d): d is PlannedDeviceInterfaces => Boolean(d && d.interfaces.length > 0));
+        if (picked.length > 0) {
+          setPlannedPickerDevices((prev) => mergePlannedDeviceInterfaces(prev, picked));
+        }
+        if (hosts.length > 0) {
+          setPlannedPickerDeviceNames(Array.from(new Set(hosts)));
+        }
+      } catch (_) {
+        // Ignore fallback-hydration errors; preview flow still continues.
+      }
 
       // For shutdown-all phrasing, never ask for interface text.
       // Instead, instruct backend to expand from planned nettopo_interfaces (mgmt IP excluded)
       // for the selected target host(s).
       const tl = (intentText || "").toLowerCase();
-      const wantsShutdownAllInterfaces =
-        /admin\s*-?\s*down all (interfaces|interface)/i.test(tl) ||
-        /shutdown all interfaces/i.test(tl) ||
-        /shut down all interfaces/i.test(tl) ||
-        /disable all interfaces/i.test(tl) ||
-        /turn off all interfaces/i.test(tl) ||
-        /bring down all interfaces/i.test(tl);
+      const wantsShutdownAllInterfaces = promptRequestsAllInterfaces(tl);
       if (wantsShutdownAllInterfaces) {
         (merged as any).interfaces_shutdown_use_nettopo = true;
         (merged as any).interfaces_to_shutdown = ["ALL"];
@@ -890,6 +1074,236 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
     applyPreviewFollowUps,
     addMsg,
   ]);
+
+  const submitInterfaceDisambiguation = useCallback(async () => {
+    if (!interfaceDisambiguation) return;
+    const devices = interfaceDisambiguation.devices;
+    const qualified: { hostname: string; ifName: string }[] = [];
+    for (const d of devices) {
+      const hn = d.hostname;
+      const set = selectedInterfacesByDevice[hn] || new Set<string>();
+      for (const ifName of set) {
+        qualified.push({ hostname: hn, ifName });
+      }
+    }
+    if (qualified.length === 0) {
+      if (promptRequestsAllInterfaces(interfaceDisambiguation.intentText)) {
+        for (const d of devices) {
+          const hn = String(d.hostname || '').trim();
+          if (!hn) continue;
+          const names = (d.interfaces || [])
+            .map((i) => String(i.name || '').trim())
+            .filter((n) => Boolean(n) && !/management|mgmt/i.test(n));
+          for (const ifName of names) qualified.push({ hostname: hn, ifName });
+        }
+      }
+    }
+    if (qualified.length === 0) {
+      Toast.warning('Select at least one interface', 'Choose one or more interfaces per device to continue.');
+      return;
+    }
+    const msgId = interfaceDisambiguation.messageId;
+    const intentText = interfaceDisambiguation.intentText;
+    const schemaAction = (interfaceDisambiguation.schemaAction || 'shutdown_interface').toLowerCase();
+    setInterfaceDisambiguation(null);
+    setMessages(prev => prev.filter(m => m.id !== msgId));
+    setGenerating(true);
+    const progressId = crypto.randomUUID();
+    setMessages(prev => [...prev, {
+      id: progressId,
+      role: 'assistant',
+      content: 'Applying your interface selection and refreshing the preview…',
+      timestamp: Date.now(),
+    }]);
+    const ac = new AbortController();
+    abortControllerRef.current = ac;
+    try {
+      const { vendor, feature, params: parsedParams } = parseIntent(intentText);
+      const selectedHosts = Array.from(selectedDevices);
+      const selectedHostsFromInterfaces = Array.from(new Set(qualified.map((q) => q.hostname)));
+      const effectiveTargetHosts =
+        selectedHosts.length > 0
+          ? selectedHosts
+          : selectedHostsFromInterfaces.length > 0
+            ? selectedHostsFromInterfaces
+            : previewLockedTargetHosts.length > 0
+              ? previewLockedTargetHosts
+              : safeParsedHostsForPreview(intentText);
+      const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const inferDirection = (ifaceName: string): 'in' | 'out' | null => {
+        const esc = escapeRegExp(ifaceName);
+        const re = new RegExp(`${esc}\\s*(in|out)\\b`, 'i');
+        const m = intentText.match(re);
+        const dir = m?.[1]?.toLowerCase();
+        return dir === 'in' || dir === 'out' ? dir : null;
+      };
+      const qTok = (x: { hostname: string; ifName: string }) => `${x.hostname}:${x.ifName}`;
+      const vidRaw =
+        (previewAccumulatedParams.vlan_id as number | string | undefined) ??
+        parsedParams.vlan_id;
+      const vlanNum =
+        vidRaw !== undefined && vidRaw !== ''
+          ? typeof vidRaw === 'number'
+            ? vidRaw
+            : parseInt(String(vidRaw), 10)
+          : NaN;
+      const wantNativeVlan = userPromptSuggestsNativeVlanIntent(intentText);
+      const nativeParsed = parseNativeVlanNumberFromPrompt(intentText);
+      const wantsTrunk = userPromptSuggestsTrunkPortIntent(intentText);
+      const wantsAccess = userPromptSuggestsAccessPortIntent(intentText);
+      const buildL2InterfaceObjects = (): Array<Record<string, unknown>> => {
+        if (wantNativeVlan) {
+          const nv =
+            nativeParsed !== null
+              ? nativeParsed
+              : !Number.isNaN(vlanNum)
+                ? vlanNum
+                : null;
+          if (nv !== null) {
+            const allowed = String(!Number.isNaN(vlanNum) ? vlanNum : nv);
+            return qualified.map(({ hostname, ifName }) => ({
+              name: qTok({ hostname, ifName }),
+              mode: 'trunk' as const,
+              trunk_vlans: allowed,
+              native_vlan: nv,
+            }));
+          }
+        }
+        if (wantsTrunk && !wantsAccess) {
+          const allowed =
+            !Number.isNaN(vlanNum) && Number.isFinite(vlanNum)
+              ? [vlanNum]
+              : [];
+          return qualified.map(({ hostname, ifName }) => ({
+            name: qTok({ hostname, ifName }),
+            mode: 'trunk' as const,
+            ...(allowed.length > 0 ? { trunk_vlans: allowed } : {}),
+          }));
+        }
+        return qualified.map(({ hostname, ifName }) => ({
+          name: qTok({ hostname, ifName }),
+          mode: 'access' as const,
+          ...(!Number.isNaN(vlanNum) ? { access_vlan: vlanNum } : {}),
+        }));
+      };
+      let ifaceParams: Record<string, any>;
+      const secondaryIntents = (previewAccumulatedParams.secondary_intents as
+        | Array<{ action?: string; feature?: string; parameters?: Record<string, unknown> }>
+        | undefined) || [];
+      const ifaceSecondaryIdx = secondaryIntents.findIndex(
+        (s) =>
+          (s.action || '').toLowerCase().replace(/-/g, '_') === 'configure_interface' ||
+          (s.feature || '').toLowerCase() === 'interface',
+      );
+      const secondaryIsIface = ifaceSecondaryIdx >= 0;
+      if (secondaryIsIface) {
+        const ifaceList = { interfaces: buildL2InterfaceObjects() };
+        const mergedSec = [...secondaryIntents];
+        const pPrev = (mergedSec[ifaceSecondaryIdx]?.parameters as Record<string, unknown>) || {};
+        mergedSec[ifaceSecondaryIdx] = {
+          ...mergedSec[ifaceSecondaryIdx],
+          action: mergedSec[ifaceSecondaryIdx]?.action || 'configure_interface',
+          feature: mergedSec[ifaceSecondaryIdx]?.feature || 'interface',
+          parameters: { ...pPrev, ...ifaceList },
+        };
+        ifaceParams = { secondary_intents: mergedSec };
+      } else if (schemaAction === 'configure_interface' || schemaAction === 'create_vlan') {
+        ifaceParams = { interfaces: buildL2InterfaceObjects() };
+      } else if (schemaAction === 'configure_acl') {
+        ifaceParams = {
+          apply_to: qualified.map(({ hostname, ifName }) => {
+            const q = qTok({ hostname, ifName });
+            const dir = inferDirection(ifName);
+            return dir ? `${q} ${dir}` : q;
+          }),
+        };
+      } else if (schemaAction === 'configure_qos') {
+        ifaceParams = {
+          interface_apply: qualified.map(({ hostname, ifName }) => {
+            const q = qTok({ hostname, ifName });
+            const dir = inferDirection(ifName);
+            return dir ? `${q} ${dir}` : q;
+          }),
+        };
+      } else if (schemaAction === 'configure_ospf') {
+        ifaceParams = { passive_interfaces: qualified.map(qTok) };
+      } else if (schemaAction === 'configure_static_route') {
+        ifaceParams = { next_hop: qTok(qualified[0]) };
+      } else {
+        ifaceParams = { interfaces_to_shutdown: qualified.map(qTok) };
+      }
+      const mergedIface: Record<string, unknown> = {
+        ...parsedParams,
+        ...previewAccumulatedParams,
+        ...ifaceParams,
+      };
+      if (effectiveTargetHosts?.length) {
+        mergedIface.target_hosts = effectiveTargetHosts;
+      }
+      setPreviewAccumulatedParams(mergedIface);
+      if (effectiveTargetHosts?.length) {
+        setPreviewLockedTargetHosts(effectiveTargetHosts);
+      }
+      const res = await ansibleApi.previewIntent({
+        intent_description: intentText,
+        target_hosts: effectiveTargetHosts,
+        vendor: vendor || undefined,
+        feature: feature || undefined,
+        provider: ansibleModel.provider,
+        model: ansibleModel.model,
+        ollama_base_url: ansibleModel.ollama_base_url ?? undefined,
+        params: mergedIface,
+        skip_rag: true,
+      }, { signal: ac.signal });
+      abortControllerRef.current = null;
+      setMessages(prev => prev.filter(m => m.id !== progressId));
+      if (applyPreviewFollowUps(res, intentText)) {
+        setGenerating(false);
+        return;
+      }
+      const valErr = (res as { parsed_intent?: { validation_errors?: string[] } })?.parsed_intent?.validation_errors;
+      if (Array.isArray(valErr) && valErr.length > 0) {
+        addMsg({
+          role: 'assistant',
+          content: `**Validation issues**\n\n${valErr.join('\n')}`,
+        });
+      } else {
+        setStudioInitialPreview(res as any);
+        setStudioIntent(intentText);
+        setStudioOpen(true);
+      }
+    } catch (err: unknown) {
+      abortControllerRef.current = null;
+      setMessages(prev => prev.filter(m => m.id !== progressId));
+      const isAbort = err instanceof DOMException && err.name === 'AbortError';
+      if (isAbort) {
+        addMsg({ role: 'assistant', content: 'The generation was cancelled by the user.' });
+      }
+      setStudioInitialPreview(null);
+      setStudioIntent(intentText);
+      setStudioOpen(true);
+    }
+    setSelectedInterfacesByDevice({});
+    setGenerating(false);
+  }, [
+    interfaceDisambiguation,
+    selectedInterfacesByDevice,
+    selectedDevices,
+    previewLockedTargetHosts,
+    previewAccumulatedParams,
+    ansibleModel,
+    applyPreviewFollowUps,
+    addMsg,
+  ]);
+
+  useEffect(() => {
+    if (!interfaceDisambiguation) return;
+    if (!promptRequestsAllInterfaces(interfaceDisambiguation.intentText)) return;
+    const msgId = interfaceDisambiguation.messageId;
+    if (autoSubmittedInterfaceDisambiguationRef.current.has(msgId)) return;
+    autoSubmittedInterfaceDisambiguationRef.current.add(msgId);
+    void submitInterfaceDisambiguation();
+  }, [interfaceDisambiguation, submitInterfaceDisambiguation]);
 
   const handleSend = useCallback(async () => {
     const baseText = input.trim();
@@ -1631,202 +2045,7 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
                         <button
                           type="button"
                           className="btn btn-sm btn-primary"
-                          onClick={async () => {
-                            if (!interfaceDisambiguation) return;
-                            const devices = interfaceDisambiguation.devices;
-                            const qualified: { hostname: string; ifName: string }[] = [];
-                            for (const d of devices) {
-                              const hn = d.hostname;
-                              const set = selectedInterfacesByDevice[hn] || new Set<string>();
-                              for (const ifName of set) {
-                                qualified.push({ hostname: hn, ifName });
-                              }
-                            }
-                            if (qualified.length === 0) {
-                              Toast.warning('Select at least one interface', 'Choose one or more interfaces per device to continue.');
-                              return;
-                            }
-                            const msgId = interfaceDisambiguation.messageId;
-                            const intentText = interfaceDisambiguation.intentText;
-                            const schemaAction = (interfaceDisambiguation.schemaAction || 'shutdown_interface').toLowerCase();
-                            setInterfaceDisambiguation(null);
-                            setMessages(prev => prev.filter(m => m.id !== msgId));
-                            setGenerating(true);
-                            const progressId = crypto.randomUUID();
-                            setMessages(prev => [...prev, {
-                              id: progressId,
-                              role: 'assistant',
-                              content: 'Applying your interface selection and refreshing the preview…',
-                              timestamp: Date.now(),
-                            }]);
-                            const ac = new AbortController();
-                            abortControllerRef.current = ac;
-                            try {
-                              const { vendor, feature, params: parsedParams } = parseIntent(intentText);
-                              // During interface disambiguation, keep the user's selected devices authoritative;
-                              // re-parsing the original text would reintroduce wrong tokens like "SW1".
-                              const selectedHosts = Array.from(selectedDevices);
-                              const selectedHostsFromInterfaces = Object.entries(selectedInterfacesByDevice)
-                                .filter(([, set]) => set.size > 0)
-                                .map(([hostname]) => hostname);
-                              const effectiveTargetHosts =
-                                selectedHosts.length > 0
-                                  ? selectedHosts
-                                  : selectedHostsFromInterfaces.length > 0
-                                    ? selectedHostsFromInterfaces
-                                    : previewLockedTargetHosts.length > 0
-                                    ? previewLockedTargetHosts
-                                    : safeParsedHostsForPreview(intentText);
-                              const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-                              const inferDirection = (ifaceName: string): 'in' | 'out' | null => {
-                                // Preserve in/out direction only when it appears next to the interface token in the original prompt.
-                                const esc = escapeRegExp(ifaceName);
-                                const re = new RegExp(`${esc}\\s*(in|out)\\b`, 'i');
-                                const m = intentText.match(re);
-                                const dir = m?.[1]?.toLowerCase();
-                                return dir === 'in' || dir === 'out' ? dir : null;
-                              };
-
-                              const qTok = (x: { hostname: string; ifName: string }) => `${x.hostname}:${x.ifName}`;
-                              const vidRaw =
-                                (previewAccumulatedParams.vlan_id as number | string | undefined) ??
-                                parsedParams.vlan_id;
-                              const vlanNum =
-                                vidRaw !== undefined && vidRaw !== ''
-                                  ? typeof vidRaw === 'number'
-                                    ? vidRaw
-                                    : parseInt(String(vidRaw), 10)
-                                  : NaN;
-                              const wantNativeVlan = userPromptSuggestsNativeVlanIntent(intentText);
-                              const nativeParsed = parseNativeVlanNumberFromPrompt(intentText);
-
-                              const buildL2InterfaceObjects = (): Array<Record<string, unknown>> => {
-                                if (wantNativeVlan) {
-                                  const nv =
-                                    nativeParsed !== null
-                                      ? nativeParsed
-                                      : !Number.isNaN(vlanNum)
-                                        ? vlanNum
-                                        : null;
-                                  if (nv !== null) {
-                                    const allowed = String(!Number.isNaN(vlanNum) ? vlanNum : nv);
-                                    return qualified.map(({ hostname, ifName }) => ({
-                                      name: qTok({ hostname, ifName }),
-                                      mode: 'trunk' as const,
-                                      trunk_vlans: allowed,
-                                      native_vlan: nv,
-                                    }));
-                                  }
-                                }
-                                return qualified.map(({ hostname, ifName }) => ({
-                                  name: qTok({ hostname, ifName }),
-                                  mode: 'access' as const,
-                                  ...(!Number.isNaN(vlanNum) ? { access_vlan: vlanNum } : {}),
-                                }));
-                              };
-
-                              let ifaceParams: Record<string, any>;
-                              const secondaryIntents = (previewAccumulatedParams.secondary_intents as
-                                | Array<{ action?: string; feature?: string; parameters?: Record<string, unknown> }>
-                                | undefined) || [];
-                              /** First secondary slice that is interface work (works with 3+ ops; order need not be [0]). */
-                              const ifaceSecondaryIdx = secondaryIntents.findIndex(
-                                (s) =>
-                                  (s.action || '').toLowerCase().replace(/-/g, '_') === 'configure_interface' ||
-                                  (s.feature || '').toLowerCase() === 'interface',
-                              );
-                              const secondaryIsIface = ifaceSecondaryIdx >= 0;
-
-                              if (secondaryIsIface) {
-                                const ifaceList = { interfaces: buildL2InterfaceObjects() };
-                                const mergedSec = [...secondaryIntents];
-                                const pPrev = (mergedSec[ifaceSecondaryIdx]?.parameters as Record<string, unknown>) || {};
-                                mergedSec[ifaceSecondaryIdx] = {
-                                  ...mergedSec[ifaceSecondaryIdx],
-                                  action: mergedSec[ifaceSecondaryIdx]?.action || 'configure_interface',
-                                  feature: mergedSec[ifaceSecondaryIdx]?.feature || 'interface',
-                                  parameters: { ...pPrev, ...ifaceList },
-                                };
-                                ifaceParams = { secondary_intents: mergedSec };
-                              } else if (schemaAction === 'configure_interface' || schemaAction === 'create_vlan') {
-                                ifaceParams = { interfaces: buildL2InterfaceObjects() };
-                              } else if (schemaAction === 'configure_acl') {
-                                ifaceParams = {
-                                  apply_to: qualified.map(({ hostname, ifName }) => {
-                                    const q = qTok({ hostname, ifName });
-                                    const dir = inferDirection(ifName);
-                                    return dir ? `${q} ${dir}` : q;
-                                  }),
-                                };
-                              } else if (schemaAction === 'configure_qos') {
-                                ifaceParams = {
-                                  interface_apply: qualified.map(({ hostname, ifName }) => {
-                                    const q = qTok({ hostname, ifName });
-                                    const dir = inferDirection(ifName);
-                                    return dir ? `${q} ${dir}` : q;
-                                  }),
-                                };
-                              } else if (schemaAction === 'configure_ospf') {
-                                ifaceParams = { passive_interfaces: qualified.map(qTok) };
-                              } else if (schemaAction === 'configure_static_route') {
-                                ifaceParams = { next_hop: qTok(qualified[0]) };
-                              } else {
-                                ifaceParams = { interfaces_to_shutdown: qualified.map(qTok) };
-                              }
-                              const mergedIface: Record<string, unknown> = {
-                                ...previewAccumulatedParams,
-                                ...parsedParams,
-                                ...ifaceParams,
-                              };
-                              if (effectiveTargetHosts?.length) {
-                                mergedIface.target_hosts = effectiveTargetHosts;
-                              }
-                              setPreviewAccumulatedParams(mergedIface);
-                              if (effectiveTargetHosts?.length) {
-                                setPreviewLockedTargetHosts(effectiveTargetHosts);
-                              }
-                              const res = await ansibleApi.previewIntent({
-                                intent_description: intentText,
-                                target_hosts: effectiveTargetHosts,
-                                vendor: vendor || undefined,
-                                feature: feature || undefined,
-                                provider: ansibleModel.provider,
-                                model: ansibleModel.model,
-                                ollama_base_url: ansibleModel.ollama_base_url ?? undefined,
-                                params: mergedIface,
-                                skip_rag: true,
-                              }, { signal: ac.signal });
-                              abortControllerRef.current = null;
-                              setMessages(prev => prev.filter(m => m.id !== progressId));
-                              if (applyPreviewFollowUps(res, intentText)) {
-                                setGenerating(false);
-                                return;
-                              }
-                              const valErr = (res as { parsed_intent?: { validation_errors?: string[] } })?.parsed_intent?.validation_errors;
-                              if (Array.isArray(valErr) && valErr.length > 0) {
-                                addMsg({
-                                  role: 'assistant',
-                                  content: `**Validation issues**\n\n${valErr.join('\n')}`,
-                                });
-                              } else {
-                                setStudioInitialPreview(res as any);
-                                setStudioIntent(intentText);
-                                setStudioOpen(true);
-                              }
-                            } catch (err: unknown) {
-                              abortControllerRef.current = null;
-                              setMessages(prev => prev.filter(m => m.id !== progressId));
-                              const isAbort = err instanceof DOMException && err.name === 'AbortError';
-                              if (isAbort) {
-                                addMsg({ role: 'assistant', content: 'The generation was cancelled by the user.' });
-                              }
-                              setStudioInitialPreview(null);
-                              setStudioIntent(intentText);
-                              setStudioOpen(true);
-                            }
-                            setSelectedInterfacesByDevice({});
-                            setGenerating(false);
-                          }}
+                          onClick={submitInterfaceDisambiguation}
                         >
                           Continue
                         </button>
@@ -1865,7 +2084,8 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
                                       normalizedField.includes('interface');
                                     if (!isTargetDeviceField && !isInterfaceField) return null;
 
-                                    const selectedForTargetDevices = paramsDisambiguationValues[vk];
+                                    const selectedForTargetDevices = Object.entries(paramsDisambiguationValues)
+                                      .find(([key]) => key.startsWith('target_devices'))?.[1];
                                     const selectedTargets: string[] = Array.isArray(selectedForTargetDevices)
                                       ? selectedForTargetDevices.map((x) => String(x).trim()).filter(Boolean)
                                       : typeof selectedForTargetDevices === 'string'
@@ -1878,6 +2098,8 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
                                       isInterfaceField && selectedTargets.length > 0
                                         ? plannedPickerDevices.filter((d) => selectedTargets.includes(d.hostname))
                                         : plannedPickerDevices;
+                                    const visibleInterfaceDevices =
+                                      filteredDevices.length > 0 ? filteredDevices : plannedPickerDevices;
                                     const candidateDevices =
                                       plannedPickerDeviceNames.length > 0
                                         ? plannedPickerDeviceNames
@@ -1914,9 +2136,22 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
                                     }
 
                                     const cur = (paramsDisambiguationValues[vk] as string[] | undefined) ?? [];
+                                    const autoAllInterfaces = promptRequestsAllInterfaces(paramsDisambiguation.intentText);
+                                    if (autoAllInterfaces) {
+                                      // For "all interfaces" prompts, values are auto-filled in state.
+                                      // Do not render an extra picker/info box here.
+                                      return null;
+                                    }
+                                    if (visibleInterfaceDevices.length === 0) {
+                                      return (
+                                        <div className="rounded border border-warning/60 bg-warning/10 px-3 py-2 text-xs text-warning-content">
+                                          No planned interfaces found for the selected target device(s). Refresh planned topology/local DB and try again.
+                                        </div>
+                                      );
+                                    }
                                     return (
                                       <div className="space-y-2 rounded border border-base-300 bg-base-300/50 p-2 max-h-56 overflow-y-auto">
-                                        {filteredDevices.map((dev) => (
+                                        {visibleInterfaceDevices.map((dev) => (
                                           <div key={`${vk}-${dev.hostname}`} className="rounded border border-base-300 bg-base-100/50 p-2">
                                             <div className="text-[11px] font-semibold text-base-content/80 mb-1">{dev.hostname}</div>
                                             <div className="flex flex-wrap gap-2">
@@ -2134,8 +2369,8 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
                                   try {
                                     const { vendor, feature, params: parsedParams } = parseIntent(intentText);
                                     const merged: Record<string, unknown> = {
-                                      ...previewAccumulatedParams,
                                       ...parsedParams,
+                                      ...previewAccumulatedParams,
                                       ...params,
                                     };
                                     const th =

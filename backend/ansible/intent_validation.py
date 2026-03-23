@@ -1030,7 +1030,7 @@ def _coerce_parameters_interfaces_for_trunk_prompt(
     if not user_prompt_indicates_trunk_l2_binding(intent_description):
         return
     vlan_id = _effective_vlan_id_for_port_binding(parameters, intent_description)
-    for key in ("interfaces", "interface_binding"):
+    for key in ("interfaces", "interface_binding", "interfaces_config"):
         raw_list = parameters.get(key)
         if not isinstance(raw_list, list) or not raw_list:
             continue
@@ -1061,15 +1061,60 @@ def correct_vlan_interface_binding_from_trunk_prompt(
     if not isinstance(parsed_intent, dict):
         return
     p = parsed_intent.get("parameters")
-    if isinstance(p, dict) and (p.get("interfaces") or p.get("interface_binding")):
+    if isinstance(p, dict) and (p.get("interfaces") or p.get("interface_binding") or p.get("interfaces_config")):
         _coerce_parameters_interfaces_for_trunk_prompt(intent_description, p)
         parsed_intent["parameters"] = p
     for sec in parsed_intent.get("secondary_intents") or []:
         if not isinstance(sec, dict):
             continue
         sp = sec.get("parameters")
-        if isinstance(sp, dict) and (sp.get("interfaces") or sp.get("interface_binding")):
+        if isinstance(sp, dict) and (sp.get("interfaces") or sp.get("interface_binding") or sp.get("interfaces_config")):
             _coerce_parameters_interfaces_for_trunk_prompt(intent_description, sp)
+
+
+def _expand_all_interfaces_preview_tokens_for_inspector(
+    intent_for_slice: Dict[str, Any],
+    planned_preview: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """
+    Inspector-only expansion for shutdown_interface `interfaces_to_shutdown=["ALL"]`.
+    Keeps execution params unchanged, but renders explicit planned interfaces for admin visibility.
+    """
+    out = {
+        "action": intent_for_slice.get("action"),
+        "feature": intent_for_slice.get("feature"),
+        "parameters": dict(intent_for_slice.get("parameters") or {}),
+        "resolved_devices": list(intent_for_slice.get("resolved_devices") or []),
+    }
+    params = dict(out.get("parameters") or {})
+    action = str(out.get("action") or "").strip().lower().replace("-", "_")
+    if action != "shutdown_interface":
+        return out
+    raw = params.get("interfaces_to_shutdown")
+    if not isinstance(raw, list):
+        return out
+    has_all = any(str(x).strip().lower() in ("all", "*", "any", "every") for x in raw)
+    if not has_all:
+        return out
+    devices = list((planned_preview or {}).get("devices") or [])
+    expanded: List[str] = []
+    for d in devices:
+        if not isinstance(d, dict):
+            continue
+        hn = str(d.get("hostname") or "").strip()
+        if not hn:
+            continue
+        for iface in d.get("interfaces") or []:
+            if not isinstance(iface, dict):
+                continue
+            name = str(iface.get("name") or "").strip()
+            if not name:
+                continue
+            expanded.append(f"{hn}:{name}")
+    if expanded:
+        params["interfaces_to_shutdown"] = expanded
+        out["parameters"] = params
+    return out
 
 
 def user_prompt_requests_vlan_interface_binding(description: str) -> bool:
@@ -1441,12 +1486,17 @@ def build_intent_schema_inspector_payload(
     rh = list(parsed_intent.get("resolved_devices") or resolved_hosts or [])
     slices: List[Dict[str, Any]] = []
 
+    planned_preview = parsed_intent.get("planned_all_interfaces_preview")
     primary_intent = {
         "action": parsed_intent.get("action"),
         "feature": parsed_intent.get("feature"),
         "parameters": dict(parsed_intent.get("parameters") or {}),
         "resolved_devices": rh,
     }
+    primary_intent = _expand_all_interfaces_preview_tokens_for_inspector(
+        primary_intent,
+        planned_preview if isinstance(planned_preview, dict) else None,
+    )
     slices.append(
         _build_one_schema_inspector_slice(
             primary_intent,

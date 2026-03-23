@@ -18,15 +18,12 @@ Could Use: [Interface **`GigabitEthernet1/0/2`** is not present on **Acc_Cisco_1
 
 
 
-- [ /] Create VLAN 10 and allow it on trunk port GigabitEthernet1/0/2 on SW1  
-Just the weird access interface inside the Intent Schema Inspection but its actually trunk. Apply check and fix to not only this case, but other operations/categories if necessary and similar and generic. 
+- [/] Create VLAN 10 and allow it on trunk port GigabitEthernet1/0/2 on SW1  
 
-
-
-- [/ ] Create VLAN 200 named Guest and set native VLAN 200 on GigabitEthernet1/0/3  
+- [/] Create VLAN 200 named Guest and set native VLAN 200 on GigabitEthernet1/0/3  
 **Comment** It asks which VLAN should be allowed in this case, which the only option is VLAN 200. Should I include all or how?
 
-- [/ ] Create VLAN on devices *(generic / ambiguous test)*  
+- [/] Create VLAN on devices *(generic / ambiguous test)*  
 
 
 ## 2️⃣ Interface
@@ -42,6 +39,7 @@ Just the weird access interface inside the Intent Schema Inspection but its actu
 
 - [ ] Configure GigabitEthernet1/0/5 as trunk and allow VLANs 10, 20, 67 on SW1  
 
+- [] Set GigabitEthernet1/0/3 with IP address 192.168.10.1/24 on SW1  
 
 - [ ] Set GigabitEthernet1/0/3 as routed interface with IP address 192.168.10.1/24 on SW1  
 

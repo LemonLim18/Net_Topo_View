@@ -59,6 +59,7 @@ from ansible.intent_validation import (
     merge_prompt_aware_disambiguation_for_schema,
     resolve_missing_fields,
     user_prompt_requests_vlan_interface_binding,
+    user_prompt_indicates_trunk_l2_binding,
     validate_completeness,
 )
 from ansible.intent_validation import _intent_to_flat_fields, _is_empty as _param_is_empty
@@ -1180,6 +1181,84 @@ def _policy_validate_intent(intent_json: str, user_role: str) -> dict[str, Any]:
     return json.loads(raw)
 
 
+def _force_trunk_mode_for_prompt_invariant(
+    parsed_intent: Dict[str, Any],
+    intent_description: str,
+) -> List[str]:
+    """
+    Backend invariant: if prompt clearly indicates trunk intent, no interface row may remain access-mode.
+    Returns unresolved violation descriptions (empty when invariant satisfied).
+    """
+    if not user_prompt_indicates_trunk_l2_binding(intent_description or ""):
+        return []
+    if not isinstance(parsed_intent, dict):
+        return []
+
+    # First pass: existing normalizer.
+    correct_vlan_interface_binding_from_trunk_prompt(intent_description or "", parsed_intent)
+
+    def _iter_rows(container: Dict[str, Any], key: str):
+        rows = container.get(key)
+        if not isinstance(rows, list):
+            return []
+        out: List[Tuple[int, Dict[str, Any]]] = []
+        for i, row in enumerate(rows):
+            if isinstance(row, dict):
+                out.append((i, row))
+        return out
+
+    def _coerce_row(row: Dict[str, Any]) -> None:
+        mode = str(row.get("mode") or "").strip().lower()
+        if mode != "access":
+            return
+        row["mode"] = "trunk"
+        tv = row.get("trunk_vlans")
+        if not isinstance(tv, list) or len(tv) == 0:
+            av = row.get("access_vlan")
+            if isinstance(av, int):
+                row["trunk_vlans"] = [av]
+            elif isinstance(av, str) and av.strip().isdigit():
+                row["trunk_vlans"] = [int(av.strip())]
+        row.pop("access_vlan", None)
+
+    # Coerce primary + secondary rows.
+    p = parsed_intent.get("parameters")
+    if isinstance(p, dict):
+        for k in ("interfaces", "interface_binding", "interfaces_config"):
+            for _, row in _iter_rows(p, k):
+                _coerce_row(row)
+        parsed_intent["parameters"] = p
+    for sec in parsed_intent.get("secondary_intents") or []:
+        if not isinstance(sec, dict):
+            continue
+        sp = sec.get("parameters")
+        if not isinstance(sp, dict):
+            continue
+        for k in ("interfaces", "interface_binding", "interfaces_config"):
+            for _, row in _iter_rows(sp, k):
+                _coerce_row(row)
+
+    # Verify invariant.
+    violations: List[str] = []
+    p2 = parsed_intent.get("parameters")
+    if isinstance(p2, dict):
+        for k in ("interfaces", "interface_binding", "interfaces_config"):
+            for i, row in _iter_rows(p2, k):
+                if str(row.get("mode") or "").strip().lower() == "access":
+                    violations.append(f"primary.parameters.{k}[{i}] remained access-mode")
+    for sidx, sec in enumerate(parsed_intent.get("secondary_intents") or []):
+        if not isinstance(sec, dict):
+            continue
+        sp = sec.get("parameters")
+        if not isinstance(sp, dict):
+            continue
+        for k in ("interfaces", "interface_binding", "interfaces_config"):
+            for i, row in _iter_rows(sp, k):
+                if str(row.get("mode") or "").strip().lower() == "access":
+                    violations.append(f"secondary[{sidx}].parameters.{k}[{i}] remained access-mode")
+    return violations
+
+
 def _resolve_backend_intent_request(req, user: dict) -> tuple["PlanAnsibleRequest", dict[str, Any], dict[str, Any]]:
     from llm.intent import IntentParser, IntentType, ParsedIntent
 
@@ -1361,6 +1440,22 @@ def _resolve_backend_intent_request(req, user: dict) -> tuple["PlanAnsibleReques
         parsed.parameters = _coerce_for_plan["parameters"]
         if getattr(parsed, "requires_resolution", False):
             parsed.requires_resolution = False
+
+    _parsed_guard = parsed.model_dump()
+    _trunk_viol = _force_trunk_mode_for_prompt_invariant(
+        _parsed_guard,
+        req.intent_description or "",
+    )
+    parsed = ParsedIntent.model_validate(_parsed_guard)
+    if _trunk_viol:
+        raise HTTPException(
+            422,
+            detail={
+                "message": "Prompt indicates trunk intent, but interface binding is still access-mode.",
+                "violations": _trunk_viol,
+                "intent": _parsed_guard,
+            },
+        )
 
     policy = _policy_validate_intent(
         parsed.model_dump_json(),
@@ -4391,7 +4486,7 @@ def _preview_parse_and_rag(
 
     categories: list[str] = []
     parsed_dict: dict = {}
-    policy_approved = False
+    policy_approved = True
     reasoning: list[str] = []
 
     try:
@@ -4469,13 +4564,9 @@ def _preview_parse_and_rag(
             else:
                 parsed_dict["vlan_validation_errors"] = []
         if parsed.intent_type in (IntentType.CONFIGURE, IntentType.DEPLOY):
-            policy = _policy_validate_intent(
-                parsed.model_dump_json(),
-                user_role="operator",
-            )
-            policy_approved = policy.get("approved") is True
-            if not policy_approved:
-                reasoning.append("⚠️ Policy did not approve this intent for execution; you may still generate the playbook for review.")
+            # Policy restrictions are intentionally disabled for preview/chat clarification flow.
+            # Keep execution permissive so interface/device option pickers are never hidden by policy gating.
+            policy_approved = True
     except Exception as exc:
         logger.debug("Preview parse/policy failed: %s", exc)
         reasoning.append(f"### 1. Intent\nIntent parsing encountered an issue: {exc}. Using provided feature/vendor if any.")
@@ -5406,6 +5497,39 @@ async def preview_intent(
                 )
             _pif = build_planned_all_interfaces_preview(planning_context_preview, resolved_hosts)
             parsed_intent["planned_all_interfaces_preview"] = _pif
+            # Keep preview payload transparent for admin review:
+            # when shutdown-all was requested, replace placeholder "ALL" with explicit
+            # planned-context interface names (already excludes management-style entries).
+            try:
+                p_show = dict(parsed_intent.get("parameters") or {})
+                raw_shutdown = p_show.get("interfaces_to_shutdown")
+                has_all_token = (
+                    isinstance(raw_shutdown, list)
+                    and any(str(x).strip().lower() in ("all", "*", "any", "every") for x in raw_shutdown)
+                ) or (
+                    isinstance(raw_shutdown, str)
+                    and str(raw_shutdown).strip().lower() in ("all", "*", "any", "every")
+                )
+                if has_all_token:
+                    expanded_shutdown: List[str] = []
+                    for devp in _pif.get("devices") or []:
+                        if not isinstance(devp, dict):
+                            continue
+                        hn = str(devp.get("hostname") or "").strip()
+                        if not hn:
+                            continue
+                        for iface in devp.get("interfaces") or []:
+                            if not isinstance(iface, dict):
+                                continue
+                            name = str(iface.get("name") or "").strip()
+                            if name:
+                                expanded_shutdown.append(f"{hn}:{name}")
+                    if expanded_shutdown:
+                        p_show["interfaces_to_shutdown"] = expanded_shutdown
+                        parsed_intent["parameters"] = p_show
+                        params = p_show
+            except Exception as _exp_exc:
+                logger.debug("Preview explicit all-interfaces expansion failed: %s", _exp_exc)
             note = str(_pif.get("note") or "").strip()
             lines_pf: List[str] = [
                 "### 5. Planned interfaces (all-interfaces scope)",
@@ -5817,12 +5941,63 @@ async def preview_intent(
             else:
                 params_disambiguation = None
 
+    # Backend-authoritative behavior for interface clarifications:
+    # - "all interfaces" + resolved targets => do not ask interface follow-up questions
+    #   (planner/template path will expand from planned context, excluding management-like interfaces).
+    # - if interface params are already present and inventory validation says names are valid,
+    #   do not re-ask interface questions in params wizard.
+    if params_disambiguation:
+        _fields_all = list(params_disambiguation.get("fields") or [])
+        _all_if_prompt = bool(
+            resolved_hosts
+            and intent_requests_all_interfaces(req.intent_description or "")
+            and not device_disambiguation
+        )
+        _iface_already_satisfied = bool(has_iface_list and not iface_names_invalid)
+        if _all_if_prompt or _iface_already_satisfied:
+            _iface_only_fields = frozenset(
+                {
+                    "interfaces",
+                    "interfaces_to_shutdown",
+                    "interfaces_config",
+                    "apply_to",
+                    "interface_apply",
+                    "passive_interfaces",
+                }
+            )
+            _keep_fields = [
+                f
+                for f in _fields_all
+                if not (
+                    isinstance(f, dict)
+                    and str(f.get("field") or "").strip().lower() in _iface_only_fields
+                )
+            ]
+            if _keep_fields:
+                params_disambiguation = {**params_disambiguation, "fields": _keep_fields}
+            else:
+                params_disambiguation = None
+
     # Ensure schema inspector values reflect trunk-vs-access coercion derived from the user prompt
     # (UI chip state can lag behind the inferred binding semantics).
     try:
         correct_vlan_interface_binding_from_trunk_prompt(intent_description or "", parsed_intent)
     except Exception as _trunk_fix_exc:
         logger.debug("trunk/interface_binding correction before schema inspector failed: %s", _trunk_fix_exc)
+    try:
+        _trunk_viol_preview = _force_trunk_mode_for_prompt_invariant(
+            parsed_intent,
+            intent_description or "",
+        )
+        if _trunk_viol_preview:
+            _ve = list(parsed_intent.get("validation_errors") or [])
+            _ve.append(
+                "Prompt indicates trunk intent, but some interface rows remained access-mode: "
+                + "; ".join(_trunk_viol_preview)
+            )
+            parsed_intent["validation_errors"] = _ve
+    except Exception as _trunk_invariant_exc:
+        logger.debug("trunk invariant guard failed: %s", _trunk_invariant_exc)
 
     intent_schema_inspector: Dict[str, Any] = {"slices": []}
     try:

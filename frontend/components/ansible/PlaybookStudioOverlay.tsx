@@ -63,6 +63,31 @@ function formatAnsibleApiError(e: unknown): string {
   return msg;
 }
 
+const isWildcardInterfaceToken = (v: string): boolean => {
+  const t = String(v || '').trim().toLowerCase();
+  return t === 'all' || t === '*' || t === 'any' || t === 'every';
+};
+
+const expandWildcardInterfacesFromPlannedPreview = (
+  current: string[],
+  planned: { devices?: { hostname: string; interfaces: { name: string }[] }[] } | null,
+): string[] => {
+  if (!Array.isArray(current) || current.length === 0) return current;
+  if (!current.some((x) => isWildcardInterfaceToken(x))) return current;
+  const devices = planned?.devices || [];
+  if (!devices.length) return current;
+  const expanded = Array.from(
+    new Set(
+      devices.flatMap((d) =>
+        (d.interfaces || [])
+          .map((i) => String(i.name || '').trim())
+          .filter(Boolean),
+      ),
+    ),
+  );
+  return expanded.length > 0 ? expanded : current;
+};
+
 /** All L2 interface objects from primary + secondary (order: primary first, then secondaries). */
 function collectAllInterfaceObjectsFromParsedIntent(
   parsed: Record<string, unknown> | null | undefined,
@@ -413,8 +438,11 @@ export function PlaybookStudioOverlay({
         setTargetHosts(Array.isArray(rd) && rd.length > 0 ? rd : fromPreview);
       }
       setTargetInterfaces(
-        extractTargetInterfaceNamesFromParsedIntent(
-          (res.parsed_intent as Record<string, unknown>) ?? null,
+        expandWildcardInterfacesFromPlannedPreview(
+          extractTargetInterfaceNamesFromParsedIntent(
+            (res.parsed_intent as Record<string, unknown>) ?? null,
+          ),
+          ((res.parsed_intent as any)?.planned_all_interfaces_preview as any) ?? null,
         ),
       );
       setPlannedAllInterfacesPreview(
@@ -482,8 +510,11 @@ export function PlaybookStudioOverlay({
         );
       }
       setTargetInterfaces(
-        extractTargetInterfaceNamesFromParsedIntent(
-          (initialPreviewResult.parsed_intent as Record<string, unknown>) ?? null,
+        expandWildcardInterfacesFromPlannedPreview(
+          extractTargetInterfaceNamesFromParsedIntent(
+            (initialPreviewResult.parsed_intent as Record<string, unknown>) ?? null,
+          ),
+          ((initialPreviewResult.parsed_intent as any)?.planned_all_interfaces_preview as any) ?? null,
         ),
       );
       setPlannedAllInterfacesPreview(
@@ -525,7 +556,9 @@ export function PlaybookStudioOverlay({
   useEffect(() => {
     const opts = plannedAllInterfacesPreview;
     if (!opts || !opts.devices || opts.devices.length === 0) return;
-    if (targetInterfaces.length !== 0) return; // don't clobber user edits
+    const shouldExpandWildcardOnly =
+      targetInterfaces.length > 0 && targetInterfaces.every((x) => isWildcardInterfaceToken(x));
+    if (targetInterfaces.length !== 0 && !shouldExpandWildcardOnly) return; // don't clobber user edits
 
     const perDevice = opts.devices.map((d) =>
       (d.interfaces || []).map((i) => String(i.name || '').trim()).filter(Boolean)
