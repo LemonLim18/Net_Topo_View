@@ -11,6 +11,7 @@ appears in the inventory or extra_vars written to disk.
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -450,7 +451,8 @@ runpy.run_module("ansible.cli.playbook", run_name="__main__")
                 stdout=stdout,
                 stderr=stderr,
                 stats={},
-                changed="changed" in (stdout + stderr).lower(),
+                # Avoid false positives from lines like "changed=0" in play recap.
+                changed=bool(re.search(r"changed\s*=\s*[1-9]\d*", (stdout + "\n" + stderr).lower())),
             )
             logger.info(
                 "ansible-playbook (Windows) complete: job_id=%s rc=%d",

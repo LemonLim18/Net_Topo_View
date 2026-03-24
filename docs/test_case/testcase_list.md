@@ -49,8 +49,11 @@ never include the management interface or the interface with the management ip a
 
 - [/] Set GigabitEthernet1/0/3 with IP address 192.168.10.1  
 
-- [ ] Configure interfaces on devices *(generic / ambiguous test)*  
+- [/] Configure interfaces on devices *(generic / ambiguous test)*  
 **Comment:** It's good but it takes some time, stucking on this part, identify the reason behind it, and make it faster.
+
+
+**Reminder**: For the application of the vlan to the trunk/access, that specific vlan need to be created first before it can be applied, else the "changed=0" will show up, because that "VLAN does not exist"
 
 Configure interfaces on devices
 Ansible AI

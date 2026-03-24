@@ -3162,10 +3162,17 @@ async def check_playbook(
         project_files=artifact["project_files"],
     )
 
+    # Remote runner adapters can misreport `changed`; trust explicit play recap counters when present.
+    _changed = bool(result.changed)
+    _txt_check = f"{result.stdout or ''}\n{result.stderr or ''}"
+    _changed_counts = [int(x) for x in re.findall(r"\bchanged=(\d+)\b", _txt_check)]
+    if _changed_counts:
+        _changed = any(x > 0 for x in _changed_counts)
+
     logger.info("Check run job=%d rc=%d user=%s", job_id, result.rc, user.get("username"))
     return CheckResult(
         rc=result.rc,
-        changed=result.changed,
+        changed=_changed,
         diff=result.stdout[-10000:] if result.stdout else "",
         summary=result.summary,
         stderr=(result.stderr or "")[-8000:],  # So UI can show why dry-run failed
@@ -3219,7 +3226,7 @@ async def execute_playbook(
 
     with _db._connect() as conn:
         row = conn.execute(
-            "SELECT status, ansible_playbook, ansible_artifact_manifest, generated_config, rollback_config "
+            "SELECT status, stage, ansible_playbook, ansible_artifact_manifest, generated_config, rollback_config "
             "FROM jobs WHERE id = ?",
             (job_id,)
         ).fetchone()
@@ -3236,10 +3243,12 @@ async def execute_playbook(
             403,
             f"Job {job_id} must be 'approved' before execution. Current status: {row['status']}"
         )
-    if row["status"] in ("success", "failed") and row.get("stage") not in ("commit", "rollback"):
+    _status = str(row["status"] or "").strip().lower()
+    _stage = str(row["stage"] or "").strip().lower() if "stage" in row.keys() else ""
+    if _status in ("success", "failed") and _stage not in ("commit", "rollback"):
         raise HTTPException(
             403,
-            f"Job {job_id} is not in an executable stage. Current status: {row['status']} stage: {row.get('stage')}",
+            f"Job {job_id} is not in an executable stage. Current status: {_status} stage: {_stage or '(missing)'}",
         )
 
     artifact = _load_job_artifact(job_id)
@@ -3296,6 +3305,12 @@ async def execute_playbook(
     )
 
     final_status = "success" if result.success else "failed"
+    _detail_tail = ""
+    if not result.success:
+        _detail_tail = ((result.stderr or "") or (result.stdout or "") or "").strip()
+        if len(_detail_tail) > 2000:
+            _detail_tail = _detail_tail[-2000:]
+    _error_msg = (result.summary if not result.success else None) or (_detail_tail if not result.success else None)
     with _db._connect() as conn:
         conn.execute(
             # Mark terminal execution outcome. Re-deploy is still allowed by gate
@@ -3304,8 +3319,19 @@ async def execute_playbook(
             (
                 final_status,
                 "commit" if result.success else "rollback",
-                (result.summary if not result.success else None),
+                _error_msg,
                 job_id,
+            ),
+        )
+        # Ensure Output/history always has at least one explicit terminal step detail
+        # even when runner callbacks produced no job_steps rows.
+        conn.execute(
+            "INSERT INTO job_steps (job_id, stage, status, details) VALUES (?, ?, ?, ?)",
+            (
+                job_id,
+                "commit" if result.success else "rollback",
+                "success" if result.success else "failed",
+                (result.summary or "Execution completed.") + (f"\n{_detail_tail}" if _detail_tail else ""),
             ),
         )
 
@@ -7502,8 +7528,8 @@ async def stream_job_output(
                     })
                     yield f"data: {data}\n\n"
 
-                _status = str((job_row or {}).get("status") or "").strip().lower() if job_row else ""
-                _stage = str((job_row or {}).get("stage") or "").strip().lower() if job_row else ""
+                _status = str(job_row["status"] or "").strip().lower() if job_row else ""
+                _stage = str(job_row["stage"] or "").strip().lower() if job_row else ""
                 if job_row and (_status in _TERMINAL or (_status == "approved" and _stage in {"commit", "rollback"})):
                     import json as _json
                     yield f"data: {_json.dumps({'done': True, 'status': _status or 'unknown', 'stage': _stage or ''})}\n\n"
