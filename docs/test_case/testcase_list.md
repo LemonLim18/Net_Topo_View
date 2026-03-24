@@ -41,19 +41,67 @@ After selecting the devices from the UI picker, it asks me which access vlan sho
 
 never include the management interface or the interface with the management ip address inside the UI picker, they should not be exposed for user to select in any case.
 
-- [ /] Configure GigabitEthernet1/0/5 as trunk and allow VLANs 10, 20, 67 on SW1  
+- [/] Configure GigabitEthernet1/0/5 as trunk and allow VLANs 10, 20, 67 on SW1  
 
-- [] Set GigabitEthernet1/0/3 with IP address 192.168.10.1/24 on SW1  
+- [/] Set GigabitEthernet1/0/3 with IP address 192.168.10.1/24 on SW1  
 
-- [ ] Set GigabitEthernet1/0/3 as routed interface with IP address 192.168.10.1/24 on SW1  
+- [/] Set GigabitEthernet1/0/3 as routed interface with IP address 192.168.10.1/24 on SW1  
 
+- [/] Set GigabitEthernet1/0/3 with IP address 192.168.10.1  
 
 - [ ] Configure interfaces on devices *(generic / ambiguous test)*  
+**Comment:** It's good but it takes some time, stucking on this part, identify the reason behind it, and make it faster.
+
+Configure interfaces on devices
+Ansible AI
+Applying device selection and refreshing the preview…
 
 
 ---
 
-## 3️⃣ ACL
+## 3️⃣ OSPF
+
+- [ ] Configure OSPF process 1 on router 2  
+
+
+- [ ] Add network 192.168.1.0/24 to OSPF area 0 on router 2  
+
+
+- [ ] Set router ID 1.1.1.1 and advertise 10.0.0.0/24 in area 0 on SW1  
+
+- [ ] Make GigabitEthernet1/0/1 passive in OSPF on router 1  
+
+
+- [ ] Enable OSPF redistribution of static routes on router 2  
+
+
+- [ ] Configure OSPF on devices *(generic / ambiguous test)*  
+
+
+---
+
+## 4️⃣ Static Route
+
+- [ ] Add a static route to 10.10.10.0/24 via 192.168.1.1 on SW1  
+
+
+- [ ] Add a default route on router 2  
+
+- [ ] Add a static route to 172.16.0.0/16 via GigabitEthernet0/1 on router 2  
+
+
+- [ ] Add a static route to 192.168.50.0/24 with next hop 10.0.0.2 on SW1  
+
+
+- [ ] Add a static route for the management network on devices  
+
+
+
+- [ ] Create a route on devices *(generic / ambiguous test)*  
+
+---
+
+## 5️⃣ ACL
 
 - [ ] Create ACL 2000 to permit SSH from 192.168.1.0/24 on SW1  
 
@@ -72,7 +120,7 @@ never include the management interface or the interface with the management ip a
 - [ ] Add ACL rule on devices *(generic / ambiguous test)*  
 
 
-## 4️⃣ QoS
+## 6️⃣ QoS
 
 - [ ] Create QoS policy VOICE_POLICY on SW1  
 
@@ -96,44 +144,6 @@ never include the management interface or the interface with the management ip a
 
 ---
 
-## 5️⃣ Static Route
-
-- [ ] Add a static route to 10.10.10.0/24 via 192.168.1.1 on SW1  
-
-
-- [ ] Add a default route on router 2  
-
-- [ ] Add a static route to 172.16.0.0/16 via GigabitEthernet0/1 on router 2  
-
-
-- [ ] Add a static route to 192.168.50.0/24 with next hop 10.0.0.2 on SW1  
-
-
-- [ ] Add a static route for the management network on devices  
-
-
-
-- [ ] Create a route on devices *(generic / ambiguous test)*  
-
----
-
-## 6️⃣ OSPF
-
-- [ ] Configure OSPF process 1 on router 2  
-
-
-- [ ] Add network 192.168.1.0/24 to OSPF area 0 on router 2  
-
-
-- [ ] Set router ID 1.1.1.1 and advertise 10.0.0.0/24 in area 0 on SW1  
-
-- [ ] Make GigabitEthernet1/0/1 passive in OSPF on router 1  
-
-
-- [ ] Enable OSPF redistribution of static routes on router 2  
-
-
-- [ ] Configure OSPF on devices *(generic / ambiguous test)*  
 
 ---
 

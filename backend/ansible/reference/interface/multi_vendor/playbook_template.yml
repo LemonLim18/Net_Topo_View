@@ -41,6 +41,23 @@
         - item.mode is defined
         - item.mode in ['access', 'trunk']
 
+    - name: Configure routed interface (L3) (Cisco IOS)
+      cisco.ios.ios_config:
+        parents: "interface {{ item.name }}"
+        lines: "{{ [
+          'no switchport',
+          (('ip address ' ~ (item.ip.address | string) ~ ' ' ~ ((item.ip.mask | default(item.ip.netmask) | default('')) | string)) if (item.ip is defined and item.ip.address is defined and (item.ip.mask is defined or item.ip.netmask is defined)) else ''),
+          (('ip address ' ~ (item.ip_address | string) ~ ' ' ~ (item.subnet_mask | string)) if (item.ip_address is defined and item.subnet_mask is defined and item.ip is not defined) else '')
+        ] | reject('equalto', '') | list }}"
+      loop: "{{ interfaces_config | default([]) }}"
+      loop_control:
+        label: "{{ item.name }}"
+      when:
+        - inventory_hostname in groups.get('vendor_cisco_ios', [])
+        - (interfaces_config | default([])) | length > 0
+        - item.mode is defined
+        - item.mode == 'routed'
+
     - name: Shutdown interface (Cisco IOS)
       cisco.ios.ios_interfaces:
         config:

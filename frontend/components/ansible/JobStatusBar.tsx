@@ -161,9 +161,31 @@ const JobStatusBar: React.FC<JobStatusBarProps> = ({
     if (tab === 'audit') fetchAudit();
   }, [tab, fetchJobs, fetchAudit]);
 
-  // No early return for !job - we want to show the 'inactive' pipeline
+  // No early return for !job - we want to show the 'inactive' pipeline.
+  // Prefer explicit backend step statuses when available; they are more accurate than coarse job.stage.
   const currentStageIdx = job ? STAGES.findIndex(s => s.key === job.stage) : -1;
   const jobStatus = job?.status;
+  const stageStatusMap: Record<string, string> = {};
+  for (const st of job?.steps || []) {
+    const key = String(st.stage || '').trim().toLowerCase();
+    if (key) stageStatusMap[key] = String(st.status || '').trim().toLowerCase();
+  }
+  const stageDone = (key: string, idx: number): boolean => {
+    const st = stageStatusMap[key];
+    if (st === 'success' || st === 'approved' || st === 'completed' || st === 'done') return true;
+    if (jobStatus === 'success') return true;
+    return Boolean(job && idx < currentStageIdx);
+  };
+  const stageCurrent = (key: string, idx: number): boolean => {
+    const st = stageStatusMap[key];
+    if (st === 'running' || st === 'in_progress') return true;
+    return Boolean(job && idx === currentStageIdx && jobStatus !== 'success');
+  };
+  const stageFailed = (key: string, idx: number): boolean => {
+    const st = stageStatusMap[key];
+    if (st === 'failed' || st === 'error') return true;
+    return Boolean(job && jobStatus === 'failed' && idx === currentStageIdx);
+  };
 
   const tabBtn = (id: BottomTab, icon: React.ReactNode, label: string) => (
     <button
@@ -183,9 +205,9 @@ const JobStatusBar: React.FC<JobStatusBarProps> = ({
       {/* Pipeline step indicator */}
       <div className="flex items-center gap-0 px-4 py-2 border-b border-base-200">
         {STAGES.map((s, idx) => {
-          const done    = job && (idx < currentStageIdx || jobStatus === 'success');
-          const current = job && (idx === currentStageIdx && jobStatus !== 'success');
-          const failed  = job && (jobStatus === 'failed' && idx === currentStageIdx);
+          const done    = stageDone(s.key, idx);
+          const current = stageCurrent(s.key, idx);
+          const failed  = stageFailed(s.key, idx);
           const inactive = !job;
           
           return (

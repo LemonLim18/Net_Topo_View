@@ -23,6 +23,7 @@ import asyncio
 import os
 import shutil
 import stat
+import ipaddress
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
@@ -45,9 +46,14 @@ from ansible.context_entity_validation import (
     validate_interface_params_against_context,
 )
 from ansible.intent_validation import (
+    CHAT_INTERFACE_LAYER_FIELD,
     SECONDARY_INTENT_CONDITIONAL_DISAMBIGUATION_BY_ACTION,
+    apply_chat_interface_wizard_to_parameters,
     build_intent_schema_inspector_payload,
     coerce_vlan_database_only_intent,
+    configure_interface_conditional_disambiguation_fields,
+    configure_interface_phased_wizard_fields,
+    correct_interface_l3_params_from_natural_language,
     correct_vlan_interface_binding_from_trunk_prompt,
     extract_create_vlan_params_from_natural_language,
     get_editable_fields_for_schema,
@@ -117,6 +123,15 @@ _db       = None   # DatabaseManager
 def _get_safe_mode_default() -> bool:
     """Server default for safe_mode when request omits it. Config: ANSIBLE_SAFE_MODE_DEFAULT (default true)."""
     return os.getenv("ANSIBLE_SAFE_MODE_DEFAULT", "true").strip().lower() in ("true", "1", "yes")
+
+
+def _get_strict_user_input_default() -> bool:
+    """
+    Strict intent mode for preview/create validation:
+    - Do not auto-fill missing required fields from inventory/topology.
+    - Require explicit user selection/answer for required targets and entities.
+    """
+    return os.getenv("ANSIBLE_STRICT_USER_INPUT", "true").strip().lower() in ("true", "1", "yes")
 
 
 def _plan_ansible_include_agent_full_context() -> bool:
@@ -208,6 +223,27 @@ def _coerce_params_for_validation(params: Dict[str, Any]) -> None:
                     if isinstance(iface, dict) and str(iface.get("mode") or "access").strip().lower() == "access":
                         iface["access_vlan"] = av_int
 
+        # Routed IPv4 from shared wizard field (CIDR allowed → fills subnet_mask when missing).
+        rip = params.get("ip_address")
+        if rip is not None and str(rip).strip() != "":
+            ip_raw = str(rip).strip()
+            addr_only = ip_raw
+            sm_from_cidr: Optional[str] = None
+            if "/" in ip_raw:
+                try:
+                    net_iface = ipaddress.IPv4Interface(ip_raw)
+                    addr_only = str(net_iface.ip)
+                    pfx = int(net_iface.network.prefixlen)
+                    sm_from_cidr = str(ipaddress.IPv4Network(f"0.0.0.0/{pfx}").netmask)
+                except (ValueError, OSError, TypeError):
+                    pass
+            for iface in params["interfaces"]:
+                if isinstance(iface, dict) and str(iface.get("mode") or "").strip().lower() == "routed":
+                    if not str(iface.get("ip_address") or "").strip():
+                        iface["ip_address"] = addr_only
+                    if sm_from_cidr and not str(iface.get("subnet_mask") or "").strip():
+                        iface["subnet_mask"] = sm_from_cidr
+
         # Trunk VLANs (allow comma-separated string from UI)
         tv = params.get("trunk_vlans")
         trunk_vlans_parsed: Optional[List[int]] = None
@@ -235,10 +271,32 @@ def _coerce_params_for_validation(params: Dict[str, Any]) -> None:
                 if isinstance(iface, dict) and str(iface.get("mode") or "").strip().lower() == "trunk":
                     iface["trunk_vlans"] = trunk_vlans_parsed
 
+        # Native VLAN (PVID) for trunk — optional top-level wizard answer
+        nv = params.get("native_vlan")
+        if nv is not None and str(nv).strip() != "":
+            try:
+                nv_int = int(nv)
+            except (TypeError, ValueError):
+                nv_int = None
+            if nv_int is not None and 1 <= nv_int <= 4094:
+                for iface in params["interfaces"]:
+                    if isinstance(iface, dict) and str(iface.get("mode") or "").strip().lower() == "trunk":
+                        iface["native_vlan"] = nv_int
+
         # IP subnet mask (shared)
         sm = params.get("subnet_mask")
         if sm is not None and str(sm).strip() != "":
-            subnet_mask = str(sm).strip()
+            subnet_mask_raw = str(sm).strip()
+            # Accept either dotted-decimal mask or CIDR prefix input (e.g. "24" or "/24").
+            subnet_mask = subnet_mask_raw
+            _pfx_txt = subnet_mask_raw[1:] if subnet_mask_raw.startswith("/") else subnet_mask_raw
+            if re.fullmatch(r"\d{1,2}", _pfx_txt or ""):
+                try:
+                    _pfx = int(_pfx_txt)
+                    if 0 <= _pfx <= 32:
+                        subnet_mask = str(ipaddress.IPv4Network(f"0.0.0.0/{_pfx}").netmask)
+                except (ValueError, OSError):
+                    pass
             for iface in params["interfaces"]:
                 if isinstance(iface, dict) and iface.get("ip_address"):
                     iface["subnet_mask"] = subnet_mask
@@ -1251,6 +1309,13 @@ def _merge_client_authoritative_preview_params(
         p2.pop("_target_device_candidate_reason", None)
         parsed_intent["parameters"] = p2
 
+    # Client ``interfaces`` chips are often bare strings; reconciling here restores ``mode`` rows
+    # after the overlay merge (without this, final configure_interface conditional asks never fire).
+    _p_out = dict(parsed_intent.get("parameters") or {})
+    apply_chat_interface_wizard_to_parameters(_p_out)
+    _coerce_params_for_validation(_p_out)
+    parsed_intent["parameters"] = _p_out
+
 
 def _sync_preview_device_deduction_and_reasoning(
     parsed_intent: Dict[str, Any],
@@ -1666,6 +1731,7 @@ def _resolve_backend_intent_request(req, user: dict) -> tuple["PlanAnsibleReques
         _parsed_guard,
         req.intent_description or "",
     )
+    correct_interface_l3_params_from_natural_language(req.intent_description or "", _parsed_guard)
     parsed = ParsedIntent.model_validate(_parsed_guard)
     if _trunk_viol:
         raise HTTPException(
@@ -2391,9 +2457,6 @@ async def plan_ansible(
                 default_mode = str(p.get("default_mode") or "").strip().lower() or None
                 modes: set[str] = set()
                 missing_trunk_vlans = False
-                ip_addrs: set[str] = set()
-                missing_subnet_mask = False
-
                 for iface in interfaces:
                     if not isinstance(iface, dict):
                         continue
@@ -2403,39 +2466,33 @@ async def plan_ansible(
                     if mode == "trunk":
                         tv = iface.get("trunk_vlans")
                         if tv in (None, "", []):
+                            tv = iface.get("allowed_vlans")
+                        if tv in (None, "", []):
                             missing_trunk_vlans = True
-                    ip_address = iface.get("ip_address")
-                    if ip_address not in (None, ""):
-                        ip_addrs.add(str(ip_address))
-                        if iface.get("subnet_mask") in (None, ""):
-                            missing_subnet_mask = True
 
-                if len(modes) == 1:
-                    only_mode = next(iter(modes))
-                    if only_mode == "trunk" and missing_trunk_vlans:
-                        if prompt_vlan_ids:
-                            for iface in interfaces:
-                                if not isinstance(iface, dict):
-                                    continue
-                                mode = str(iface.get("mode") or default_mode or "").strip().lower()
-                                if mode == "trunk" and iface.get("trunk_vlans") in (None, "", []):
-                                    iface["trunk_vlans"] = list(prompt_vlan_ids)
-                                    iface.pop("allowed_vlans", None)
-                            intent["params"]["interfaces"] = interfaces
-                        else:
-                            conditional_missing.append({
-                                "field": "trunk_vlans",
-                                "question": (
-                                    "Which VLAN IDs should be allowed on this trunk? "
-                                    "(Pick from the list when using chat preview — options follow intent and planned context.)"
-                                ),
-                            })
+                if (
+                    len(modes) == 1
+                    and next(iter(modes)) == "trunk"
+                    and missing_trunk_vlans
+                    and prompt_vlan_ids
+                ):
+                    for iface in interfaces:
+                        if not isinstance(iface, dict):
+                            continue
+                        mode = str(iface.get("mode") or default_mode or "").strip().lower()
+                        if mode == "trunk" and iface.get("trunk_vlans") in (None, "", []):
+                            iface["trunk_vlans"] = list(prompt_vlan_ids)
+                            iface.pop("allowed_vlans", None)
+                    intent["params"]["interfaces"] = interfaces
 
-                if missing_subnet_mask and len(ip_addrs) == 1:
-                    conditional_missing.append({
-                        "field": "subnet_mask",
-                        "question": "Subnet mask for the provided interface IP address(es)?",
-                    })
+            _iface_qs = configure_interface_conditional_disambiguation_fields(intent.get("params") or {})
+            conditional_missing = [
+                {"field": str(f.get("field") or ""), "question": str(f.get("question") or "")}
+                for f in _iface_qs
+                if isinstance(f, dict)
+                and str(f.get("field") or "").strip()
+                and str(f.get("question") or "").strip()
+            ]
 
             if conditional_missing:
                 raise HTTPException(
@@ -2463,8 +2520,13 @@ async def plan_ansible(
                 "inventory_lookup_fn": _make_inventory_lookup_fn(),
             }
             safe_mode = req.safe_mode if getattr(req, "safe_mode", None) is not None else _get_safe_mode_default()
+            strict_user_input = _get_strict_user_input_default()
             resolved_intent, ask_user_fields, resolution_trace = resolve_missing_fields(
-                intent, schema, context=context, safe_mode=safe_mode
+                intent,
+                schema,
+                context=context,
+                safe_mode=safe_mode,
+                strict_user_input=strict_user_input,
             )
             if ask_user_fields:
                 raise HTTPException(
@@ -3236,11 +3298,11 @@ async def execute_playbook(
     final_status = "success" if result.success else "failed"
     with _db._connect() as conn:
         conn.execute(
-            # Keep job in an "approved" state so it can be re-executed
-            # without forcing the user to approve again.
+            # Mark terminal execution outcome. Re-deploy is still allowed by gate
+            # (execute accepts success/failed in addition to approved).
             "UPDATE jobs SET status = ?, stage = ?, error_message = ? WHERE id = ?",
             (
-                "approved",
+                final_status,
                 "commit" if result.success else "rollback",
                 (result.summary if not result.success else None),
                 job_id,
@@ -4778,6 +4840,7 @@ def _preview_parse_and_rag(
         # routing secondary intent exists.
         if pf == "interface" and pa in {"shutdown_interface", "configure_interface"} and not has_routing_secondary:
             cleaned = [c for c in cleaned if c != "routing"]
+            cleaned = [c for c in cleaned if c != "general"]
             if "interface" not in cleaned:
                 cleaned.insert(0, "interface")
 
@@ -4836,6 +4899,17 @@ def _preview_parse_and_rag(
             reasoning.append(
                 f"- **Also detected (secondary):** {', '.join(s.get('feature', '') or s.get('action', '') for s in secondary_list)}. These will be validated; primary intent is generated first."
             )
+        # Explicit operation list so users can quickly tell parser/action selection vs UI hydration issues.
+        _primary_op = (parsed_dict.get("action") or "").strip() if parsed_dict else ""
+        _secondary_ops = [
+            str(s.get("action") or "").strip()
+            for s in secondary_list
+            if isinstance(s, dict) and str(s.get("action") or "").strip()
+        ]
+        _ops_parts = [f"primary=`{_primary_op or 'unknown'}`"]
+        if _secondary_ops:
+            _ops_parts.append("secondary=" + ", ".join(f"`{op}`" for op in _secondary_ops))
+        reasoning.append("### 1b. Operations involved\n- " + "; ".join(_ops_parts))
         # For VLAN, show which interfaces will be configured (mode + VLANs)
         is_vlan = (parsed.feature or "").strip().lower() == "vlan" or any((c or "").strip().lower() == "vlan" for c in categories)
         if is_vlan:
@@ -4863,6 +4937,10 @@ def _preview_parse_and_rag(
                 reasoning.append("- ⚠️ **VLAN validation failed:** " + "; ".join(validation_errors) + ". Please correct your prompt (e.g. VLAN ID must be 1–4094) before generating.")
             else:
                 parsed_dict["vlan_validation_errors"] = []
+        try:
+            correct_interface_l3_params_from_natural_language(intent_description, parsed_dict)
+        except Exception as _l3_exc:
+            logger.debug("interface L3 prompt coercion (preview parse) failed: %s", _l3_exc)
         if parsed.intent_type in (IntentType.CONFIGURE, IntentType.DEPLOY):
             # Policy restrictions are intentionally disabled for preview/chat clarification flow.
             # Keep execution permissive so interface/device option pickers are never hidden by policy gating.
@@ -4889,11 +4967,12 @@ def _preview_parse_and_rag(
                 break
     explicit_targets_from_ui = bool(merged_targets)
 
+    strict_user_input = _get_strict_user_input_default()
     parsed_resolved: List[str] = list(parsed_dict.get("resolved_devices") or []) if parsed_dict else []
     if merged_targets:
         resolved: List[str] = _resolve_target_hosts(merged_targets)
     else:
-        resolved = _resolve_target_hosts(parsed_resolved)
+        resolved = [] if strict_user_input else _resolve_target_hosts(parsed_resolved)
     resolved = _narrow_resolved_by_hostnames_in_prompt(intent_description, resolved, _db)
     # Do not re-map "access switch 1,2,3" when the client already sent explicit hostnames —
     # numeric subset would shrink the list and append §1c reasoning that then contradicts
@@ -4934,7 +5013,7 @@ def _preview_parse_and_rag(
     pending_devices_disambiguation: Optional[Dict[str, Any]] = None
     inventory_unknown_device_tokens: List[str] = []
     _forced_aliases_preview: List[str] = []
-    if _db is not None and not explicit_targets_from_ui:
+    if _db is not None and not explicit_targets_from_ui and not strict_user_input:
         _forced_aliases_preview = _extract_non_exact_device_aliases_from_prompt(intent_description, _db)
     if _forced_aliases_preview:
         _, _dd_forced = _resolve_unknown_device_aliases(_forced_aliases_preview, _db)
@@ -4965,7 +5044,7 @@ def _preview_parse_and_rag(
                     "### 1c. Target device(s) need confirmation\n"
                     + (_rq + "\n" if _rq else "- Pick hostname(s) in the chat device picker or **Target inventory**.\n"),
                 )
-            elif _auto_hosts and _inv_unknown:
+            elif _auto_hosts and _inv_unknown and not strict_user_input:
                 reasoning.insert(
                     1,
                     "### 1c. Mapped device hint(s)\n"
@@ -5236,6 +5315,7 @@ async def preview_intent(
                 if v is not None and k != "secondary_intents"
             }
         )
+        apply_chat_interface_wizard_to_parameters(p)
         _coerce_params_for_validation(p)
         parsed_intent["parameters"] = p
         _merge_req_params_secondary_intents_into_parsed_intent(parsed_intent, req.params)
@@ -5534,8 +5614,13 @@ async def preview_intent(
                 "inventory_lookup_fn": _make_inventory_lookup_fn(),
             }
             safe_mode = req.safe_mode if getattr(req, "safe_mode", None) is not None else _get_safe_mode_default()
+            strict_user_input = _get_strict_user_input_default()
             _resolved_intent, _ask_user_fields, _resolution_trace = resolve_missing_fields(
-                parsed_intent, schema, context=context, safe_mode=safe_mode
+                parsed_intent,
+                schema,
+                context=context,
+                safe_mode=safe_mode,
+                strict_user_input=strict_user_input,
             )
             parsed_intent.update(_resolved_intent)
             params = dict(parsed_intent.get("parameters") or {})
@@ -5620,6 +5705,39 @@ async def preview_intent(
             parameters=_params_merged,
             trusted_param_keys=_trusted_param_keys,
         )
+
+    # Vague "configure interfaces…" → stepwise L2 vs L3, then access vs trunk (chat wizard).
+    try:
+        _sa_phase = str((schema.get("action") or "") if schema else "").strip().lower().replace("-", "_")
+        if _sa_phase == "configure_interface" and schema:
+            _trust_phase = _trusted_param_keys or set()
+            _phase_list = configure_interface_phased_wizard_fields(
+                req.intent_description or "",
+                dict(parsed_intent.get("parameters") or {}),
+                trusted_param_keys=_trust_phase,
+            )
+            if _phase_list:
+                _first_fn = str((_phase_list[0] or {}).get("field") or "")
+                _layer_not_trusted = CHAT_INTERFACE_LAYER_FIELD not in _trust_phase
+                if _first_fn == CHAT_INTERFACE_LAYER_FIELD and _layer_not_trusted:
+                    params_disambiguation = {
+                        "question": "Before other details: clarify how you want interfaces configured.",
+                        "fields": list(_phase_list),
+                    }
+                else:
+                    _existing_pf: List[Dict[str, Any]] = list((params_disambiguation or {}).get("fields") or [])
+                    _seen_pf = {str((f or {}).get("field") or "") for f in _existing_pf if isinstance(f, dict)}
+                    for _pe in _phase_list:
+                        _pfn = str((_pe or {}).get("field") or "")
+                        if _pfn and _pfn not in _seen_pf:
+                            _existing_pf.insert(0, _pe)
+                            _seen_pf.add(_pfn)
+                    params_disambiguation = {
+                        "question": (params_disambiguation or {}).get("question") or "Please provide the following.",
+                        "fields": _existing_pf,
+                    }
+    except Exception as _phase_wiz_exc:
+        logger.debug("configure_interface phased wizard merge failed: %s", _phase_wiz_exc)
 
     params_disambiguation = _append_secondary_intent_schema_disambiguation(
         parsed_intent,
@@ -6006,17 +6124,60 @@ async def preview_intent(
         schema_action=schema_action_iface,
         feature_lower=feat_lower_preview,
     )
-    # Keep schema inspector / response params aligned with trunk-corrected binding (Studio can resend access-shaped rows).
+    # Keep schema inspector / response params aligned with trunk-corrected binding.
+    # For configure_interface, preserve L3-derived fields from parsed_intent when UI sends
+    # minimal interface picks (name only / access default), while still honoring authoritative names.
+    # Base on full ``_params_for_reasoning`` (includes top-level wizard answers like ``subnet_mask``);
+    # the old ``_pb_sync`` copy dropped those keys and caused repeat subnet questions after submit.
     _pb_sync = dict(parsed_intent.get("parameters") or {})
+    _schema_action_norm = str(schema_action_iface or "").strip().lower().replace("-", "_")
+    _merged_interfaces_out: Optional[List[Any]] = None
     for _k in ("interfaces", "interface_binding", "mode", "trunk_vlans"):
-        if _k in _params_for_reasoning:
+        if _k not in _params_for_reasoning:
+            continue
+        if (
+            _k == "interfaces"
+            and _schema_action_norm == "configure_interface"
+            and isinstance(_params_for_reasoning.get("interfaces"), list)
+            and isinstance(_pb_sync.get("interfaces"), list)
+        ):
+            ui_rows = list(_params_for_reasoning.get("interfaces") or [])
+            parsed_rows = list(_pb_sync.get("interfaces") or [])
+            merged_rows: List[Any] = []
+            max_len = max(len(ui_rows), len(parsed_rows))
+            for idx in range(max_len):
+                u = ui_rows[idx] if idx < len(ui_rows) else None
+                p = parsed_rows[idx] if idx < len(parsed_rows) else None
+                if isinstance(u, dict) and isinstance(p, dict):
+                    row = dict(p)
+                    if str(u.get("name") or "").strip():
+                        row["name"] = str(u.get("name") or "").strip()
+                    if str(row.get("mode") or "").strip().lower() == "routed":
+                        if str(u.get("ip_address") or "").strip():
+                            row["ip_address"] = str(u.get("ip_address") or "").strip()
+                        if str(u.get("subnet_mask") or "").strip():
+                            row["subnet_mask"] = str(u.get("subnet_mask") or "").strip()
+                    else:
+                        row.update(u)
+                    merged_rows.append(row)
+                elif u is not None:
+                    merged_rows.append(u)
+                elif p is not None:
+                    merged_rows.append(p)
+            _merged_interfaces_out = merged_rows
+        else:
             _pb_sync[_k] = _params_for_reasoning[_k]
+    _base_pb = dict(_params_for_reasoning)
+    if _merged_interfaces_out is not None:
+        _base_pb["interfaces"] = _merged_interfaces_out
+    _pb_sync = _base_pb
     if resolved_hosts:
         _pb_sync = _normalize_mismatched_qualified_interface_tokens(
             _pb_sync,
             list(resolved_hosts or []),
         )
     parsed_intent["parameters"] = _pb_sync
+    _coerce_params_for_validation(parsed_intent["parameters"])
 
     if inv_validation_result is not None:
         parsed_intent["interfaces_inventory_validation"] = {
@@ -6236,6 +6397,9 @@ async def preview_intent(
 
     # Authoritative client params (wizard / chat) win over LLM; then align Section 2 + inspector hosts.
     _merge_client_authoritative_preview_params(parsed_intent, req.params, db_manager=_db)
+    _p_authoritative = dict(parsed_intent.get("parameters") or {})
+    _coerce_params_for_validation(_p_authoritative)
+    parsed_intent["parameters"] = _p_authoritative
     rd_final = parsed_intent.get("resolved_devices")
     if isinstance(rd_final, list) and any(str(h).strip() for h in rd_final):
         resolved_hosts = [str(h).strip() for h in rd_final if str(h).strip()]
@@ -6321,6 +6485,64 @@ async def preview_intent(
             parsed_intent["validation_errors"] = _ve
     except Exception as _trunk_invariant_exc:
         logger.debug("trunk invariant guard failed: %s", _trunk_invariant_exc)
+    try:
+        correct_interface_l3_params_from_natural_language(req.intent_description or "", parsed_intent)
+    except Exception as _l3_preview_exc:
+        logger.debug("interface L3 prompt coercion (preview) failed: %s", _l3_preview_exc)
+    # Chat wizard can leave stale rows (e.g. subnet_mask) built before params were coerced.
+    try:
+        _p_prune = dict(parsed_intent.get("parameters") or {})
+        _iface_hook_prune = SECONDARY_INTENT_CONDITIONAL_DISAMBIGUATION_BY_ACTION.get("configure_interface")
+        _cond_needed_names = {
+            str((f or {}).get("field") or "").strip().lower()
+            for f in (_iface_hook_prune(_p_prune) if _iface_hook_prune else [])
+        }
+        _cond_managed = frozenset({"subnet_mask", "trunk_vlans", "ip_address", "access_vlan", "native_vlan"})
+        if params_disambiguation:
+            _pf_prune = [
+                f
+                for f in (params_disambiguation.get("fields") or [])
+                if isinstance(f, dict)
+                and (
+                    str(f.get("field") or "").strip().lower() not in _cond_managed
+                    or str(f.get("field") or "").strip().lower() in _cond_needed_names
+                )
+            ]
+            if _pf_prune:
+                params_disambiguation = {**params_disambiguation, "fields": _pf_prune}
+            else:
+                params_disambiguation = None
+    except Exception as _prune_pd_exc:
+        logger.debug("prune stale params_disambiguation fields failed: %s", _prune_pd_exc)
+    _p_post_l3 = dict(parsed_intent.get("parameters") or {})
+    _coerce_params_for_validation(_p_post_l3)
+    parsed_intent["parameters"] = _p_post_l3
+    # Re-run conditional configure_interface disambiguation on final parsed params so nested
+    # required leaves (e.g. interfaces[].subnet_mask for routed IP) always surface in chat wizard.
+    try:
+        _schema_action_final = (
+            str((schema or {}).get("action") or "")
+            .strip()
+            .lower()
+            .replace("-", "_")
+        )
+        _cond_hook_final = SECONDARY_INTENT_CONDITIONAL_DISAMBIGUATION_BY_ACTION.get(_schema_action_final)
+        if _cond_hook_final:
+            _extra_fields = _cond_hook_final(dict(parsed_intent.get("parameters") or {}))
+            if _extra_fields:
+                _fields_list_final: List[Dict[str, Any]] = list((params_disambiguation or {}).get("fields") or [])
+                _seen_final = {str(f.get("field") or "") for f in _fields_list_final if isinstance(f, dict)}
+                for _e in _extra_fields:
+                    _fn = str(_e.get("field") or "")
+                    if _fn and _fn not in _seen_final:
+                        _fields_list_final.append(_e)
+                        _seen_final.add(_fn)
+                params_disambiguation = {
+                    "question": (params_disambiguation or {}).get("question") or "Please provide the following.",
+                    "fields": _fields_list_final,
+                }
+    except Exception as _cond_final_exc:
+        logger.debug("final conditional disambiguation merge failed: %s", _cond_final_exc)
 
     intent_schema_inspector: Dict[str, Any] = {"slices": []}
     try:
@@ -7265,7 +7487,7 @@ async def stream_job_output(
                     ).fetchall()
 
                     job_row = conn.execute(
-                        "SELECT status FROM jobs WHERE id = ?",
+                        "SELECT status, stage FROM jobs WHERE id = ?",
                         (job_id,),
                     ).fetchone()
 
@@ -7280,9 +7502,11 @@ async def stream_job_output(
                     })
                     yield f"data: {data}\n\n"
 
-                if job_row and job_row["status"] in _TERMINAL:
+                _status = str((job_row or {}).get("status") or "").strip().lower() if job_row else ""
+                _stage = str((job_row or {}).get("stage") or "").strip().lower() if job_row else ""
+                if job_row and (_status in _TERMINAL or (_status == "approved" and _stage in {"commit", "rollback"})):
                     import json as _json
-                    yield f"data: {_json.dumps({'done': True, 'status': job_row['status']})}\n\n"
+                    yield f"data: {_json.dumps({'done': True, 'status': _status or 'unknown', 'stage': _stage or ''})}\n\n"
                     return
 
             except Exception as exc:

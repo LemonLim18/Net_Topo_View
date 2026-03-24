@@ -22,8 +22,20 @@ from ansible.api import (
     _resolve_unknown_device_aliases,
 )
 from ansible.context_entity_validation import build_planned_all_interfaces_preview
-from ansible.intent_validation import configure_interface_conditional_disambiguation_fields
-from ansible.intent_validation import get_schema_for_parsed_intent, validate_completeness
+from ansible.intent_validation import (
+    CHAT_INTERFACE_LAYER_FIELD,
+    CHAT_INTERFACE_L2_MODE_FIELD,
+    apply_chat_interface_wizard_to_parameters,
+    configure_interface_conditional_disambiguation_fields,
+    configure_interface_phased_wizard_fields,
+    configure_interface_prompt_is_layer_ambiguous,
+    correct_interface_l3_params_from_natural_language,
+)
+from ansible.api import _coerce_params_for_validation
+from ansible.intent_validation import (
+    get_schema_for_parsed_intent,
+    validate_completeness,
+)
 from ansible.intent_validation import merge_prompt_aware_disambiguation_for_schema
 from ansible.reference_resolver import fill_playbook_from_reference
 
@@ -479,7 +491,7 @@ def test_planned_all_interfaces_preview_excludes_management_and_has_no_note():
     assert "note" not in out
 
 
-def test_configure_interface_does_not_force_access_vlan_question():
+def test_configure_interface_conditional_asks_access_vlan_for_access_ports():
     fields = configure_interface_conditional_disambiguation_fields(
         {
             "interfaces": [
@@ -489,7 +501,88 @@ def test_configure_interface_does_not_force_access_vlan_question():
         }
     )
     asked = {str(f.get("field") or "") for f in fields}
-    assert "access_vlan" not in asked
+    assert "access_vlan" in asked
+
+
+def test_configure_interface_conditional_string_iface_and_default_mode_routed_asks_ip():
+    fields = configure_interface_conditional_disambiguation_fields(
+        {
+            "default_mode": "routed",
+            "interfaces": ["Acc_Cisco_1:Ethernet0/3"],
+        }
+    )
+    assert any(str(f.get("field") or "") == "ip_address" for f in fields)
+
+
+def test_configure_interface_conditional_asks_ip_when_routed_without_ip():
+    fields = configure_interface_conditional_disambiguation_fields(
+        {
+            "default_mode": "routed",
+            "interfaces": [{"name": "Acc_Cisco_1:GigabitEthernet0/1", "mode": "routed"}],
+        }
+    )
+    asked = {str(f.get("field") or "") for f in fields}
+    assert "ip_address" in asked
+
+
+def test_configure_interface_conditional_skips_ip_question_when_address_present():
+    fields = configure_interface_conditional_disambiguation_fields(
+        {
+            "default_mode": "routed",
+            "interfaces": [
+                {
+                    "name": "Acc_Cisco_1:GigabitEthernet0/1",
+                    "mode": "routed",
+                    "ip_address": "10.0.0.1",
+                }
+            ],
+        }
+    )
+    asked = {str(f.get("field") or "") for f in fields}
+    assert "ip_address" not in asked
+
+
+def test_apply_chat_wizard_reconciles_string_interfaces_to_routed_rows():
+    p = {
+        CHAT_INTERFACE_LAYER_FIELD: "l3",
+        "interfaces": ["Acc_Cisco_1:Ethernet0/3"],
+    }
+    apply_chat_interface_wizard_to_parameters(p)
+    assert p.get("default_mode") == "routed"
+    assert p["interfaces"] == [{"name": "Acc_Cisco_1:Ethernet0/3", "mode": "routed"}]
+
+
+def test_coerce_propagates_top_level_ip_address_to_routed_rows():
+    p = {
+        "ip_address": "192.168.10.1/24",
+        "interfaces": [{"name": "r1:Eth0", "mode": "routed"}],
+    }
+    _coerce_params_for_validation(p)
+    row = p["interfaces"][0]
+    assert row.get("ip_address") == "192.168.10.1"
+    assert row.get("subnet_mask") == "255.255.255.0"
+
+
+def test_coerce_propagates_top_level_native_vlan_to_trunk_rows():
+    p = {
+        "native_vlan": 99,
+        "interfaces": [{"name": "sw:Gi0/1", "mode": "trunk", "trunk_vlans": [10, 20]}],
+    }
+    _coerce_params_for_validation(p)
+    assert p["interfaces"][0].get("native_vlan") == 99
+
+
+def test_configure_interface_conditional_asks_native_vlan_for_trunk_ports():
+    fields = configure_interface_conditional_disambiguation_fields(
+        {
+            "interfaces": [
+                {"name": "Acc_Cisco_1:Ethernet0/2", "mode": "trunk", "trunk_vlans": [10, 20]},
+            ]
+        }
+    )
+    native = next((f for f in fields if str(f.get("field") or "") == "native_vlan"), None)
+    assert native is not None
+    assert "optional" not in native
 
 
 def test_is_management_interface_matches_nested_ip_dict_and_cidr():
@@ -585,6 +678,190 @@ def test_reference_fill_cisco_trunk_uses_add_semantics_and_dot1q():
     assert isinstance(rendered, str) and rendered
     assert "switchport trunk encapsulation dot1q" in rendered
     assert "switchport trunk allowed vlan add" in rendered
+
+
+def test_reference_fill_huawei_interface_renders_successfully():
+    intent = {
+        "target_hosts": ["Acc_Huawei_3"],
+        "params": {
+            "interfaces": [
+                {
+                    "name": "Acc_Huawei_3:Ethernet0/3",
+                    "mode": "access",
+                    "access_vlan": 10,
+                    "enabled": True,
+                }
+            ]
+        },
+    }
+    rendered = fill_playbook_from_reference("interface", ["huawei_vrp"], intent)
+    assert isinstance(rendered, str) and rendered
+    assert "community.network.ce_config" in rendered
+    assert "port link-type access" in rendered
+    # Must keep runtime loop expressions intact (first-pass fill must not collapse these).
+    assert 'parents: "interface {{ item }}"' in rendered
+    assert 'loop: "{{ interfaces_to_shutdown | default([]) }}"' in rendered
+
+
+def test_reference_fill_huawei_trunk_includes_native_vlan_command():
+    intent = {
+        "target_hosts": ["Acc_Huawei_3"],
+        "params": {
+            "interfaces": [
+                {
+                    "name": "GigabitEthernet1/0/3",
+                    "mode": "trunk",
+                    "trunk_vlans": [12, 13, 14],
+                    "native_vlan": 12,
+                    "enabled": True,
+                }
+            ]
+        },
+    }
+    rendered = fill_playbook_from_reference("interface", ["huawei_vrp"], intent)
+    assert isinstance(rendered, str) and rendered
+    assert "port trunk allow-pass vlan" in rendered
+    assert "port trunk pvid vlan" in rendered
+
+
+def test_reference_fill_juniper_interface_renders_successfully():
+    intent = {
+        "target_hosts": ["Acc_Juniper_1"],
+        "params": {
+            "interfaces": [
+                {
+                    "name": "ge-0/0/1",
+                    "enabled": True,
+                }
+            ]
+        },
+    }
+    rendered = fill_playbook_from_reference("interface", ["juniper_junos"], intent)
+    assert isinstance(rendered, str) and rendered
+    assert "juniper.device.junos_interfaces" in rendered
+
+
+def test_correct_interface_l3_coerces_routed_from_cidr_prompt():
+    pi = {
+        "action": "configure_interface",
+        "feature": "interface",
+        "parameters": {
+            "interfaces": [{"name": "Acc_Cisco_1:Ethernet0/1", "mode": "access"}],
+        },
+    }
+    correct_interface_l3_params_from_natural_language(
+        "Set GigabitEthernet1/0/3 with IP address 192.168.10.1/24 on SW1",
+        pi,
+    )
+    iface = pi["parameters"]["interfaces"][0]
+    assert iface.get("mode") == "routed"
+    assert iface.get("ip_address") == "192.168.10.1"
+    assert iface.get("subnet_mask") == "255.255.255.0"
+    # Inventory / UI-selected interface must not be replaced by the prompt's interface token.
+    assert iface.get("name") == "Acc_Cisco_1:Ethernet0/1"
+
+
+def test_correct_interface_l3_merges_into_routed_row_without_duplicating_prompt_iface_name():
+    """Routed placeholder without IP must get L3 from NL without appending Gi* from the prompt."""
+    pi = {
+        "action": "configure_interface",
+        "feature": "interface",
+        "parameters": {
+            "interfaces": [{"name": "Ethernet0/3", "mode": "routed"}],
+        },
+    }
+    correct_interface_l3_params_from_natural_language(
+        "Set GigabitEthernet1/0/3 with IP address 192.168.10.1/24 on Acc_Cisco_1",
+        pi,
+    )
+    ifaces = pi["parameters"]["interfaces"]
+    assert len(ifaces) == 1
+    iface = ifaces[0]
+    assert iface.get("name") == "Ethernet0/3"
+    assert iface.get("mode") == "routed"
+    assert iface.get("ip_address") == "192.168.10.1"
+    assert iface.get("subnet_mask") == "255.255.255.0"
+
+
+def test_correct_interface_l3_with_ip_only_keeps_missing_subnet_for_follow_up():
+    pi = {
+        "action": "configure_interface",
+        "feature": "interface",
+        "parameters": {
+            "interfaces": [{"name": "Ethernet0/3", "mode": "access"}],
+        },
+    }
+    correct_interface_l3_params_from_natural_language(
+        "Set GigabitEthernet1/0/3 with IP address 192.168.10.1 on SW1",
+        pi,
+    )
+    iface = pi["parameters"]["interfaces"][0]
+    assert iface.get("name") == "Ethernet0/3"
+    assert iface.get("mode") == "routed"
+    assert iface.get("ip_address") == "192.168.10.1"
+    assert iface.get("subnet_mask") in (None, "")
+
+
+def test_configure_interface_vague_prompt_is_layer_ambiguous():
+    assert configure_interface_prompt_is_layer_ambiguous(
+        "Configure interfaces on devices",
+        {},
+    )
+    assert not configure_interface_prompt_is_layer_ambiguous(
+        "Configure interfaces on devices",
+        {"default_mode": "access"},
+    )
+
+
+def test_configure_interface_phased_wizard_layer_then_l2_mode():
+    fields0 = configure_interface_phased_wizard_fields(
+        "Configure interfaces on devices",
+        {},
+        trusted_param_keys=set(),
+    )
+    assert len(fields0) == 1
+    assert fields0[0].get("field") == CHAT_INTERFACE_LAYER_FIELD
+    assert fields0[0].get("control") == "single_select_strings"
+
+    fields1 = configure_interface_phased_wizard_fields(
+        "Configure interfaces on devices",
+        {CHAT_INTERFACE_LAYER_FIELD: "l2"},
+        trusted_param_keys={CHAT_INTERFACE_LAYER_FIELD},
+    )
+    assert len(fields1) == 1
+    assert fields1[0].get("field") == CHAT_INTERFACE_L2_MODE_FIELD
+
+    fields2 = configure_interface_phased_wizard_fields(
+        "Configure interfaces on devices",
+        {
+            CHAT_INTERFACE_LAYER_FIELD: "l2",
+            CHAT_INTERFACE_L2_MODE_FIELD: "access",
+        },
+        trusted_param_keys={CHAT_INTERFACE_LAYER_FIELD, CHAT_INTERFACE_L2_MODE_FIELD},
+    )
+    assert fields2 == []
+
+
+def test_reference_fill_cisco_routed_includes_no_switchport_and_ip():
+    intent = {
+        "target_hosts": ["Acc_Cisco_1"],
+        "params": {
+            "interfaces": [
+                {
+                    "name": "Ethernet0/3",
+                    "mode": "routed",
+                    "ip_address": "192.168.10.1",
+                    "subnet_mask": "255.255.255.0",
+                    "enabled": True,
+                }
+            ]
+        },
+    }
+    rendered = fill_playbook_from_reference("interface", ["cisco_ios"], intent)
+    assert isinstance(rendered, str) and rendered
+    assert "no switchport" in rendered
+    # IP is applied at Ansible runtime (tasks are inside {% raw %}); template must contain ip stanza.
+    assert "ip address" in rendered and ("item.ip.address" in rendered or "item.ip_address" in rendered)
 
 
 def test_prompt_aware_disambiguation_skips_trunk_vlan_question_when_prompt_has_vlans():

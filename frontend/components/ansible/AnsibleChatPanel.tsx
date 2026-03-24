@@ -21,6 +21,22 @@ import {
 const ANSIBLE_MODEL_STORAGE_KEY = 'ansibleStudio.selectedModel';
 const OLLAMA_BASE_URL_STORAGE_KEY = 'llmRuntimeSelector.ollamaBaseUrl';
 
+/** Renders ``**bold**`` segments as real bold (backend wizard copy uses markdown-style emphasis). */
+function renderChatEmphasis(text: string): React.ReactNode {
+  if (!text) return null;
+  const parts = text.split(/(\*\*[^*]+\*\*)/g);
+  return parts.map((part, i) => {
+    if (/^\*\*[^*]+\*\*$/.test(part)) {
+      return (
+        <strong key={i} className="font-semibold">
+          {part.slice(2, -2)}
+        </strong>
+      );
+    }
+    return <React.Fragment key={i}>{part}</React.Fragment>;
+  });
+}
+
 function prettifyModelLabel(providerName: string, modelName: string): string {
   if (providerName === 'gemini') {
     if (modelName === 'gemini-2.5-flash') return 'Gemini 2.5 Flash';
@@ -228,9 +244,11 @@ export type PreviewParamField = {
   question: string;
   secondary_intent_index?: number;
   label?: string;
-  /** When set with ``options``, render checkboxes instead of free-text (e.g. trunk VLAN IDs from planned context). */
-  control?: 'multi_select_integers';
-  options?: number[];
+  /** When true, empty values do not block Continue. */
+  optional?: boolean;
+  /** Typed UI controls from backend disambiguation enrichment. */
+  control?: 'multi_select_integers' | 'single_select_integers' | 'single_select_strings';
+  options?: number[] | string[];
 };
 
 type PlannedDeviceInterfaces = { hostname: string; interfaces: { name: string }[] };
@@ -270,6 +288,19 @@ function previewFieldValueKey(f: PreviewParamField): string {
     return `${f.field}::__sec__${f.secondary_intent_index}`;
   }
   return f.field;
+}
+
+function isValidIPv4Address(raw: string): boolean {
+  const s = String(raw || '').trim();
+  if (!s) return false;
+  const parts = s.split('.');
+  if (parts.length !== 4) return false;
+  for (const p of parts) {
+    if (!/^\d{1,3}$/.test(p)) return false;
+    const n = Number(p);
+    if (!Number.isInteger(n) || n < 0 || n > 255) return false;
+  }
+  return true;
 }
 
 // ── VS Code-style markdown renderer ──────────────────────────────────────────
@@ -847,7 +878,8 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
               f.field === 'trunk_vlans' &&
               f.control === 'multi_select_integers' &&
               Array.isArray(f.options) &&
-              f.options.includes(vid)
+              f.options.every((x) => typeof x === 'number') &&
+              (f.options as number[]).includes(vid)
             ) {
               initVals[previewFieldValueKey(f)] = [vid];
             }
@@ -901,13 +933,23 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
           paramsNeedContextFix: Boolean((ifaceDis as any)?.params_need_context_fix),
         });
         {
-          const parsed = (res?.parsed_intent ?? null) as Record<string, unknown> | null;
-          const chips = buildPlannedInventoryPreselectChips(parsed, {
-            extraInvalidEntities: (ifaceDis as any)?.invalid_entities as unknown[] | undefined,
-          });
-          setSelectedInterfacesByDevice(
-            preselectPlannedInventoryInterfacesByDevice(chips, { devices: ifaceDevices }),
-          );
+          const hasInvalidEntities =
+            Array.isArray((ifaceDis as any)?.invalid_entities) &&
+            ((ifaceDis as any)?.invalid_entities as unknown[]).length > 0;
+          if (hasInvalidEntities || Boolean((ifaceDis as any)?.params_need_context_fix)) {
+            // Invalid-name correction flow: never pre-tick interfaces.
+            // User must explicitly pick from planned inventory.
+            setSelectedInterfacesByDevice({});
+          } else {
+            const parsed = (res?.parsed_intent ?? null) as Record<string, unknown> | null;
+            const chips = buildPlannedInventoryPreselectChips(parsed, {
+              extraInvalidEntities: (ifaceDis as any)?.invalid_entities as unknown[] | undefined,
+              skipSuggestions: true,
+            });
+            setSelectedInterfacesByDevice(
+              preselectPlannedInventoryInterfacesByDevice(chips, { devices: ifaceDevices }),
+            );
+          }
         }
 
         // If the prompt asks for "admin-down all interfaces", preselect *all* planned-context
@@ -1912,7 +1954,7 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
                   ) : msg.disambiguation ? (
                     <div className="space-y-2">
                       <div className="text-sm text-base-content/90">
-                        {msg.disambiguation.question}
+                        {renderChatEmphasis(msg.disambiguation.question)}
                       </div>
                       <div className="flex flex-col gap-2">
                         {msg.disambiguation.options.map((opt) => (
@@ -1956,7 +1998,7 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
                   ) : (msg as any).deviceDisambiguation && deviceDisambiguation?.messageId === msg.id ? (
                     <div className="space-y-3">
                       <div className="text-sm text-base-content/90 whitespace-pre-line">
-                        {deviceDisambiguation.question}
+                        {renderChatEmphasis(deviceDisambiguation.question)}
                       </div>
                       {deviceDisambiguation.kind ? (
                         <div className="text-xs text-base-content/60">
@@ -2056,7 +2098,7 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
                         </div>
                       ) : null}
                       <div className="text-sm text-base-content/90">
-                        {interfaceDisambiguation.question}
+                        {renderChatEmphasis(interfaceDisambiguation.question)}
                       </div>
                       {interfaceDisambiguation.devices.map((dev) => (
                         <div key={dev.hostname} className="rounded border border-base-300 bg-base-300/50 p-2">
@@ -2127,17 +2169,86 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
                                   {f.label ? (
                                     <div className="text-xs text-amber-600/90 dark:text-amber-400/90 mb-1">{f.label}</div>
                                   ) : null}
-                                  <label className="text-sm text-base-content/90 block mb-0.5">{f.question}</label>
+                                  <label className="text-sm text-base-content/90 block mb-0.5">
+                                    {renderChatEmphasis(f.question)}
+                                  </label>
                                   {(() => {
                                     const normalizedField = String(f.field || '').toLowerCase();
+                                    if (
+                                      f.control === 'single_select_strings' &&
+                                      Array.isArray(f.options) &&
+                                      f.options.length > 0 &&
+                                      f.options.every((x) => typeof x === 'string')
+                                    ) {
+                                      const opts = f.options as string[];
+                                      const curVal = String((paramsDisambiguationValues[vk] ?? '') as string);
+                                      const optLabel = (opt: string) => {
+                                        if (opt === 'l2') return 'Layer 2 (switchport — access or trunk)';
+                                        if (opt === 'l3') return 'Layer 3 (routed — IP address)';
+                                        if (opt === 'access') return 'Access';
+                                        if (opt === 'trunk') return 'Trunk';
+                                        return opt;
+                                      };
+                                      return (
+                                        <div className="flex flex-col gap-2 rounded border border-base-300 bg-base-300/50 p-2">
+                                          {opts.map((opt) => (
+                                            <label key={`${vk}-${opt}`} className="flex items-center gap-2 cursor-pointer">
+                                              <input
+                                                type="radio"
+                                                name={vk}
+                                                checked={curVal === opt}
+                                                onChange={() =>
+                                                  setParamsDisambiguationValues((prev) => ({ ...prev, [vk]: opt }))
+                                                }
+                                                className="radio radio-sm radio-primary"
+                                              />
+                                              <span className="text-sm">{optLabel(opt)}</span>
+                                            </label>
+                                          ))}
+                                        </div>
+                                      );
+                                    }
+                                    if (
+                                      f.control === 'single_select_integers' &&
+                                      Array.isArray(f.options) &&
+                                      f.options.length > 0 &&
+                                      f.options.every((x) => typeof x === 'number')
+                                    ) {
+                                      const opts = f.options as number[];
+                                      const curValRaw = paramsDisambiguationValues[vk];
+                                      const curVal =
+                                        typeof curValRaw === 'number'
+                                          ? curValRaw
+                                          : parseInt(String(curValRaw ?? ''), 10);
+                                      return (
+                                        <div className="flex flex-wrap gap-2 rounded border border-base-300 bg-base-300/50 p-2 max-h-52 overflow-y-auto">
+                                          {opts.map((n) => (
+                                            <label key={`${vk}-${n}`} className="flex items-center gap-1.5 cursor-pointer">
+                                              <input
+                                                type="radio"
+                                                name={vk}
+                                                checked={curVal === n}
+                                                onChange={() =>
+                                                  setParamsDisambiguationValues((prev) => ({ ...prev, [vk]: n }))
+                                                }
+                                                className="radio radio-sm radio-primary"
+                                              />
+                                              <span className="text-xs font-mono">VLAN {n}</span>
+                                            </label>
+                                          ))}
+                                        </div>
+                                      );
+                                    }
+                                    const isChatField = String(f.field || '').startsWith('_chat_');
                                     const isTargetDeviceField =
                                       normalizedField === 'target_devices' ||
                                       normalizedField === 'target_hosts' ||
-                                      normalizedField.includes('device');
+                                      (normalizedField.includes('device') && !isChatField);
                                     const isInterfaceField =
-                                      normalizedField === 'interfaces' ||
-                                      normalizedField === 'interfaces_to_shutdown' ||
-                                      normalizedField.includes('interface');
+                                      !isChatField &&
+                                      (normalizedField === 'interfaces' ||
+                                        normalizedField === 'interfaces_to_shutdown' ||
+                                        normalizedField.includes('interface'));
                                     if (!isTargetDeviceField && !isInterfaceField) return null;
 
                                     const selectedForTargetDevices = Object.entries(paramsDisambiguationValues)
@@ -2245,9 +2356,10 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
                                   })() || (
                                     f.control === 'multi_select_integers' &&
                                     Array.isArray(f.options) &&
-                                    f.options.length > 0 ? (
+                                    f.options.length > 0 &&
+                                    f.options.every((x) => typeof x === 'number') ? (
                                       <div className="flex flex-wrap gap-2 rounded border border-base-300 bg-base-300/50 p-2 max-h-52 overflow-y-auto">
-                                        {f.options.map((n) => {
+                                        {(f.options as number[]).map((n) => {
                                           const cur = (paramsDisambiguationValues[vk] as number[] | undefined) ?? [];
                                           const checked = cur.includes(n);
                                           return (
@@ -2299,17 +2411,138 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
                                           </div>
                                         );
                                       }
+
+                                      if (normalizedField === 'ip_address') {
+                                        const subnetField = paramsDisambiguation.fields.find(
+                                          (sf) =>
+                                            String(sf.field || '').toLowerCase() === 'subnet_mask' &&
+                                            sf.secondary_intent_index === f.secondary_intent_index,
+                                        );
+                                        const subnetKey = subnetField ? previewFieldValueKey(subnetField) : null;
+                                        const subnetValue = subnetKey ? paramsDisambiguationValues[subnetKey] : '';
+                                        const subnetText =
+                                          typeof subnetValue === 'number'
+                                            ? String(subnetValue)
+                                            : String(subnetValue ?? '').replace('/', '').trim();
+                                        return (
+                                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mt-1">
+                                            <div>
+                                              <div className="text-xs text-base-content/60 mb-1">IP address</div>
+                                              <input
+                                                type="text"
+                                                className="input input-sm input-bordered w-full font-mono"
+                                                placeholder="192.168.10.1"
+                                                value={String((paramsDisambiguationValues[vk] ?? '') as string | number)}
+                                                onChange={(e) =>
+                                                  setParamsDisambiguationValues((prev) => ({
+                                                    ...prev,
+                                                    [vk]: e.target.value,
+                                                  }))
+                                                }
+                                              />
+                                            </div>
+                                            <div>
+                                              <div className="text-xs text-base-content/60 mb-1">Subnet mask</div>
+                                              <div className="flex items-center gap-2 relative group">
+                                                <div className="flex items-center justify-center h-8 px-2 rounded-l bg-base-300 border border-base-content/20 text-base-content/60 font-mono text-sm">
+                                                  /
+                                                </div>
+                                                <input
+                                                  type="number"
+                                                  min={0}
+                                                  max={32}
+                                                  className="input input-sm input-bordered flex-1 rounded-l-none font-mono"
+                                                  placeholder="0-32"
+                                                  value={subnetText}
+                                                  onChange={(e) => {
+                                                    if (!subnetKey) return;
+                                                    const v = e.target.value;
+                                                    const n = v === '' ? '' : parseInt(v, 10);
+                                                    if (v === '' || (!isNaN(n as number) && (n as number) >= 0 && (n as number) <= 32)) {
+                                                      setParamsDisambiguationValues((prev) => ({
+                                                        ...prev,
+                                                        [subnetKey]: n,
+                                                      }));
+                                                    }
+                                                  }}
+                                                  onKeyDown={(e) => {
+                                                    if (['e', 'E', '+', '-', '.'].includes(e.key)) {
+                                                      e.preventDefault();
+                                                    }
+                                                  }}
+                                                />
+                                              </div>
+                                            </div>
+                                          </div>
+                                        );
+                                      }
+
+                                      if (normalizedField === 'prefix_length' || normalizedField === 'subnet_mask') {
+                                        return (
+                                          <div className="flex items-center gap-2 relative group mt-1">
+                                            <div className="flex items-center justify-center h-8 px-2 rounded-l bg-base-300 border border-base-content/20 text-base-content/60 font-mono text-sm">
+                                              /
+                                            </div>
+                                            <input
+                                              type="number"
+                                              min={0}
+                                              max={32}
+                                              className="input input-sm input-bordered flex-1 rounded-l-none font-mono"
+                                              placeholder="0-32"
+                                              value={String((paramsDisambiguationValues[vk] ?? '') as string | number)}
+                                              onChange={(e) => {
+                                                const v = e.target.value;
+                                                const n = v === '' ? '' : parseInt(v, 10);
+                                                if (v === '' || (!isNaN(n as number) && (n as number) >= 0 && (n as number) <= 32)) {
+                                                  setParamsDisambiguationValues((prev) => ({
+                                                    ...prev,
+                                                    [vk]: n,
+                                                  }));
+                                                }
+                                              }}
+                                              onKeyDown={(e) => {
+                                                if (['e', 'E', '+', '-', '.'].includes(e.key)) {
+                                                  e.preventDefault();
+                                                }
+                                              }}
+                                            />
+                                            <div className="absolute right-3 top-1/2 -translate-y-1/2 text-xs opacity-0 group-focus-within:opacity-40 pointer-events-none transition-opacity text-base-content/70">
+                                              Range: 0-32
+                                            </div>
+                                          </div>
+                                        );
+                                      }
+
                                       return (
                                         <input
-                                          type={f.field === 'vlan_id' || f.field === 'process_id' ? 'number' : 'text'}
-                                          className="input input-sm input-bordered w-full font-mono"
-                                          placeholder={f.field === 'vlan_id' ? '1-4094' : ''}
+                                          type={
+                                            f.field === 'vlan_id' ||
+                                            f.field === 'process_id' ||
+                                            f.field === 'access_vlan' ||
+                                            f.field === 'native_vlan'
+                                              ? 'number'
+                                              : 'text'
+                                          }
+                                          className="input input-sm input-bordered w-full font-mono mt-1"
+                                          placeholder={
+                                            f.field === 'vlan_id' || f.field === 'access_vlan' || f.field === 'native_vlan'
+                                              ? '1-4094'
+                                              : ''
+                                          }
                                           value={String((paramsDisambiguationValues[vk] ?? '') as string | number)}
                                           onChange={(e) => {
                                             const v = e.target.value;
                                             setParamsDisambiguationValues((prev) => ({
                                               ...prev,
-                                              [vk]: f.field === 'vlan_id' || f.field === 'process_id' ? (v ? parseInt(v, 10) : '') : v,
+                                              [vk]:
+                                                f.field === 'vlan_id' ||
+                                                f.field === 'process_id' ||
+                                                f.field === 'access_vlan' ||
+                                                f.field === 'native_vlan'
+                                                  ? v === ''
+                                                    ? ''
+                                                    : parseInt(v, 10)
+                                                  : v,
                                             }));
                                           }}
                                         />
@@ -2353,10 +2586,24 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
                                 disabled={
                                   paramsDisambiguation.fields.some(
                                     (f) => {
-                                      const v = paramsDisambiguationValues[previewFieldValueKey(f)];
+                                      const vk = previewFieldValueKey(f);
+                                      const v = paramsDisambiguationValues[vk];
+                                      if (f.optional && (v === undefined || v === '' || v === null)) return false;
                                       if (v === undefined || v === '' || v === null) return true;
                                       if (Array.isArray(v) && v.length === 0) return true;
                                       if (typeof v === 'number' && Number.isNaN(v)) return true;
+                                      const fl = String(f.field || '').toLowerCase();
+                                      if (fl === 'ip_address' && !isValidIPv4Address(String(v))) return true;
+                                      if (fl === 'access_vlan' || fl === 'native_vlan') {
+                                        if (typeof v === 'number' && (v < 1 || v > 4094)) return true;
+                                      }
+                                      if (fl === 'subnet_mask') {
+                                        const n =
+                                          typeof v === 'number'
+                                            ? v
+                                            : parseInt(String(v).replace("/", "").trim(), 10);
+                                        if (Number.isNaN(n) || n < 0 || n > 32) return true;
+                                      }
                                       return false;
                                     }
                                   )

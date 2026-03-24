@@ -1,0 +1,63 @@
+---
+# Interface config — Huawei VRP (multi-scenario: description, shutdown, access/trunk, IP).
+# Reference template logic (per interface):
+#   interface <name>
+#   description <description>
+#   shutdown / undo shutdown
+#   access: port link-type access; port default vlan <vlan-id>
+#   trunk:  port link-type trunk; port trunk allow-pass vlan <vlan-list>
+#   ip:     ip address <ipv4> <mask>
+# Vars: interfaces_config = [ { name, description?, enabled?, mode?, access?: { vlan }, trunk?: { allowed_vlans }, ip?: { address, mask } } ], or interfaces_to_shutdown = [ names ].
+- name: Configure interfaces (Huawei VRP)
+  hosts: "Acc_Huawei_3"
+  gather_facts: no
+  ignore_unreachable: true
+  vars:
+    interfaces_config_defaults: [{"access": {"vlan": 124}, "enabled": true, "mode": "access", "name": "GigabitEthernet1/0/2"}]
+    interfaces_config: [{"access": {"vlan": 124}, "enabled": true, "mode": "access", "name": "GigabitEthernet1/0/2"}]
+
+
+    
+    interfaces_to_shutdown: "{{ nettopo_interfaces | default([]) | rejectattr('ip_address', 'equalto', (hostvars[inventory_hostname].ansible_host | default(''))) | map(attribute='name') | map('trim') | reject('equalto', '') | reject('match', '(?i).*(management|mgmt|meth|vty|console).*') | list }}"
+    
+
+  tasks:
+# Multi-scenario (interfaces_config)
+
+
+    - name: Configure interface (Huawei VRP)
+      community.network.ce_config:
+        parents: "interface {{ item.name }}"
+        lines: "{{ [
+          (('description ' ~ item.description) if (item.description is defined and item.description) else none),
+          ('shutdown' if (item.enabled is defined and item.enabled == false) else 'undo shutdown'),
+          ('port link-type access' if (item.mode is defined and item.mode == 'access') else none),
+          (('port default vlan ' ~ (item.access.vlan | string)) if (item.mode is defined and item.mode == 'access' and item.access is defined and item.access.vlan is defined) else none),
+          ('port link-type trunk' if (item.mode is defined and item.mode == 'trunk') else none),
+          (('port trunk allow-pass vlan ' ~ ((item.trunk.allowed_vlans | default(item.trunk.allow_pass_vlans) | default([]) | map('string') | join(' ')))) if (item.mode is defined and item.mode == 'trunk' and item.trunk is defined) else none),
+          (('ip address ' ~ (item.ip.address | string) ~ ' ' ~ ((item.ip.mask | default(item.ip.netmask) | default('255.255.255.0')) | string)) if (item.ip is defined and item.ip.address is defined) else none)
+        ] | reject('equalto', none) | list }}"
+      loop: "{{ interfaces_config | default([]) }}"
+      loop_control:
+        label: "{{ item.name }}"
+      when:
+        - inventory_hostname in groups.get('vendor_huawei_vrp', [])
+        - (interfaces_config | default([])) | length > 0
+
+# end conditional
+
+# Shutdown-only fallback (interfaces_to_shutdown = list of names)
+
+    - name: Shutdown interface (Huawei VRP)
+      community.network.ce_config:
+        lines:
+          - "{{ 'shutdown' if (interfaces_admin_enabled | default(false)) == false else 'undo shutdown' }}"
+        parents: "interface {{ item }}"
+        state: merged
+      loop: "{{ interfaces_to_shutdown | default([]) }}"
+      loop_control:
+        label: "{{ item }}"
+      when:
+        - inventory_hostname in groups.get('vendor_huawei_vrp', [])
+        - (interfaces_config | default([])) | length == 0
+        - (interfaces_to_shutdown | default([])) | length > 0

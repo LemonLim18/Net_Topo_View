@@ -2,6 +2,7 @@
 
 from ansible.context_entity_validation import (
     collect_user_interface_names_from_params,
+    enrich_params_disambiguation_trunk_vlan_controls,
     explicit_interface_names_from_request_params,
     hosts_for_device_hint,
     intent_requests_all_interfaces,
@@ -236,6 +237,31 @@ def test_should_validate_shutdown_and_vlan():
     assert not should_validate_interface_names_against_inventory(
         "shutdown_interface", "interface", {}
     )
+
+
+def test_enrich_vlan_controls_applies_trunk_access_native():
+    pd = {
+        "question": "Please provide the following.",
+        "fields": [
+            {"field": "trunk_vlans", "question": "trunk?"},
+            {"field": "access_vlan", "question": "access?"},
+            {"field": "native_vlan", "question": "native?"},
+        ],
+    }
+    parsed = {"parameters": {"vlan_id": 100}}
+    out = enrich_params_disambiguation_trunk_vlan_controls(
+        pd,
+        planning_context=None,
+        parsed_intent=parsed,
+    )
+    assert out is not None
+    fmap = {str(f.get("field") or ""): f for f in (out.get("fields") or []) if isinstance(f, dict)}
+    assert fmap["trunk_vlans"].get("control") == "multi_select_integers"
+    assert fmap["access_vlan"].get("control") == "single_select_integers"
+    assert fmap["native_vlan"].get("control") == "single_select_integers"
+    assert fmap["trunk_vlans"].get("options") == [100]
+    assert fmap["access_vlan"].get("options") == [100]
+    assert fmap["native_vlan"].get("options") == [100]
 
 
 if __name__ == "__main__":

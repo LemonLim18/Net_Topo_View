@@ -1,11 +1,13 @@
 ---
 # Interface config — Huawei VRP (multi-scenario: description, shutdown, access/trunk, IP).
 # Reference template logic (per interface):
-#   interface {{ item.name }}
-#   {% if item.description %}description {{ item.description }}{% endif %}
-#   {% if item.enabled == false %}shutdown{% else %}undo shutdown{% endif %}
-#   {% if item.mode == 'access' %}port link-type access; port default vlan {{ item.access.vlan }}{% elif item.mode == 'trunk' %}port link-type trunk; port trunk allow-pass vlan {{ item.trunk.allowed_vlans | join(' ') }}{% endif %}
-#   {% if item.ip %}ip address {{ item.ip.address }} {{ item.ip.mask }}{% endif %}
+#   interface <name>
+#   description <description>
+#   shutdown / undo shutdown
+#   access: port link-type access; port default vlan <vlan-id>
+#   trunk:  port link-type trunk; port trunk allow-pass vlan <vlan-list>
+#   trunk native: port trunk pvid vlan <vlan-id>
+#   ip:     ip address <ipv4> <mask>
 # Vars: interfaces_config = [ { name, description?, enabled?, mode?, access?: { vlan }, trunk?: { allowed_vlans }, ip?: { address, mask } } ], or interfaces_to_shutdown = [ names ].
 - name: Configure interfaces (Huawei VRP)
   hosts: "{{ target_hosts | default('all') }}"
@@ -16,12 +18,16 @@
     interfaces_config: {{ interfaces_config_override | default([]) | tojson }}
 {% if interfaces_config_use_nettopo | default(false) %}
     # Per-host expanded config from nettopo_interfaces (mgmt excluded by name + mgmt IP match).
-    interfaces_config: "{{ '{{ [ ((interfaces_config_defaults | default([]) | first | default({})) | combine({''name'': n})) for n in (nettopo_interfaces | default([]) | rejectattr(''ip_address'', ''equalto'', (hostvars[inventory_hostname].ansible_host | default(''''))) | map(attribute=''name'') | map(''trim'') | reject(''equalto'', '''') | reject(''match'', ''(?i).*(management|mgmt|meth|vty|console).*'') | list) ] }}' }}"
+    {% raw %}
+    interfaces_config: "{{ [ ((interfaces_config_defaults | default([]) | first | default({})) | combine({'name': n})) for n in (nettopo_interfaces | default([]) | rejectattr('ip_address', 'equalto', (hostvars[inventory_hostname].ansible_host | default(''))) | map(attribute='name') | map('trim') | reject('equalto', '') | reject('match', '(?i).*(management|mgmt|meth|vty|console).*') | list) ] }}"
+    {% endraw %}
 {% endif %}
 {% if interfaces_to_shutdown_override is defined and interfaces_to_shutdown_override is not none and interfaces_to_shutdown_override | length > 0 %}
     interfaces_to_shutdown: {{ interfaces_to_shutdown_override | tojson }}
 {% else %}
-    interfaces_to_shutdown: "{{ '{{ nettopo_interfaces | default([]) | rejectattr(''ip_address'', ''equalto'', (hostvars[inventory_hostname].ansible_host | default(''''))) | map(attribute=''name'') | map(''trim'') | reject(''equalto'', '''') | reject(''match'', ''(?i).*(management|mgmt|meth|vty|console).*'') | list }}' }}"
+    {% raw %}
+    interfaces_to_shutdown: "{{ nettopo_interfaces | default([]) | rejectattr('ip_address', 'equalto', (hostvars[inventory_hostname].ansible_host | default(''))) | map(attribute='name') | map('trim') | reject('equalto', '') | reject('match', '(?i).*(management|mgmt|meth|vty|console).*') | list }}"
+    {% endraw %}
 {% endif %}
   tasks:
 # Multi-scenario (interfaces_config)
@@ -37,6 +43,7 @@
           (('port default vlan ' ~ (item.access.vlan | string)) if (item.mode is defined and item.mode == 'access' and item.access is defined and item.access.vlan is defined) else none),
           ('port link-type trunk' if (item.mode is defined and item.mode == 'trunk') else none),
           (('port trunk allow-pass vlan ' ~ ((item.trunk.allowed_vlans | default(item.trunk.allow_pass_vlans) | default([]) | map('string') | join(' ')))) if (item.mode is defined and item.mode == 'trunk' and item.trunk is defined) else none),
+          (('port trunk pvid vlan ' ~ (item.trunk.native_vlan | string)) if (item.mode is defined and item.mode == 'trunk' and item.trunk is defined and item.trunk.native_vlan is defined) else none),
           (('ip address ' ~ (item.ip.address | string) ~ ' ' ~ ((item.ip.mask | default(item.ip.netmask) | default('255.255.255.0')) | string)) if (item.ip is defined and item.ip.address is defined) else none)
         ] | reject('equalto', none) | list }}"
       loop: "{{ interfaces_config | default([]) }}"
@@ -47,23 +54,31 @@
         - item.enabled is defined
 {% endraw %}
 {% else %}
-{% for item in interfaces_config | default([]) %}
-{% set ns = namespace(lines=[]) %}
-{% if item.description is defined and item.description %}{% set _ = ns.lines.append('description ' + (item.description | string)) %}{% endif %}
-{% if item.enabled is defined and item.enabled == false %}{% set _ = ns.lines.append('shutdown') %}{% elif item.enabled is defined and item.enabled != false %}{% set _ = ns.lines.append('undo shutdown') %}{% endif %}
-{% if item.mode is defined and item.mode == 'access' and item.access is defined %}{% set _ = ns.lines.append('port link-type access') %}{% set _ = ns.lines.append('port default vlan ' + (item.access.vlan | string)) %}{% elif item.mode is defined and item.mode == 'trunk' and item.trunk is defined %}{% set _ = ns.lines.append('port link-type trunk') %}{% set _ = ns.lines.append('port trunk allow-pass vlan ' + (item.trunk.allowed_vlans | default(item.trunk.allow_pass_vlans) | default([]) | map('string') | join(' '))) %}{% endif %}
-{% if item.ip is defined and item.ip and item.ip.address is defined %}{% set _ = ns.lines.append('ip address ' + (item.ip.address | string) + ' ' + (item.ip.mask | default(item.ip.netmask) | default('255.255.255.0') | string)) %}{% endif %}
-    - name: Configure interface {{ item.name }} (Huawei VRP)
+{% raw %}
+    - name: Configure interface (Huawei VRP)
       community.network.ce_config:
         parents: "interface {{ item.name }}"
-        lines: {{ ns.lines | tojson }}
+        lines: "{{ [
+          (('description ' ~ item.description) if (item.description is defined and item.description) else none),
+          ('shutdown' if (item.enabled is defined and item.enabled == false) else 'undo shutdown'),
+          ('port link-type access' if (item.mode is defined and item.mode == 'access') else none),
+          (('port default vlan ' ~ (item.access.vlan | string)) if (item.mode is defined and item.mode == 'access' and item.access is defined and item.access.vlan is defined) else none),
+          ('port link-type trunk' if (item.mode is defined and item.mode == 'trunk') else none),
+          (('port trunk allow-pass vlan ' ~ ((item.trunk.allowed_vlans | default(item.trunk.allow_pass_vlans) | default([]) | map('string') | join(' ')))) if (item.mode is defined and item.mode == 'trunk' and item.trunk is defined) else none),
+          (('port trunk pvid vlan ' ~ (item.trunk.native_vlan | string)) if (item.mode is defined and item.mode == 'trunk' and item.trunk is defined and item.trunk.native_vlan is defined) else none),
+          (('ip address ' ~ (item.ip.address | string) ~ ' ' ~ ((item.ip.mask | default(item.ip.netmask) | default('255.255.255.0')) | string)) if (item.ip is defined and item.ip.address is defined) else none)
+        ] | reject('equalto', none) | list }}"
+      loop: "{{ interfaces_config | default([]) }}"
+      loop_control:
+        label: "{{ item.name }}"
       when:
         - inventory_hostname in groups.get('vendor_huawei_vrp', [])
-        - ns.lines | length > 0
-{% endfor %}
+        - (interfaces_config | default([])) | length > 0
+{% endraw %}
 # end conditional
 {% endif %}
 # Shutdown-only fallback (interfaces_to_shutdown = list of names)
+{% raw %}
     - name: Shutdown interface (Huawei VRP)
       community.network.ce_config:
         lines:
@@ -77,3 +92,4 @@
         - inventory_hostname in groups.get('vendor_huawei_vrp', [])
         - (interfaces_config | default([])) | length == 0
         - (interfaces_to_shutdown | default([])) | length > 0
+{% endraw %}

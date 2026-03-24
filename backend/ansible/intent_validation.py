@@ -6,11 +6,14 @@ from_inventory -> from_topology -> from_policy -> ask_user), and questions for d
 Validates completeness and type; resolves missing fields with resolution_trace; respects safe_mode.
 """
 
+import ipaddress
 import json
 import logging
 import re
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
+
+from ansible.context_entity_validation import intent_requests_all_interfaces
 
 logger = logging.getLogger("ansible.intent_validation")
 
@@ -141,19 +144,25 @@ def _normalize_intent_for_type_schema(intent: Dict[str, Any], schema_key: str) -
         )
     elif schema_key == "configure_interface":
         out["target_hosts"] = flat.get("target_devices") or []
+        params_raw = dict(intent.get("parameters") or intent.get("params") or {})
+        def_mode = str(params_raw.get("default_mode") or "").strip().lower()
+        if def_mode not in ("access", "trunk", "routed"):
+            def_mode = "access"
         ifaces = flat.get("interfaces") or []
         norm: List[Dict[str, Any]] = []
         for item in ifaces:
             if isinstance(item, str):
-                norm.append({"name": item.strip(), "mode": "access"})
+                norm.append({"name": item.strip(), "mode": def_mode})
             elif isinstance(item, dict):
                 d = dict(item)
+                if not str(d.get("mode") or "").strip():
+                    d["mode"] = def_mode
                 for _null_opt in ("native_vlan", "access_vlan", "allowed_vlans", "trunk_vlans"):
                     if _null_opt in d and d[_null_opt] is None:
                         del d[_null_opt]
                 norm.append(d)
             else:
-                norm.append({"name": str(item), "mode": "access"})
+                norm.append({"name": str(item), "mode": def_mode})
         out["interfaces"] = norm
     elif schema_key == "configure_acl":
         out["target_hosts"] = flat.get("target_devices") or []
@@ -424,6 +433,7 @@ def resolve_missing_fields(
     schema: Dict[str, Any],
     context: Optional[Dict[str, Any]] = None,
     safe_mode: bool = True,
+    strict_user_input: bool = False,
 ) -> Tuple[Dict[str, Any], List[Dict[str, Any]], List[Dict[str, Any]]]:
     """
     For each missing field, try resolution_order; build resolution_trace.
@@ -472,6 +482,8 @@ def resolve_missing_fields(
                     resolved = True
                     break
             elif strategy == "from_inventory":
+                if strict_user_input:
+                    continue
                 if inventory_lookup_fn:
                     try:
                         value, detail = inventory_lookup_fn(field, intent, context or {})
@@ -497,6 +509,8 @@ def resolve_missing_fields(
                     except Exception as e:
                         logger.debug("from_inventory lookup failed: %s", e)
             elif strategy == "from_topology":
+                if strict_user_input:
+                    continue
                 if field == "interfaces" and planning_context and resolve_interfaces_fn:
                     try:
                         names = resolve_interfaces_fn(intent, planning_context)
@@ -763,6 +777,203 @@ def vlan_schema_fields_missing_from_user_prompt_respecting_params(
 # Extend by registering callables: ``parameters`` dict -> list of
 # ``{"field", "question"}`` for the chat wizard (primary or secondary slices).
 
+# Chat-only keys (preview / wizard). Not sent to device JSON-Schema payloads.
+CHAT_INTERFACE_LAYER_FIELD = "_chat_interface_layer"
+CHAT_INTERFACE_L2_MODE_FIELD = "_chat_interface_l2_mode"
+
+
+def user_prompt_has_explicit_interface_layer_intent(description: str) -> bool:
+    """
+    True when the user already indicated L2 (access/trunk/switchport) or L3 (IP/routed)
+    clearly enough that we should not ask the generic L2-vs-L3 question.
+    """
+    text = str(description or "").strip()
+    if not text:
+        return False
+    tl = re.sub(r"\s+", " ", text.lower())
+    if intent_requests_all_interfaces(text):
+        return True
+    if re.search(r"\b(?:shutdown|shut\s*down|admin[- ]?down|disable)\b", tl) and re.search(
+        r"\binterface", tl
+    ):
+        return True
+    # L3 / routed
+    if re.search(r"\b(?:\d{1,3}\.){3}\d{1,3}/\d{1,2}\b", text):
+        return True
+    if re.search(
+        r"\b(?:ip\s+address|ipv4|subnet|cidr|routed|layer\s*3|\bl3\b|no\s+switchport|svi\b)\b",
+        tl,
+    ):
+        return True
+    if re.search(r"\bwith\s+ip\s+address\b", tl):
+        return True
+    # L2 switchport
+    if re.search(
+        r"\b(?:trunk|access\s+vlan|access\s+port|as\s+access|switchport|tagged|untagged|"
+        r"native\s+vlan|allowed\s+vlan|voice\s+vlan|port[- ]channel)\b",
+        tl,
+    ):
+        return True
+    return False
+
+
+def parameters_imply_interface_layer(parameters: Optional[Dict[str, Any]]) -> Optional[str]:
+    """
+    Return ``\"l2\"``, ``\"l3\"``, or None if parameters do not yet imply a layer.
+    """
+    if not isinstance(parameters, dict):
+        return None
+    # Ignore ``_chat_*`` wizard keys: they are pending choices until merged into ``default_mode`` / rows.
+    dm = str(parameters.get("default_mode") or "").strip().lower()
+    if dm in ("access", "trunk"):
+        return "l2"
+    if dm == "routed":
+        return "l3"
+    interfaces = parameters.get("interfaces") or []
+    if not isinstance(interfaces, list):
+        return None
+    saw_l3 = False
+    saw_l2 = False
+    for iface in interfaces:
+        if not isinstance(iface, dict):
+            continue
+        mode = str(iface.get("mode") or "").strip().lower()
+        if mode == "routed" or iface.get("ip_address") not in (None, ""):
+            saw_l3 = True
+        elif mode in ("access", "trunk"):
+            saw_l2 = True
+    if saw_l3 and not saw_l2:
+        return "l3"
+    if saw_l2 and not saw_l3:
+        return "l2"
+    if saw_l3 and saw_l2:
+        return "l2"  # mixed; avoid blocking — let validation ask
+    return None
+
+
+def configure_interface_prompt_is_layer_ambiguous(
+    intent_description: str,
+    parameters: Optional[Dict[str, Any]],
+) -> bool:
+    """
+    Super-vague interface configuration (e.g. "Configure interfaces on devices") with no
+    L2/L3 hint in text or parameters.
+    """
+    if user_prompt_has_explicit_interface_layer_intent(intent_description):
+        return False
+    if parameters_imply_interface_layer(parameters) is not None:
+        return False
+    t = re.sub(r"\s+", " ", str(intent_description or "").strip().lower())
+    if not t:
+        return False
+    if not re.search(r"\b(?:configure|set\s*up|setup|change|modify|update)\b", t):
+        return False
+    if not (
+        re.search(r"\b(?:interface|interfaces|port|ports|switchport)\b", t)
+        or re.search(r"\b(?:device|devices|switch|switches|router|routers)\b", t)
+    ):
+        return False
+    return True
+
+
+def apply_chat_interface_wizard_to_parameters(params: Dict[str, Any]) -> None:
+    """
+    Map chat wizard answers into ``default_mode`` so downstream validation and templates
+    see consistent L2/L3 intent. Wizard keys stay in ``params`` for trusted re-merge.
+    """
+    if not isinstance(params, dict):
+        return
+    layer = str(params.get(CHAT_INTERFACE_LAYER_FIELD) or "").strip().lower()
+    l2mode = str(params.get(CHAT_INTERFACE_L2_MODE_FIELD) or "").strip().lower()
+    if layer == "l2" and l2mode in ("access", "trunk"):
+        params["default_mode"] = l2mode
+    elif layer == "l3":
+        params["default_mode"] = "routed"
+    dm = str(params.get("default_mode") or "").strip().lower()
+    if dm in ("access", "trunk", "routed") and isinstance(params.get("interfaces"), list) and params["interfaces"]:
+        reconcile_configure_interface_rows_with_default_mode(params)
+
+
+def reconcile_configure_interface_rows_with_default_mode(params: Dict[str, Any]) -> None:
+    """
+    Align each interface row with ``default_mode`` after the L2/L3 wizard so Studio chips
+    (often access-shaped) do not contradict routed/L2 intent.
+    """
+    if not isinstance(params, dict):
+        return
+    dm = str(params.get("default_mode") or "").strip().lower()
+    if dm not in ("access", "trunk", "routed"):
+        return
+    ifaces = params.get("interfaces")
+    if not isinstance(ifaces, list) or not ifaces:
+        return
+    out: List[Any] = []
+    for item in ifaces:
+        if isinstance(item, str):
+            name = str(item).strip()
+            if name:
+                out.append({"name": name, "mode": dm})
+            continue
+        if not isinstance(item, dict):
+            name = str(item).strip() if item else ""
+            if name:
+                out.append({"name": name, "mode": dm})
+            continue
+        row = dict(item)
+        row["mode"] = dm
+        if dm == "routed":
+            row.pop("access_vlan", None)
+            row.pop("trunk_vlans", None)
+            row.pop("allowed_vlans", None)
+        elif dm in ("access", "trunk"):
+            row.pop("ip_address", None)
+            row.pop("subnet_mask", None)
+        out.append(row)
+    params["interfaces"] = out
+
+
+def configure_interface_phased_wizard_fields(
+    intent_description: str,
+    parameters: Dict[str, Any],
+    *,
+    trusted_param_keys: Optional[Set[str]] = None,
+) -> List[Dict[str, Any]]:
+    """
+    One step at a time: (1) L2 vs L3, then (2) for L2 only, access vs trunk.
+    When this returns a non-empty list for step (1), preview should prioritize this question.
+    """
+    trusted = {str(k) for k in (trusted_param_keys or set())}
+    if CHAT_INTERFACE_LAYER_FIELD in trusted and CHAT_INTERFACE_L2_MODE_FIELD in trusted:
+        return []
+    if not configure_interface_prompt_is_layer_ambiguous(intent_description, parameters):
+        return []
+    if CHAT_INTERFACE_LAYER_FIELD not in trusted:
+        return [
+            {
+                "field": CHAT_INTERFACE_LAYER_FIELD,
+                "question": (
+                    "Your message does not say whether this is **Layer 2** (switchport: access/trunk) "
+                    "or **Layer 3** (routed interface with an IP). Which do you want to configure?"
+                ),
+                "control": "single_select_strings",
+                "options": ["l2", "l3"],
+            }
+        ]
+    layer = str(parameters.get(CHAT_INTERFACE_LAYER_FIELD) or "").strip().lower()
+    if layer == "l2" and CHAT_INTERFACE_L2_MODE_FIELD not in trusted:
+        return [
+            {
+                "field": CHAT_INTERFACE_L2_MODE_FIELD,
+                "question": (
+                    "For Layer 2, should these ports be **access** or **trunk**? "
+                    "(You can supply VLAN details in the next steps.)"
+                ),
+                "control": "single_select_strings",
+                "options": ["access", "trunk"],
+            }
+        ]
+    return []
+
 
 def configure_interface_conditional_disambiguation_fields(
     parameters: Dict[str, Any],
@@ -772,46 +983,96 @@ def configure_interface_conditional_disambiguation_fields(
     """
     shared_fields: List[Dict[str, Any]] = []
     p2 = dict(parameters or {})
-    interfaces = p2.get("interfaces") or []
-    if not isinstance(interfaces, list) or not interfaces:
+    interfaces_raw = p2.get("interfaces") or []
+    if not isinstance(interfaces_raw, list) or not interfaces_raw:
         return shared_fields
     default_mode = str(p2.get("default_mode") or "").strip().lower() or None
+    interfaces: List[Dict[str, Any]] = []
+    for item in interfaces_raw:
+        if isinstance(item, dict):
+            interfaces.append(dict(item))
+        elif isinstance(item, str):
+            name = str(item).strip()
+            if name and default_mode in ("access", "trunk", "routed"):
+                interfaces.append({"name": name, "mode": default_mode})
+        elif item is not None:
+            s = str(item).strip()
+            if s and default_mode in ("access", "trunk", "routed"):
+                interfaces.append({"name": s, "mode": default_mode})
+    if not interfaces:
+        return shared_fields
     modes: set[str] = set()
     missing_trunk_vlans = False
+    missing_routed_ip = False
+    missing_access_vlan = False
+    missing_native_vlan = False
     ip_addrs: set[str] = set()
     missing_subnet_mask = False
 
     for iface in interfaces:
-        if not isinstance(iface, dict):
-            continue
         mode = str(iface.get("mode") or default_mode or "").strip().lower()
         if mode:
             modes.add(mode)
-        if mode == "access":
-            # Access mode can be configured without forcing VLAN assignment.
-            # Keep VLAN follow-up optional unless explicitly requested elsewhere.
-            pass
+        if mode == "routed":
+            if not str(iface.get("ip_address") or "").strip():
+                missing_routed_ip = True
+        elif mode == "access":
+            av = iface.get("access_vlan")
+            if av in (None, "", []):
+                missing_access_vlan = True
         elif mode == "trunk":
             tv = iface.get("trunk_vlans")
             if tv in (None, "", []):
                 tv = iface.get("allowed_vlans")
             if tv in (None, "", []):
                 missing_trunk_vlans = True
+            nv = iface.get("native_vlan")
+            if nv in (None, "", []):
+                missing_native_vlan = True
         ip_address = iface.get("ip_address")
         if ip_address not in (None, ""):
             ip_addrs.add(str(ip_address))
             if iface.get("subnet_mask") in (None, ""):
                 missing_subnet_mask = True
 
+    if missing_routed_ip:
+        shared_fields.append(
+            {
+                "field": "ip_address",
+                "question": (
+                    "Which IPv4 address should be configured on this routed interface "
+                    "(e.g. 192.168.10.1)? Use CIDR (192.168.10.1/24) if you prefer."
+                ),
+            }
+        )
+
     if len(modes) == 1:
         only_mode = next(iter(modes))
+        if only_mode == "access" and missing_access_vlan:
+            shared_fields.append(
+                {
+                    "field": "access_vlan",
+                    "question": (
+                        "Which **access VLAN** ID (1–4094) should untagged traffic use on these ports?"
+                    ),
+                }
+            )
         if only_mode == "trunk" and missing_trunk_vlans:
             shared_fields.append(
                 {
                     "field": "trunk_vlans",
                     "question": (
-                        "Which VLAN IDs should be allowed on this trunk? "
+                        "Which VLAN IDs should be **allowed** on this trunk? "
                         "(Pick from the list — options come from your intent and planned network context.)"
+                    ),
+                }
+            )
+        if only_mode == "trunk" and missing_native_vlan:
+            shared_fields.append(
+                {
+                    "field": "native_vlan",
+                    "question": (
+                        "Which **native / PVID** VLAN ID (1-4094) should be set on this trunk?"
                     ),
                 }
             )
@@ -955,6 +1216,200 @@ def user_prompt_indicates_trunk_l2_binding(description: str) -> bool:
     ):
         return True
     return False
+
+
+def user_prompt_suggests_interface_l3(description: str) -> bool:
+    """True when prompt clearly asks for an interface IPv4 / routed (L3) configuration."""
+    text = str(description or "").strip()
+    if not text:
+        return False
+    tl = re.sub(r"\s+", " ", text.lower())
+    if re.search(r"\b(?:\d{1,3}\.){3}\d{1,3}/\d{1,2}\b", text):
+        return True
+    if re.search(r"\bip\s+address\b", tl):
+        return True
+    if re.search(r"\bwith\s+ip\s+address\b", tl):
+        return True
+    if "routed interface" in tl or re.search(r"\bas\s+routed\b", tl):
+        return True
+    if re.search(r"\blayer\s*3\b", tl) or re.search(r"\bl3\s+interface\b", tl):
+        return True
+    return False
+
+
+def _extract_l3_interface_row_from_prompt(description: str) -> Optional[Dict[str, Any]]:
+    """Parse interface name + IPv4 + mask from natural language (CIDR or address + mask)."""
+    text = str(description or "").strip()
+    if not text:
+        return None
+    tl = text.lower()
+
+    ip_addr: Optional[str] = None
+    mask: Optional[str] = None
+
+    cidr_m = re.search(r"\b(\d{1,3}(?:\.\d{1,3}){3})/(\d{1,2})\b", text)
+    if cidr_m:
+        ip_addr = cidr_m.group(1)
+        try:
+            pfx = int(cidr_m.group(2))
+            iface_ip = ipaddress.IPv4Interface(f"{ip_addr}/{pfx}")
+            mask = str(iface_ip.network.netmask)
+        except (ValueError, OSError):
+            return None
+    else:
+        imm = re.search(
+            r"\b(?:address|ip)\s+(?:is\s+)?(\d{1,3}(?:\.\d{1,3}){3})\s+(\d{1,3}(?:\.\d{1,3}){3})\b",
+            tl,
+        )
+        if not imm:
+            imm = re.search(
+                r"\b(\d{1,3}(?:\.\d{1,3}){3})\s+(255\.\d{1,3}\.\d{1,3}\.\d{1,3})\b",
+                text,
+            )
+        if imm:
+            ip_addr = imm.group(1)
+            mask = imm.group(2)
+        else:
+            ip_only = re.search(
+                r"\b(?:with\s+)?ip\s+address\s+(?:is\s+)?(\d{1,3}(?:\.\d{1,3}){3})\b",
+                tl,
+            )
+            if ip_only:
+                ip_addr = ip_only.group(1)
+
+    if not ip_addr:
+        return None
+
+    iface: Optional[str] = None
+    m = re.search(
+        r"\b((?:GigabitEthernet|TenGigabitEthernet|FastEthernet|Ethernet)\d[/\w.-]+)\b",
+        text,
+        re.I,
+    )
+    if m:
+        iface = m.group(1)
+    else:
+        m2 = re.search(r"\b(Gi|Te|Fa|Eth|Et)(\d+(?:/\d+)+)\b", text, re.I)
+        if m2:
+            iface = m2.group(1) + m2.group(2)
+
+    if not iface:
+        return None
+
+    return {
+        "name": iface,
+        "mode": "routed",
+        "ip_address": ip_addr,
+        "subnet_mask": mask,
+    }
+
+
+def _parameters_l3_satisfied_for_prompt(parameters: Dict[str, Any], description: str) -> bool:
+    want = _extract_l3_interface_row_from_prompt(description)
+    if not want:
+        return False
+    want_ip = str(want.get("ip_address") or "").strip()
+    want_mask = str(want.get("subnet_mask") or "").strip()
+    for row in parameters.get("interfaces") or []:
+        if not isinstance(row, dict):
+            continue
+        if str(row.get("ip_address") or "").strip() != want_ip:
+            continue
+        have_mask = str(row.get("subnet_mask") or "").strip()
+        if (
+            str(row.get("mode") or "").strip().lower() == "routed"
+            and ((not want_mask) or bool(have_mask))
+        ):
+            return True
+    return False
+
+
+def _merge_l3_patch_into_parameters(parameters: Dict[str, Any], patch: Dict[str, Any]) -> None:
+    if not isinstance(parameters, dict) or not patch:
+        return
+    ifaces = parameters.get("interfaces")
+    if not isinstance(ifaces, list):
+        ifaces = []
+
+    def _strip_l2_keys(row: Dict[str, Any]) -> None:
+        for k in ("access_vlan", "trunk_vlans", "allowed_vlans", "native_vlan"):
+            row.pop(k, None)
+
+    if len(ifaces) == 0:
+        parameters["interfaces"] = [dict(patch)]
+        return
+
+    if len(ifaces) == 1 and isinstance(ifaces[0], dict):
+        row = dict(ifaces[0])
+        # User / UI-selected interface names (inventory, hostname:ifname) win over NL tokens.
+        row["name"] = str(row.get("name") or patch.get("name") or "").strip()
+        row["mode"] = "routed"
+        row["ip_address"] = patch["ip_address"]
+        if patch.get("subnet_mask"):
+            row["subnet_mask"] = patch["subnet_mask"]
+        _strip_l2_keys(row)
+        parameters["interfaces"] = [row]
+        return
+
+    for i, row in enumerate(ifaces):
+        if not isinstance(row, dict):
+            continue
+        if row.get("ip_address"):
+            continue
+        mode = str(row.get("mode") or "").strip().lower()
+        # Include routed rows missing IP so we do not append a duplicate row named from the prompt only.
+        if mode in ("access", "trunk", "", "routed"):
+            merged = dict(row)
+            merged["name"] = str(merged.get("name") or patch.get("name") or "").strip()
+            merged["mode"] = "routed"
+            merged["ip_address"] = patch["ip_address"]
+            if patch.get("subnet_mask"):
+                merged["subnet_mask"] = patch["subnet_mask"]
+            _strip_l2_keys(merged)
+            ifaces[i] = merged
+            parameters["interfaces"] = ifaces
+            return
+
+    parameters["interfaces"] = list(ifaces) + [dict(patch)]
+
+
+def correct_interface_l3_params_from_natural_language(
+    intent_description: str,
+    parsed_intent: Dict[str, Any],
+) -> None:
+    """
+    When the user clearly asks for L3 interface config, coerce ``parameters.interfaces``
+    away from accidental L2 defaults (e.g. mode access) produced by the LLM.
+    """
+    if not user_prompt_suggests_interface_l3(intent_description):
+        return
+    if not isinstance(parsed_intent, dict):
+        return
+
+    patch = _extract_l3_interface_row_from_prompt(intent_description)
+    if not patch:
+        return
+
+    def _apply(container: Dict[str, Any]) -> None:
+        p = container.get("parameters")
+        if not isinstance(p, dict):
+            return
+        if _parameters_l3_satisfied_for_prompt(p, intent_description):
+            return
+        _merge_l3_patch_into_parameters(p, patch)
+
+    act = str(parsed_intent.get("action") or "").strip().lower().replace("-", "_")
+    feat = str(parsed_intent.get("feature") or "").strip().lower()
+    if act in ("configure_interface", "configure", "") or feat == "interface":
+        _apply(parsed_intent)
+
+    for sec in parsed_intent.get("secondary_intents") or []:
+        if not isinstance(sec, dict):
+            continue
+        sa = str(sec.get("action") or "").strip().lower().replace("-", "_")
+        sf = str(sec.get("feature") or "").strip().lower()
+        if sa == "configure_interface" or sf == "interface":
+            _apply(sec)
 
 
 def _effective_vlan_id_for_port_binding(parameters: Dict[str, Any], intent_description: str) -> Optional[int]:

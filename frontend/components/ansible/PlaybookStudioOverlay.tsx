@@ -19,6 +19,7 @@ import { ansibleApi } from '../../src/services/api';
 import { Toast } from '../../src/utils/swal';
 import {
   buildPlannedInventoryPreselectChips,
+  extractTargetInterfaceNamesFromAuthoritativeParams,
   extractTargetInterfaceNamesFromParsedIntent,
   preselectPlannedInventoryInterfaces,
 } from '../../src/utils/interfaceInventoryPreselect';
@@ -511,9 +512,15 @@ export function PlaybookStudioOverlay({
       }
       setTargetInterfaces(
         expandWildcardInterfacesFromPlannedPreview(
-          extractTargetInterfaceNamesFromParsedIntent(
-            (initialPreviewResult.parsed_intent as Record<string, unknown>) ?? null,
-          ),
+          (() => {
+            const fromAuth = extractTargetInterfaceNamesFromAuthoritativeParams(
+              authoritativeMergedParams as Record<string, unknown> | null | undefined,
+            );
+            if (fromAuth.length > 0) return fromAuth;
+            return extractTargetInterfaceNamesFromParsedIntent(
+              (initialPreviewResult.parsed_intent as Record<string, unknown>) ?? null,
+            );
+          })(),
           ((initialPreviewResult.parsed_intent as any)?.planned_all_interfaces_preview as any) ?? null,
         ),
       );

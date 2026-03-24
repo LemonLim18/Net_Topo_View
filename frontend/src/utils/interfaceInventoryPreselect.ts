@@ -62,6 +62,29 @@ export function extractTargetInterfaceNamesFromParsedIntent(
   return dedup;
 }
 
+/**
+ * Interface names from accumulated preview params (chat / disambiguation).
+ * When non-empty, callers should prefer these over `parsed_intent` so UI picks stay authoritative.
+ */
+export function extractTargetInterfaceNamesFromAuthoritativeParams(
+  params: Record<string, unknown> | null | undefined,
+): string[] {
+  if (!params) return [];
+  const out: string[] = [];
+  if (Array.isArray(params.interfaces)) {
+    pushInterfaceNamesFromList(params.interfaces, out);
+  }
+  const seen = new Set<string>();
+  const dedup: string[] = [];
+  for (const x of out) {
+    if (!seen.has(x)) {
+      seen.add(x);
+      dedup.push(x);
+    }
+  }
+  return dedup;
+}
+
 /** Loose match: inventory "Ethernet0/1" vs LLM "GigabitEthernet1/0/2". */
 export function interfaceNameMatchesChipForPreselect(chip: string, plannedName: string): boolean {
   const a = chip.trim().toLowerCase();
@@ -129,6 +152,8 @@ export function extractInventoryValidationChipsForPreselect(
 export type BuildPreselectChipsOptions = {
   /** e.g. `interfaces_disambiguation.invalid_entities` when `parsed_intent` is not yet populated. */
   extraInvalidEntities?: unknown[] | undefined;
+  /** When true, only preselect names found in intent parameters; skip "closest in inventory" suggestions from backend. */
+  skipSuggestions?: boolean;
 };
 
 /**
@@ -140,8 +165,8 @@ export function buildPlannedInventoryPreselectChips(
   options?: BuildPreselectChipsOptions,
 ): string[] {
   const fromIntent = extractTargetInterfaceNamesFromParsedIntent(parsed);
-  const fromParsedInv = extractInventoryValidationChipsForPreselect(parsed);
-  const fromExtra = extractSuggestionChipsFromInvalidEntities(options?.extraInvalidEntities);
+  const fromParsedInv = options?.skipSuggestions ? [] : extractInventoryValidationChipsForPreselect(parsed);
+  const fromExtra = options?.skipSuggestions ? [] : extractSuggestionChipsFromInvalidEntities(options?.extraInvalidEntities);
   const seen = new Set<string>();
   const out: string[] = [];
   for (const x of [...fromIntent, ...fromParsedInv, ...fromExtra]) {

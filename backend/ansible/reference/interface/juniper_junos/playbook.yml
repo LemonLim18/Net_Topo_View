@@ -12,6 +12,7 @@
     interfaces_to_shutdown: "{{ interfaces_to_shutdown | default(nettopo_interfaces | default([]) | map(attribute='name') | list) }}"
     interfaces_admin_enabled: "{{ ((interfaces_admin_enabled | default(false) | string | trim | lower) in ['1', 'true', 'yes', 'on']) | string | lower }}"
   tasks:
+{% raw %}
     - name: Configure interface (Juniper Junos)
       juniper.device.junos_interfaces:
         config:
@@ -38,3 +39,4 @@
         - inventory_hostname in groups.get('vendor_juniper_junos', [])
         - (interfaces_config | default([])) | length == 0
         - (interfaces_to_shutdown | default([])) | length > 0
+{% endraw %}

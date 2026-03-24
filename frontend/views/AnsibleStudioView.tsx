@@ -237,6 +237,13 @@ const AnsibleStudioView: React.FC<AnsibleStudioViewProps> = ({ user }) => {
   useEffect(() => {
     if (activeJobId) refreshJob(activeJobId);
   }, [activeJobId, refreshJob]);
+  useEffect(() => {
+    if (!activeJobId) return;
+    const t = window.setInterval(() => {
+      refreshJob(activeJobId);
+    }, 2000);
+    return () => window.clearInterval(t);
+  }, [activeJobId, refreshJob]);
 
   useEffect(() => {
     localStorage.setItem(ANSIBLE_TABS_KEY, JSON.stringify(tabs));
@@ -458,8 +465,26 @@ const AnsibleStudioView: React.FC<AnsibleStudioViewProps> = ({ user }) => {
   // ── Approve ──────────────────────────────────────────────────────────────
   const handleApprove = useCallback(async () => {
     if (!activeJobId) return;
+    const ts = new Date().toLocaleTimeString();
+    const session: AnsibleOutputSession = {
+      id: `approve-${activeJobId}-${Date.now()}`,
+      label: `Approve — Job ${activeJobId}`,
+      type: 'plan',
+      createdAt: Date.now(),
+      lines: [`[${ts}] Approve — Job ${activeJobId}`, 'Approval request sent.'],
+    };
+    setOutputSessions(prev => [session, ...prev].slice(0, 50));
+    setActiveOutputId(session.id);
     await ansibleApi.approveJob(activeJobId);
     await refreshJob(activeJobId);
+    const ts2 = new Date().toLocaleTimeString();
+    setOutputSessions(prev =>
+      prev.map(s =>
+        s.id === session.id
+          ? { ...s, lines: [...s.lines, `[${ts2}] Approval complete.`] }
+          : s
+      )
+    );
   }, [activeJobId, refreshJob]);
 
   // ── Deploy (SSE) ─────────────────────────────────────────────────────────
@@ -474,7 +499,10 @@ const AnsibleStudioView: React.FC<AnsibleStudioViewProps> = ({ user }) => {
       label: `Deploy — Job ${activeJobId}`,
       type: 'deploy',
       createdAt: Date.now(),
-      lines: [],
+      lines: [
+        `[${new Date().toLocaleTimeString()}] Deploy requested — Job ${activeJobId}`,
+        'Streaming execution logs…',
+      ],
     };
     deploySessionIdRef.current = sessionId;
     setStreamingSessionId(sessionId);
@@ -504,6 +532,14 @@ const AnsibleStudioView: React.FC<AnsibleStudioViewProps> = ({ user }) => {
           deploySessionIdRef.current = null;
           setStreamingSessionId(null);
           refreshJob(activeJobId);
+          const tsDone = new Date().toLocaleTimeString();
+          setOutputSessions(prev =>
+            prev.map(s =>
+              s.id === sessionId
+                ? { ...s, lines: [...s.lines, `[${tsDone}] Deploy stream finished.`] }
+                : s
+            )
+          );
           return;
         }
         const line = `[${data.stage}] ${data.details ?? data.line ?? ''}`;
@@ -526,6 +562,14 @@ const AnsibleStudioView: React.FC<AnsibleStudioViewProps> = ({ user }) => {
       }
       deploySessionIdRef.current = null;
       setStreamingSessionId(null);
+      const tsErr = new Date().toLocaleTimeString();
+      setOutputSessions(prev =>
+        prev.map(s =>
+          s.id === sessionId
+            ? { ...s, lines: [...s.lines, `[${tsErr}] Stream disconnected or completed unexpectedly.`] }
+            : s
+        )
+      );
     };
 
     try {
@@ -539,6 +583,14 @@ const AnsibleStudioView: React.FC<AnsibleStudioViewProps> = ({ user }) => {
       }
       deploySessionIdRef.current = null;
       setStreamingSessionId(null);
+      const tsFail = new Date().toLocaleTimeString();
+      setOutputSessions(prev =>
+        prev.map(s =>
+          s.id === sessionId
+            ? { ...s, lines: [...s.lines, `[${tsFail}] Deploy request failed before execution stream completed.`] }
+            : s
+        )
+      );
     }
   }, [activeJobId, refreshJob]);
 

@@ -197,8 +197,8 @@ def enrich_params_disambiguation_trunk_vlan_controls(
     parsed_intent: Optional[Dict[str, Any]],
 ) -> Optional[Dict[str, Any]]:
     """
-    Attach ``control`` + ``options`` to ``trunk_vlans`` wizard fields so the UI can render
-    multi-select instead of free-text (avoids typos; options come from intent + planned context).
+    Attach ``control`` + ``options`` to VLAN wizard fields so the UI can render typed pickers
+    instead of free-text (avoids typos; options come from intent + planned context).
     """
     if not params_disambiguation:
         return None
@@ -213,12 +213,14 @@ def enrich_params_disambiguation_trunk_vlan_controls(
         if not isinstance(f, dict):
             fields_out.append(f)
             continue
-        if f.get("field") != "trunk_vlans":
-            fields_out.append(f)
-            continue
         nf = dict(f)
-        nf["control"] = "multi_select_integers"
-        nf["options"] = list(opts)
+        field_name = str(nf.get("field") or "").strip().lower()
+        if field_name == "trunk_vlans":
+            nf["control"] = "multi_select_integers"
+            nf["options"] = list(opts)
+        elif field_name in ("access_vlan", "native_vlan"):
+            nf["control"] = "single_select_integers"
+            nf["options"] = list(opts)
         fields_out.append(nf)
     return {**params_disambiguation, "fields": fields_out}
 

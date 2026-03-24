@@ -3,7 +3,7 @@ import Editor from '@monaco-editor/react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import {
-  X, Save, Download, Play, ShieldCheck, RefreshCw, FlaskConical, Lock, FileText
+  X, Save, Download, Play, ShieldCheck, RefreshCw, FlaskConical, Lock, FileText, Check
 } from 'lucide-react';
 import type { AnsibleTab, AnsibleJob } from '../../typesLLM';
 
@@ -90,6 +90,8 @@ const PlaybookEditor: React.FC<PlaybookEditorProps> = ({
   const isApproved  = job?.status === 'approved';
   const isDeploying = job?.status === 'running';
   const isDone      = job?.status === 'success' || job?.status === 'failed';
+  const hasExecutedBefore = job?.status === 'success' || job?.status === 'failed';
+  const approveDone = isApproved || isDeploying || isDone;
   // Allow re-deploy when a job was already approved at least once.
   // Backend enforces "must be approved" for execution, but historically jobs may
   // move to success/failed status after the first run; we still want Deploy to stay available.
@@ -191,12 +193,13 @@ const PlaybookEditor: React.FC<PlaybookEditorProps> = ({
         </button>
 
         <button
-          className="btn btn-xs btn-warning gap-1"
+          className={`btn btn-xs gap-1 ${approveDone ? 'btn-success' : 'btn-warning'}`}
           onClick={onApprove}
-          disabled={!isAdmin || !hasPlaybook || isApproved || isDeploying || isDone}
+          disabled={!isAdmin || !hasPlaybook || approveDone}
           title={approveTitle}
         >
-          <ShieldCheck className="h-3 w-3" /> Approve
+          {approveDone ? <Check className="h-3 w-3" /> : <ShieldCheck className="h-3 w-3" />}
+          {approveDone ? 'Approved' : 'Approve'}
         </button>
 
         <button
@@ -206,7 +209,7 @@ const PlaybookEditor: React.FC<PlaybookEditorProps> = ({
           title={deployTitle}
         >
           <Play className="h-3 w-3" />
-          {isDeploying ? 'Deploying…' : 'Deploy'}
+          {isDeploying ? 'Deploying…' : hasExecutedBefore ? 'Re-Deploy' : 'Deploy'}
         </button>
 
         <div className="ml-auto flex items-center gap-2">
