@@ -74,7 +74,7 @@ Applying device selection and refreshing the preview…
 
 - [/] Make GigabitEthernet1/0/1 passive in OSPF on router 1  
 
-**Reminder**: Could make the UI question to ask for the process id, instead of adjusting afterwards on the preview modal. And the router id can be avoided in this prompt.
+**Reminder**: The router id can be avoided in this prompt.
 
 
 - [/] Enable OSPF redistribution of static routes on router 2  
