@@ -699,7 +699,7 @@ def test_reference_fill_huawei_interface_renders_successfully():
     assert "community.network.ce_config" in rendered
     assert "port link-type access" in rendered
     # Must keep runtime loop expressions intact (first-pass fill must not collapse these).
-    assert 'parents: "interface {{ item }}"' in rendered
+    assert "replace('GigabitEthernet', 'GE')" in rendered
     assert 'loop: "{{ interfaces_to_shutdown | default([]) }}"' in rendered
 
 
@@ -722,6 +722,69 @@ def test_reference_fill_huawei_trunk_includes_native_vlan_command():
     assert isinstance(rendered, str) and rendered
     assert "port trunk allow-pass vlan" in rendered
     assert "port trunk pvid vlan" in rendered
+
+
+def test_reference_fill_huawei_normalizes_long_interface_names_for_vrp():
+    intent = {
+        "target_hosts": ["Acc_Huawei_3"],
+        "params": {
+            "interfaces": [
+                {
+                    "name": "GigabitEthernet1/0/2",
+                    "mode": "access",
+                    "access_vlan": 124,
+                    "enabled": True,
+                }
+            ]
+        },
+    }
+    rendered = fill_playbook_from_reference("interface", ["huawei_vrp"], intent)
+    assert isinstance(rendered, str) and rendered
+    assert "replace('GigabitEthernet', 'GE')" in rendered
+    assert "replace('TenGigabitEthernet', '10GE')" in rendered
+    assert 'parents: "interface {{ (item.name | string | replace(' in rendered
+
+
+def test_reference_fill_multi_vendor_interface_keeps_huawei_name_normalization():
+    intent = {
+        "target_hosts": ["Acc_Cisco_1", "Acc_Huawei_3"],
+        "params": {
+            "interfaces": [
+                {
+                    "name": "GigabitEthernet1/0/2",
+                    "mode": "access",
+                    "access_vlan": 124,
+                    "enabled": True,
+                }
+            ]
+        },
+    }
+    rendered = fill_playbook_from_reference("interface", ["cisco_ios", "huawei_vrp"], intent)
+    assert isinstance(rendered, str) and rendered
+    assert "inventory_hostname in groups.get('vendor_huawei_vrp', [])" in rendered
+    assert "replace('GigabitEthernet', 'GE')" in rendered
+    assert 'parents: "interface {{ item.name }}"' in rendered  # Cisco path unchanged
+
+
+def test_reference_fill_huawei_vlan_keeps_interface_name_normalization():
+    intent = {
+        "target_hosts": ["Acc_Huawei_3"],
+        "params": {
+            "vlan_id": 124,
+            "vlan_name": "VLAN124",
+            "interfaces": [
+                {
+                    "name": "GigabitEthernet1/0/2",
+                    "mode": "access",
+                    "access_vlan": 124,
+                }
+            ],
+        },
+    }
+    rendered = fill_playbook_from_reference("vlan", ["huawei_vrp"], intent)
+    assert isinstance(rendered, str) and rendered
+    assert "inventory_hostname in groups.get('vendor_huawei_vrp', [])" in rendered
+    assert "parents: interface GE1/0/2" in rendered
 
 
 def test_reference_fill_juniper_interface_renders_successfully():

@@ -77,7 +77,7 @@
 {% raw %}
     - name: Configure interface (Huawei VRP) [all interfaces]
       community.network.ce_config:
-        parents: "interface {{ item.name }}"
+        parents: "interface {{ (item.name | string | replace('TenGigabitEthernet', '10GE') | replace('GigabitEthernet', 'GE')) }}"
         lines: "{{ [
           (('description ' ~ item.description) if (item.description is defined and item.description) else none),
           ('shutdown' if (item.enabled is defined and item.enabled == false) else 'undo shutdown'),
@@ -103,7 +103,7 @@
 {% if item.ip is defined and item.ip and item.ip.address is defined %}{% set _ = ns.lines.append('ip address ' + (item.ip.address | string) + ' ' + (item.ip.mask | default(item.ip.netmask) | default('255.255.255.0') | string)) %}{% endif %}
     - name: Configure interface {{ item.name }} (Huawei VRP)
       community.network.ce_config:
-        parents: "interface {{ item.name }}"
+        parents: "interface {{ (item.name | string | replace('TenGigabitEthernet', '10GE') | replace('GigabitEthernet', 'GE')) }}"
         lines: {{ ns.lines | tojson }}
       when:
         - inventory_hostname in groups.get('vendor_huawei_vrp', [])
@@ -115,7 +115,7 @@
       community.network.ce_config:
         lines:
           - "{{ 'shutdown' if (interfaces_admin_enabled | default(false)) == false else 'undo shutdown' }}"
-        parents: "interface {{ item }}"
+        parents: "interface {{ (item | string | replace('TenGigabitEthernet', '10GE') | replace('GigabitEthernet', 'GE')) }}"
         state: merged
       loop: "{{ interfaces_to_shutdown | default([]) }}"
       loop_control:

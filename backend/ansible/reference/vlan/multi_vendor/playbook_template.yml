@@ -74,7 +74,7 @@
         lines:
           - port link-type access
           - port default vlan {{ vlan_id }}
-        parents: "interface {{ '{{ item }}' }}"
+        parents: "interface {{ '{{ (item | string | replace(''TenGigabitEthernet'', ''10GE'') | replace(''GigabitEthernet'', ''GE'')) }}' }}"
       loop: "{{ '{{ nettopo_interfaces | default([]) | rejectattr(''ip_address'', ''equalto'', (hostvars[inventory_hostname].ansible_host | default(''''))) | map(attribute=''name'') | map(''trim'') | reject(''equalto'', '''') | reject(''match'', ''(?i).*(management|mgmt|meth|vty|console).*'') | list }}' }}"
       loop_control:
         label: "{{ '{{ item }}' }}"
@@ -96,7 +96,7 @@
 {% if interfaces_binding_trunk_native_vlan is not none %}
           - port trunk pvid vlan {{ interfaces_binding_trunk_native_vlan }}
 {% endif %}
-        parents: "interface {{ '{{ item }}' }}"
+        parents: "interface {{ '{{ (item | string | replace(''TenGigabitEthernet'', ''10GE'') | replace(''GigabitEthernet'', ''GE'')) }}' }}"
       loop: "{{ '{{ nettopo_interfaces | default([]) | rejectattr(''ip_address'', ''equalto'', (hostvars[inventory_hostname].ansible_host | default(''''))) | map(attribute=''name'') | map(''trim'') | reject(''equalto'', '''') | reject(''match'', ''(?i).*(management|mgmt|meth|vty|console).*'') | list }}' }}"
       loop_control:
         label: "{{ '{{ item }}' }}"
@@ -111,7 +111,7 @@
         lines:
           - port link-type access
           - port default vlan {{ iface.access.vlan }}
-        parents: interface {{ iface.name }}
+        parents: interface {{ iface.name | replace('TenGigabitEthernet', '10GE') | replace('GigabitEthernet', 'GE') }}
       when: inventory_hostname in groups.get('vendor_huawei_vrp', [])
 {% endif %}
 {% endfor %}
@@ -125,7 +125,7 @@
 {% if iface.trunk.native_vlan is defined and iface.trunk.native_vlan is not none %}
           - port trunk pvid vlan {{ iface.trunk.native_vlan }}
 {% endif %}
-        parents: interface {{ iface.name }}
+        parents: interface {{ iface.name | replace('TenGigabitEthernet', '10GE') | replace('GigabitEthernet', 'GE') }}
       when: inventory_hostname in groups.get('vendor_huawei_vrp', [])
 {% endif %}
 {% endfor %}
