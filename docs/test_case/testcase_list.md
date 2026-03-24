@@ -64,23 +64,37 @@ Applying device selection and refreshing the preview…
 
 ## 3️⃣ OSPF
 
-- [ ] Configure OSPF process 1 on router 2  
+- [/] Configure OSPF process 1 on router 2 Configure OSPF process 1 on router 2  
 
 
-- [ ] Add network 192.168.1.0/24 to OSPF area 0 on router 2  
+- [/] Add network 192.168.1.0/24 to OSPF area 0 on router 2  
 
 
-- [ ] Set router ID 1.1.1.1 and advertise 10.0.0.0/24 in area 0 on SW1  
+- [/] Set router ID 1.1.1.1 and advertise 10.0.0.0/24 in area 0 on SW1  
 
-- [ ] Make GigabitEthernet1/0/1 passive in OSPF on router 1  
+- [/] Make GigabitEthernet1/0/1 passive in OSPF on router 1  
 
-
-- [ ] Enable OSPF redistribution of static routes on router 2  
-
-
-- [ ] Configure OSPF on devices *(generic / ambiguous test)*  
+**Reminder**: Could make the UI question to ask for the process id, instead of adjusting afterwards on the preview modal. And the router id can be avoided in this prompt.
 
 
+- [/] Enable OSPF redistribution of static routes on router 2  
+
+
+- [/] Configure OSPF on devices *(generic / ambiguous test)*  
+
+
+
+**Reminder**: Collect OSPF missing fields in one pass (ordered, consecutive)
+
+Updated configure_ospf_conditional_disambiguation_fields() in backend/ansible/intent_validation.py
+It now returns all missing fields at once in order:
+network_address
+prefix_length
+area
+So user can fill them in one flow, no extra backend re-ask cycle.
+
+
+Do this for other operations, to ensure a one-go question asking.
 ---
 
 ## 4️⃣ Static Route

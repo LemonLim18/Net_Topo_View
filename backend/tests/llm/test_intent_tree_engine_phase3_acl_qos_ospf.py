@@ -58,6 +58,40 @@ class TestIntentTreeEnginePhase3AclQosOspf(unittest.TestCase):
         field_names = {f.get("field") for f in fields if isinstance(f, dict)}
         self.assertTrue({"process_id", "networks"}.issubset(field_names))
 
+    def test_ospf_passive_interface_does_not_require_networks(self):
+        parsed_intent = {
+            "action": "configure_ospf_passive_interface",
+            "feature": "ospf",
+            "parameters": {"process_id": 1, "passive_interfaces": ["SW1:Ethernet0/1"]},
+            "device_deduction": {},
+        }
+        res = evaluate_intent_tree(
+            intent_description="Make Ethernet0/1 passive in OSPF on SW1",
+            parsed_intent=parsed_intent,
+            resolved_hosts=["SW1"],
+            db_manager=None,
+        )
+        fields = (res.params_disambiguation or {}).get("fields") or []
+        field_names = {f.get("field") for f in fields if isinstance(f, dict)}
+        self.assertNotIn("networks", field_names)
+
+    def test_ospf_passive_interface_requires_process_id_when_missing(self):
+        parsed_intent = {
+            "action": "configure_ospf_passive_interface",
+            "feature": "ospf",
+            "parameters": {"passive_interfaces": ["SW1:Ethernet0/1"]},
+            "device_deduction": {},
+        }
+        res = evaluate_intent_tree(
+            intent_description="Make Ethernet0/1 passive in OSPF on SW1",
+            parsed_intent=parsed_intent,
+            resolved_hosts=["SW1"],
+            db_manager=None,
+        )
+        fields = (res.params_disambiguation or {}).get("fields") or []
+        field_names = {f.get("field") for f in fields if isinstance(f, dict)}
+        self.assertIn("process_id", field_names)
+
 
 if __name__ == "__main__":
     unittest.main()

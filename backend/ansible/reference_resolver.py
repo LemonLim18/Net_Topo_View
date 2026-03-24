@@ -16,6 +16,7 @@ Validated against reference/vlan/intent_schema.json when feature is vlan.
 import json
 import logging
 import re
+import ipaddress
 import yaml
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -130,7 +131,7 @@ def _target_hosts_from_intent(intent: Dict[str, Any]) -> List[str]:
 _VLAN_INTENT_SCHEMA_PATH = _REFERENCE_DIR / "vlan" / "intent_schema.json"
 
 # Known features that have reference playbooks (subdirs under reference/)
-_KNOWN_FEATURES = frozenset({"vlan", "interface"})
+_KNOWN_FEATURES = frozenset({"vlan", "interface", "ospf"})
 
 # Vendors that have single-vendor playbooks under reference/{feature}/{vendor}/
 _KNOWN_VENDORS = frozenset({"cisco_ios", "huawei_vrp", "juniper_junos"})
@@ -637,7 +638,7 @@ def resolve_playbook_template_path(
             return single_path
     # For vlan/interface with no vendor info (e.g. planning_context empty), default to multi_vendor
     # so we always get the correct reference format instead of LLM/bundle wrong format.
-    if feature in {"vlan", "interface"}:
+    if feature in {"vlan", "interface", "ospf"}:
         multi_path = base / "multi_vendor" / _MULTI_VENDOR_TEMPLATE
         if multi_path.exists():
             return multi_path
@@ -772,6 +773,107 @@ def get_template_vars(
             "interfaces_shutdown_use_nettopo": use_nettopo_shutdown,
             "interfaces_config_use_nettopo": use_nettopo_config,
             "interfaces_admin_enabled": interfaces_admin_enabled,
+        }
+
+    if feature == "ospf":
+        params_x = dict(intent.get("params") or {})
+        target_hosts = list(
+            intent.get("target_hosts")
+            or params_x.get("target_hosts")
+            or params_x.get("target_devices")
+            or []
+        )
+        pid_raw = params_x.get("process_id", params_x.get("ospf_process_id"))
+        process_id: Any = None
+        try:
+            if pid_raw is not None and str(pid_raw).strip() != "":
+                process_id = int(pid_raw)
+        except Exception:
+            process_id = None
+
+        router_id = str(params_x.get("router_id") or "").strip()
+        area_default_raw = params_x.get("area")
+        try:
+            area_default = int(area_default_raw) if area_default_raw is not None and str(area_default_raw).strip() != "" else 0
+        except Exception:
+            area_default = 0
+
+        def _wildcard_from_prefix(prefix: int) -> str:
+            mask = ipaddress.IPv4Network(f"0.0.0.0/{prefix}").netmask
+            octets = [int(p) for p in str(mask).split(".")]
+            return ".".join(str(255 - x) for x in octets)
+        def _prefix_from_wildcard(wildcard: str) -> Optional[int]:
+            try:
+                wc = ipaddress.IPv4Address(str(wildcard).strip())
+                mask_int = int(wc) ^ 0xFFFFFFFF
+                net = ipaddress.IPv4Network((0, mask_int), strict=False)
+                return int(net.prefixlen)
+            except Exception:
+                return None
+
+        networks: List[Dict[str, Any]] = []
+        raw_networks = params_x.get("networks") or params_x.get("ospf_networks") or []
+        if isinstance(raw_networks, list):
+            for n in raw_networks:
+                if isinstance(n, dict):
+                    net = str(n.get("network") or "").strip()
+                    wc = str(n.get("wildcard") or "").strip()
+                    area_raw = n.get("area")
+                    try:
+                        area_i = int(area_raw) if area_raw is not None and str(area_raw).strip() != "" else area_default
+                    except Exception:
+                        area_i = area_default
+                    if net and wc:
+                        pfx = _prefix_from_wildcard(wc)
+                        row = {"network": net, "wildcard": wc, "area": area_i}
+                        if pfx is not None:
+                            row["prefix_length"] = pfx
+                        networks.append(row)
+                    continue
+                s = str(n or "").strip()
+                if not s:
+                    continue
+                m = re.search(r"\b(\d{1,3}(?:\.\d{1,3}){3})/(\d{1,2})\b", s)
+                if not m:
+                    continue
+                net = m.group(1)
+                pfx = int(m.group(2))
+                if pfx < 0 or pfx > 32:
+                    continue
+                am = re.search(r"\barea\s+(\d+)\b", s, re.I)
+                area_i = int(am.group(1)) if am else area_default
+                networks.append({"network": net, "wildcard": _wildcard_from_prefix(pfx), "area": area_i, "prefix_length": pfx})
+        elif isinstance(raw_networks, str) and raw_networks.strip():
+            m = re.search(r"\b(\d{1,3}(?:\.\d{1,3}){3})/(\d{1,2})\b", raw_networks.strip())
+            if m:
+                net = m.group(1)
+                pfx = int(m.group(2))
+                if 0 <= pfx <= 32:
+                    networks.append({"network": net, "wildcard": _wildcard_from_prefix(pfx), "area": area_default, "prefix_length": pfx})
+
+        redistribution_raw = params_x.get("redistribution")
+        if redistribution_raw in (None, "", []):
+            redistribution_raw = params_x.get("redistribute")
+        redistribution: List[str] = []
+        if isinstance(redistribution_raw, list):
+            for item in redistribution_raw:
+                s = str(item).strip().lower()
+                if not s:
+                    continue
+                if s in ("static", "connected", "bgp", "rip", "isis", "ospf"):
+                    redistribution.append(s)
+        elif redistribution_raw is not None and str(redistribution_raw).strip():
+            for item in re.split(r"[\s,;]+", str(redistribution_raw).strip().lower()):
+                if item in ("static", "connected", "bgp", "rip", "isis", "ospf"):
+                    redistribution.append(item)
+
+        return {
+            "target_hosts": ",".join(str(h).strip() for h in target_hosts if str(h).strip()) or "all",
+            "process_id": process_id,
+            "router_id": router_id,
+            "networks": networks,
+            "passive_interfaces": params_x.get("passive_interfaces") or [],
+            "redistribution": sorted(set(redistribution)),
         }
 
     normalized = _normalize_intent_to_schema_shape(intent)

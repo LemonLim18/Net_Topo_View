@@ -1,0 +1,20 @@
+---
+- name: Configure OSPF (Huawei VRP)
+  hosts: "Acc_Huawei_3"
+  gather_facts: no
+  ignore_unreachable: true
+  tasks:
+    - name: Configure OSPF process and advertised networks (Huawei VRP)
+      community.network.ce_config:
+        lines:
+          - "ospf 1"
+
+          - " router-id 192.168.1.40"
+
+
+          - " area 0"
+          - "  network 192.168.1.0 0.0.0.255"
+
+          - "return"
+      when:
+        - inventory_hostname in groups.get('vendor_huawei_vrp', [])

@@ -234,6 +234,11 @@ def test_should_validate_shutdown_and_vlan():
     assert should_validate_interface_names_against_inventory(
         "create_vlan", "vlan", {"interfaces": [{"name": "Gi0/1"}]}
     )
+    assert should_validate_interface_names_against_inventory(
+        "configure_ospf_passive_interface",
+        "ospf",
+        {"passive_interfaces": ["GigabitEthernet1/0/1"]},
+    )
     assert not should_validate_interface_names_against_inventory(
         "shutdown_interface", "interface", {}
     )

@@ -54,7 +54,14 @@ from ansible.intent_validation import (
     configure_interface_conditional_disambiguation_fields,
     configure_interface_phased_wizard_fields,
     correct_interface_l3_params_from_natural_language,
+    correct_ospf_params_from_natural_language,
     correct_vlan_interface_binding_from_trunk_prompt,
+    ospf_passive_interfaces_non_empty,
+    ospf_redistribution_non_empty,
+    client_supplied_ospf_advertisement_params,
+    client_supplied_ospf_router_id_param,
+    strip_llm_ospf_advertisement_guesses_if_not_explicit_in_prompt,
+    strip_llm_ospf_process_id_if_not_explicit_in_prompt,
     extract_create_vlan_params_from_natural_language,
     get_editable_fields_for_schema,
     get_schema_for_parsed_intent,
@@ -97,6 +104,36 @@ from ansible.planning_context import (
 from config_engine.safety import validate_playbook_yaml
 
 logger = logging.getLogger("ansible.api")
+
+
+def _client_supplied_ospf_process_id(params: Optional[Dict[str, Any]]) -> bool:
+    if not isinstance(params, dict):
+        return False
+    for _k in ("process_id", "ospf_process_id"):
+        _v = params.get(_k)
+        if _v is not None and str(_v).strip() != "":
+            return True
+    return False
+
+
+def _apply_ospf_nl_strips(
+    intent_description: str,
+    parsed_intent: Dict[str, Any],
+    request_params: Optional[Dict[str, Any]],
+) -> None:
+    """Drop LLM guesses for OSPF when the user prompt did not state them (wizard must ask)."""
+    rp = request_params if isinstance(request_params, dict) else None
+    strip_llm_ospf_process_id_if_not_explicit_in_prompt(
+        intent_description or "",
+        parsed_intent,
+        client_supplied_process_id=_client_supplied_ospf_process_id(rp),
+    )
+    strip_llm_ospf_advertisement_guesses_if_not_explicit_in_prompt(
+        intent_description or "",
+        parsed_intent,
+        client_supplied_advertisement=client_supplied_ospf_advertisement_params(rp),
+        client_supplied_router_id=client_supplied_ospf_router_id_param(rp),
+    )
 
 
 def _default_manifest_llm_provider() -> str:
@@ -168,6 +205,26 @@ def _coerce_params_for_validation(params: Dict[str, Any]) -> None:
         params["target_hosts"] = [params["target_hosts"]]
     if params.get("target_devices") is not None and isinstance(params["target_devices"], str):
         params["target_devices"] = [params["target_devices"]]
+
+    def _ospf_wildcard_from_prefix(prefix: int) -> str:
+        netmask = ipaddress.IPv4Network(f"0.0.0.0/{prefix}").netmask
+        octets = [int(part) for part in str(netmask).split(".")]
+        return ".".join(str(255 - o) for o in octets)
+    def _looks_like_netmask(mask: str) -> bool:
+        try:
+            ip = ipaddress.IPv4Address(str(mask).strip())
+            # Contiguous mask check: invert and ensure contiguous host bits.
+            inv = int(ip) ^ 0xFFFFFFFF
+            return (inv & (inv + 1)) == 0
+        except Exception:
+            return False
+    def _inverse_mask(mask: str) -> Optional[str]:
+        try:
+            ip = ipaddress.IPv4Address(str(mask).strip())
+            inv = int(ip) ^ 0xFFFFFFFF
+            return str(ipaddress.IPv4Address(inv))
+        except Exception:
+            return None
     pid = params.get("process_id")
     if pid is not None and str(pid).strip() != "":
         try:
@@ -180,7 +237,7 @@ def _coerce_params_for_validation(params: Dict[str, Any]) -> None:
             params["admin_distance"] = int(ad)
         except (TypeError, ValueError):
             pass
-    for key in ("networks", "rules", "classification_rules"):
+    for key in ("networks", "rules", "classification_rules", "passive_interfaces", "redistribution", "redistribute"):
         val = params.get(key)
         if isinstance(val, str) and val.strip():
             stripped = val.strip()
@@ -196,12 +253,70 @@ def _coerce_params_for_validation(params: Dict[str, Any]) -> None:
                 except json.JSONDecodeError:
                     if key == "networks":
                         params[key] = [x.strip() for x in re.split(r"[\s,]+", stripped) if x.strip()]
+                    elif key == "passive_interfaces":
+                        params[key] = [x.strip() for x in re.split(r"[,;]+", stripped) if x.strip()]
                     else:
                         params[key] = [stripped]
             elif key == "networks":
                 params[key] = [x.strip() for x in re.split(r"[\s,]+", stripped) if x.strip()]
+            elif key == "passive_interfaces":
+                params[key] = [x.strip() for x in re.split(r"[,;]+", stripped) if x.strip()]
+            elif key in ("redistribution", "redistribute"):
+                params[key] = [x.strip() for x in re.split(r"[\s,;]+", stripped) if x.strip()]
             else:
                 params[key] = [stripped]
+
+    # OSPF robustness: accept/warn-friendly netmask forms and normalize to wildcard mask.
+    if isinstance(params.get("networks"), list):
+        norm_networks = []
+        for n in params.get("networks") or []:
+            if not isinstance(n, dict):
+                norm_networks.append(n)
+                continue
+            row = dict(n)
+            wc = str(row.get("wildcard") or "").strip()
+            sm = str(row.get("subnet_mask") or "").strip()
+            # Prefer explicit wildcard; if it looks like a netmask, convert it.
+            if wc and _looks_like_netmask(wc):
+                inv = _inverse_mask(wc)
+                if inv:
+                    row["wildcard"] = inv
+            elif not wc and sm and _looks_like_netmask(sm):
+                inv = _inverse_mask(sm)
+                if inv:
+                    row["wildcard"] = inv
+            norm_networks.append(row)
+        params["networks"] = norm_networks
+
+    # OSPF stepwise wizard: network_address + prefix_length + area are authoritative.
+    # When all three are present, always rebuild ``networks[]`` so a stale LLM list from a
+    # fresh re-parse cannot override chat / Studio answers (merged params keep both keys).
+    net_addr = str(params.get("network_address") or "").strip()
+    prefix_raw = params.get("prefix_length")
+    area_raw = params.get("area")
+    _ospf_atomic_complete = (
+        bool(net_addr)
+        and prefix_raw is not None
+        and str(prefix_raw).strip() != ""
+        and area_raw is not None
+        and str(area_raw).strip() != ""
+    )
+    if _ospf_atomic_complete:
+        try:
+            ipaddress.IPv4Address(net_addr)
+            pfx = int(str(prefix_raw).replace("/", "").strip())
+            area = int(str(area_raw).strip())
+            if 0 <= pfx <= 32 and area >= 0:
+                params["prefix_length"] = pfx
+                params["area"] = area
+                params["networks"] = [{
+                    "network": net_addr,
+                    "wildcard": _ospf_wildcard_from_prefix(pfx),
+                    "area": area,
+                }]
+        except Exception:
+            # Keep existing networks / values; validation will report if malformed.
+            pass
     if isinstance(params.get("acl_type"), str):
         params["acl_type"] = params["acl_type"].strip().lower()
     if isinstance(params.get("qos_type"), str):
@@ -377,6 +492,14 @@ _NON_HOSTNAME_WORDS = frozenset({
     "edge",
     "leaf",
     "spine",
+    # OSPF terms frequently present in prompts but not hostnames
+    "advertise",
+    "advertised",
+    "ospf",
+    "area",
+    "process",
+    "routerid",
+    "router-id",
 })
 
 
@@ -1732,6 +1855,8 @@ def _resolve_backend_intent_request(req, user: dict) -> tuple["PlanAnsibleReques
         req.intent_description or "",
     )
     correct_interface_l3_params_from_natural_language(req.intent_description or "", _parsed_guard)
+    correct_ospf_params_from_natural_language(req.intent_description or "", _parsed_guard)
+    _apply_ospf_nl_strips(req.intent_description or "", _parsed_guard, req.params)
     parsed = ParsedIntent.model_validate(_parsed_guard)
     if _trunk_viol:
         raise HTTPException(
@@ -1761,8 +1886,25 @@ def _resolve_backend_intent_request(req, user: dict) -> tuple["PlanAnsibleReques
         )
 
     plan_params_merged = dict(parsed.parameters or {})
+    # UI/chat answers must be authoritative for create-and-plan (same contract as preview):
+    # values confirmed in disambiguation should survive parser defaults/placeholders.
+    if isinstance(req.params, dict):
+        for k, v in req.params.items():
+            if k in ("secondary_intents", "_secondary_intents"):
+                continue
+            if v is None:
+                continue
+            if isinstance(v, str) and not str(v).strip():
+                continue
+            if isinstance(v, list) and len(v) == 0:
+                continue
+            if isinstance(v, dict) and len(v) == 0:
+                continue
+            plan_params_merged[k] = v
     if str(parsed.feature or "").strip().lower() == "vlan":
         merge_extracted_vlan_params_into_flat_params(plan_params_merged, req.intent_description or "")
+    apply_chat_interface_wizard_to_parameters(plan_params_merged)
+    _coerce_params_for_validation(plan_params_merged)
     plan_req = PlanAnsibleRequest(
         intent_description=req.intent_description,
         target_hosts=parsed.resolved_devices,
@@ -1781,8 +1923,23 @@ def _resolve_backend_intent_request(req, user: dict) -> tuple["PlanAnsibleReques
     )
     parsed_dict = parsed.model_dump()
     params_dict = dict(parsed_dict.get("parameters") or {})
+    if isinstance(req.params, dict):
+        for k, v in req.params.items():
+            if k in ("secondary_intents", "_secondary_intents"):
+                continue
+            if v is None:
+                continue
+            if isinstance(v, str) and not str(v).strip():
+                continue
+            if isinstance(v, list) and len(v) == 0:
+                continue
+            if isinstance(v, dict) and len(v) == 0:
+                continue
+            params_dict[k] = v
     if str(parsed_dict.get("feature") or "").strip().lower() == "vlan":
         merge_extracted_vlan_params_into_flat_params(params_dict, req.intent_description or "")
+    apply_chat_interface_wizard_to_parameters(params_dict)
+    _coerce_params_for_validation(params_dict)
     raw_secondary = params_dict.pop("_secondary_intents", None)
     parsed_dict["secondary_intents"] = _normalize_secondary_intents(raw_secondary)
     parsed_dict["parameters"] = params_dict
@@ -2198,6 +2355,7 @@ async def plan_ansible(
         resolved_hosts = _rh_ok
     effective_vendor = normalize_vendor(req.vendor or infer_vendor_hint(resolved_hosts, _db))
     plan_params = dict(req.params or {})
+    _coerce_params_for_validation(plan_params)
     if str(req.feature or "").strip().lower() == "vlan":
         merge_extracted_vlan_params_into_flat_params(plan_params, req.intent_description or "")
         _vlan_user_if = bool(plan_params.get("interfaces") or plan_params.get("interfaces_config"))
@@ -2278,6 +2436,10 @@ async def plan_ansible(
         "planning_context": planning_context,
         "device_inventory_context": planning_context_to_prompt_text(planning_context),
     }
+    # Keep schema completeness checks aligned with explicit UI-selected targets.
+    # Some action schemas require target_devices while APIs commonly carry target_hosts.
+    intent["params"]["target_hosts"] = list(resolved_hosts or [])
+    intent["params"]["target_devices"] = list(resolved_hosts or [])
 
     # Tree engine expects a parsed_intent-like structure.
     # In plan-ansible we don't have the full LLM parse yet, so we construct
@@ -2289,6 +2451,35 @@ async def plan_ansible(
         "parameters": dict(plan_params),
         "device_deduction": {},
     }
+    # Keep plan-time tree checks aligned with operation-specific OSPF intent.
+    # Without this, passive-interface prompts can be evaluated as generic
+    # configure_ospf and incorrectly require "networks".
+    if str(req.feature or "").strip().lower().replace("-", "_") == "ospf":
+        _p_tree = dict(parsed_intent.get("parameters") or {})
+        _canonical = str(
+            _p_tree.get("_canonical_operation")
+            or _p_tree.get("canonical_operation")
+            or ""
+        ).strip().lower().replace("-", "_")
+        _passive = _p_tree.get("passive_interfaces")
+        _has_passive = ospf_passive_interfaces_non_empty(_passive)
+        _red = _p_tree.get("redistribution") or _p_tree.get("redistribute")
+        _has_redistribution = ospf_redistribution_non_empty(_red)
+        _nets = _p_tree.get("networks")
+        _has_networks = isinstance(_nets, list) and len(_nets) > 0
+        if _canonical in ("configure_ospf_redistribute", "configure_ospf_redistribution") or (
+            _has_redistribution and not _has_networks and not _has_passive
+        ):
+            parsed_intent["action"] = "configure_ospf_redistribute"
+        elif _canonical in ("configure_passive_interface", "configure_ospf_passive_interface") or (
+            _has_passive and not _has_networks
+        ):
+            parsed_intent["action"] = "configure_ospf_passive_interface"
+        else:
+            parsed_intent["action"] = "configure_ospf"
+        _apply_ospf_nl_strips(req.intent_description or "", parsed_intent, plan_params)
+    parsed_intent["parameters"]["target_hosts"] = list(resolved_hosts or [])
+    parsed_intent["parameters"]["target_devices"] = list(resolved_hosts or [])
 
     # Tree engine (Phase 1): root-first enforcement before schema validation.
     # If device scope is unclear, force missing target_devices so we ask/abort
@@ -2347,6 +2538,11 @@ async def plan_ansible(
             if isinstance(f, dict) and f.get("field") and f.get("question")
         ]
         if missing_fields and questions:
+            logger.warning(
+                "plan_ansible: tree-level missing required params: missing=%s questions=%s",
+                missing_fields,
+                questions,
+            )
             raise HTTPException(
                 422,
                 detail={
@@ -2416,8 +2612,19 @@ async def plan_ansible(
     # the frontend/LLM set req.action to configure_interface.
     action_or_feature = inferred_interface_action or getattr(req, "action", None) or req.feature
     schema = get_schema_for_parsed_intent(
-        {"feature": req.feature, "action": inferred_interface_action or getattr(req, "action", None)}
+        {
+            "feature": req.feature,
+            "action": inferred_interface_action or getattr(req, "action", None),
+            # Required for operation-specific schema routing (e.g. OSPF passive-interface).
+            "parameters": dict(intent.get("params") or {}),
+        }
     )
+    if schema:
+        # Keep type validation aligned with the selected operation schema.
+        # Example: feature="ospf" may map to configure_ospf_passive_interface.
+        action_or_feature = (schema.get("action") or action_or_feature or "").strip() or action_or_feature
+
+    schema_action_key = (schema.get("action") or "").strip().lower().replace("-", "_") if schema else ""
 
     # "All interfaces" shutdown: type schema for shutdown_interface requires a non-empty
     # interfaces_to_shutdown array during validation. We provide a minimal placeholder
@@ -2529,6 +2736,11 @@ async def plan_ansible(
                 strict_user_input=strict_user_input,
             )
             if ask_user_fields:
+                logger.warning(
+                    "plan_ansible: schema-level missing required params: missing=%s questions=%s",
+                    [f.get("field") for f in ask_user_fields],
+                    [{"field": f.get("field"), "question": f.get("question")} for f in ask_user_fields],
+                )
                 raise HTTPException(
                     422,
                     detail={
@@ -4470,9 +4682,18 @@ def _req_params_has_explicit_interfaces(req_params: Optional[Dict[str, Any]]) ->
         return False
     i = req_params.get("interfaces")
     ic = req_params.get("interfaces_config")
+    pi = req_params.get("passive_interfaces")
+    ato = req_params.get("apply_to")
+    iap = req_params.get("interface_apply")
     if isinstance(i, list) and len(i) > 0:
         return True
     if isinstance(ic, list) and len(ic) > 0:
+        return True
+    if isinstance(pi, list) and len(pi) > 0:
+        return True
+    if isinstance(ato, list) and len(ato) > 0:
+        return True
+    if isinstance(iap, list) and len(iap) > 0:
         return True
     for key in ("secondary_intents", "_secondary_intents"):
         secs = req_params.get(key)
@@ -4486,9 +4707,18 @@ def _req_params_has_explicit_interfaces(req_params: Optional[Dict[str, Any]]) ->
                 continue
             si = p.get("interfaces")
             sic = p.get("interfaces_config")
+            spi = p.get("passive_interfaces")
+            sap = p.get("apply_to")
+            sia = p.get("interface_apply")
             if isinstance(si, list) and len(si) > 0:
                 return True
             if isinstance(sic, list) and len(sic) > 0:
+                return True
+            if isinstance(spi, list) and len(spi) > 0:
+                return True
+            if isinstance(sap, list) and len(sap) > 0:
+                return True
+            if isinstance(sia, list) and len(sia) > 0:
                 return True
     return False
 
@@ -4967,6 +5197,14 @@ def _preview_parse_and_rag(
             correct_interface_l3_params_from_natural_language(intent_description, parsed_dict)
         except Exception as _l3_exc:
             logger.debug("interface L3 prompt coercion (preview parse) failed: %s", _l3_exc)
+        try:
+            correct_ospf_params_from_natural_language(intent_description, parsed_dict)
+        except Exception as _ospf_exc:
+            logger.debug("ospf prompt coercion (preview parse) failed: %s", _ospf_exc)
+        try:
+            _apply_ospf_nl_strips(intent_description, parsed_dict, request_params)
+        except Exception as _ospf_strip_exc:
+            logger.debug("ospf NL strip (preview parse) failed: %s", _ospf_strip_exc)
         if parsed.intent_type in (IntentType.CONFIGURE, IntentType.DEPLOY):
             # Policy restrictions are intentionally disabled for preview/chat clarification flow.
             # Keep execution permissive so interface/device option pickers are never hidden by policy gating.
@@ -5420,6 +5658,13 @@ async def preview_intent(
     # Deterministic VLAN id/name from natural language (LLM often drops them on long device phrases).
     merge_extracted_vlan_params_into_parsed_intent(parsed_intent, req.intent_description or "")
 
+    # Before tree + schema completeness, drop LLM-invented OSPF fields the user did not state
+    # (so disambiguation is built against real gaps, not hallucinated networks/router-id).
+    try:
+        _apply_ospf_nl_strips(req.intent_description or "", parsed_intent, req.params)
+    except Exception as _ospf_pre_tree_exc:
+        logger.debug("ospf NL strip (preview pre-tree) failed: %s", _ospf_pre_tree_exc)
+
     # Tree engine (Phase 1): root-first enforcement before schema validation.
     tree_res = None
     devices_disambiguation: Optional[Dict[str, Any]] = None
@@ -5683,6 +5928,12 @@ async def preview_intent(
             shared_fields = _cond_hook(dict(parsed_intent.get("parameters") or {}))
             if shared_fields:
                 fields_list: List[Dict[str, Any]] = list((params_disambiguation or {}).get("fields") or [])
+                if schema_action_key == "configure_ospf":
+                    # Replace the generic one-shot "networks" question with atomic fields.
+                    fields_list = [
+                        f for f in fields_list
+                        if str((f or {}).get("field") or "").strip().lower() != "networks"
+                    ]
                 seen_fields = {f.get("field") for f in fields_list if isinstance(f, dict)}
                 for e in shared_fields:
                     if e["field"] not in seen_fields:
@@ -6053,6 +6304,7 @@ async def preview_intent(
                     "configure_acl",
                     "configure_qos",
                     "configure_ospf",
+                    "configure_ospf_passive_interface",
                     "configure_static_route",
                 )
                 else "vlan"
@@ -6244,6 +6496,7 @@ async def preview_intent(
                     "configure_acl",
                     "configure_qos",
                     "configure_ospf",
+                    "configure_ospf_passive_interface",
                     "configure_static_route",
                 )
             )
@@ -6515,6 +6768,14 @@ async def preview_intent(
         correct_interface_l3_params_from_natural_language(req.intent_description or "", parsed_intent)
     except Exception as _l3_preview_exc:
         logger.debug("interface L3 prompt coercion (preview) failed: %s", _l3_preview_exc)
+    try:
+        correct_ospf_params_from_natural_language(req.intent_description or "", parsed_intent)
+    except Exception as _ospf_preview_exc:
+        logger.debug("ospf prompt coercion (preview) failed: %s", _ospf_preview_exc)
+    try:
+        _apply_ospf_nl_strips(req.intent_description or "", parsed_intent, req.params)
+    except Exception as _ospf_strip_preview_exc:
+        logger.debug("ospf NL strip (preview) failed: %s", _ospf_strip_preview_exc)
     # Chat wizard can leave stale rows (e.g. subnet_mask) built before params were coerced.
     try:
         _p_prune = dict(parsed_intent.get("parameters") or {})

@@ -9,6 +9,7 @@ class TestSpuriousDeviceHints(unittest.TestCase):
 
         self.assertTrue(is_spurious_device_hint_token("trunk"))
         self.assertTrue(is_spurious_device_hint_token("port"))
+        self.assertTrue(is_spurious_device_hint_token("advertise"))
         self.assertFalse(is_spurious_device_hint_token("SW1"))
 
     def test_interface_tokens_not_hostnames(self):

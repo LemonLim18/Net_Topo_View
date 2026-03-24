@@ -27,13 +27,34 @@ from ansible.intent_validation import (
     CHAT_INTERFACE_L2_MODE_FIELD,
     apply_chat_interface_wizard_to_parameters,
     configure_interface_conditional_disambiguation_fields,
+    configure_ospf_conditional_disambiguation_fields,
+    correct_ospf_params_from_natural_language,
     configure_interface_phased_wizard_fields,
     configure_interface_prompt_is_layer_ambiguous,
     correct_interface_l3_params_from_natural_language,
 )
 from ansible.api import _coerce_params_for_validation
+
+
+def test_coerce_params_ospf_atomic_fields_override_stale_networks():
+    p = {
+        "networks": [{"network": "192.168.1.0", "wildcard": "0.0.0.255", "area": 0}],
+        "network_address": "192.168.9.0",
+        "prefix_length": 29,
+        "area": 9,
+    }
+    _coerce_params_for_validation(p)
+    assert len(p["networks"]) == 1
+    assert p["networks"][0]["network"] == "192.168.9.0"
+    assert p["networks"][0]["area"] == 9
+    wc = str(p["networks"][0].get("wildcard") or "")
+    assert wc and wc.count(".") == 3
+from ansible.intent_tree_engine import evaluate_intent_tree
 from ansible.intent_validation import (
+    correct_ospf_params_from_natural_language,
     get_schema_for_parsed_intent,
+    strip_llm_ospf_advertisement_guesses_if_not_explicit_in_prompt,
+    strip_llm_ospf_process_id_if_not_explicit_in_prompt,
     validate_completeness,
 )
 from ansible.intent_validation import merge_prompt_aware_disambiguation_for_schema
@@ -572,6 +593,176 @@ def test_coerce_propagates_top_level_native_vlan_to_trunk_rows():
     assert p["interfaces"][0].get("native_vlan") == 99
 
 
+def test_configure_ospf_conditional_asks_all_missing_fields_in_one_pass():
+    fields0 = configure_ospf_conditional_disambiguation_fields({"process_id": 1})
+    assert [str(f.get("field") or "") for f in fields0] == ["network_address", "prefix_length", "area"]
+
+    fields1 = configure_ospf_conditional_disambiguation_fields(
+        {"process_id": 1, "network_address": "192.168.1.0"}
+    )
+    assert [str(f.get("field") or "") for f in fields1] == ["prefix_length", "area"]
+
+    fields2 = configure_ospf_conditional_disambiguation_fields(
+        {"process_id": 1, "network_address": "192.168.1.0", "prefix_length": 24}
+    )
+    assert [str(f.get("field") or "") for f in fields2] == ["area"]
+
+
+def test_coerce_builds_ospf_networks_from_atomic_fields():
+    p = {"network_address": "192.168.1.0", "prefix_length": "/24", "area": "0"}
+    _coerce_params_for_validation(p)
+    assert p.get("networks") == [{
+        "network": "192.168.1.0",
+        "wildcard": "0.0.0.255",
+        "area": 0,
+    }]
+
+
+def test_correct_ospf_params_from_natural_language_fills_router_id_and_network():
+    pi = {
+        "action": "configure_ospf",
+        "feature": "ospf",
+        "parameters": {"process_id": 1, "target_hosts": ["Acc_Cisco_2"]},
+    }
+    correct_ospf_params_from_natural_language(
+        "Set router ID 1.1.1.1 and advertise 10.0.0.0/24 in area 0 on SW1",
+        pi,
+    )
+    p = pi["parameters"]
+    assert p.get("router_id") == "1.1.1.1"
+    assert p.get("network_address") == "10.0.0.0"
+    assert p.get("prefix_length") == 24
+    assert p.get("area") == 0
+    assert p.get("networks") == [{"network": "10.0.0.0", "wildcard": "0.0.0.255", "area": 0}]
+
+
+def test_correct_ospf_params_from_natural_language_extracts_passive_interface():
+    pi = {
+        "action": "configure_ospf",
+        "feature": "ospf",
+        "parameters": {"process_id": 1, "target_hosts": ["Acc_Cisco_1"]},
+    }
+    correct_ospf_params_from_natural_language(
+        "Make GigabitEthernet1/0/1 passive in OSPF on router 1",
+        pi,
+    )
+    assert pi["parameters"].get("passive_interfaces") == ["GigabitEthernet1/0/1"]
+
+
+def test_get_schema_for_parsed_intent_uses_passive_ospf_schema():
+    intent = {
+        "action": "configure_ospf",
+        "feature": "ospf",
+        "parameters": {
+            "target_hosts": ["Acc_Cisco_1"],
+            "process_id": 1,
+            "passive_interfaces": ["GigabitEthernet1/0/1"],
+        },
+    }
+    schema = get_schema_for_parsed_intent(intent)
+    assert schema is not None
+    assert str(schema.get("action") or "") == "configure_ospf_passive_interface"
+
+
+def test_get_schema_for_parsed_intent_uses_ospf_redistribute_schema():
+    intent = {
+        "action": "configure_ospf",
+        "feature": "ospf",
+        "parameters": {
+            "target_hosts": ["Acc_Cisco_1"],
+            "process_id": 1,
+            "redistribution": ["static"],
+        },
+    }
+    schema = get_schema_for_parsed_intent(intent)
+    assert schema is not None
+    assert str(schema.get("action") or "") == "configure_ospf_redistribute"
+
+
+def test_get_schema_for_parsed_intent_redistribute_string_selects_redistribute_schema():
+    intent = {
+        "action": "configure_ospf",
+        "feature": "ospf",
+        "parameters": {
+            "target_hosts": ["Acc_Cisco_1"],
+            "redistribute": "static",
+        },
+    }
+    schema = get_schema_for_parsed_intent(intent)
+    assert schema is not None
+    assert str(schema.get("action") or "") == "configure_ospf_redistribute"
+
+
+def test_strip_llm_ospf_advertisement_surfaces_missing_networks_for_vague_prompt():
+    parsed = {
+        "action": "configure_ospf",
+        "feature": "ospf",
+        "resolved_devices": ["Acc_Cisco_1"],
+        "parameters": {
+            "process_id": 1,
+            "networks": [{"network": "192.168.1.0", "wildcard": "0.0.0.255", "area": 0}],
+            "router_id": "192.168.1.40",
+        },
+        "device_deduction": {},
+    }
+    strip_llm_ospf_advertisement_guesses_if_not_explicit_in_prompt(
+        "Configure OSPF on devices",
+        parsed,
+        client_supplied_advertisement=False,
+        client_supplied_router_id=False,
+    )
+    assert not parsed["parameters"].get("networks")
+    assert not parsed["parameters"].get("router_id")
+    sch = get_schema_for_parsed_intent(parsed)
+    assert sch is not None
+    missing, _ = validate_completeness(parsed, sch, action_or_feature="configure_ospf")
+    assert "networks" in missing
+
+
+def test_strip_llm_ospf_advertisement_keeps_networks_when_cidr_in_prompt():
+    parsed = {
+        "action": "configure_ospf",
+        "feature": "ospf",
+        "parameters": {},
+        "device_deduction": {},
+    }
+    correct_ospf_params_from_natural_language(
+        "Advertise 10.0.0.0/24 in OSPF area 0 on router 1",
+        parsed,
+    )
+    strip_llm_ospf_advertisement_guesses_if_not_explicit_in_prompt(
+        "Advertise 10.0.0.0/24 in OSPF area 0 on router 1",
+        parsed,
+        client_supplied_advertisement=False,
+        client_supplied_router_id=False,
+    )
+    assert parsed["parameters"].get("networks")
+
+
+def test_strip_llm_ospf_process_id_surfaces_wizard_when_prompt_implicit():
+    parsed = {
+        "action": "configure_ospf",
+        "feature": "ospf",
+        "parameters": {"process_id": 1, "redistribution": ["static"]},
+        "device_deduction": {},
+    }
+    strip_llm_ospf_process_id_if_not_explicit_in_prompt(
+        "Redistribute static routes into OSPF on router 2",
+        parsed,
+        client_supplied_process_id=False,
+    )
+    assert "process_id" not in parsed["parameters"]
+    res = evaluate_intent_tree(
+        intent_description="Redistribute static routes into OSPF on router 2",
+        parsed_intent=parsed,
+        resolved_hosts=["R2"],
+        db_manager=None,
+    )
+    fields = (res.params_disambiguation or {}).get("fields") or []
+    names = {f.get("field") for f in fields if isinstance(f, dict)}
+    assert "process_id" in names
+
+
 def test_configure_interface_conditional_asks_native_vlan_for_trunk_ports():
     fields = configure_interface_conditional_disambiguation_fields(
         {
@@ -785,6 +976,52 @@ def test_reference_fill_huawei_vlan_keeps_interface_name_normalization():
     assert isinstance(rendered, str) and rendered
     assert "inventory_hostname in groups.get('vendor_huawei_vrp', [])" in rendered
     assert "parents: interface GE1/0/2" in rendered
+
+
+def test_reference_fill_ospf_cisco_renders_network_lines():
+    intent = {
+        "target_hosts": ["Acc_Cisco_2"],
+        "params": {
+            "process_id": 1,
+            "router_id": "1.1.1.1",
+            "networks": [{"network": "192.168.1.0", "wildcard": "0.0.0.255", "area": 0}],
+        },
+    }
+    rendered = fill_playbook_from_reference("ospf", ["cisco_ios"], intent)
+    assert isinstance(rendered, str) and rendered
+    assert 'parents: "router ospf 1"' in rendered
+    assert "router-id 1.1.1.1" in rendered
+    assert "network 192.168.1.0 0.0.0.255 area 0" in rendered
+
+
+def test_reference_fill_ospf_cisco_renders_passive_interface_lines():
+    intent = {
+        "target_hosts": ["Acc_Cisco_1"],
+        "params": {
+            "process_id": 1,
+            "router_id": "1.1.1.1",
+            "passive_interfaces": ["Acc_Cisco_1:Ethernet0/1"],
+        },
+    }
+    rendered = fill_playbook_from_reference("ospf", ["cisco_ios"], intent)
+    assert isinstance(rendered, str) and rendered
+    assert 'parents: "router ospf 1"' in rendered
+    assert "router-id 1.1.1.1" in rendered
+    assert "passive-interface Ethernet0/1" in rendered
+
+
+def test_reference_fill_ospf_cisco_renders_redistribution_lines():
+    intent = {
+        "target_hosts": ["Acc_Cisco_1"],
+        "params": {
+            "process_id": 1,
+            "redistribution": ["static", "connected"],
+        },
+    }
+    rendered = fill_playbook_from_reference("ospf", ["cisco_ios"], intent)
+    assert isinstance(rendered, str) and rendered
+    assert "redistribute static" in rendered
+    assert "redistribute connected" in rendered
 
 
 def test_reference_fill_juniper_interface_renders_successfully():

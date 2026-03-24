@@ -239,11 +239,14 @@ const AnsibleStudioView: React.FC<AnsibleStudioViewProps> = ({ user }) => {
   }, [activeJobId, refreshJob]);
   useEffect(() => {
     if (!activeJobId) return;
+    // Keep periodic polling only while an active operation is running.
+    // Otherwise this endpoint can spam logs with low-value "200 OK" noise.
+    if (!isStreaming && !isChecking) return;
     const t = window.setInterval(() => {
       refreshJob(activeJobId);
-    }, 2000);
+    }, 4000);
     return () => window.clearInterval(t);
-  }, [activeJobId, refreshJob]);
+  }, [activeJobId, refreshJob, isStreaming, isChecking]);
 
   useEffect(() => {
     localStorage.setItem(ANSIBLE_TABS_KEY, JSON.stringify(tabs));

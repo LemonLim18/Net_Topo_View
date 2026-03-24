@@ -1,0 +1,27 @@
+action: configure_ospf_redistribute
+feature: ospf
+required:
+  - process_id
+  - target_devices
+  - redistribution
+optional:
+  - router_id
+resolution_order:
+  process_id:
+    - from_intent
+    - ask_user
+  target_devices:
+    - from_intent
+    - from_inventory
+    - ask_user
+  redistribution:
+    - from_intent
+    - ask_user
+  router_id:
+    - from_intent
+    - ask_user
+questions:
+  process_id: "OSPF process ID?"
+  target_devices: "Which devices?"
+  redistribution: "Which protocols should be redistributed into OSPF (e.g. static, connected)?"
+  router_id: "OSPF router ID (IPv4)?"

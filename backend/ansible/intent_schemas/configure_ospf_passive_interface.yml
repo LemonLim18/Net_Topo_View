@@ -1,0 +1,27 @@
+action: configure_ospf_passive_interface
+feature: ospf
+required:
+  - process_id
+  - target_devices
+  - passive_interfaces
+optional:
+  - router_id
+resolution_order:
+  process_id:
+    - from_intent
+    - ask_user
+  target_devices:
+    - from_intent
+    - from_inventory
+    - ask_user
+  passive_interfaces:
+    - from_intent
+    - ask_user
+  router_id:
+    - from_intent
+    - ask_user
+questions:
+  process_id: "OSPF process ID?"
+  target_devices: "Which devices?"
+  passive_interfaces: "Which interface(s) should be passive in OSPF?"
+  router_id: "OSPF router ID (IPv4)?"

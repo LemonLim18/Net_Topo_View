@@ -41,6 +41,14 @@ _DEVICE_HINT_STOPWORDS = frozenset(
         "isl",
         "spanning",
         "switching",
+        # OSPF wording that must never be interpreted as hostnames
+        "advertise",
+        "advertised",
+        "ospf",
+        "area",
+        "process",
+        "routerid",
+        "router-id",
     }
 )
 
@@ -911,7 +919,14 @@ def should_validate_interface_names_against_inventory(
         sa in ("shutdown_interface", "configure_interface")
         or sa == "create_vlan"
         or fl == "vlan"
-        or sa in ("configure_acl", "configure_qos", "configure_ospf", "configure_static_route")
+        or sa
+        in (
+            "configure_acl",
+            "configure_qos",
+            "configure_ospf",
+            "configure_ospf_passive_interface",
+            "configure_static_route",
+        )
     )
     if not intent_uses_iface_inventory:
         return False

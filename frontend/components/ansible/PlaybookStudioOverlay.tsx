@@ -255,25 +255,65 @@ function intentInspectorStatusLabel(status: string): string {
   return status;
 }
 
+function sanitizeIPv4Input(raw: string): string {
+  const src = String(raw || '');
+  const hasDot = src.includes('.');
+  const digitsAndDots = src.replace(/[^\d.]/g, '');
+  if (!hasDot) {
+    const digits = digitsAndDots.replace(/\./g, '').slice(0, 12);
+    const chunks: string[] = [];
+    for (let i = 0; i < digits.length; i += 3) chunks.push(digits.slice(i, i + 3));
+    return chunks
+      .slice(0, 4)
+      .map((c) => {
+        if (!c) return '';
+        const n = parseInt(c, 10);
+        if (Number.isNaN(n)) return '';
+        return String(Math.max(0, Math.min(255, n)));
+      })
+      .join('.');
+  }
+  return digitsAndDots
+    .split('.')
+    .slice(0, 4)
+    .map((p) => {
+      const s = p.slice(0, 3);
+      if (!s) return '';
+      const n = parseInt(s, 10);
+      if (Number.isNaN(n)) return '';
+      return String(Math.max(0, Math.min(255, n)));
+    })
+    .join('.');
+}
+
 /** Prefer chat wizard / accumulated preview params over LLM-only parsed_intent.parameters. */
 function buildSchemaParamValuesFromSources(
   fields: SchemaEditableField[],
   parsedParams: Record<string, unknown>,
   authoritative?: Record<string, unknown> | null,
+  fallbackParams?: Record<string, unknown> | null,
 ): Record<string, string | number> {
   const auth =
     authoritative && typeof authoritative === 'object' ? authoritative : {};
+  const fallback =
+    fallbackParams && typeof fallbackParams === 'object' ? fallbackParams : {};
   const out: Record<string, string | number> = {};
   for (const f of fields) {
     const key = f.field;
     const a = auth[key];
     const p = parsedParams[key];
+    const fb = fallback[key];
     const hasAuth =
       a !== undefined &&
       a !== null &&
       a !== '' &&
       !(typeof a === 'number' && Number.isNaN(a));
-    const raw = hasAuth ? a : p;
+    const hasParsed =
+      p !== undefined &&
+      p !== null &&
+      p !== '' &&
+      !(typeof p === 'number' && Number.isNaN(p));
+    const raw = hasAuth ? a : hasParsed ? p : fb;
     if (raw === undefined || raw === null || raw === '') {
       out[key] = '';
       continue;
@@ -281,6 +321,13 @@ function buildSchemaParamValuesFromSources(
     if (f.type === 'number' || key === 'vlan_id' || key === 'process_id') {
       const n = typeof raw === 'number' ? raw : parseInt(String(raw), 10);
       out[key] = Number.isNaN(n) ? '' : n;
+    } else if (Array.isArray(raw) || (raw && typeof raw === 'object')) {
+      // Keep structured values editable/readable in schema form instead of "[object Object]".
+      try {
+        out[key] = JSON.stringify(raw);
+      } catch {
+        out[key] = String(raw);
+      }
     } else {
       out[key] = String(raw);
     }
@@ -451,8 +498,14 @@ export function PlaybookStudioOverlay({
       );
       setSchemaEditableFields(res.schema_editable_fields ?? []);
       const params = (res.parsed_intent as any)?.parameters ?? {};
+      const parseFallback = (parseIntent(intentDescription)?.params ?? {}) as Record<string, unknown>;
       setSchemaParamValues(
-        buildSchemaParamValuesFromSources(res.schema_editable_fields ?? [], params, authoritativeMergedParams),
+        buildSchemaParamValuesFromSources(
+          res.schema_editable_fields ?? [],
+          params,
+          authoritativeMergedParams,
+          parseFallback,
+        ),
       );
       setInterfacesForSelection((res as any).interfaces_for_selection ?? null);
       setIntentSchemaInspector((res as { intent_schema_inspector?: IntentSchemaInspectorPayload }).intent_schema_inspector ?? null);
@@ -529,11 +582,13 @@ export function PlaybookStudioOverlay({
       );
       setSchemaEditableFields(initialPreviewResult.schema_editable_fields ?? []);
       const params = (initialPreviewResult.parsed_intent as any)?.parameters ?? {};
+      const parseFallback = (parseIntent(intentDescription)?.params ?? {}) as Record<string, unknown>;
       setSchemaParamValues(
         buildSchemaParamValuesFromSources(
           initialPreviewResult.schema_editable_fields ?? [],
           params,
           authoritativeMergedParams,
+          parseFallback,
         ),
       );
       setInterfacesForSelection(initialPreviewResult.interfaces_for_selection ?? null);
@@ -1291,13 +1346,24 @@ export function PlaybookStudioOverlay({
                               {f.required && <span className="text-error ml-0.5">*</span>}
                             </label>
                             <input
-                              type={f.type === 'number' ? 'number' : 'text'}
+                              type={f.field === 'network_address' ? 'text' : f.type === 'number' ? 'number' : 'text'}
                               className="input input-bordered input-sm flex-1 min-w-0 max-w-xs"
                               value={schemaParamValues[f.field] ?? ''}
                               onChange={(e) =>
                                 setSchemaParamValues((prev) => ({
                                   ...prev,
-                                  [f.field]: f.type === 'number' ? (e.target.value === '' ? '' : Number(e.target.value)) : e.target.value,
+                                  [f.field]:
+                                    f.field === 'network_address'
+                                      ? sanitizeIPv4Input(e.target.value)
+                                      : f.field === 'prefix_length'
+                                        ? (() => {
+                                            const n = parseInt(String(e.target.value || '').replace('/', '').trim(), 10);
+                                            if (Number.isNaN(n)) return '';
+                                            return Math.max(0, Math.min(32, n));
+                                          })()
+                                        : f.type === 'number'
+                                          ? (e.target.value === '' ? '' : Number(e.target.value))
+                                          : e.target.value,
                                 }))
                               }
                               placeholder={f.required ? 'Required' : 'Optional'}

@@ -197,6 +197,38 @@ def _normalize_intent_for_type_schema(intent: Dict[str, Any], schema_key: str) -
         for opt in ("area_definitions", "passive_interfaces", "redistribution"):
             if flat.get(opt) is not None:
                 out[opt] = flat.get(opt)
+    elif schema_key == "configure_ospf_redistribute":
+        out["target_hosts"] = flat.get("target_devices") or []
+        pid = flat.get("process_id")
+        try:
+            out["process_id"] = int(pid) if pid is not None and str(pid).strip() != "" else None
+        except (TypeError, ValueError):
+            out["process_id"] = None
+        red = flat.get("redistribution")
+        if isinstance(red, list):
+            out["redistribution"] = [str(x).strip() for x in red if str(x).strip()]
+        elif red is not None and str(red).strip():
+            out["redistribution"] = [str(red).strip()]
+        else:
+            out["redistribution"] = []
+        if flat.get("router_id"):
+            out["router_id"] = str(flat.get("router_id")).strip()
+    elif schema_key == "configure_ospf_passive_interface":
+        out["target_hosts"] = flat.get("target_devices") or []
+        pid = flat.get("process_id")
+        try:
+            out["process_id"] = int(pid) if pid is not None and str(pid).strip() != "" else None
+        except (TypeError, ValueError):
+            out["process_id"] = None
+        passive = flat.get("passive_interfaces")
+        if isinstance(passive, list):
+            out["passive_interfaces"] = [str(x).strip() for x in passive if str(x).strip()]
+        elif passive is not None and str(passive).strip():
+            out["passive_interfaces"] = [str(passive).strip()]
+        else:
+            out["passive_interfaces"] = []
+        if flat.get("router_id"):
+            out["router_id"] = str(flat.get("router_id")).strip()
     elif schema_key == "configure_qos":
         out["target_hosts"] = flat.get("target_devices") or []
         out["policy_name"] = str(flat.get("policy_name") or "").strip()
@@ -1087,8 +1119,62 @@ def configure_interface_conditional_disambiguation_fields(
     return shared_fields
 
 
+def configure_ospf_conditional_disambiguation_fields(
+    parameters: Dict[str, Any],
+) -> List[Dict[str, Any]]:
+    """
+    OSPF follow-up questions collected in one pass (ordered):
+    1) network IPv4 address,
+    2) prefix length (/0-/32),
+    3) OSPF area.
+    """
+    p = dict(parameters or {})
+    fields: List[Dict[str, Any]] = []
+    passive = p.get("passive_interfaces")
+    if isinstance(passive, list) and any(str(x).strip() for x in passive):
+        return fields
+
+    # If structured OSPF networks already exist, no extra asks needed.
+    nets = p.get("networks")
+    if isinstance(nets, list) and any(isinstance(x, dict) and str(x.get("network") or "").strip() for x in nets):
+        return fields
+
+    network_address = str(p.get("network_address") or "").strip()
+    prefix_raw = p.get("prefix_length")
+    area_raw = p.get("area")
+
+    has_prefix = prefix_raw is not None and str(prefix_raw).strip() != ""
+    has_area = area_raw is not None and str(area_raw).strip() != ""
+
+    if not network_address:
+        fields.append(
+            {
+                "field": "network_address",
+                "question": "Which OSPF network **address** (IPv4) should be advertised?",
+            }
+        )
+
+    if not has_prefix:
+        fields.append(
+            {
+                "field": "prefix_length",
+                "question": "What is the prefix length for that network? (Enter **/0** to **/32**.)",
+            }
+        )
+
+    if not has_area:
+        fields.append(
+            {
+                "field": "area",
+                "question": "Which OSPF **area** should this network be advertised in?",
+            }
+        )
+    return fields
+
+
 SECONDARY_INTENT_CONDITIONAL_DISAMBIGUATION_BY_ACTION: Dict[str, Callable[[Dict[str, Any]], List[Dict[str, Any]]]] = {
     "configure_interface": configure_interface_conditional_disambiguation_fields,
+    "configure_ospf": configure_ospf_conditional_disambiguation_fields,
 }
 
 
@@ -1175,7 +1261,22 @@ def merge_prompt_aware_disambiguation_for_schema(
                 "fields": fields_list,
             }
         return params_disambiguation
-    # Future: elif sa == "configure_ospf": ...
+    if sa == "configure_ospf":
+        desc = str(intent_description or "")
+        if re.search(r"\bpassive\b", desc, re.I) and re.search(r"\bospf\b", desc, re.I):
+            fields_list = list((params_disambiguation or {}).get("fields") or [])
+            fields_list = [
+                f for f in fields_list
+                if str((f or {}).get("field") or "").strip().lower()
+                not in ("networks", "area_definitions", "network_address", "prefix_length", "area")
+            ]
+            if not fields_list:
+                return None
+            return {
+                "question": (params_disambiguation or {}).get("question") or "Please provide the following.",
+                "fields": fields_list,
+            }
+        return params_disambiguation
     return params_disambiguation
 
 
@@ -1410,6 +1511,310 @@ def correct_interface_l3_params_from_natural_language(
         sf = str(sec.get("feature") or "").strip().lower()
         if sa == "configure_interface" or sf == "interface":
             _apply(sec)
+
+
+def _extract_ospf_patch_from_prompt(intent_description: str) -> Dict[str, Any]:
+    text = str(intent_description or "").strip()
+    if not text:
+        return {}
+    out: Dict[str, Any] = {}
+
+    rid_m = re.search(r"\brouter[\s_-]*id\s+(\d{1,3}(?:\.\d{1,3}){3})\b", text, re.I)
+    if rid_m:
+        rid = rid_m.group(1)
+        try:
+            ipaddress.IPv4Address(rid)
+            out["router_id"] = rid
+        except Exception:
+            pass
+
+    if re.search(r"\bpassive\b", text, re.I) and re.search(r"\bospf\b", text, re.I):
+        iface_tokens: List[str] = []
+        for m in re.finditer(
+            r"\b((?:GigabitEthernet|TenGigabitEthernet|FastEthernet|Ethernet|Gi|Te|Fa|Eth)\s*\d+(?:/\d+){1,2})\b",
+            text,
+            re.I,
+        ):
+            iface = re.sub(r"\s+", "", m.group(1) or "")
+            if iface:
+                iface_tokens.append(iface)
+        if iface_tokens:
+            out["passive_interfaces"] = sorted(set(iface_tokens))
+
+    # Explicit OSPF process ID only (do not infer from "router 2" device names).
+    for _pat in (
+        r"\brouter\s+ospf\s+(\d+)\b",
+        r"\bospf\s+process(?:\s+id)?\s+(\d+)\b",
+    ):
+        _pm = re.search(_pat, text, re.I)
+        if not _pm:
+            continue
+        try:
+            _v = int(_pm.group(1))
+            if 0 <= _v <= 65535:
+                out["process_id"] = _v
+                break
+        except Exception:
+            continue
+    if "process_id" not in out and re.search(r"\bospf\b", text, re.I):
+        _pm = re.search(r"\bprocess\s+id\s+(\d+)\b", text, re.I)
+        if _pm:
+            try:
+                _v = int(_pm.group(1))
+                if 0 <= _v <= 65535:
+                    out["process_id"] = _v
+            except Exception:
+                pass
+
+    cidr_m = re.search(r"\b(\d{1,3}(?:\.\d{1,3}){3})/(\d{1,2})\b", text)
+    area_m = re.search(r"\barea\s+(\d+)\b", text, re.I)
+    if cidr_m:
+        net = cidr_m.group(1)
+        try:
+            pfx = int(cidr_m.group(2))
+        except Exception:
+            pfx = -1
+        if 0 <= pfx <= 32:
+            try:
+                ipaddress.IPv4Address(net)
+                mask = ipaddress.IPv4Network(f"0.0.0.0/{pfx}").netmask
+                inv = int(ipaddress.IPv4Address(mask)) ^ 0xFFFFFFFF
+                wildcard = str(ipaddress.IPv4Address(inv))
+                area = int(area_m.group(1)) if area_m else 0
+                out["network_address"] = net
+                out["prefix_length"] = pfx
+                out["area"] = area
+                out["networks"] = [{"network": net, "wildcard": wildcard, "area": area}]
+            except Exception:
+                pass
+    return out
+
+
+def correct_ospf_params_from_natural_language(
+    intent_description: str,
+    parsed_intent: Dict[str, Any],
+) -> None:
+    """
+    Fill obvious OSPF fields from user prompt so wizard doesn't re-ask
+    values already present in natural language.
+    """
+    if not isinstance(parsed_intent, dict):
+        return
+    patch = _extract_ospf_patch_from_prompt(intent_description)
+    if not patch:
+        return
+
+    def _apply(container: Dict[str, Any]) -> None:
+        p = container.get("parameters")
+        if not isinstance(p, dict):
+            return
+        if patch.get("router_id") and not str(p.get("router_id") or "").strip():
+            p["router_id"] = patch["router_id"]
+        if patch.get("networks") and not p.get("networks"):
+            p["networks"] = patch["networks"]
+        if patch.get("network_address") and not str(p.get("network_address") or "").strip():
+            p["network_address"] = patch["network_address"]
+        if patch.get("prefix_length") is not None and str(p.get("prefix_length") or "").strip() == "":
+            p["prefix_length"] = patch["prefix_length"]
+        if patch.get("area") is not None and str(p.get("area") or "").strip() == "":
+            p["area"] = patch["area"]
+        if patch.get("passive_interfaces") and not p.get("passive_interfaces"):
+            p["passive_interfaces"] = patch["passive_interfaces"]
+        if patch.get("process_id") is not None and (
+            p.get("process_id") is None or str(p.get("process_id") or "").strip() == ""
+        ):
+            p["process_id"] = patch["process_id"]
+        container["parameters"] = p
+
+    act = str(parsed_intent.get("action") or "").strip().lower().replace("-", "_")
+    feat = str(parsed_intent.get("feature") or "").strip().lower()
+    if act == "configure_ospf" or feat == "ospf":
+        _apply(parsed_intent)
+
+    for sec in parsed_intent.get("secondary_intents") or []:
+        if not isinstance(sec, dict):
+            continue
+        sa = str(sec.get("action") or "").strip().lower().replace("-", "_")
+        sf = str(sec.get("feature") or "").strip().lower()
+        if sa == "configure_ospf" or sf == "ospf":
+            _apply(sec)
+
+
+def prompt_contains_explicit_ospf_process_id(intent_description: str) -> bool:
+    """
+    True when the user text clearly states an OSPF routing process number (not a device name like "router 2").
+    Used to decide whether an LLM-supplied process_id is trustworthy.
+    """
+    text = str(intent_description or "").strip()
+    if not text:
+        return False
+    tl = text.lower()
+    if re.search(r"\brouter\s+ospf\s+\d+\b", tl):
+        return True
+    if re.search(r"\bospf\s+process(?:\s+id)?\s+\d+\b", tl):
+        return True
+    if re.search(r"\bprocess\s+id\s+\d+\b", tl) and re.search(r"\bospf\b", tl):
+        return True
+    return False
+
+
+def prompt_contains_explicit_ospf_network_advertisement(intent_description: str) -> bool:
+    """
+    True when the user text states what to advertise into OSPF (CIDR and/or network + mask + area).
+    Vague lines like "Configure OSPF on devices" return False so LLM-invented networks are dropped.
+    """
+    text = str(intent_description or "").strip()
+    if not text:
+        return False
+    if re.search(r"\b\d{1,3}(?:\.\d{1,3}){3}/\d{1,2}\b", text):
+        return True
+    # Cisco-style: network 192.168.1.0 0.0.0.255 area 0
+    if re.search(
+        r"\bnetwork\s+\d{1,3}(?:\.\d{1,3}){3}(?:\s+\d{1,3}(?:\.\d{1,3}){3})?\s+area\s+\d+",
+        text,
+        re.I,
+    ):
+        return True
+    if re.search(r"\bospf\b", text, re.I) and re.search(
+        r"\bnetwork\s+\d{1,3}(?:\.\d{1,3}){3}\s+\d{1,3}(?:\.\d{1,3}){3}\b",
+        text,
+        re.I,
+    ):
+        return True
+    return False
+
+
+def prompt_contains_explicit_ospf_router_id_in_prompt(intent_description: str) -> bool:
+    text = str(intent_description or "").strip()
+    if not text:
+        return False
+    return bool(re.search(r"\brouter[\s_-]*id\s+\d{1,3}(?:\.\d{1,3}){3}\b", text, re.I))
+
+
+def client_supplied_ospf_advertisement_params(params: Optional[Dict[str, Any]]) -> bool:
+    if not isinstance(params, dict):
+        return False
+    nets = params.get("networks")
+    if isinstance(nets, list) and any(
+        isinstance(x, dict) and str(x.get("network") or "").strip() for x in nets
+    ):
+        return True
+    if isinstance(nets, str) and nets.strip():
+        return True
+    if str(params.get("network_address") or "").strip():
+        return True
+    return False
+
+
+def client_supplied_ospf_router_id_param(params: Optional[Dict[str, Any]]) -> bool:
+    if not isinstance(params, dict):
+        return False
+    v = params.get("router_id")
+    return v is not None and str(v).strip() != ""
+
+
+def strip_llm_ospf_advertisement_guesses_if_not_explicit_in_prompt(
+    intent_description: str,
+    parsed_intent: Dict[str, Any],
+    *,
+    client_supplied_advertisement: bool = False,
+    client_supplied_router_id: bool = False,
+) -> None:
+    """
+    Remove LLM- or template-hallucinated OSPF advertisement data when the user did not state
+    a network/CIDR (and related) in natural language. Optional router_id is cleared the same way.
+    """
+    if not isinstance(parsed_intent, dict):
+        return
+    desc = intent_description or ""
+    explicit_net = prompt_contains_explicit_ospf_network_advertisement(desc)
+    explicit_rid = prompt_contains_explicit_ospf_router_id_in_prompt(desc)
+
+    def _strip(container: Dict[str, Any]) -> None:
+        p = container.get("parameters")
+        if not isinstance(p, dict):
+            return
+        if not explicit_net and not client_supplied_advertisement:
+            p.pop("networks", None)
+            p.pop("ospf_networks", None)
+            p.pop("network_address", None)
+            p.pop("prefix_length", None)
+            p.pop("area", None)
+        if not explicit_rid and not client_supplied_router_id:
+            p.pop("router_id", None)
+        container["parameters"] = p
+
+    act = str(parsed_intent.get("action") or "").strip().lower().replace("-", "_")
+    feat = str(parsed_intent.get("feature") or "").strip().lower()
+    if act == "configure_ospf" or feat == "ospf":
+        _strip(parsed_intent)
+    for sec in parsed_intent.get("secondary_intents") or []:
+        if not isinstance(sec, dict):
+            continue
+        sa = str(sec.get("action") or "").strip().lower().replace("-", "_")
+        sf = str(sec.get("feature") or "").strip().lower()
+        if sa == "configure_ospf" or sf == "ospf":
+            _strip(sec)
+
+
+def strip_llm_ospf_process_id_if_not_explicit_in_prompt(
+    intent_description: str,
+    parsed_intent: Dict[str, Any],
+    *,
+    client_supplied_process_id: bool = False,
+) -> None:
+    """
+    Remove process_id / ospf_process_id from OSPF intents when the prompt does not state
+    an explicit OSPF process ID, so the UI wizard must ask. Keeps values when the client
+    already answered (merged params) or the prompt names the process explicitly.
+    """
+    if not isinstance(parsed_intent, dict):
+        return
+    if client_supplied_process_id or prompt_contains_explicit_ospf_process_id(intent_description or ""):
+        return
+
+    def _strip(container: Dict[str, Any]) -> None:
+        p = container.get("parameters")
+        if not isinstance(p, dict):
+            return
+        p.pop("process_id", None)
+        p.pop("ospf_process_id", None)
+        container["parameters"] = p
+
+    act = str(parsed_intent.get("action") or "").strip().lower().replace("-", "_")
+    feat = str(parsed_intent.get("feature") or "").strip().lower()
+    if act == "configure_ospf" or feat == "ospf":
+        _strip(parsed_intent)
+    for sec in parsed_intent.get("secondary_intents") or []:
+        if not isinstance(sec, dict):
+            continue
+        sa = str(sec.get("action") or "").strip().lower().replace("-", "_")
+        sf = str(sec.get("feature") or "").strip().lower()
+        if sa == "configure_ospf" or sf == "ospf":
+            _strip(sec)
+
+
+def ospf_redistribution_non_empty(raw: Any) -> bool:
+    """True when redistribution / redistribute params list or string names at least one protocol."""
+    if raw is None:
+        return False
+    if isinstance(raw, list):
+        return any(str(x).strip() for x in raw)
+    if isinstance(raw, str) and raw.strip():
+        for item in re.split(r"[\s,;]+", raw.strip().lower()):
+            if item in ("static", "connected", "bgp", "rip", "isis", "ospf"):
+                return True
+    return False
+
+
+def ospf_passive_interfaces_non_empty(raw: Any) -> bool:
+    if raw is None:
+        return False
+    if isinstance(raw, list):
+        return any(str(x).strip() for x in raw)
+    if isinstance(raw, str):
+        return bool(raw.strip())
+    return False
 
 
 def _effective_vlan_id_for_port_binding(parameters: Dict[str, Any], intent_description: str) -> Optional[int]:
@@ -1752,6 +2157,33 @@ def get_schema_for_parsed_intent(parsed_intent: Dict[str, Any]) -> Optional[Dict
     """
     action = (parsed_intent.get("action") or "").strip().lower().replace("-", "_")
     feature = (parsed_intent.get("feature") or "").strip().lower().replace("-", "_")
+    params = dict(parsed_intent.get("parameters") or parsed_intent.get("params") or {})
+    canonical = str(params.get("_canonical_operation") or params.get("canonical_operation") or "").strip().lower().replace("-", "_")
+
+    if feature == "ospf" or action == "configure_ospf" or canonical in ("configure_passive_interface", "configure_ospf_passive_interface", "configure_ospf_redistribute"):
+        if canonical == "configure_ospf_redistribute":
+            schema = load_schema("configure_ospf_redistribute")
+            if schema:
+                return schema
+        if canonical in ("configure_passive_interface", "configure_ospf_passive_interface"):
+            schema = load_schema("configure_ospf_passive_interface")
+            if schema:
+                return schema
+        red = params.get("redistribution") or params.get("redistribute")
+        has_red = ospf_redistribution_non_empty(red)
+        if has_red and not params.get("networks") and not ospf_passive_interfaces_non_empty(
+            params.get("passive_interfaces")
+        ):
+            schema = load_schema("configure_ospf_redistribute")
+            if schema:
+                return schema
+        passive = params.get("passive_interfaces")
+        has_passive = ospf_passive_interfaces_non_empty(passive)
+        if has_passive and not params.get("networks"):
+            schema = load_schema("configure_ospf_passive_interface")
+            if schema:
+                return schema
+
     if action and action not in ("unknown", "configure", "clarify"):
         schema = load_schema(action)
         if schema:
@@ -1799,6 +2231,8 @@ def get_required_params_hint_for_prompt() -> str:
         "configure_interface",
         "create_vlan",
         "configure_ospf",
+        "configure_ospf_passive_interface",
+        "configure_ospf_redistribute",
         "configure_static_route",
         "configure_acl",
         "configure_qos",

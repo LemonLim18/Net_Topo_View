@@ -303,6 +303,38 @@ function isValidIPv4Address(raw: string): boolean {
   return true;
 }
 
+function sanitizeIPv4Input(raw: string): string {
+  const src = String(raw || '');
+  const hasDot = src.includes('.');
+  const digitsAndDots = src.replace(/[^\d.]/g, '');
+
+  // If user types pure digits, insert dots every 3 digits (max 4 octets).
+  if (!hasDot) {
+    const digits = digitsAndDots.replace(/\./g, '').slice(0, 12);
+    const chunks: string[] = [];
+    for (let i = 0; i < digits.length; i += 3) {
+      chunks.push(digits.slice(i, i + 3));
+    }
+    const octets = chunks.slice(0, 4).map((c) => {
+      if (!c) return '';
+      const n = parseInt(c, 10);
+      if (Number.isNaN(n)) return '';
+      return String(Math.max(0, Math.min(255, n)));
+    });
+    return octets.join('.');
+  }
+
+  const parts = digitsAndDots.split('.').slice(0, 4);
+  const normalized = parts.map((p) => {
+    const s = p.slice(0, 3);
+    if (!s) return '';
+    const n = parseInt(s, 10);
+    if (Number.isNaN(n)) return '';
+    return String(Math.max(0, Math.min(255, n)));
+  });
+  return normalized.join('.');
+}
+
 // ── VS Code-style markdown renderer ──────────────────────────────────────────
 interface MarkdownProps { content: string; onOpenFile?: (path: string) => void; }
 
@@ -1276,7 +1308,7 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
             return dir ? `${q} ${dir}` : q;
           }),
         };
-      } else if (schemaAction === 'configure_ospf') {
+      } else if (schemaAction === 'configure_ospf' || schemaAction === 'configure_ospf_passive_interface') {
         ifaceParams = { passive_interfaces: qualified.map(qTok) };
       } else if (schemaAction === 'configure_static_route') {
         ifaceParams = { next_hop: qTok(qualified[0]) };
@@ -2477,6 +2509,23 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
                                         );
                                       }
 
+                                      if (normalizedField === 'network_address') {
+                                        return (
+                                          <input
+                                            type="text"
+                                            className="input input-sm input-bordered w-full font-mono mt-1"
+                                            placeholder="192.168.1.0"
+                                            value={String((paramsDisambiguationValues[vk] ?? '') as string | number)}
+                                            onChange={(e) =>
+                                              setParamsDisambiguationValues((prev) => ({
+                                                ...prev,
+                                                [vk]: sanitizeIPv4Input(e.target.value),
+                                              }))
+                                            }
+                                          />
+                                        );
+                                      }
+
                                       if (normalizedField === 'prefix_length' || normalizedField === 'subnet_mask') {
                                         return (
                                           <div className="flex items-center gap-2 relative group mt-1">
@@ -2518,6 +2567,7 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
                                           type={
                                             f.field === 'vlan_id' ||
                                             f.field === 'process_id' ||
+                                            f.field === 'area' ||
                                             f.field === 'access_vlan' ||
                                             f.field === 'native_vlan'
                                               ? 'number'
@@ -2537,6 +2587,7 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
                                               [vk]:
                                                 f.field === 'vlan_id' ||
                                                 f.field === 'process_id' ||
+                                              f.field === 'area' ||
                                                 f.field === 'access_vlan' ||
                                                 f.field === 'native_vlan'
                                                   ? v === ''
@@ -2594,10 +2645,25 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
                                       if (typeof v === 'number' && Number.isNaN(v)) return true;
                                       const fl = String(f.field || '').toLowerCase();
                                       if (fl === 'ip_address' && !isValidIPv4Address(String(v))) return true;
+                                      if (fl === 'network_address' && !isValidIPv4Address(String(v))) return true;
                                       if (fl === 'access_vlan' || fl === 'native_vlan') {
                                         if (typeof v === 'number' && (v < 1 || v > 4094)) return true;
                                       }
+                                      if (fl === 'area') {
+                                        const n =
+                                          typeof v === 'number'
+                                            ? v
+                                            : parseInt(String(v).trim(), 10);
+                                        if (Number.isNaN(n) || n < 0) return true;
+                                      }
                                       if (fl === 'subnet_mask') {
+                                        const n =
+                                          typeof v === 'number'
+                                            ? v
+                                            : parseInt(String(v).replace("/", "").trim(), 10);
+                                        if (Number.isNaN(n) || n < 0 || n > 32) return true;
+                                      }
+                                      if (fl === 'prefix_length') {
                                         const n =
                                           typeof v === 'number'
                                             ? v
@@ -2676,6 +2742,23 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
                                       ...previewAccumulatedParams,
                                       ...params,
                                     };
+                                    // OSPF wizard uses network_address + prefix_length + area; drop stale
+                                    // networks[] from earlier previews/LLM so the API does not keep both.
+                                    const na = String((merged as any).network_address ?? '').trim();
+                                    const pl = (merged as any).prefix_length;
+                                    const ar = (merged as any).area;
+                                    const atomicOspf =
+                                      na &&
+                                      pl !== undefined &&
+                                      pl !== null &&
+                                      String(pl).trim() !== '' &&
+                                      ar !== undefined &&
+                                      ar !== null &&
+                                      String(ar).trim() !== '';
+                                    if (atomicOspf) {
+                                      delete (merged as any).networks;
+                                      delete (merged as any).ospf_networks;
+                                    }
                                     const th =
                                       previewLockedTargetHosts.length > 0
                                         ? previewLockedTargetHosts

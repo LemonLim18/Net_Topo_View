@@ -1,0 +1,26 @@
+---
+- name: Configure OSPF (Huawei VRP)
+  hosts: "{{ target_hosts | default('all') }}"
+  gather_facts: no
+  ignore_unreachable: true
+  tasks:
+    - name: Configure OSPF process and advertised networks (Huawei VRP)
+      community.network.ce_config:
+        lines:
+          - "ospf {{ process_id }}"
+{% if router_id %}
+          - " router-id {{ router_id }}"
+{% endif %}
+{% for net in networks | default([]) %}
+          - " area {{ net.area }}"
+          - "  network {{ net.network }} {{ net.wildcard }}"
+{% endfor %}
+{% for iface in passive_interfaces | default([]) %}
+          - " silent-interface {{ (iface | string).split(':')[-1] }}"
+{% endfor %}
+{% for proto in redistribution | default([]) %}
+          - " import-route {{ proto }}"
+{% endfor %}
+          - "return"
+      when:
+        - inventory_hostname in groups.get('vendor_huawei_vrp', [])

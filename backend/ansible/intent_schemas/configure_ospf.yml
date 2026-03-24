@@ -23,7 +23,6 @@ resolution_order:
     - ask_user
   networks:
     - from_intent
-    - from_inventory
     - ask_user
   area_definitions:
     - from_intent
