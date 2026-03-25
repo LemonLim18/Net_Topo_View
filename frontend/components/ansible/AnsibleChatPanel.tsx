@@ -283,6 +283,87 @@ function mergePlannedDeviceInterfaces(
   }));
 }
 
+/** Per-host interface rows from local planned topology (mirrors device-disambiguation submit). */
+async function plannedInterfacesFromLocalTopology(hosts: string[]): Promise<PlannedDeviceInterfaces[]> {
+  if (hosts.length === 0) return [];
+  try {
+    const topo = await netboxApi.getLocalPlannedTopology();
+    const nodes = (topo?.nodes || {}) as Record<string, any>;
+    return hosts
+      .map((hostname) => {
+        const node = nodes[hostname];
+        if (!node) return null;
+        const mgmtIp = String(node.mgmt_ip || '').trim();
+        const rawIfaceMaps = Array.isArray(node.interfaceList) ? node.interfaceList : [];
+        const firstMap = (rawIfaceMaps.find((x: unknown) => x && typeof x === 'object') || {}) as Record<string, unknown>;
+        const ifNames = Object.entries(firstMap)
+          .filter(([rawName, rawIp]) => {
+            const name = String(rawName || '').trim();
+            if (!name) return false;
+            const ip = String(rawIp || '').trim();
+            if (/management|mgmt/i.test(name)) return false;
+            if (mgmtIp && ip && ip === mgmtIp) return false;
+            return true;
+          })
+          .map(([rawName]) => String(rawName).trim())
+          .filter(Boolean);
+        return {
+          hostname,
+          interfaces: ifNames.map((name) => ({ name })),
+        };
+      })
+      .filter((d): d is PlannedDeviceInterfaces => Boolean(d && d.interfaces.length > 0));
+  } catch {
+    return [];
+  }
+}
+
+function isParamsWizardTargetHostField(f: PreviewParamField): boolean {
+  const n = String(f.field || '').toLowerCase();
+  return n === 'target_devices' || n === 'target_hosts';
+}
+
+function isParamsWizardInterfaceInventoryField(f: PreviewParamField): boolean {
+  const raw = String(f.field || '');
+  const n = raw.toLowerCase();
+  if (raw.startsWith('_chat_')) return false;
+  return (
+    n === 'apply_to' ||
+    n === 'interfaces' ||
+    n === 'interfaces_to_shutdown' ||
+    n === 'interfaces_config' ||
+    n === 'interface_apply' ||
+    n === 'passive_interfaces' ||
+    (n.includes('interface') && !isParamsWizardTargetHostField(f))
+  );
+}
+
+function collectTargetHostsFromParamsWizard(
+  fields: PreviewParamField[],
+  values: Record<string, string | number | string[] | number[] | undefined>,
+): string[] {
+  const out: string[] = [];
+  for (const field of fields) {
+    if (!isParamsWizardTargetHostField(field)) continue;
+    const vk = previewFieldValueKey(field);
+    const v = values[vk];
+    if (Array.isArray(v)) {
+      out.push(...v.map((x) => String(x ?? '').trim()).filter(Boolean));
+    } else if (typeof v === 'string') {
+      out.push(...v.split(/[\s,]+/).map((s) => s.trim()).filter(Boolean));
+    }
+  }
+  return Array.from(new Set(out));
+}
+
+function mergeInterfacePickersFromPreviewResponse(res: any): PlannedDeviceInterfaces[] {
+  const raw =
+    (res?.interfaces_disambiguation?.devices as PlannedDeviceInterfaces[] | undefined) ||
+    (res?.interfaces_for_selection?.devices as PlannedDeviceInterfaces[] | undefined) ||
+    [];
+  return Array.isArray(raw) ? raw : [];
+}
+
 /** Value map key: disambiguate duplicate field names across primary vs secondary intents. */
 function previewFieldValueKey(f: PreviewParamField): string {
   if (f.secondary_intent_index !== undefined && f.secondary_intent_index !== null) {
@@ -346,6 +427,53 @@ function isValidIPv4Cidr(raw: string): boolean {
   const pfx = Number(m[2]);
   if (!isValidIPv4Address(ip)) return false;
   return Number.isInteger(pfx) && pfx >= 0 && pfx <= 32;
+}
+
+/** True when this wizard field still blocks Continue / Next (single-field check). */
+function paramsWizardValueIncomplete(
+  f: PreviewParamField,
+  allValues: Record<string, string | number | string[] | number[] | undefined>,
+): boolean {
+  const vk = previewFieldValueKey(f);
+  const v = allValues[vk];
+  if (f.optional && (v === undefined || v === '' || v === null)) return false;
+  if (v === undefined || v === '' || v === null) return true;
+  if (Array.isArray(v) && v.length === 0) return true;
+  if (typeof v === 'number' && Number.isNaN(v)) return true;
+  const fl = String(f.field || '').toLowerCase();
+  if (fl === 'next_hop') {
+    const modeKey = `${vk}__mode`;
+    const modeRaw = String((allValues[modeKey] ?? '') as string).trim().toLowerCase();
+    const mode = modeRaw === 'interface' ? 'interface' : 'ip';
+    if (mode === 'interface') {
+      return !String(v || '').trim();
+    }
+    const ip = String(v || '').trim().split('/')[0];
+    if (!ip) return true;
+    if (ip.includes('.') && !isValidIPv4Address(ip)) return true;
+    return false;
+  }
+  if (fl === 'ip_address' && !isValidIPv4Address(String(v))) return true;
+  if (fl === 'network_address' && !isValidIPv4Address(String(v))) return true;
+  if (fl === 'destination' && !isValidIPv4Cidr(String(v))) return true;
+  if (fl === 'access_vlan' || fl === 'native_vlan') {
+    if (typeof v === 'number' && (v < 1 || v > 4094)) return true;
+  }
+  if (fl === 'area') {
+    const n = typeof v === 'number' ? v : parseInt(String(v).trim(), 10);
+    if (Number.isNaN(n) || n < 0) return true;
+  }
+  if (fl === 'subnet_mask') {
+    const n =
+      typeof v === 'number' ? v : parseInt(String(v).replace('/', '').trim(), 10);
+    if (Number.isNaN(n) || n < 0 || n > 32) return true;
+  }
+  if (fl === 'prefix_length') {
+    const n =
+      typeof v === 'number' ? v : parseInt(String(v).replace('/', '').trim(), 10);
+    if (Number.isNaN(n) || n < 0 || n > 32) return true;
+  }
+  return false;
 }
 
 function sanitizeIPv4CidrInput(raw: string): string {
@@ -494,6 +622,8 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
     Record<string, string | number | string[] | number[]>
   >({});
   const [paramsDisambiguationStep, setParamsDisambiguationStep] = useState(0);
+  /** True while Next is refreshing preview / local topology before an interface step. */
+  const [paramsWizardNextLoading, setParamsWizardNextLoading] = useState(false);
   /** Planned-inventory device picker (hints like SW1, wrong names, or missing targets) — before interface/params. */
   const [deviceDisambiguation, setDeviceDisambiguation] = useState<{
     messageId: string;
@@ -799,10 +929,7 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
             disambiguation_kind?: string;
           }
         | undefined;
-      const pickerDevicesFromIface =
-        ((res?.interfaces_disambiguation?.devices as PlannedDeviceInterfaces[] | undefined) ||
-        (res?.interfaces_for_selection?.devices as PlannedDeviceInterfaces[] | undefined) ||
-        []);
+      const pickerDevicesFromIface = mergeInterfacePickersFromPreviewResponse(res);
       if (pickerDevicesFromIface.length > 0) {
         setPlannedPickerDevices((prev) => mergePlannedDeviceInterfaces(prev, pickerDevicesFromIface));
       }
@@ -1051,6 +1178,97 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
     },
     [],
   );
+
+  const handleParamsWizardNext = useCallback(async () => {
+    if (!paramsDisambiguation) return;
+    const fields = paramsDisambiguation.fields;
+    const step = paramsDisambiguationStep;
+    const cur = fields[step];
+    const nxt = fields[step + 1];
+    if (!cur || nxt === undefined) return;
+
+    if (paramsWizardValueIncomplete(cur, paramsDisambiguationValues)) {
+      Toast.warning('Missing or invalid answer', 'Please complete this step before continuing.');
+      return;
+    }
+
+    const advancingToIface = isParamsWizardInterfaceInventoryField(nxt);
+    const hosts = collectTargetHostsFromParamsWizard(fields, paramsDisambiguationValues);
+
+    if (advancingToIface) {
+      if (hosts.length === 0) {
+        Toast.warning('Select devices first', 'Choose target device(s) before selecting interfaces.');
+        return;
+      }
+      setParamsWizardNextLoading(true);
+      try {
+        const intentText = paramsDisambiguation.intentText;
+        const { vendor, feature, params: parsedParams } = parseIntent(intentText);
+        const scopedPrev = previewAccumulatedIntentText === intentText ? previewAccumulatedParams : {};
+        const merged: Record<string, unknown> = { ...parsedParams, ...scopedPrev, target_hosts: hosts };
+
+        const localPick = await plannedInterfacesFromLocalTopology(hosts);
+        if (localPick.length > 0) {
+          setPlannedPickerDevices((prev) => mergePlannedDeviceInterfaces(prev, localPick));
+        }
+        setPlannedPickerDeviceNames(Array.from(new Set(hosts)));
+
+        const localCoversAll =
+          hosts.length > 0 &&
+          hosts.every((hn) => {
+            const row = localPick.find((d) => d.hostname === hn);
+            return row != null && (row.interfaces?.length ?? 0) > 0;
+          });
+
+        if (!localCoversAll) {
+          const res = await ansibleApi.previewIntent({
+            intent_description: intentText,
+            target_hosts: hosts,
+            params: merged,
+            vendor: vendor || undefined,
+            feature: feature || undefined,
+            provider: ansibleModel.provider,
+            model: ansibleModel.model,
+            ollama_base_url: ansibleModel.ollama_base_url ?? undefined,
+            skip_rag: true,
+          });
+
+          const fromPreview = mergeInterfacePickersFromPreviewResponse(res);
+          if (fromPreview.length > 0) {
+            setPlannedPickerDevices((prev) => mergePlannedDeviceInterfaces(prev, fromPreview));
+          }
+          const nameSet = new Set<string>(hosts);
+          for (const d of fromPreview) {
+            const hn = String(d.hostname || '').trim();
+            if (hn) nameSet.add(hn);
+          }
+          setPlannedPickerDeviceNames(Array.from(nameSet));
+        }
+
+        setPreviewLockedTargetHosts(hosts);
+        setPreviewAccumulatedParams(merged);
+        setPreviewAccumulatedIntentText(intentText);
+        setParamsDisambiguationStep((s) => s + 1);
+      } catch {
+        Toast.error(
+          'Could not load interfaces',
+          'Failed to refresh planned interfaces for the selected devices. Check planned topology / local DB and try again.',
+        );
+      } finally {
+        setParamsWizardNextLoading(false);
+      }
+      return;
+    }
+
+    setParamsDisambiguationStep((s) => s + 1);
+  }, [
+    paramsDisambiguation,
+    paramsDisambiguationStep,
+    paramsDisambiguationValues,
+    previewAccumulatedParams,
+    previewAccumulatedIntentText,
+    ansibleModel,
+  ]);
 
   const submitDeviceDisambiguation = useCallback(async () => {
     if (!deviceDisambiguation) return;
@@ -2446,6 +2664,9 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
                                       !isChatField &&
                                       (normalizedField === 'interfaces' ||
                                         normalizedField === 'interfaces_to_shutdown' ||
+                                        normalizedField === 'apply_to' ||
+                                        normalizedField === 'interface_apply' ||
+                                        normalizedField === 'passive_interfaces' ||
                                         normalizedField.includes('interface'));
                                     if (!isTargetDeviceField && !isInterfaceField) return null;
 
@@ -2466,12 +2687,87 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
                                     const visibleInterfaceDevices =
                                       filteredDevices.length > 0 ? filteredDevices : plannedPickerDevices;
                                     const candidateDevices =
-                                      plannedPickerDeviceNames.length > 0
-                                        ? plannedPickerDeviceNames
-                                        : filteredDevices.map((d) => d.hostname);
+                                      (() => {
+                                        // Prefer backend-provided options for target_devices questions.
+                                        // This avoids stale UI state (e.g. previous single-host picker) from
+                                        // shrinking the current device-choice list.
+                                        if (
+                                          isTargetDeviceField &&
+                                          Array.isArray((f as any).options) &&
+                                          (f as any).options.every((x: unknown) => typeof x === 'string')
+                                        ) {
+                                          const opts = ((f as any).options as string[])
+                                            .map((x) => String(x || '').trim())
+                                            .filter(Boolean);
+                                          if (opts.length > 0) return opts;
+                                        }
+                                        return plannedPickerDeviceNames.length > 0
+                                          ? plannedPickerDeviceNames
+                                          : filteredDevices.map((d) => d.hostname);
+                                      })();
 
                                     if (isTargetDeviceField) {
                                       const cur = (paramsDisambiguationValues[vk] as string[] | undefined) ?? [];
+                                      const fc = f as {
+                                        closest_candidates?: string[];
+                                        other_candidates?: string[];
+                                      };
+                                      const closestList = Array.isArray(fc.closest_candidates)
+                                        ? fc.closest_candidates
+                                            .map((x) => String(x || '').trim())
+                                            .filter(Boolean)
+                                        : [];
+                                      const otherList = Array.isArray(fc.other_candidates)
+                                        ? fc.other_candidates
+                                            .map((x) => String(x || '').trim())
+                                            .filter(Boolean)
+                                        : [];
+                                      const useGroupedPicker =
+                                        closestList.length > 0 && otherList.length > 0;
+                                      const toggleHost = (host: string) => {
+                                        setParamsDisambiguationValues((prev) => {
+                                          const prevArr = (prev[vk] as string[] | undefined) ?? [];
+                                          const next = prevArr.includes(host)
+                                            ? prevArr.filter((x) => x !== host)
+                                            : [...prevArr, host];
+                                          return { ...prev, [vk]: next };
+                                        });
+                                      };
+                                      const hostCheckbox = (host: string) => {
+                                        const checked = cur.includes(host);
+                                        return (
+                                          <label
+                                            key={`${vk}-${host}`}
+                                            className="flex items-center gap-1.5 cursor-pointer"
+                                          >
+                                            <input
+                                              type="checkbox"
+                                              checked={checked}
+                                              onChange={() => toggleHost(host)}
+                                              className="checkbox checkbox-sm checkbox-primary"
+                                            />
+                                            <span className="text-xs font-mono">{host}</span>
+                                          </label>
+                                        );
+                                      };
+                                      if (useGroupedPicker) {
+                                        return (
+                                          <div className="space-y-2 rounded border border-base-300 bg-base-300/50 p-2 max-h-60 overflow-y-auto">
+                                            <div>
+                                              <div className="w-full text-[11px] font-semibold text-primary/90 mb-1">
+                                                You might be referring:
+                                              </div>
+                                              <div className="flex flex-wrap gap-2">{closestList.map(hostCheckbox)}</div>
+                                            </div>
+                                            <div>
+                                              <div className="w-full text-[11px] font-semibold text-base-content/70 mb-1">
+                                                Devices not found?
+                                              </div>
+                                              <div className="flex flex-wrap gap-2">{otherList.map(hostCheckbox)}</div>
+                                            </div>
+                                          </div>
+                                        );
+                                      }
                                       return (
                                         <div className="flex flex-wrap gap-2 rounded border border-base-300 bg-base-300/50 p-2 max-h-52 overflow-y-auto">
                                           {candidateDevices.map((host) => {
@@ -2481,15 +2777,7 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
                                                 <input
                                                   type="checkbox"
                                                   checked={checked}
-                                                  onChange={() => {
-                                                    setParamsDisambiguationValues((prev) => {
-                                                      const prevArr = (prev[vk] as string[] | undefined) ?? [];
-                                                      const next = prevArr.includes(host)
-                                                        ? prevArr.filter((x) => x !== host)
-                                                        : [...prevArr, host];
-                                                      return { ...prev, [vk]: next };
-                                                    });
-                                                  }}
+                                                  onChange={() => toggleHost(host)}
                                                   className="checkbox checkbox-sm checkbox-primary"
                                                 />
                                                 <span className="text-xs font-mono">{host}</span>
@@ -3008,6 +3296,7 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
                           </div>
                           <div className="flex items-center gap-2">
                             <button type="button" className="btn btn-sm btn-ghost" onClick={() => {
+                              setParamsWizardNextLoading(false);
                               setParamsDisambiguation(null);
                               setParamsDisambiguationValues({});
                               setParamsDisambiguationStep(0);
@@ -3027,59 +3316,42 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
                             {paramsDisambiguationStep < paramsDisambiguation.fields.length - 1 ? (
                               <button
                                 type="button"
-                                className="btn btn-sm btn-primary"
-                                onClick={() => setParamsDisambiguationStep((s) => s + 1)}
+                                className="btn btn-sm btn-primary gap-1.5"
+                                disabled={
+                                  paramsWizardNextLoading ||
+                                  !paramsDisambiguation.fields[paramsDisambiguationStep] ||
+                                  paramsWizardValueIncomplete(
+                                    paramsDisambiguation.fields[paramsDisambiguationStep],
+                                    paramsDisambiguationValues as Record<
+                                      string,
+                                      string | number | string[] | number[] | undefined
+                                    >,
+                                  )
+                                }
+                                onClick={() => void handleParamsWizardNext()}
                               >
-                                Next
+                                {paramsWizardNextLoading ? (
+                                  <>
+                                    <Loader2 className="w-3.5 h-3.5 animate-spin shrink-0" />
+                                    Loading…
+                                  </>
+                                ) : (
+                                  'Next'
+                                )}
                               </button>
                             ) : (
                               <button
                                 type="button"
                                 className="btn btn-sm btn-primary"
                                 disabled={
-                                  paramsDisambiguation.fields.some(
-                                    (f) => {
-                                      const vk = previewFieldValueKey(f);
-                                      const v = paramsDisambiguationValues[vk];
-                                      if (f.optional && (v === undefined || v === '' || v === null)) return false;
-                                      if (v === undefined || v === '' || v === null) return true;
-                                      if (Array.isArray(v) && v.length === 0) return true;
-                                      if (typeof v === 'number' && Number.isNaN(v)) return true;
-                                      const fl = String(f.field || '').toLowerCase();
-                                      if (fl === 'ip_address' && !isValidIPv4Address(String(v))) return true;
-                                      if (fl === 'network_address' && !isValidIPv4Address(String(v))) return true;
-                                      if (fl === 'destination' && !isValidIPv4Cidr(String(v))) return true;
-                                      if (fl === 'next_hop') {
-                                        const s = String(v || '').trim();
-                                        // next_hop can be an egress interface name; only enforce IPv4 format when it looks like an IP.
-                                        if (s.includes('.') && !isValidIPv4Address(s)) return true;
-                                      }
-                                      if (fl === 'access_vlan' || fl === 'native_vlan') {
-                                        if (typeof v === 'number' && (v < 1 || v > 4094)) return true;
-                                      }
-                                      if (fl === 'area') {
-                                        const n =
-                                          typeof v === 'number'
-                                            ? v
-                                            : parseInt(String(v).trim(), 10);
-                                        if (Number.isNaN(n) || n < 0) return true;
-                                      }
-                                      if (fl === 'subnet_mask') {
-                                        const n =
-                                          typeof v === 'number'
-                                            ? v
-                                            : parseInt(String(v).replace("/", "").trim(), 10);
-                                        if (Number.isNaN(n) || n < 0 || n > 32) return true;
-                                      }
-                                      if (fl === 'prefix_length') {
-                                        const n =
-                                          typeof v === 'number'
-                                            ? v
-                                            : parseInt(String(v).replace("/", "").trim(), 10);
-                                        if (Number.isNaN(n) || n < 0 || n > 32) return true;
-                                      }
-                                      return false;
-                                    }
+                                  paramsDisambiguation.fields.some((f) =>
+                                    paramsWizardValueIncomplete(
+                                      f,
+                                      paramsDisambiguationValues as Record<
+                                        string,
+                                        string | number | string[] | number[] | undefined
+                                      >,
+                                    ),
                                   )
                                 }
                                 onClick={async () => {
@@ -3190,11 +3462,21 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
                                       delete (merged as any).networks;
                                       delete (merged as any).ospf_networks;
                                     }
+                                    // Preserve user-picked target devices from this wizard round.
+                                    // Previously, previewLockedTargetHosts could overwrite `target_devices`
+                                    // and force a stale host (e.g. Acc_Cisco_1) back into the request.
+                                    const mergedTargetsFromWizard = Array.isArray((merged as any).target_hosts)
+                                      ? ((merged as any).target_hosts as unknown[])
+                                          .map((x) => String(x || '').trim())
+                                          .filter(Boolean)
+                                      : [];
                                     const th =
-                                      previewLockedTargetHosts.length > 0
-                                        ? previewLockedTargetHosts
-                                        : safeParsedHostsForPreview(intentText);
-                                    if (th?.length) {
+                                      mergedTargetsFromWizard.length > 0
+                                        ? mergedTargetsFromWizard
+                                        : previewLockedTargetHosts.length > 0
+                                          ? previewLockedTargetHosts
+                                          : safeParsedHostsForPreview(intentText);
+                                    if (th.length > 0) {
                                       merged.target_hosts = th;
                                     }
                                     setPreviewAccumulatedParams(merged);

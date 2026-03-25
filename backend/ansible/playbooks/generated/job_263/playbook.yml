@@ -1,0 +1,31 @@
+- name: Configure ACL (Huawei VRP)
+  hosts: "Acc_Huawei_3"
+  gather_facts: no
+  connection: network_cli
+  tasks:
+    - name: Configure ACL on Huawei VRP
+      community.network.ce_config:
+        lines:
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    - name: Apply ACL to GigabitEthernet1/0/3 on Huawei VRP (replace semantics)
+      community.network.ce_config:
+        lines:
+          - "interface GigabitEthernet1/0/3"
+          - "undo traffic-filter inbound"
+          - "undo traffic-filter outbound"
+          - "traffic-filter inbound acl 2026"
+          - "quit"
+

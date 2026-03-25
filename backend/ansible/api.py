@@ -1853,8 +1853,11 @@ def _resolve_backend_intent_request(req, user: dict) -> tuple["PlanAnsibleReques
                 or "access-group" in _tl
                 or "inbound on" in _tl
                 or "outbound on" in _tl
+                or "apply it on" in _tl
+                or "apply on" in _tl
                 or _pa in ("apply_acl", "apply_acl_to_interface")
             )
+            _acl_ruleish = any(k in _tl for k in ("deny", "permit", "icmp", "tcp", "udp"))
             if "ospf" in _tl and (_pa in ("unknown", "") or _pf in ("routing", "", "ospf")):
                 parsed.intent_type = IntentType.CONFIGURE
                 if not str(parsed.feature or "").strip():
@@ -1863,8 +1866,12 @@ def _resolve_backend_intent_request(req, user: dict) -> tuple["PlanAnsibleReques
                     parsed.action = "configure_ospf"
             elif _routeish and (_pa in ("unknown", "") or _pf in ("routing", "")):
                 parsed.intent_type = IntentType.CONFIGURE
-            elif _applyish and (_aclish or _pf in ("acl", "")):
+            elif (_applyish and (_aclish or _pf in ("acl", ""))) or (_aclish and _acl_ruleish):
                 parsed.intent_type = IntentType.CONFIGURE
+                if not str(parsed.feature or "").strip():
+                    parsed.feature = "acl"
+                if _pa in ("unknown", "", "apply_acl"):
+                    parsed.action = "apply_acl_to_interface" if _applyish else "configure_acl"
         except Exception:
             pass
     if parsed.intent_type not in {IntentType.CONFIGURE, IntentType.DEPLOY}:
@@ -1890,12 +1897,38 @@ def _resolve_backend_intent_request(req, user: dict) -> tuple["PlanAnsibleReques
             _tl = str(req.intent_description or "").strip().lower()
             _pa = str(parsed.action or "").strip().lower().replace("-", "_")
             _routeish = ("route" in _tl or "routing" in _tl) and "traceroute" not in _tl
+            _aclish = (
+                "acl" in _tl
+                or "access-list" in _tl
+                or "access list" in _tl
+                or "icmp" in _tl
+                or "permit" in _tl
+                or "deny" in _tl
+            )
+            _applyish_acl = (
+                "apply acl" in _tl
+                or "access-group" in _tl
+                or "traffic-filter" in _tl
+                or "inbound on" in _tl
+                or "outbound on" in _tl
+                or "apply it on" in _tl
+            )
+            _create_or_rule_acl = any(
+                k in _tl for k in ("create acl", "deny", "permit", "icmp", "tcp", "udp", "rule")
+            )
             if "ospf" in _tl and (_pa in ("unknown", "") or _pa == "configure"):
                 parsed.feature = "ospf"
                 parsed.action = "configure_ospf"
             if _routeish and (_pa in ("unknown", "") or _pa == "configure"):
                 parsed.feature = "static_route"
                 parsed.action = "configure_static_route"
+            if _aclish and (_pa in ("unknown", "", "configure", "apply_acl")):
+                parsed.feature = "acl"
+                parsed.action = (
+                    "configure_acl"
+                    if _create_or_rule_acl
+                    else ("apply_acl_to_interface" if _applyish_acl else "configure_acl")
+                )
         except Exception:
             pass
     if not parsed.feature:
@@ -2028,6 +2061,11 @@ def _resolve_backend_intent_request(req, user: dict) -> tuple["PlanAnsibleReques
             plan_params_merged = dict(_acl_fix["parameters"])
     except Exception as _acl_fix_exc:
         logger.debug("acl prompt coercion failed (pre-plan): %s", _acl_fix_exc)
+    if str(parsed.feature or "").strip().lower().replace("-", "_") == "acl":
+        if not str(plan_params_merged.get("acl_direction") or "").strip():
+            _d = str(plan_params_merged.get("direction") or "").strip().lower()
+            if _d:
+                plan_params_merged["acl_direction"] = "out" if _d.startswith("out") else "in"
     plan_req = PlanAnsibleRequest(
         intent_description=req.intent_description,
         target_hosts=parsed.resolved_devices,
@@ -2492,6 +2530,12 @@ async def plan_ansible(
                 plan_params = dict(_acl_fix["parameters"])
     except Exception as _acl_plan_exc:
         logger.debug("acl prompt coercion failed (plan_ansible): %s", _acl_plan_exc)
+    # Studio/UI may send only ``direction``; tree + apply schema expect ``acl_direction``.
+    if str(req.feature or "").strip().lower().replace("-", "_") == "acl":
+        if not str(plan_params.get("acl_direction") or "").strip():
+            _d = str(plan_params.get("direction") or "").strip().lower()
+            if _d:
+                plan_params["acl_direction"] = "out" if _d.startswith("out") else "in"
     if str(req.feature or "").strip().lower() == "vlan":
         merge_extracted_vlan_params_into_flat_params(plan_params, req.intent_description or "")
         _vlan_user_if = bool(plan_params.get("interfaces") or plan_params.get("interfaces_config"))
@@ -4610,6 +4654,84 @@ def _extract_requested_numbers(intent_description: str) -> List[int]:
     return []
 
 
+def _acl_wizard_device_option_groups(
+    intent_description: str,
+    devices_disambiguation: Optional[Dict[str, Any]],
+) -> Tuple[List[str], List[str]]:
+    """
+    (closest, others) for ACL device pickers: prompt-suggested host(s) first, then the rest
+    of planned inventory so users can multi-select beyond the hint.
+    """
+    full: List[str] = []
+    if _db is not None:
+        try:
+            full = sorted(set(_db_hostname_lower_to_canonical(_db).values()))
+        except Exception:
+            full = []
+    if not full:
+        try:
+            raw = list((devices_disambiguation or {}).get("candidate_devices") or [])
+            full = sorted({str(x).strip() for x in raw if str(x).strip()})
+        except Exception:
+            full = []
+
+    tl = str(intent_description or "").strip().lower()
+    nums = _extract_requested_numbers(intent_description or "")
+    closest: List[str] = []
+    if nums and "access" in tl and "switch" in tl:
+        try:
+            access_hosts = _get_access_devices_ordered()
+            by_num: Dict[int, str] = {}
+            for h in access_hosts:
+                n = _number_from_hostname(h)
+                if n is not None and n not in by_num:
+                    by_num[n] = h
+            picked = [by_num[n] for n in nums if n in by_num]
+            closest = list(dict.fromkeys(picked))
+        except Exception:
+            closest = []
+
+    if not closest and devices_disambiguation:
+        try:
+            cc = devices_disambiguation.get("closest_candidates")
+            if isinstance(cc, list) and cc:
+                closest = [str(x).strip() for x in cc if str(x).strip()]
+                closest = list(dict.fromkeys(closest))
+        except Exception:
+            pass
+
+    if not full:
+        return closest, []
+
+    seen = set(closest)
+    others = [h for h in full if h not in seen]
+    return closest, others
+
+
+def _acl_wizard_device_options(
+    intent_description: str,
+    devices_disambiguation: Optional[Dict[str, Any]],
+) -> List[str]:
+    """Flat hostname list (suggested first, then remaining inventory)."""
+    a, b = _acl_wizard_device_option_groups(intent_description, devices_disambiguation)
+    return a + b
+
+
+def _apply_acl_target_field_device_groups(
+    field_dict: Dict[str, Any],
+    intent_description: str,
+    devices_disambiguation: Optional[Dict[str, Any]],
+) -> None:
+    """Mutates field_dict: options + optional closest_candidates / other_candidates for chat UI."""
+    closest, others = _acl_wizard_device_option_groups(intent_description, devices_disambiguation)
+    field_dict["options"] = closest + others
+    field_dict.pop("closest_candidates", None)
+    field_dict.pop("other_candidates", None)
+    if closest and others:
+        field_dict["closest_candidates"] = closest
+        field_dict["other_candidates"] = others
+
+
 def _switch_role_disambiguation(intent_description: str) -> Optional[dict[str, Any]]:
     """
     Detect ambiguous prompts like "Switch 1 and Switch 2" (no access/dist/core),
@@ -5337,6 +5459,46 @@ def _preview_parse_and_rag(
                 _cats_norm2 = {str(c).strip().lower().replace("-", "_") for c in (categories or []) if str(c).strip()}
                 if "ospf" not in _cats_norm2:
                     categories.append("ospf")
+        except Exception:
+            pass
+
+        # ACL recovery: prompts like "Create ACL to deny ICMP and apply it on access switch 3"
+        # may come back as action=unknown from some models. Promote to a real ACL operation
+        # so schema-driven required-parameter questions (acl_name/apply_to/direction/targets) can be asked.
+        try:
+            _tl_acl = str(intent_description or "").strip().lower()
+            _pa_acl = str(parsed_dict.get("action") or parsed.action or "").strip().lower().replace("-", "_")
+            _pf_acl = str(parsed_dict.get("feature") or parsed.feature or "").strip().lower().replace("-", "_")
+            _cats_acl = {str(c).strip().lower().replace("-", "_") for c in (categories or []) if str(c).strip()}
+            _aclish = (
+                "acl" in _tl_acl
+                or "access-list" in _tl_acl
+                or "access list" in _tl_acl
+                or "icmp" in _tl_acl
+                or "permit" in _tl_acl
+                or "deny" in _tl_acl
+                or "acl" in _cats_acl
+            )
+            _applyish_acl = (
+                "apply acl" in _tl_acl
+                or "access-group" in _tl_acl
+                or "traffic-filter" in _tl_acl
+                or "inbound on" in _tl_acl
+                or "outbound on" in _tl_acl
+                or "apply it on" in _tl_acl
+            )
+            _create_or_rule_acl = any(
+                k in _tl_acl for k in ("create acl", "deny", "permit", "icmp", "tcp", "udp", "rule")
+            )
+            if _aclish and (_pa_acl in ("unknown", "") or _pf_acl in ("", "acl")):
+                parsed_dict["feature"] = "acl"
+                parsed_dict["action"] = (
+                    "configure_acl"
+                    if _create_or_rule_acl
+                    else ("apply_acl_to_interface" if _applyish_acl else "configure_acl")
+                )
+                if "acl" not in _cats_acl:
+                    categories.append("acl")
         except Exception:
             pass
 
@@ -6749,8 +6911,7 @@ async def preview_intent(
                 and (schema_action_iface == "create_vlan" or feat_lower_preview == "vlan")
             )
             or (
-                iface_names_invalid
-                and schema_action_iface
+                schema_action_iface
                 in (
                     "configure_acl",
                     "apply_acl_to_interface",
@@ -6758,6 +6919,41 @@ async def preview_intent(
                     "configure_ospf",
                     "configure_ospf_passive_interface",
                     "configure_static_route",
+                )
+                and (
+                    iface_names_invalid
+                    # Ask interface picker when required attachment target is still missing,
+                    # even if there is no invalid-name validation error yet.
+                    or (
+                        schema_action_iface in ("configure_acl", "apply_acl_to_interface")
+                        and (
+                            ("apply_to" in set(missing_final or []))
+                            or (
+                                not isinstance((params or {}).get("apply_to"), list)
+                                or len((params or {}).get("apply_to") or []) == 0
+                            )
+                        )
+                    )
+                    or (
+                        schema_action_iface == "configure_qos"
+                        and (
+                            ("interface_apply" in set(missing_final or []))
+                            or (
+                                not isinstance((params or {}).get("interface_apply"), list)
+                                or len((params or {}).get("interface_apply") or []) == 0
+                            )
+                        )
+                    )
+                    or (
+                        schema_action_iface in ("configure_ospf", "configure_ospf_passive_interface")
+                        and (
+                            ("passive_interfaces" in set(missing_final or []))
+                            or (
+                                not isinstance((params or {}).get("passive_interfaces"), list)
+                                or len((params or {}).get("passive_interfaces") or []) == 0
+                            )
+                        )
+                    )
                 )
             )
         )
@@ -6957,7 +7153,33 @@ async def preview_intent(
         parsed_intent["requires_disambiguation"] = False
         parsed_intent["disambiguation_message"] = ""
         # Do not keep a params wizard row asking for targets when hostnames are already resolved.
-        if params_disambiguation:
+        _keep_target_row_acl_switch_pick = False
+        try:
+            _sa_strip = str(schema_action_iface or "").strip().lower().replace("-", "_")
+            _tl_strip = str(req.intent_description or "").strip().lower()
+            _nums_strip = _extract_requested_numbers(req.intent_description or "")
+            _switch_sel_strip = bool(
+                _nums_strip
+                and "switch" in _tl_strip
+                and ("access" in _tl_strip or "distribution" in _tl_strip or "core" in _tl_strip)
+            )
+            _attach_strip = bool(
+                re.search(r"\b(?:apply|applied|attach|bind)\b", _tl_strip)
+                or re.search(r"\btraffic[-\s]?filter\b", _tl_strip)
+                or re.search(r"\bon\s+(?:an?\s+)?(?:access|distribution|core)\s+switch\b", _tl_strip)
+            )
+            if (
+                feat_lower_preview == "acl"
+                and _sa_strip in ("apply_acl_to_interface", "configure_acl")
+                and _switch_sel_strip
+                and not _explicit_targets_in_request
+                and (_sa_strip == "apply_acl_to_interface" or _attach_strip)
+            ):
+                # Parser may pre-resolve the wrong host for "access switch N"; keep the device wizard.
+                _keep_target_row_acl_switch_pick = True
+        except Exception:
+            pass
+        if params_disambiguation and not _keep_target_row_acl_switch_pick:
             _target_field_names = frozenset({"target_devices", "target_hosts"})
             _pf = [
                 f
@@ -7140,6 +7362,168 @@ async def preview_intent(
                 params_disambiguation = None
     except Exception as _pd_prune_exc:
         logger.debug("params_disambiguation prune failed: %s", _pd_prune_exc)
+
+    # ACL apply staged wizard ordering:
+    # 1) ask target device(s) first
+    # 2) then planned inventory interface picker
+    # 3) then acl_direction (strict options)
+    # 4) finally acl_name
+    try:
+        _sa_acl = str(schema_action_iface or "").strip().lower().replace("-", "_")
+        _tl_acl_q = str(req.intent_description or "").strip().lower()
+        _acl_attach_prompt = bool(
+            re.search(r"\b(?:apply|applied|attach|bind)\b", _tl_acl_q)
+            or re.search(r"\btraffic[-\s]?filter\b", _tl_acl_q)
+            or re.search(r"\bon\s+(?:an?\s+)?(?:access|distribution|core)\s+switch\b", _tl_acl_q)
+        )
+        _acl_staged_wizard = _sa_acl == "apply_acl_to_interface" or (
+            _sa_acl == "configure_acl" and _acl_attach_prompt
+        )
+        if _acl_staged_wizard:
+            _reqp = req.params if isinstance(req.params, dict) else {}
+            _explicit_targets_in_req = bool(
+                (req.target_hosts and len(req.target_hosts) > 0)
+                or (isinstance(_reqp.get("target_hosts"), list) and len(_reqp.get("target_hosts") or []) > 0)
+                or (isinstance(_reqp.get("target_devices"), list) and len(_reqp.get("target_devices") or []) > 0)
+                or (isinstance(_reqp.get("target_hosts"), str) and str(_reqp.get("target_hosts") or "").strip())
+                or (isinstance(_reqp.get("target_devices"), str) and str(_reqp.get("target_devices") or "").strip())
+            )
+            _has_switch_selector = bool(
+                _extract_requested_numbers(req.intent_description or "")
+                and "switch" in _tl_acl_q
+                and ("access" in _tl_acl_q or "distribution" in _tl_acl_q or "core" in _tl_acl_q)
+            )
+            # If prompt uses selector-style host hints (e.g. "access switch 3"), keep device question
+            # visible unless user already gave explicit hostnames.
+            _force_target_pick = _has_switch_selector and not _explicit_targets_in_req
+            _has_targets = bool(
+                resolved_hosts
+                and any(str(h).strip() for h in resolved_hosts)
+            )
+            _has_apply_to = bool(
+                (isinstance(_reqp.get("apply_to"), list) and _reqp.get("apply_to"))
+                or (isinstance(parsed_intent.get("parameters"), dict) and isinstance((parsed_intent.get("parameters") or {}).get("apply_to"), list) and (parsed_intent.get("parameters") or {}).get("apply_to"))
+            )
+            _has_acl_direction = bool(
+                str((parsed_intent.get("parameters") or {}).get("acl_direction") or "").strip()
+            )
+            _has_acl_name = bool(
+                str((parsed_intent.get("parameters") or {}).get("acl_name") or "").strip()
+            )
+
+            # Stage 1: no resolved targets yet -> ask only target_devices.
+            if not _has_targets:
+                _tf_acl_dev: Dict[str, Any] = {
+                    "field": "target_devices",
+                    "question": "Which devices?",
+                    "optional": False,
+                    "control": "multi_select_strings",
+                }
+                _apply_acl_target_field_device_groups(
+                    _tf_acl_dev,
+                    req.intent_description or "",
+                    devices_disambiguation,
+                )
+                params_disambiguation = {
+                    "question": "Please provide the following.",
+                    "fields": [_tf_acl_dev],
+                }
+            # Single-round ordered wizard: include all still-missing ACL apply fields at once.
+            # Frontend renders these sequentially (Question 1..N) in one round-trip.
+            _pd_acl = params_disambiguation if isinstance(params_disambiguation, dict) else None
+            _fields_in = [
+                f for f in ((_pd_acl or {}).get("fields") or [])
+                if isinstance(f, dict)
+            ]
+            _field_map = {
+                str(f.get("field") or "").strip().lower().replace("-", "_"): dict(f)
+                for f in _fields_in
+            }
+            _ordered: List[Dict[str, Any]] = []
+
+            # 1) Device first (if unresolved)
+            if (not _has_targets) or _force_target_pick:
+                _fd = dict(_field_map.get("target_devices") or _field_map.get("target_hosts") or {
+                    "field": "target_devices",
+                    "question": "Which devices?",
+                    "optional": False,
+                })
+                _fd["field"] = "target_devices"
+                _fd["control"] = "multi_select_strings"
+                _apply_acl_target_field_device_groups(
+                    _fd,
+                    req.intent_description or "",
+                    devices_disambiguation,
+                )
+                _ordered.append(_fd)
+
+            # apply_acl_to_interface: interface + direction + name ordering.
+            # configure_acl+attach: same UX; skip direction row only for pure define (no attach hint).
+            if _sa_acl == "apply_acl_to_interface" or _acl_attach_prompt:
+                # 2) Interface attachment picker
+                if not _has_apply_to:
+                    _ordered.append(
+                        dict(
+                            _field_map.get("apply_to")
+                            or {
+                                "field": "apply_to",
+                                "question": "Which interface(s) should it be applied to?",
+                                "optional": False,
+                            }
+                        )
+                    )
+
+                # 3) Direction options (no free text)
+                if not _has_acl_direction:
+                    _fdir = dict(
+                        _field_map.get("acl_direction")
+                        or {
+                            "field": "acl_direction",
+                            "question": "Direction on the interface (inbound/in or outbound/out)?",
+                            "optional": False,
+                        }
+                    )
+                    _fdir["control"] = "single_select_strings"
+                    _fdir["options"] = ["in", "out"]
+                    _ordered.append(_fdir)
+
+                # 4) ACL name/number last
+                if not _has_acl_name:
+                    _ordered.append(
+                        dict(
+                            _field_map.get("acl_name")
+                            or {
+                                "field": "acl_name",
+                                "question": "ACL name or number?",
+                                "optional": False,
+                            }
+                        )
+                    )
+
+            # Keep any remaining non-interface/non-target fields after core ACL flow.
+            for _k, _v in _field_map.items():
+                if _k in {
+                    "target_devices",
+                    "target_hosts",
+                    "interfaces",
+                    "apply_to",
+                    "interface_apply",
+                    "acl_direction",
+                    "acl_name",
+                }:
+                    continue
+                _ordered.append(dict(_v))
+
+            params_disambiguation = (
+                {
+                    "question": (_pd_acl or {}).get("question") or "Please provide the following.",
+                    "fields": _ordered,
+                }
+                if _ordered
+                else None
+            )
+    except Exception as _acl_stage_exc:
+        logger.debug("ACL staged disambiguation merge failed: %s", _acl_stage_exc)
 
     intent_schema_inspector: Dict[str, Any] = {"slices": []}
     try:

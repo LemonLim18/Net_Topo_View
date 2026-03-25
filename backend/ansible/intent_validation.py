@@ -1917,6 +1917,24 @@ def correct_acl_params_from_natural_language(
 
     _explicit_family = _prompt_explicit_acl_family(text)
 
+    def _extract_basic_rule_from_prompt(t: str) -> Optional[Dict[str, Any]]:
+        tl = (t or "").lower()
+        action = "deny" if "deny" in tl or "block" in tl else ("permit" if "permit" in tl or "allow" in tl else "")
+        protocol = ""
+        for p in ("icmp", "tcp", "udp", "ip"):
+            if re.search(rf"\b{p}\b", tl):
+                protocol = p
+                break
+        if not action or not protocol:
+            return None
+        # Safe baseline for ACL rule synthesis from vague create/apply prompts.
+        return {
+            "action": action,
+            "protocol": protocol,
+            "source": "any",
+            "destination": "any",
+        }
+
     def _fix_rules(container: Dict[str, Any]) -> None:
         p = container.get("parameters")
         if not isinstance(p, dict):
@@ -1929,6 +1947,21 @@ def correct_acl_params_from_natural_language(
             p["acl_type"] = _explicit_family
         rules = p.get("rules")
         if not isinstance(rules, list):
+            # If the user clearly expressed ACL rule intent (e.g. deny icmp) but parser dropped rules,
+            # synthesize one safe explicit rule so templates do not render empty ACL blocks.
+            sr = _extract_basic_rule_from_prompt(text)
+            if sr:
+                p2 = dict(p)
+                p2["rules"] = [sr]
+                # Safe fallback ACL name only when missing and we had to synthesize rules.
+                if not str(p2.get("acl_name") or "").strip():
+                    p2["acl_name"] = "BLOCK_ICMP" if str(sr.get("protocol") or "") == "icmp" else "ACL_AUTO"
+                if isinstance(container.get("parameters"), dict):
+                    container["parameters"] = p2
+                if isinstance(container.get("params"), dict):
+                    container["params"] = p2
+                if not isinstance(container.get("parameters"), dict) and not isinstance(container.get("params"), dict):
+                    container["parameters"] = p2
             return
         fixed: List[Any] = []
         for r in rules:

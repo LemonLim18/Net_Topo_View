@@ -696,17 +696,38 @@ export function PlaybookStudioOverlay({
       const field = schemaEditableFields.find((f) => f.field === k);
       params[k] = field?.type === 'number' ? Number(v) : v;
     });
-    // If the user already answered pickers in the chat (authoritativeMergedParams),
-    // preserve the real typed values (arrays/objects) instead of schema-form JSON strings.
-    const auth = (authoritativeMergedParams && typeof authoritativeMergedParams === 'object'
-      ? (authoritativeMergedParams as Record<string, unknown>)
-      : null) as any;
+    // Chat / wizard answers win over parseIntent defaults and must reach create-and-plan unchanged.
+    const auth =
+      authoritativeMergedParams && typeof authoritativeMergedParams === 'object'
+        ? (authoritativeMergedParams as Record<string, unknown>)
+        : null;
     if (auth) {
-      for (const key of ['apply_to', 'interface_apply', 'passive_interfaces', 'secondary_intents', '_secondary_intents']) {
-        const v = auth[key];
-        if (Array.isArray(v) && v.length > 0) {
-          params[key] = v;
-        }
+      const copyIfMeaningful = (key: string, raw: unknown) => {
+        if (raw === undefined || raw === null) return;
+        if (typeof raw === 'string' && !raw.trim()) return;
+        if (Array.isArray(raw) && raw.length === 0) return;
+        if (typeof raw === 'object' && !Array.isArray(raw) && Object.keys(raw as object).length === 0) return;
+        params[key] = raw;
+      };
+      for (const key of [
+        'acl_direction',
+        'acl_name',
+        'acl_type',
+        'rules',
+        'apply_to',
+        'interface_apply',
+        'passive_interfaces',
+        'secondary_intents',
+        '_secondary_intents',
+      ]) {
+        copyIfMeaningful(key, auth[key]);
+      }
+      const dirAlt = auth.direction;
+      if (!params.acl_direction && (typeof dirAlt === 'string' ? dirAlt.trim() : dirAlt != null)) {
+        const d = String(dirAlt ?? '')
+          .trim()
+          .toLowerCase();
+        if (d) params.acl_direction = d.startsWith('out') ? 'out' : 'in';
       }
     }
     if (targetHosts.length > 0) {
@@ -883,6 +904,7 @@ export function PlaybookStudioOverlay({
     vlanAccessVlan,
     vlanAllowedVlans,
     vlanNativeVlan,
+    authoritativeMergedParams,
   ]);
 
   const getStudioVendorFeature = useCallback(() => {
