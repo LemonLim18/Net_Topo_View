@@ -131,7 +131,7 @@ def _target_hosts_from_intent(intent: Dict[str, Any]) -> List[str]:
 _VLAN_INTENT_SCHEMA_PATH = _REFERENCE_DIR / "vlan" / "intent_schema.json"
 
 # Known features that have reference playbooks (subdirs under reference/)
-_KNOWN_FEATURES = frozenset({"vlan", "interface", "ospf", "static_route"})
+_KNOWN_FEATURES = frozenset({"vlan", "interface", "ospf", "static_route", "acl"})
 
 # Vendors that have single-vendor playbooks under reference/{feature}/{vendor}/
 _KNOWN_VENDORS = frozenset({"cisco_ios", "huawei_vrp", "juniper_junos"})
@@ -933,6 +933,47 @@ def get_template_vars(
             "next_hop": next_hop,
             "admin_distance": admin_distance,
             "vrf_name": vrf_name,
+        }
+
+    if feature == "acl":
+        params_x = dict(intent.get("params") or {})
+        target_hosts = list(
+            intent.get("target_hosts")
+            or params_x.get("target_hosts")
+            or params_x.get("target_devices")
+            or []
+        )
+        acl_name = str(params_x.get("acl_name") or params_x.get("name") or "").strip()
+        acl_type = str(params_x.get("acl_type") or "ipv4").strip().lower()
+        rules = params_x.get("rules") or []
+        if isinstance(rules, str) and rules.strip():
+            # Allow raw CLI lines as a single string.
+            rules_out: List[Any] = [rules.strip()]
+        elif isinstance(rules, list):
+            # Normalize wildcard masks: users often supply CIDR or subnet masks; Cisco/Huawei ACLs use wildcard.
+            rules_out = []
+            for r in rules:
+                if not isinstance(r, dict):
+                    rules_out.append(r)
+                    continue
+                row = dict(r)
+                for k in ("source_wildcard", "dest_wildcard"):
+                    v = str(row.get(k) or "").strip()
+                    if v.startswith("255."):
+                        try:
+                            octets = [int(p) for p in v.split(".")]
+                            row[k] = ".".join(str(255 - x) for x in octets)
+                        except Exception:
+                            pass
+                rules_out.append(row)
+        else:
+            rules_out = []
+        return {
+            "target_hosts": ",".join(str(h).strip() for h in target_hosts if str(h).strip()) or "all",
+            "acl_name": acl_name,
+            "acl_type": acl_type,
+            "rules": rules_out,
+            "apply_to": params_x.get("apply_to") or [],
         }
 
     normalized = _normalize_intent_to_schema_shape(intent)

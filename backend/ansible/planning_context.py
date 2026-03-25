@@ -285,10 +285,10 @@ def planning_context_readiness(context: Dict[str, Any]) -> Dict[str, Any]:
     # Prefer NetBox; allow local_db if all target devices have required fields (e.g. after sync with name mismatch)
     if inventory_source != "netbox" and (not devices or missing_hosts):
         issues.append(f"Planned inventory source is '{inventory_source or 'unknown'}' instead of NetBox")
-    # For vlan/interface/ospf/static_route we can proceed with host + vendor + management IP
+    # For vlan/interface/ospf/static_route/acl we can proceed with host + vendor + management IP
     # even when freshness marks are stale (common immediately after reconciliation).
     # We still enforce missing-host and per-device required field checks below.
-    if feature not in ("vlan", "interface", "ospf", "static_route") and inventory_freshness in {FreshnessClass.MISSING.value, FreshnessClass.STALE.value}:
+    if feature not in ("vlan", "interface", "ospf", "static_route", "acl") and inventory_freshness in {FreshnessClass.MISSING.value, FreshnessClass.STALE.value}:
         issues.append(f"Planned inventory freshness is {inventory_freshness or 'unknown'}")
     if feature == "routing" and planned_freshness in {
         FreshnessClass.MISSING.value,

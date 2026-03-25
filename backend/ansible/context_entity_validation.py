@@ -497,6 +497,22 @@ def explicit_interface_names_from_request_params(params: Optional[Dict[str, Any]
     out: List[str] = []
     seen: Set[str] = set()
 
+    def _strip_direction_suffix(s: str) -> str:
+        return re.sub(r"\b(in|out)\s*$", "", str(s or "").strip(), flags=re.IGNORECASE).strip()
+
+    def _names_from_apply_list(v: Any) -> List[str]:
+        if not isinstance(v, list) or not v:
+            return []
+        names: List[str] = []
+        for item in v:
+            if isinstance(item, dict):
+                n = str(item.get("interface") or item.get("name") or "").strip()
+            else:
+                n = _strip_direction_suffix(str(item).strip())
+            if n:
+                names.append(n)
+        return names
+
     def _append_from_iface_list(v: Any) -> None:
         if not isinstance(v, list) or not v:
             return
@@ -504,7 +520,7 @@ def explicit_interface_names_from_request_params(params: Optional[Dict[str, Any]
             if isinstance(x, dict):
                 n = str(x.get("name") or x.get("interface") or "").strip()
             else:
-                n = str(x).strip()
+                n = _strip_direction_suffix(str(x).strip())
             if not n:
                 continue
             nk = normalize_interface_name(n)
@@ -512,8 +528,26 @@ def explicit_interface_names_from_request_params(params: Optional[Dict[str, Any]
                 seen.add(nk)
                 out.append(n)
 
-    for key in ("interfaces", "interfaces_config"):
+    # If the client supplied authoritative attachment targets, validate ONLY those names.
+    ato = params.get("apply_to")
+    if isinstance(ato, list) and ato:
+        _append_from_iface_list(_names_from_apply_list(ato))
+        return out
+    iap = params.get("interface_apply")
+    if isinstance(iap, list) and iap:
+        _append_from_iface_list(_names_from_apply_list(iap))
+        return out
+    pi = params.get("passive_interfaces")
+    if isinstance(pi, list) and pi:
+        _append_from_iface_list(_names_from_apply_list(pi))
+        return out
+
+    for key in ("interfaces", "interfaces_config", "interfaces_to_shutdown"):
         _append_from_iface_list(params.get(key))
+    # static_route next_hop can be an interface token (e.g. "Acc_Cisco_1:Gi0/1").
+    nh = params.get("next_hop")
+    if isinstance(nh, str) and nh.strip():
+        _append_from_iface_list([nh])
 
     for sk in ("secondary_intents", "_secondary_intents"):
         sec_list = params.get(sk)
@@ -525,8 +559,18 @@ def explicit_interface_names_from_request_params(params: Optional[Dict[str, Any]
             sp = sec.get("parameters")
             if not isinstance(sp, dict):
                 continue
-            for key in ("interfaces", "interfaces_config", "interfaces_to_shutdown"):
+            for key in (
+                "interfaces",
+                "interfaces_config",
+                "interfaces_to_shutdown",
+                "apply_to",
+                "interface_apply",
+                "passive_interfaces",
+            ):
                 _append_from_iface_list(sp.get(key))
+            nh2 = sp.get("next_hop")
+            if isinstance(nh2, str) and nh2.strip():
+                _append_from_iface_list([nh2])
 
     return out
 
@@ -922,6 +966,7 @@ def should_validate_interface_names_against_inventory(
         or sa
         in (
             "configure_acl",
+            "apply_acl_to_interface",
             "configure_qos",
             "configure_ospf",
             "configure_ospf_passive_interface",

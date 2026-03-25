@@ -487,9 +487,15 @@ export function PlaybookStudioOverlay({
       }
       setTargetInterfaces(
         expandWildcardInterfacesFromPlannedPreview(
-          extractTargetInterfaceNamesFromParsedIntent(
-            (res.parsed_intent as Record<string, unknown>) ?? null,
-          ),
+          (() => {
+            const fromAuth = extractTargetInterfaceNamesFromAuthoritativeParams(
+              authoritativeMergedParams as Record<string, unknown> | null | undefined,
+            );
+            if (fromAuth.length > 0) return fromAuth;
+            return extractTargetInterfaceNamesFromParsedIntent(
+              (res.parsed_intent as Record<string, unknown>) ?? null,
+            );
+          })(),
           ((res.parsed_intent as any)?.planned_all_interfaces_preview as any) ?? null,
         ),
       );
@@ -517,7 +523,10 @@ export function PlaybookStudioOverlay({
         setVlanAccessVlan(inf.accessVlan);
         setVlanAllowedVlans(inf.allowedCsv);
         setVlanNativeVlan(inf.nativeVlan);
-        const chips = buildPlannedInventoryPreselectChips(parsedPi);
+        // Never auto-pick "closest in inventory" suggestions here.
+        // If the user/LLM provided an invalid interface (e.g. Gi1/0/1) and inventory suggests Eth0/1,
+        // we must show the mismatch instead of silently remapping the selection.
+        const chips = buildPlannedInventoryPreselectChips(parsedPi, { skipSuggestions: true });
         setVlanSelectedInterfaces(
           preselectPlannedInventoryInterfaces(
             chips,
@@ -601,7 +610,8 @@ export function PlaybookStudioOverlay({
         setVlanAccessVlan(inf.accessVlan);
         setVlanAllowedVlans(inf.allowedCsv);
         setVlanNativeVlan(inf.nativeVlan);
-        const chips = buildPlannedInventoryPreselectChips(parsedPi);
+        // Never auto-pick "closest in inventory" suggestions here; keep user selection authoritative.
+        const chips = buildPlannedInventoryPreselectChips(parsedPi, { skipSuggestions: true });
         setVlanSelectedInterfaces(
           preselectPlannedInventoryInterfaces(chips, initialPreviewResult.interfaces_for_selection ?? null),
         );
@@ -686,12 +696,28 @@ export function PlaybookStudioOverlay({
       const field = schemaEditableFields.find((f) => f.field === k);
       params[k] = field?.type === 'number' ? Number(v) : v;
     });
+    // If the user already answered pickers in the chat (authoritativeMergedParams),
+    // preserve the real typed values (arrays/objects) instead of schema-form JSON strings.
+    const auth = (authoritativeMergedParams && typeof authoritativeMergedParams === 'object'
+      ? (authoritativeMergedParams as Record<string, unknown>)
+      : null) as any;
+    if (auth) {
+      for (const key of ['apply_to', 'interface_apply', 'passive_interfaces', 'secondary_intents', '_secondary_intents']) {
+        const v = auth[key];
+        if (Array.isArray(v) && v.length > 0) {
+          params[key] = v;
+        }
+      }
+    }
     if (targetHosts.length > 0) {
       params.target_hosts = targetHosts;
     }
-    const parsedAction = String((pip?.action as string) || '')
+    const parsedActionRaw = String((pip?.action as string) || '')
       .toLowerCase()
       .replace(/-/g, '_');
+    // Normalize common ACL-apply alias so downstream params logic matches backend schema.
+    const parsedAction =
+      parsedActionRaw === 'apply_acl' ? 'apply_acl_to_interface' : parsedActionRaw;
     const secondariesFromPreview = Array.isArray(
       (pip as { secondary_intents?: unknown } | null)?.secondary_intents,
     )
@@ -826,6 +852,22 @@ export function PlaybookStudioOverlay({
             };
           });
         }
+      }
+    }
+
+    // Authoritative interface attachment semantics:
+    // If the user selected planned-inventory attachment targets (e.g. apply_to for ACL),
+    // never send stale prompt-derived `interfaces` alongside it.
+    if (parsedAction === 'apply_acl_to_interface' || parsedAction === 'configure_acl') {
+      if (Array.isArray(params.apply_to) && params.apply_to.length > 0) {
+        delete params.interfaces;
+        delete params.interfaces_config;
+      }
+    }
+    if (parsedAction === 'configure_qos') {
+      if (Array.isArray(params.interface_apply) && params.interface_apply.length > 0) {
+        delete params.interfaces;
+        delete params.interfaces_config;
       }
     }
     return params;

@@ -115,9 +115,9 @@ Do this for other operations, to ensure a one-go question asking.
 **Reminder**: For this kind of case, will be put on hold first. The first things to do is to store the management network information, so that mapping can be done by storing the map between the network information(name, and the network segment/mask). Then, two ways can be used to resolve for the static route punya outgoing interface or the nexthop ip address: The first one is to make the admin to register every static route already inside the netbox to get the information predefined. The second one is let the system have the knowledge of the all network topo graph, then from that path determine the route from what devices to what devices, then recommend the shortest link to reach the management. Choose the closest next neighbor and then get its information thru the lldp, and construct it.
 
 - [] Create a static route between the device A to device B.
-**Reminder**: Do the same thing by recommending the shortest path between the devices and then get those info, and then create the static route. The second advanced things can be done is to show a graph which the user can click the path nodes from the source device to the target device. And based on the neighbor info retrieved, the static route will be created for all involved nodes, with the correct info.
+**Reminder TO-DO LIST**: Do the same thing by recommending the shortest path between the devices and then get those info, and then create the static route. The second advanced things can be done is to show a graph which the user can click the path nodes from the source device to the target device. And based on the neighbor info retrieved, the static route will be created for all involved nodes, with the correct info.
 
-**Reminder**: For the UI in the Ansible studio chat, allows when user presses up and down, it can go back to the previous and the next prompt accordingly.
+**Reminder TO-DO LIST**: For the UI in the Ansible studio chat, allows when user presses up and down, it can go back to the previous and the next prompt accordingly.
 
 And for the RAG library, implement the max height will overflow-y-scroll for the document stored, to avoid excessive height.
 
@@ -125,16 +125,23 @@ Also, please modify it so that Ansible chat, after the successful generation of 
 
 
 
-- [ ] Create a route on devices *(generic / ambiguous test)*  
+- [/] Create a route on devices *(generic / ambiguous test)*
+
+**Note**: Can branch into two categories, either the static or ospf, then require for the missing required parameters. 
 
 ---
 
 ## 5️⃣ ACL
 
-- [ ] Create ACL 2000 to permit SSH from 192.168.1.0/24 on SW1  
+- [/] Create ACL 2000 to permit SSH from 192.168.1.0/24 on SW1  
+**TO-DO**: Turn the following into the option picker, not input text.
+Clarifying for some missing information
+Question 1 of 1
+ACL type (ipv4, ipv6, mac, or l2)?
+ipv4
 
 
-- [ ] Create ACL named BLOCK_HTTP to deny TCP port 80 on SW1  
+- [/] Create ACL named BLOCK_HTTP to deny TCP port 80 on SW1  
 
 
 - [ ] Apply ACL 3000 inbound on GigabitEthernet1/0/1 on SW1  

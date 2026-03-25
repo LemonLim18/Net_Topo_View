@@ -1,0 +1,40 @@
+# Intent schema: apply existing ACL to interface(s)
+action: apply_acl_to_interface
+feature: acl
+required:
+  - acl_name
+  - apply_to
+  - acl_direction
+  - target_devices
+optional:
+  - acl_type
+  - interfaces
+resolution_order:
+  acl_name:
+    - from_intent
+    - ask_user
+  apply_to:
+    - from_intent
+    - from_inventory
+    - ask_user
+  acl_direction:
+    - from_intent
+    - ask_user
+  target_devices:
+    - from_intent
+    - from_inventory
+    - ask_user
+  acl_type:
+    - from_intent
+    - ask_user
+  interfaces:
+    - from_intent
+    - from_inventory
+    - ask_user
+questions:
+  acl_name: "ACL name or number?"
+  apply_to: "Which interface(s) should it be applied to?"
+  acl_direction: "Direction on the interface (inbound/in or outbound/out)?"
+  target_devices: "Which devices?"
+  acl_type: "ACL type (ipv4, ipv6, mac, or l2)?"
+  interfaces: "Which interface(s) should it be applied to?"

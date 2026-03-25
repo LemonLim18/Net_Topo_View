@@ -1,0 +1,53 @@
+- name: Configure firewall filter (Juniper Junos)
+  hosts: "{{ target_hosts | default('all') }}"
+  gather_facts: no
+  connection: netconf
+  tasks:
+    - name: Configure firewall filter from rules
+      junipernetworks.junos.junos_config:
+        lines:
+{% set _has_rules = (rules is defined) and ((rules | length) > 0) %}
+{% if _has_rules %}
+          - "delete firewall family inet filter {{ acl_name }}"
+{% for rule in rules %}
+{% if rule is string %}
+          - "{{ rule }}"
+{% else %}
+{% set term = ('t' ~ (rule.seq | string)) if (rule.seq is defined) else ('t' ~ (loop.index | string)) %}
+{% if rule.source is defined and (rule.source | string | lower) != 'any' %}
+          - "set firewall family inet filter {{ acl_name }} term {{ term }} from source-address {{ rule.source }}/32"
+{% endif %}
+{% if rule.destination is defined and (rule.destination | string) != 'any' %}
+          - "set firewall family inet filter {{ acl_name }} term {{ term }} from destination-address {{ rule.destination }}/32"
+{% endif %}
+{% if rule.protocol is defined %}
+          - "set firewall family inet filter {{ acl_name }} term {{ term }} from protocol {{ rule.protocol }}"
+{% endif %}
+{% if rule.port is defined %}
+          - "set firewall family inet filter {{ acl_name }} term {{ term }} from destination-port {{ rule.port }}"
+{% endif %}
+          - "set firewall family inet filter {{ acl_name }} term {{ term }} then {{ 'accept' if rule.action == 'permit' else 'discard' }}"
+{% endif %}
+{% endfor %}
+{% endif %}
+
+{% for ap in (apply_to or []) %}
+{% if ap is string %}
+{% set _tok = (ap | string) %}
+{% set _parts = _tok.split() %}
+{% set _last = (_parts[-1] if (_parts | length) > 0 else '') %}
+{% set _dir = (_last if _last in ['in','out'] else (acl_direction | default('in'))) %}
+{% set _iface_tok = (' '.join(_parts[:-1]) if _last in ['in','out'] else _tok) %}
+{% set _iface = (_iface_tok.split(':', 1)[1] if ':' in _iface_tok else _iface_tok) %}
+{% else %}
+{% set _iface = (ap.interface | default(ap.get('interface')) | default(ap.get('name')) | string) %}
+{% set _dir = (ap.direction | default(ap.get('direction')) | default(acl_direction | default('in')) | string) %}
+{% endif %}
+{% if _iface | trim %}
+    - name: Apply firewall filter to {{ _iface }} (replace semantics)
+      junipernetworks.junos.junos_config:
+        lines:
+          - "delete interfaces {{ _iface }} unit 0 family inet filter"
+          - "set interfaces {{ _iface }} unit 0 family inet filter {{ 'input' if _dir in ['in', 'inbound'] else 'output' }} {{ acl_name }}"
+{% endif %}
+{% endfor %}

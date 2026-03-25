@@ -95,7 +95,10 @@ export function interfaceNameMatchesChipForPreselect(chip: string, plannedName: 
     s.replace(/^gigabitethernet|^gig|^ethernet|^eth|^fastethernet|^fa|^gi(?=\d)/i, '');
   const sa = strip(a);
   const sb = strip(b);
-  if (sa && sb && (sa === sb || sa.endsWith(sb) || sb.endsWith(sa))) return true;
+  // Do NOT use suffix matching here.
+  // Example: "GigabitEthernet1/0/1" must NOT auto-match inventory "Ethernet0/1"
+  // (previous suffix match would incorrectly map 1/0/1 -> 0/1).
+  if (sa && sb && sa === sb) return true;
   const m1 = a.match(/(\d+\/\d+(?:\/\d+)?)/);
   const m2 = b.match(/(\d+\/\d+(?:\/\d+)?)/);
   if (m1 && m2 && m1[1] === m2[1]) return true;

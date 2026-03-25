@@ -352,6 +352,7 @@ def _intent_to_flat_fields(intent: Dict[str, Any], schema: Dict[str, Any]) -> Di
     flat["policy_name"] = params.get("policy_name")
     flat["acl_type"] = params.get("acl_type")
     flat["apply_to"] = params.get("apply_to")
+    flat["acl_direction"] = params.get("acl_direction") or params.get("direction")
     flat["desired_state"] = params.get("desired_state")
     flat["area_definitions"] = params.get("area_definitions")
     flat["passive_interfaces"] = params.get("passive_interfaces")
@@ -361,6 +362,26 @@ def _intent_to_flat_fields(intent: Dict[str, Any], schema: Dict[str, Any]) -> Di
     flat["qos_type"] = params.get("qos_type") or params.get("qos_construct_type")
     flat["classification_rules"] = params.get("classification_rules")
     flat["interface_apply"] = params.get("interface_apply")
+
+    # ACL apply: if direction wasn't promoted to acl_direction, infer it from apply_to.
+    # apply_to can be:
+    # - ["Acc_Cisco_1:Ethernet0/1 in", ...]
+    # - [{"interface": "Ethernet0/1", "direction": "in"}]
+    if not flat.get("acl_direction") and flat.get("apply_to") is not None:
+        ato = flat.get("apply_to")
+        first = None
+        if isinstance(ato, list) and ato:
+            first = ato[0]
+        elif isinstance(ato, str) and ato.strip():
+            first = ato
+        if isinstance(first, dict):
+            d = str(first.get("direction") or "").strip().lower()
+            if d in ("in", "out", "inbound", "outbound"):
+                flat["acl_direction"] = "in" if d.startswith("in") else "out"
+        elif isinstance(first, str):
+            m = re.search(r"\b(in|out)\b\s*$", first.strip(), re.I)
+            if m:
+                flat["acl_direction"] = m.group(1).lower()
 
     # Static route: allow alternate LLM keys so we don't ask the user for values
     # that already exist in the parsed intent under different names.
@@ -1821,6 +1842,271 @@ def correct_static_route_params_from_natural_language(
         sf = str(sec.get("feature") or "").strip().lower()
         if sa == "configure_static_route" or sf in ("static_route", "routing"):
             _apply(sec)
+
+
+def _wildcard_from_prefix(prefix: int) -> str:
+    mask = ipaddress.IPv4Network(f"0.0.0.0/{prefix}").netmask
+    octets = [int(p) for p in str(mask).split(".")]
+    return ".".join(str(255 - x) for x in octets)
+
+
+def _wildcard_from_netmask_str(netmask: str) -> Optional[str]:
+    """
+    Convert subnet mask (255.255.255.0) to wildcard mask (0.0.0.255).
+    Returns None if invalid.
+    """
+    try:
+        m = ipaddress.IPv4Address(str(netmask).strip())
+        octets = [int(p) for p in str(m).split(".")]
+        return ".".join(str(255 - x) for x in octets)
+    except Exception:
+        return None
+
+
+def _prefix_from_wildcard_str(wildcard: str) -> Optional[int]:
+    """Convert wildcard mask to prefix length when possible."""
+    try:
+        wc = ipaddress.IPv4Address(str(wildcard).strip())
+        mask_int = int(wc) ^ 0xFFFFFFFF
+        net = ipaddress.IPv4Network((0, mask_int), strict=False)
+        return int(net.prefixlen)
+    except Exception:
+        return None
+
+
+def correct_acl_params_from_natural_language(
+    intent_description: str,
+    parsed_intent: Dict[str, Any],
+) -> None:
+    """
+    Fix ACL rule fields to match device syntax expectations.
+
+    Key fix:
+      - When the user writes CIDR (/24), ACLs require wildcard masks (0.0.0.255),
+        not subnet masks (255.255.255.0). Convert any netmask-like values to wildcard.
+    """
+    if not isinstance(parsed_intent, dict):
+        return
+    text = str(intent_description or "").strip()
+    if not text:
+        return
+
+    def _prompt_explicit_acl_family(t: str) -> Optional[str]:
+        """
+        Return 'ipv4' or 'ipv6' only when the prompt explicitly indicates it:
+        - keywords: ipv4/v4, ipv6/v6
+        - literal addresses/prefixes: 192.0.2.1, 192.0.2.0/24, 2001:db8::1, 2001:db8::/64
+        Otherwise return None so UI can ask.
+        """
+        tl = (t or "").lower()
+        if re.search(r"\bipv6\b|\bv6\b", tl):
+            return "ipv6"
+        if re.search(r"\bipv4\b|\bv4\b", tl):
+            return "ipv4"
+        # IPv6 literal (supports compressed forms like 2001:db8::/64)
+        if re.search(r"\b[0-9a-f:]*:[0-9a-f:]+\b", tl, re.I):
+            return "ipv6"
+        # IPv4 literal
+        if re.search(r"\b(?:\d{1,3}\.){3}\d{1,3}(?:/\d{1,2})?\b", tl):
+            return "ipv4"
+        # If the rules explicitly mention common IPv4-only semantics, assume ipv4.
+        # (This avoids re-asking for simple "deny tcp port 80" cases that don't specify IP family yet.)
+        if any(k in tl for k in ("tcp", "udp", "icmp", "ip ")):
+            return "ipv4"
+        return None
+
+    _explicit_family = _prompt_explicit_acl_family(text)
+
+    def _fix_rules(container: Dict[str, Any]) -> None:
+        p = container.get("parameters")
+        if not isinstance(p, dict):
+            p = container.get("params")
+        if not isinstance(p, dict):
+            return
+        # Prompt-aware family inference (only when explicit); otherwise leave missing so UI asks.
+        if _explicit_family and not str(p.get("acl_type") or "").strip():
+            p = dict(p)
+            p["acl_type"] = _explicit_family
+        rules = p.get("rules")
+        if not isinstance(rules, list):
+            return
+        fixed: List[Any] = []
+        for r in rules:
+            if not isinstance(r, dict):
+                fixed.append(r)
+                continue
+            row = dict(r)
+            # Normalize common "any" shapes: if address is 'any', wildcard must not be present.
+            for addr_key, wc_key in (("source", "source_wildcard"), ("destination", "dest_wildcard")):
+                addr_raw = str(row.get(addr_key) or "").strip().lower()
+                if addr_raw in ("any", "all", "*"):
+                    row[addr_key] = "any"
+                    row.pop(wc_key, None)
+
+            # Normalize port: accept "eq 80" and store just "80" so templates don't render "eq eq 80".
+            if row.get("port") is not None:
+                ps = str(row.get("port") or "").strip()
+                m = re.match(r"^(?:eq\s+)?(\d+)\s*$", ps, re.I)
+                if m:
+                    row["port"] = m.group(1)
+                else:
+                    # Keep advanced expressions (e.g. "range 1000 2000") as-is.
+                    row["port"] = ps
+
+            # Support "source" or "destination" expressed as CIDR.
+            for addr_key, wc_key in (("source", "source_wildcard"), ("destination", "dest_wildcard")):
+                addr = str(row.get(addr_key) or "").strip()
+                if addr.strip().lower() == "any":
+                    row.pop(wc_key, None)
+                    continue
+                if "/" in addr:
+                    try:
+                        ip, pfx_s = addr.split("/", 1)
+                        ipaddress.IPv4Address(ip.strip())
+                        pfx = int(pfx_s.strip())
+                        if 0 <= pfx <= 32:
+                            row[addr_key] = ip.strip()
+                            row[wc_key] = _wildcard_from_prefix(pfx)
+                    except Exception:
+                        pass
+                # If the wildcard field looks like a netmask, convert it.
+                wc_val = row.get(wc_key)
+                if wc_val is not None and str(wc_val).strip():
+                    # Drop CIDR-like wildcard artifacts (e.g. "0.0.0.0/0") when addr isn't CIDR.
+                    if "/" in str(wc_val):
+                        row.pop(wc_key, None)
+                        wc_val = None
+                    converted = _wildcard_from_netmask_str(str(wc_val))
+                    if converted:
+                        row[wc_key] = converted
+                # If the wildcard is still a netmask-ish value (e.g. 255.255.255.0),
+                # force invert; ACL wildcard must be 0.x not 255.x.
+                wc_after = str(row.get(wc_key) or "").strip()
+                if wc_after.startswith("255."):
+                    forced = _wildcard_from_netmask_str(wc_after)
+                    if forced:
+                        row[wc_key] = forced
+                # If wildcard missing but prompt had CIDR for this address, try to infer from prompt.
+                if (row.get(wc_key) in (None, "", [])) and addr and re.search(re.escape(addr) + r"/(\d{1,2})\b", text):
+                    m = re.search(re.escape(addr) + r"/(\d{1,2})\b", text)
+                    if m:
+                        try:
+                            pfx = int(m.group(1))
+                            if 0 <= pfx <= 32:
+                                row[wc_key] = _wildcard_from_prefix(pfx)
+                        except Exception:
+                            pass
+            fixed.append(row)
+        p2 = dict(p)
+        p2["rules"] = fixed
+        if isinstance(container.get("parameters"), dict):
+            container["parameters"] = p2
+        if isinstance(container.get("params"), dict):
+            container["params"] = p2
+        if not isinstance(container.get("parameters"), dict) and not isinstance(container.get("params"), dict):
+            container["parameters"] = p2
+
+    def _fix_acl_apply(container: Dict[str, Any]) -> None:
+        """
+        Best-effort extraction for apply-only prompts like:
+          "Apply ACL 3000 inbound on GigabitEthernet1/0/1 on SW1"
+        If the wizard already supplied apply_to/interfaces/direction, do nothing.
+        """
+        p = container.get("parameters")
+        if not isinstance(p, dict):
+            p = container.get("params")
+        if not isinstance(p, dict):
+            return
+        p2 = dict(p)
+
+        # Always fill acl_name from the prompt if missing, even when the wizard already supplied apply_to.
+        if not str(p2.get("acl_name") or "").strip():
+            m2 = re.search(r"\bacl\s+([0-9]{1,6}|[A-Za-z][A-Za-z0-9_-]{0,63})\b", text, re.I)
+            if m2:
+                p2["acl_name"] = str(m2.group(1)).strip()
+
+        tl = text.lower()
+        direction_from_prompt: Optional[str] = None
+        if re.search(r"\binbound\b", tl) or re.search(r"\b in\b", tl):
+            direction_from_prompt = "in"
+        if re.search(r"\boutbound\b", tl) or re.search(r"\b out\b", tl):
+            direction_from_prompt = "out"
+
+        # If the wizard already supplied apply_to (authoritative), don't override it.
+        if isinstance(p2.get("apply_to"), list) and p2.get("apply_to"):
+            if not str(p2.get("acl_direction") or "").strip():
+                first = str((p2.get("apply_to") or [""])[0] or "").strip()
+                mdir = re.search(r"\b(in|out)\b\s*$", first, re.I)
+                if mdir:
+                    p2["acl_direction"] = mdir.group(1).lower()
+                elif direction_from_prompt:
+                    p2["acl_direction"] = direction_from_prompt
+            if isinstance(container.get("parameters"), dict):
+                container["parameters"] = p2
+            if isinstance(container.get("params"), dict):
+                container["params"] = p2
+            if not isinstance(container.get("parameters"), dict) and not isinstance(container.get("params"), dict):
+                container["parameters"] = p2
+            return
+        if isinstance(p2.get("interfaces"), list) and p2.get("interfaces") and str(p2.get("acl_direction") or "").strip():
+            if isinstance(container.get("parameters"), dict):
+                container["parameters"] = p2
+            if isinstance(container.get("params"), dict):
+                container["params"] = p2
+            if not isinstance(container.get("parameters"), dict) and not isinstance(container.get("params"), dict):
+                container["parameters"] = p2
+            return
+
+        applyish = bool(
+            re.search(r"\bapply\s+acl\b", tl)
+            or "access-group" in tl
+            or "traffic-filter" in tl
+            or "inbound on" in tl
+            or "outbound on" in tl
+        )
+        if not applyish:
+            return
+
+        direction: Optional[str] = None
+        if direction_from_prompt:
+            direction = direction_from_prompt
+
+        iface: Optional[str] = None
+        m = re.search(
+            r"\b(GigabitEthernet|TenGigabitEthernet|FastEthernet|Ethernet|Port-channel|PortChannel|Loopback|Vlan|Gi|Te|Fa|Eth|Po)\s*\d+(?:/\d+){0,3}\b",
+            text,
+            re.I,
+        )
+        if m:
+            iface = str(m.group(0)).strip()
+
+        if iface:
+            p2["interfaces"] = p2.get("interfaces") or [iface]
+        if direction:
+            p2["acl_direction"] = p2.get("acl_direction") or direction
+        if iface and direction:
+            p2["apply_to"] = [{"interface": iface, "direction": direction}]
+
+        if isinstance(container.get("parameters"), dict):
+            container["parameters"] = p2
+        if isinstance(container.get("params"), dict):
+            container["params"] = p2
+        if not isinstance(container.get("parameters"), dict) and not isinstance(container.get("params"), dict):
+            container["parameters"] = p2
+
+    act = str(parsed_intent.get("action") or "").strip().lower().replace("-", "_")
+    feat = str(parsed_intent.get("feature") or "").strip().lower().replace("-", "_")
+    if act in ("configure_acl", "apply_acl_to_interface") or feat == "acl":
+        _fix_rules(parsed_intent)
+        _fix_acl_apply(parsed_intent)
+    for sec in parsed_intent.get("secondary_intents") or []:
+        if not isinstance(sec, dict):
+            continue
+        sa = str(sec.get("action") or "").strip().lower().replace("-", "_")
+        sf = str(sec.get("feature") or "").strip().lower().replace("-", "_")
+        if sa in ("configure_acl", "apply_acl_to_interface") or sf == "acl":
+            _fix_rules(sec)
+            _fix_acl_apply(sec)
 
 
 def prompt_contains_explicit_ospf_process_id(intent_description: str) -> bool:

@@ -1254,6 +1254,15 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
         const dir = m?.[1]?.toLowerCase();
         return dir === 'in' || dir === 'out' ? dir : null;
       };
+      const inferPromptDirection = (): 'in' | 'out' | null => {
+        const tl = String(intentText || '').toLowerCase();
+        if (/\binbound\b/.test(tl)) return 'in';
+        if (/\boutbound\b/.test(tl)) return 'out';
+        // If the user wrote "in"/"out" without binding to a specific interface.
+        if (/\b(in)\b/.test(tl) && !/\b(out)\b/.test(tl)) return 'in';
+        if (/\b(out)\b/.test(tl) && !/\b(in)\b/.test(tl)) return 'out';
+        return null;
+      };
       const qTok = (x: { hostname: string; ifName: string }) => `${x.hostname}:${x.ifName}`;
       const vidRaw =
         (previewAccumulatedParams.vlan_id as number | string | undefined) ??
@@ -1326,11 +1335,11 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
         ifaceParams = { secondary_intents: mergedSec };
       } else if (schemaAction === 'configure_interface' || schemaAction === 'create_vlan') {
         ifaceParams = { interfaces: buildL2InterfaceObjects() };
-      } else if (schemaAction === 'configure_acl') {
+      } else if (schemaAction === 'configure_acl' || schemaAction === 'apply_acl_to_interface') {
         ifaceParams = {
           apply_to: qualified.map(({ hostname, ifName }) => {
             const q = qTok({ hostname, ifName });
-            const dir = inferDirection(ifName);
+            const dir = inferDirection(ifName) ?? inferPromptDirection();
             return dir ? `${q} ${dir}` : q;
           }),
         };
@@ -1354,6 +1363,21 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
         ...(previewAccumulatedIntentText === intentText ? previewAccumulatedParams : {}),
         ...ifaceParams,
       };
+      // Authoritative attachment semantics:
+      // When the user explicitly selected attachment targets (ACL/QoS/etc),
+      // do not keep stale prompt-derived `interfaces` around (it can override/preselect wrongly).
+      if (schemaAction === 'configure_acl' || schemaAction === 'apply_acl_to_interface') {
+        if (Array.isArray((mergedIface as any).apply_to) && (mergedIface as any).apply_to.length > 0) {
+          delete (mergedIface as any).interfaces;
+          delete (mergedIface as any).interfaces_config;
+        }
+      }
+      if (schemaAction === 'configure_qos') {
+        if (Array.isArray((mergedIface as any).interface_apply) && (mergedIface as any).interface_apply.length > 0) {
+          delete (mergedIface as any).interfaces;
+          delete (mergedIface as any).interfaces_config;
+        }
+      }
       if (effectiveTargetHosts?.length) {
         mergedIface.target_hosts = effectiveTargetHosts;
       }
@@ -1379,6 +1403,69 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
         setGenerating(false);
         return;
       }
+      // Hard authoritative override before opening Playbook Studio:
+      // when user picked interfaces in UI, never let stale prompt/LLM interface fields
+      // (e.g. GigabitEthernet...) leak into preview modal state.
+      const forceAuthoritativeInterfacesInPreview = (
+        preview: any,
+        action: string,
+        authoritativeParams: Record<string, unknown>,
+      ) => {
+        if (!preview || !preview.parsed_intent || typeof preview.parsed_intent !== 'object') return preview;
+        const out = { ...preview, parsed_intent: { ...preview.parsed_intent } } as any;
+        const p0 = ((out.parsed_intent as any).parameters || {}) as Record<string, unknown>;
+        const p: Record<string, unknown> = { ...p0 };
+        const secIn = Array.isArray((out.parsed_intent as any).secondary_intents)
+          ? ((out.parsed_intent as any).secondary_intents as Array<any>)
+          : [];
+        const secOut = secIn.map((s) => ({
+          ...s,
+          parameters: { ...((s && typeof s === 'object' ? s.parameters : {}) || {}) },
+        }));
+
+        const clearStaleInterfaces = () => {
+          delete p.interfaces;
+          delete p.interfaces_config;
+          for (const s of secOut) {
+            if (!s || typeof s !== 'object') continue;
+            const sp = (s.parameters || {}) as Record<string, unknown>;
+            delete sp.interfaces;
+            delete sp.interfaces_config;
+            s.parameters = sp;
+          }
+        };
+
+        if (action === 'configure_acl' || action === 'apply_acl_to_interface') {
+          if (Array.isArray((authoritativeParams as any).apply_to) && (authoritativeParams as any).apply_to.length > 0) {
+            p.apply_to = (authoritativeParams as any).apply_to;
+            clearStaleInterfaces();
+          }
+        } else if (action === 'configure_qos') {
+          if (Array.isArray((authoritativeParams as any).interface_apply) && (authoritativeParams as any).interface_apply.length > 0) {
+            p.interface_apply = (authoritativeParams as any).interface_apply;
+            clearStaleInterfaces();
+          }
+        } else if (action === 'configure_ospf' || action === 'configure_ospf_passive_interface') {
+          if (Array.isArray((authoritativeParams as any).passive_interfaces) && (authoritativeParams as any).passive_interfaces.length > 0) {
+            p.passive_interfaces = (authoritativeParams as any).passive_interfaces;
+            clearStaleInterfaces();
+          }
+        } else if (action === 'shutdown_interface') {
+          if (Array.isArray((authoritativeParams as any).interfaces_to_shutdown) && (authoritativeParams as any).interfaces_to_shutdown.length > 0) {
+            p.interfaces_to_shutdown = (authoritativeParams as any).interfaces_to_shutdown;
+            clearStaleInterfaces();
+          }
+        } else if (action === 'configure_interface' || action === 'create_vlan') {
+          if (Array.isArray((authoritativeParams as any).interfaces) && (authoritativeParams as any).interfaces.length > 0) {
+            p.interfaces = (authoritativeParams as any).interfaces;
+          }
+        }
+
+        (out.parsed_intent as any).parameters = p;
+        (out.parsed_intent as any).secondary_intents = secOut;
+        return out;
+      };
+      const sanitizedRes = forceAuthoritativeInterfacesInPreview(res, schemaAction, mergedIface);
       const valErr = (res as { parsed_intent?: { validation_errors?: string[] } })?.parsed_intent?.validation_errors;
       if (Array.isArray(valErr) && valErr.length > 0) {
         addMsg({
@@ -1386,7 +1473,7 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
           content: `**Validation issues**\n\n${valErr.join('\n')}`,
         });
       } else {
-        setStudioInitialPreview(res as any);
+        setStudioInitialPreview(sanitizedRes as any);
         setStudioIntent(intentText);
         setStudioOpen(true);
       }
@@ -2321,6 +2408,33 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
                                             </label>
                                           ))}
                                         </div>
+                                      );
+                                    }
+
+                                    // ACL type: render as a strict dropdown even when backend schema doesn't provide options.
+                                    if (normalizedField === 'acl_type') {
+                                      const opts = ['ipv4', 'ipv6', 'mac', 'l2'];
+                                      const curVal = String((paramsDisambiguationValues[vk] ?? '') as string).trim().toLowerCase();
+                                      return (
+                                        <select
+                                          className="select select-sm select-bordered w-full font-mono mt-1"
+                                          value={curVal}
+                                          onChange={(e) =>
+                                            setParamsDisambiguationValues((prev) => ({
+                                              ...prev,
+                                              [vk]: String(e.target.value || '').trim(),
+                                            }))
+                                          }
+                                        >
+                                          <option value="" disabled>
+                                            Select ACL type…
+                                          </option>
+                                          {opts.map((o) => (
+                                            <option key={`${vk}-${o}`} value={o}>
+                                              {o}
+                                            </option>
+                                          ))}
+                                        </select>
                                       );
                                     }
                                     const isChatField = String(f.field || '').startsWith('_chat_');

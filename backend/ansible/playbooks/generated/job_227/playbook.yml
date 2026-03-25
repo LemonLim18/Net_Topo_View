@@ -1,0 +1,27 @@
+- name: Configure ACL (Cisco IOS)
+  hosts: "Acc_Cisco_1"
+  gather_facts: no
+  connection: network_cli
+  tasks:
+
+
+    - name: Configure named ACL on Cisco IOS
+      cisco.ios.ios_config:
+        match: line
+        replace: line
+        parents:
+          - "ip access-list extended BLOCK_HTTP"
+        lines:
+
+
+
+
+
+
+
+
+
+
+          - "1 deny tcp any any eq 80"
+
+

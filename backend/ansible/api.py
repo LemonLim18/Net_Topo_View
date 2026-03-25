@@ -1847,6 +1847,14 @@ def _resolve_backend_intent_request(req, user: dict) -> tuple["PlanAnsibleReques
             _pa = str(parsed.action or "").strip().lower().replace("-", "_")
             _pf = str(parsed.feature or "").strip().lower().replace("-", "_")
             _routeish = ("route" in _tl or "routing" in _tl) and "traceroute" not in _tl
+            _aclish = "acl" in _tl or "access-list" in _tl or "access list" in _tl
+            _applyish = (
+                "apply acl" in _tl
+                or "access-group" in _tl
+                or "inbound on" in _tl
+                or "outbound on" in _tl
+                or _pa in ("apply_acl", "apply_acl_to_interface")
+            )
             if "ospf" in _tl and (_pa in ("unknown", "") or _pf in ("routing", "", "ospf")):
                 parsed.intent_type = IntentType.CONFIGURE
                 if not str(parsed.feature or "").strip():
@@ -1855,10 +1863,26 @@ def _resolve_backend_intent_request(req, user: dict) -> tuple["PlanAnsibleReques
                     parsed.action = "configure_ospf"
             elif _routeish and (_pa in ("unknown", "") or _pf in ("routing", "")):
                 parsed.intent_type = IntentType.CONFIGURE
+            elif _applyish and (_aclish or _pf in ("acl", "")):
+                parsed.intent_type = IntentType.CONFIGURE
         except Exception:
             pass
     if parsed.intent_type not in {IntentType.CONFIGURE, IntentType.DEPLOY}:
         raise HTTPException(422, f"Intent '{parsed.intent_type.value}' is not a configuration change.")
+    # Normalize common ACL-apply variants so schema/template selection is stable.
+    try:
+        _pa = str(parsed.action or "").strip().lower().replace("-", "_")
+        _pf = str(parsed.feature or "").strip().lower().replace("-", "_")
+        if _pa == "apply_acl":
+            parsed.action = "apply_acl_to_interface"
+        if str(parsed.action or "").strip().lower().replace("-", "_") == "apply_acl_to_interface":
+            if not _pf:
+                parsed.feature = "acl"
+            _p = dict(parsed.parameters or {})
+            _p.setdefault("_canonical_operation", "apply_acl_to_interface")
+            parsed.parameters = _p
+    except Exception:
+        pass
     if not parsed.feature:
         # Same recovery as preview: if the user asked for routing changes but parser omitted feature,
         # carry forward routing_type disambiguation (if any) or default to static_route to drive schema questions.
@@ -1919,6 +1943,12 @@ def _resolve_backend_intent_request(req, user: dict) -> tuple["PlanAnsibleReques
         req.intent_description or "",
     )
     correct_interface_l3_params_from_natural_language(req.intent_description or "", _parsed_guard)
+    try:
+        from ansible.intent_validation import correct_acl_params_from_natural_language
+
+        correct_acl_params_from_natural_language(req.intent_description or "", _parsed_guard)
+    except Exception as _acl_plan_exc:
+        logger.debug("acl prompt coercion failed (plan/create): %s", _acl_plan_exc)
     try:
         correct_static_route_params_from_natural_language(req.intent_description or "", _parsed_guard)
     except Exception as _static_plan_exc:
@@ -1983,11 +2013,27 @@ def _resolve_backend_intent_request(req, user: dict) -> tuple["PlanAnsibleReques
         merge_extracted_vlan_params_into_flat_params(plan_params_merged, req.intent_description or "")
     apply_chat_interface_wizard_to_parameters(plan_params_merged)
     _coerce_params_for_validation(plan_params_merged)
+    # Ensure ACL apply prompts (inbound/outbound + interface) populate apply-only fields
+    # so apply_acl_to_interface schema doesn't re-ask obvious direction/interface.
+    try:
+        from ansible.intent_validation import correct_acl_params_from_natural_language
+
+        _acl_fix = {
+            "action": parsed.action or "",
+            "feature": parsed.feature or "",
+            "parameters": dict(plan_params_merged),
+        }
+        correct_acl_params_from_natural_language(req.intent_description or "", _acl_fix)
+        if isinstance(_acl_fix.get("parameters"), dict):
+            plan_params_merged = dict(_acl_fix["parameters"])
+    except Exception as _acl_fix_exc:
+        logger.debug("acl prompt coercion failed (pre-plan): %s", _acl_fix_exc)
     plan_req = PlanAnsibleRequest(
         intent_description=req.intent_description,
         target_hosts=parsed.resolved_devices,
         vendor=normalize_vendor(parsed.vendor or infer_vendor_hint(parsed.resolved_devices, _db)),
         feature=parsed.feature,
+        action=str(parsed.action or "").strip(),
         params=plan_params_merged,
         max_interfaces=getattr(req, "max_interfaces", 5),
         requires_resolution=getattr(parsed, "requires_resolution", False),
@@ -2327,6 +2373,7 @@ class PlanAnsibleRequest(BaseModel):
     target_hosts:       List[str] = []
     vendor:             str = ""
     feature:            str = ""
+    action:             str = ""
     params:             Dict[str, Any] = {}
     max_interfaces:     int = 5
     # Default off / single attempt: iterative LLM refinement is slow; Studio can re-generate if needed.
@@ -2434,6 +2481,17 @@ async def plan_ansible(
     effective_vendor = normalize_vendor(req.vendor or infer_vendor_hint(resolved_hosts, _db))
     plan_params = dict(req.params or {})
     _coerce_params_for_validation(plan_params)
+    # Prompt-aware ACL normalization (also handles apply-to-interface extraction).
+    try:
+        if str(req.feature or "").strip().lower().replace("-", "_") == "acl":
+            from ansible.intent_validation import correct_acl_params_from_natural_language
+
+            _acl_fix = {"action": str(getattr(req, "action", "") or ""), "feature": "acl", "parameters": plan_params}
+            correct_acl_params_from_natural_language(req.intent_description or "", _acl_fix)
+            if isinstance(_acl_fix.get("parameters"), dict):
+                plan_params = dict(_acl_fix["parameters"])
+    except Exception as _acl_plan_exc:
+        logger.debug("acl prompt coercion failed (plan_ansible): %s", _acl_plan_exc)
     if str(req.feature or "").strip().lower() == "vlan":
         merge_extracted_vlan_params_into_flat_params(plan_params, req.intent_description or "")
         _vlan_user_if = bool(plan_params.get("interfaces") or plan_params.get("interfaces_config"))
@@ -2524,7 +2582,7 @@ async def plan_ansible(
     # the minimum keys needed by `intent_tree_engine` (Phase 1: target_devices
     # + interface; and Phase 2 best-effort for static_route leaves).
     parsed_intent = {
-        "action": None,
+        "action": str(getattr(req, "action", None) or "").strip() or None,
         "feature": req.feature,
         "parameters": dict(plan_params),
         "device_deduction": {},
@@ -2688,11 +2746,15 @@ async def plan_ansible(
     # For interface intents, prefer the prompt-inferred action so "turn on/enable"
     # validates against shutdown_interface (no access_vlan requirement), even if
     # the frontend/LLM set req.action to configure_interface.
-    action_or_feature = inferred_interface_action or getattr(req, "action", None) or req.feature
+    # Prefer request overrides, but fall back to parsed intent output so operation-specific
+    # schemas (e.g. apply_acl_to_interface) can be selected even when the client only sent text.
+    effective_feature = (req.feature or parsed.feature or "").strip()
+    effective_action = (inferred_interface_action or getattr(req, "action", None) or parsed.action or "").strip()
+    action_or_feature = effective_action or effective_feature
     schema = get_schema_for_parsed_intent(
         {
-            "feature": req.feature,
-            "action": inferred_interface_action or getattr(req, "action", None),
+            "feature": effective_feature,
+            "action": effective_action,
             # Required for operation-specific schema routing (e.g. OSPF passive-interface).
             "parameters": dict(intent.get("params") or {}),
         }
@@ -2834,6 +2896,7 @@ async def plan_ansible(
     feature_lower = (req.feature or "").strip().lower()
     is_vlan = feature_lower == "vlan"
     is_interface = feature_lower == "interface"
+    is_acl = feature_lower == "acl"
 
     # Interface feature: topology resolution only when params still lack interfaces (ignore stale requires_resolution).
     if is_interface:
@@ -3026,13 +3089,17 @@ async def plan_ansible(
             intent=fallback_intent,
             planning_context=planning_context,
         )
-    if (is_vlan or is_interface) and template_filled is None:
-        logger.error("VLAN template fill returned None (vendors=%s); refusing to fall back to LLM", vendors)
+    if (is_vlan or is_interface or is_acl) and template_filled is None:
+        logger.error(
+            "Reference template fill returned None (vendors=%s); refusing to fall back to LLM for feature=%s",
+            vendors,
+            feature_lower,
+        )
         raise HTTPException(
             422,
             detail={
-                "message": f"{'VLAN' if is_vlan else 'Interface'} playbook must be generated from the reference template. Template fill failed or no reference path found.",
-                "feature": "vlan" if is_vlan else "interface",
+                "message": f"{'VLAN' if is_vlan else ('Interface' if is_interface else 'ACL')} playbook must be generated from the reference template. Template fill failed or no reference path found.",
+                "feature": "vlan" if is_vlan else ("interface" if is_interface else "acl"),
                 "vendors": vendors,
                 "target_hosts": resolved_hosts,
             },
@@ -3060,7 +3127,7 @@ async def plan_ansible(
                 "history": [{"attempt": 1, "passed": True, "issues": []}],
                 "source": "reference_template",
             }
-        elif is_vlan or is_interface:
+        elif is_vlan or is_interface or is_acl:
             # Default safety: VLAN/interface should use reference only (no LLM fallback).
             # Exception: configure_interface with VLAN/IP semantics on Cisco+Juniper
             # can’t be safely expressed by deterministic reference templates (they mainly
@@ -3100,15 +3167,15 @@ async def plan_ansible(
                 raise HTTPException(
                     422,
                     detail={
-                        "message": f"{'VLAN' if is_vlan else 'Interface'} reference playbook failed validation. Fix template or inventory; LLM fallback is disabled for this feature.",
+                        "message": f"{'VLAN' if is_vlan else ('Interface' if is_interface else 'ACL')} reference playbook failed validation. Fix template or inventory; LLM fallback is disabled for this feature.",
                         "validation_issues": validation.get("issues", []),
                         "errors": validation.get("errors", []),
                     },
                 )
 
-    # For VLAN/interface always use reference-style single playbook (no LLM).
+    # For VLAN/interface/ACL always use reference-style single playbook (no LLM).
     use_bundle = bool(getattr(builder, "supports_role_bundle", lambda *_: False)(req.feature))
-    if is_vlan or is_interface:
+    if is_vlan or is_interface or is_acl:
         use_bundle = False
     if orchestration is None and _agent is not None and skip_upfront_vector_rag:
         # Deferred RAG: reference path missed and we need LLM (e.g. interface VLAN/IP fallback).
@@ -5366,6 +5433,12 @@ def _preview_parse_and_rag(
         except Exception as _l3_exc:
             logger.debug("interface L3 prompt coercion (preview parse) failed: %s", _l3_exc)
         try:
+            from ansible.intent_validation import correct_acl_params_from_natural_language
+
+            correct_acl_params_from_natural_language(intent_description, parsed_dict)
+        except Exception as _acl_exc:
+            logger.debug("acl prompt coercion (preview parse) failed: %s", _acl_exc)
+        try:
             correct_ospf_params_from_natural_language(intent_description, parsed_dict)
         except Exception as _ospf_exc:
             logger.debug("ospf prompt coercion (preview parse) failed: %s", _ospf_exc)
@@ -5740,6 +5813,31 @@ async def preview_intent(
         request_params=req.params,
         skip_rag=bool(req.skip_rag),
     )
+
+    # Normalize ACL-apply variants early so preview can:
+    # - select the correct operation schema (apply_acl_to_interface)
+    # - run planned-inventory interface validation and build the interface picker
+    try:
+        _pa = str(parsed_intent.get("action") or "").strip().lower().replace("-", "_")
+        _pf = str(parsed_intent.get("feature") or "").strip().lower().replace("-", "_")
+        _tl = str(req.intent_description or "").strip().lower()
+        _applyish = (
+            "apply acl" in _tl
+            or "access-group" in _tl
+            or "inbound on" in _tl
+            or "outbound on" in _tl
+            or _pa in ("apply_acl", "apply_acl_to_interface")
+        )
+        if _applyish and (_pf in ("", "acl") or "acl" in _tl):
+            parsed_intent["intent_type"] = "configure"
+            parsed_intent["feature"] = "acl"
+            if _pa == "apply_acl" or not str(parsed_intent.get("action") or "").strip():
+                parsed_intent["action"] = "apply_acl_to_interface"
+            p0 = dict(parsed_intent.get("parameters") or {})
+            p0.setdefault("_canonical_operation", "apply_acl_to_interface")
+            parsed_intent["parameters"] = p0
+    except Exception:
+        pass
     # Merge request params (e.g. interfaces_to_shutdown, vlan_id, vlan_name, target_hosts) into parsed intent
     if req.params:
         p = dict(parsed_intent.get("parameters") or {})
@@ -6460,6 +6558,19 @@ async def preview_intent(
         except Exception as exc:
             logger.debug("Preview planned all-interfaces summary failed: %s", exc)
 
+    # Ensure ACL apply prompts have `interfaces` populated before interface validation/picker logic runs.
+    try:
+        _pa_norm = str(parsed_intent.get("action") or "").strip().lower().replace("-", "_")
+        _pf_norm = str(parsed_intent.get("feature") or "").strip().lower().replace("-", "_")
+        if _pf_norm == "acl" or _pa_norm == "apply_acl_to_interface":
+            from ansible.intent_validation import correct_acl_params_from_natural_language
+
+            correct_acl_params_from_natural_language(req.intent_description or "", parsed_intent)
+            # Keep local working copy aligned for inventory validation below.
+            params = dict(parsed_intent.get("parameters") or {})
+    except Exception as _acl_preview_early_exc:
+        logger.debug("acl prompt coercion (preview early) failed: %s", _acl_preview_early_exc)
+
     iface_names_invalid = False
     inv_validation_result: Optional[Any] = None
     _preview_secondary_intents: List[Dict[str, Any]] = list(
@@ -6495,6 +6606,7 @@ async def preview_intent(
                     "shutdown_interface",
                     "configure_interface",
                     "configure_acl",
+                    "apply_acl_to_interface",
                     "configure_qos",
                     "configure_ospf",
                     "configure_ospf_passive_interface",
@@ -6641,6 +6753,7 @@ async def preview_intent(
                 and schema_action_iface
                 in (
                     "configure_acl",
+                    "apply_acl_to_interface",
                     "configure_qos",
                     "configure_ospf",
                     "configure_ospf_passive_interface",
@@ -6674,6 +6787,8 @@ async def preview_intent(
                     )
                 elif schema_action_iface == "shutdown_interface":
                     iface_q = "Please select the interfaces you want to shutdown."
+                elif schema_action_iface == "apply_acl_to_interface":
+                    iface_q = "Which interface(s) should it be applied to?"
                 else:
                     iface_q = "Please select valid interfaces from planned inventory."
                 interfaces_disambiguation = _interfaces_disambiguation_from_planning(
@@ -6917,6 +7032,13 @@ async def preview_intent(
         logger.debug("interface L3 prompt coercion (preview) failed: %s", _l3_preview_exc)
 
     try:
+        from ansible.intent_validation import correct_acl_params_from_natural_language
+
+        correct_acl_params_from_natural_language(req.intent_description or "", parsed_intent)
+    except Exception as _acl_preview_exc:
+        logger.debug("acl prompt coercion (preview) failed: %s", _acl_preview_exc)
+
+    try:
         correct_static_route_params_from_natural_language(req.intent_description or "", parsed_intent)
     except Exception as _static_preview_exc:
         logger.debug("static route prompt coercion (preview) failed: %s", _static_preview_exc)
@@ -6982,6 +7104,42 @@ async def preview_intent(
                 }
     except Exception as _cond_final_exc:
         logger.debug("final conditional disambiguation merge failed: %s", _cond_final_exc)
+
+    # Prune stale disambiguation asks after prompt coercions & interface inventory validation.
+    # (Example: prompt contains "ACL 3000" but early tree-level asks still include acl_name.)
+    try:
+        if params_disambiguation and isinstance(params_disambiguation.get("fields"), list):
+            _pcur = dict(parsed_intent.get("parameters") or {})
+            _fields_out: List[Dict[str, Any]] = []
+            for _f in params_disambiguation.get("fields") or []:
+                if not isinstance(_f, dict):
+                    continue
+                fn = str(_f.get("field") or "").strip()
+                fnl = fn.lower().replace("-", "_")
+                if fnl == "acl_name" and str(_pcur.get("acl_name") or "").strip():
+                    continue
+                if fnl == "acl_direction" and str(_pcur.get("acl_direction") or "").strip():
+                    continue
+                if fnl in ("apply_to", "interface_apply"):
+                    # For interface-attachment flows (ACL/QoS), always prefer the planned-inventory picker
+                    # over a free-text "apply_to" input when we have inventory options.
+                    if interfaces_disambiguation:
+                        continue
+                    if isinstance(_pcur.get("apply_to"), list) and _pcur.get("apply_to"):
+                        continue
+                if fnl == "interfaces":
+                    # If inventory picker is present, do not also ask a freeform interfaces question.
+                    if interfaces_disambiguation:
+                        continue
+                    if interface_intent_params_satisfied(_pcur):
+                        continue
+                _fields_out.append(_f)
+            if _fields_out:
+                params_disambiguation = {**params_disambiguation, "fields": _fields_out}
+            else:
+                params_disambiguation = None
+    except Exception as _pd_prune_exc:
+        logger.debug("params_disambiguation prune failed: %s", _pd_prune_exc)
 
     intent_schema_inspector: Dict[str, Any] = {"slices": []}
     try:

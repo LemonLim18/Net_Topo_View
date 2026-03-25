@@ -498,6 +498,7 @@ def validate_playbook_bundle(
         return report
 
     file_map: Dict[str, Dict[str, Any]] = {}
+    allow_ipv4_literals = str(feature or "").strip().lower() in {"acl", "static_route", "ospf", "routing"}
     for item in files:
         if not isinstance(item, dict):
             add_error("Bundle contains a non-object file entry.")
@@ -518,6 +519,11 @@ def validate_playbook_bundle(
 
         content = str(item.get("content") or "")
         for finding in _scan_patterns(content, _HARD_CODED_SECRET_PATTERNS):
+            # ACL/routing artifacts legitimately contain IPv4 prefixes and next-hops.
+            # The "hard-coded IP" rule is meant to prevent embedding device addressing (mgmt IPs)
+            # into generated bundles, not to block policy objects like ACL source prefixes.
+            if finding.get("code") == "hard_coded_ip" and allow_ipv4_literals:
+                continue
             add_error(f"{finding['message']} File: {path}")
 
     add_check("entrypoint_in_files", entrypoint_path in file_map, entrypoint_path)

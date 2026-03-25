@@ -1,0 +1,51 @@
+- name: Configure ACL (Huawei VRP)
+  hosts: "{{ target_hosts | default('all') }}"
+  gather_facts: no
+  connection: network_cli
+  tasks:
+    - name: Configure ACL on Huawei VRP
+      community.network.ce_config:
+        lines:
+{% set _is_numbered = ((acl_name | string) | trim).isdigit() %}
+{% set _has_rules = (rules is defined) and ((rules | length) > 0) %}
+{% if _has_rules %}
+{% if _is_numbered %}
+          - "undo acl number {{ acl_name }}"
+          - "acl number {{ acl_name }}"
+{% else %}
+          - "undo acl name {{ acl_name }}"
+          - "acl name {{ acl_name }} {{ 'advance' if acl_type in ['ipv4','extended'] else acl_type }}"
+{% endif %}
+{% for rule in rules %}
+{% if rule is string %}
+          - "{{ rule }}"
+{% else %}
+          - "rule {% if rule.seq is defined %}{{ rule.seq }} {% endif %}{{ rule.action }} {% if rule.protocol is defined %}{{ rule.protocol }} {% endif %}source {{ rule.source }}{% if rule.source_wildcard is defined %} {{ rule.source_wildcard }}{% endif %}{% if rule.destination is defined %} destination {{ rule.destination }}{% endif %}{% if rule.dest_wildcard is defined %} {{ rule.dest_wildcard }}{% endif %}{% if rule.port is defined %} destination-port eq {{ rule.port }}{% endif %}{% if rule.log is defined and rule.log %} logging{% endif %}"
+{% endif %}
+{% endfor %}
+          - "return"
+{% endif %}
+
+{% for ap in (apply_to or []) %}
+{% if ap is string %}
+{% set _tok = (ap | string) %}
+{% set _parts = _tok.split() %}
+{% set _last = (_parts[-1] if (_parts | length) > 0 else '') %}
+{% set _dir = (_last if _last in ['in','out'] else (acl_direction | default('in'))) %}
+{% set _iface_tok = (' '.join(_parts[:-1]) if _last in ['in','out'] else _tok) %}
+{% set _iface = (_iface_tok.split(':', 1)[1] if ':' in _iface_tok else _iface_tok) %}
+{% else %}
+{% set _iface = (ap.interface | default(ap.get('interface')) | default(ap.get('name')) | string) %}
+{% set _dir = (ap.direction | default(ap.get('direction')) | default(acl_direction | default('in')) | string) %}
+{% endif %}
+{% if _iface | trim %}
+    - name: Apply ACL to {{ _iface }} on Huawei VRP (replace semantics)
+      community.network.ce_config:
+        lines:
+          - "interface {{ _iface }}"
+          - "undo traffic-filter inbound"
+          - "undo traffic-filter outbound"
+          - "traffic-filter {{ 'inbound' if _dir in ['in', 'inbound'] else 'outbound' }} acl{% if ((acl_name | string) | trim).isdigit() %} {{ acl_name }}{% else %} name {{ acl_name }}{% endif %}"
+          - "quit"
+{% endif %}
+{% endfor %}
