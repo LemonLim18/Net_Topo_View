@@ -99,18 +99,29 @@ Do this for other operations, to ensure a one-go question asking.
 
 ## 4️⃣ Static Route
 
-- [ ] Add a static route to 10.10.10.0/24 via 192.168.1.1 on SW1  
+- [/] Add a static route to 10.10.10.0/24 via 192.168.1.1 on SW1  
+
+**Preview Modal:**
+
+- [/] Add a default route on router 2  
+
+- [/] Add a static route to 172.16.0.0/16 via GigabitEthernet0/1 on router 2  
 
 
-- [ ] Add a default route on router 2  
-
-- [ ] Add a static route to 172.16.0.0/16 via GigabitEthernet0/1 on router 2  
+- [/] Add a static route to 192.168.50.0/24 with next hop 10.0.0.2 on SW1  
 
 
-- [ ] Add a static route to 192.168.50.0/24 with next hop 10.0.0.2 on SW1  
+- [Skip] Add a static route for the management network on devices 
+**Reminder**: For this kind of case, will be put on hold first. The first things to do is to store the management network information, so that mapping can be done by storing the map between the network information(name, and the network segment/mask). Then, two ways can be used to resolve for the static route punya outgoing interface or the nexthop ip address: The first one is to make the admin to register every static route already inside the netbox to get the information predefined. The second one is let the system have the knowledge of the all network topo graph, then from that path determine the route from what devices to what devices, then recommend the shortest link to reach the management. Choose the closest next neighbor and then get its information thru the lldp, and construct it.
 
+- [] Create a static route between the device A to device B.
+**Reminder**: Do the same thing by recommending the shortest path between the devices and then get those info, and then create the static route. The second advanced things can be done is to show a graph which the user can click the path nodes from the source device to the target device. And based on the neighbor info retrieved, the static route will be created for all involved nodes, with the correct info.
 
-- [ ] Add a static route for the management network on devices  
+**Reminder**: For the UI in the Ansible studio chat, allows when user presses up and down, it can go back to the previous and the next prompt accordingly.
+
+And for the RAG library, implement the max height will overflow-y-scroll for the document stored, to avoid excessive height.
+
+Also, please modify it so that Ansible chat, after the successful generation of the playbook, will explain what it has done, as what we normally expect to see after the prompt generation is done by LLM. Something like explanation, summary and possible next prompt.
 
 
 

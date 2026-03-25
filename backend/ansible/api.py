@@ -55,11 +55,13 @@ from ansible.intent_validation import (
     configure_interface_phased_wizard_fields,
     correct_interface_l3_params_from_natural_language,
     correct_ospf_params_from_natural_language,
+    correct_static_route_params_from_natural_language,
     correct_vlan_interface_binding_from_trunk_prompt,
     ospf_passive_interfaces_non_empty,
     ospf_redistribution_non_empty,
     client_supplied_ospf_advertisement_params,
     client_supplied_ospf_router_id_param,
+    strip_llm_static_route_next_hop_if_not_explicit_in_prompt,
     strip_llm_ospf_advertisement_guesses_if_not_explicit_in_prompt,
     strip_llm_ospf_process_id_if_not_explicit_in_prompt,
     extract_create_vlan_params_from_natural_language,
@@ -134,6 +136,13 @@ def _apply_ospf_nl_strips(
         client_supplied_advertisement=client_supplied_ospf_advertisement_params(rp),
         client_supplied_router_id=client_supplied_ospf_router_id_param(rp),
     )
+
+
+def _client_supplied_static_route_next_hop(params: Optional[Dict[str, Any]]) -> bool:
+    if not isinstance(params, dict):
+        return False
+    v = params.get("next_hop")
+    return v is not None and str(v).strip() != ""
 
 
 def _default_manifest_llm_provider() -> str:
@@ -1659,9 +1668,18 @@ def _resolve_backend_intent_request(req, user: dict) -> tuple["PlanAnsibleReques
     if req.vendor:
         parsed.vendor = normalize_vendor(req.vendor)
     if req.params is not None:
-        # Merge so request can override specific keys without wiping LLM output (e.g. empty {} from frontend)
+        # Merge so request can override specific keys without wiping LLM output.
+        # IMPORTANT: ignore empty values (""/[]/{}) so previously-parsed prompt values are not erased.
         base = dict(parsed.parameters or {})
         for k, v in (req.params or {}).items():
+            if v is None:
+                continue
+            if isinstance(v, str) and not v.strip():
+                continue
+            if isinstance(v, list) and len(v) == 0:
+                continue
+            if isinstance(v, dict) and len(v) == 0:
+                continue
             base[k] = v
         _coerce_params_for_validation(base)
         parsed.parameters = base
@@ -1819,8 +1837,43 @@ def _resolve_backend_intent_request(req, user: dict) -> tuple["PlanAnsibleReques
 
     if parsed.requires_disambiguation:
         raise HTTPException(422, parsed.disambiguation_message or "Intent requires disambiguation before planning.")
+
+    # Heuristic recovery: LLM sometimes labels routing config prompts as QUERY (action unknown / feature routing).
+    # If the user is clearly asking to create/configure a route, treat it as a configuration intent so
+    # create-and-plan can proceed into schema-driven questions and reference template generation.
+    if parsed.intent_type not in {IntentType.CONFIGURE, IntentType.DEPLOY}:
+        try:
+            _tl = str(req.intent_description or "").strip().lower()
+            _pa = str(parsed.action or "").strip().lower().replace("-", "_")
+            _pf = str(parsed.feature or "").strip().lower().replace("-", "_")
+            _routeish = ("route" in _tl or "routing" in _tl) and "traceroute" not in _tl
+            if "ospf" in _tl and (_pa in ("unknown", "") or _pf in ("routing", "", "ospf")):
+                parsed.intent_type = IntentType.CONFIGURE
+                if not str(parsed.feature or "").strip():
+                    parsed.feature = "ospf"
+                if _pa in ("unknown", ""):
+                    parsed.action = "configure_ospf"
+            elif _routeish and (_pa in ("unknown", "") or _pf in ("routing", "")):
+                parsed.intent_type = IntentType.CONFIGURE
+        except Exception:
+            pass
     if parsed.intent_type not in {IntentType.CONFIGURE, IntentType.DEPLOY}:
         raise HTTPException(422, f"Intent '{parsed.intent_type.value}' is not a configuration change.")
+    if not parsed.feature:
+        # Same recovery as preview: if the user asked for routing changes but parser omitted feature,
+        # carry forward routing_type disambiguation (if any) or default to static_route to drive schema questions.
+        try:
+            _tl = str(req.intent_description or "").strip().lower()
+            _pa = str(parsed.action or "").strip().lower().replace("-", "_")
+            _routeish = ("route" in _tl or "routing" in _tl) and "traceroute" not in _tl
+            if "ospf" in _tl and (_pa in ("unknown", "") or _pa == "configure"):
+                parsed.feature = "ospf"
+                parsed.action = "configure_ospf"
+            if _routeish and (_pa in ("unknown", "") or _pa == "configure"):
+                parsed.feature = "static_route"
+                parsed.action = "configure_static_route"
+        except Exception:
+            pass
     if not parsed.feature:
         raise HTTPException(422, "Intent parser did not resolve a configuration feature.")
     if not parsed.resolved_devices:
@@ -1850,11 +1903,36 @@ def _resolve_backend_intent_request(req, user: dict) -> tuple["PlanAnsibleReques
             parsed.requires_resolution = False
 
     _parsed_guard = parsed.model_dump()
+    # Heuristic recovery: vague "route" prompts sometimes come back as feature=routing with action=unknown.
+    # Treat them as static-route intents so schema-driven questions are surfaced.
+    try:
+        _pa = str(_parsed_guard.get("action") or "").strip().lower().replace("-", "_")
+        _pf = str(_parsed_guard.get("feature") or "").strip().lower().replace("-", "_")
+        _tl = str(req.intent_description or "").strip().lower()
+        if "route" in _tl and "ospf" not in _tl and (_pa in ("unknown", "") or _pf in ("routing", "")):
+            _parsed_guard["action"] = "configure_static_route"
+            _parsed_guard["feature"] = "static_route"
+    except Exception:
+        pass
     _trunk_viol = _force_trunk_mode_for_prompt_invariant(
         _parsed_guard,
         req.intent_description or "",
     )
     correct_interface_l3_params_from_natural_language(req.intent_description or "", _parsed_guard)
+    try:
+        correct_static_route_params_from_natural_language(req.intent_description or "", _parsed_guard)
+    except Exception as _static_plan_exc:
+        logger.debug("static route prompt coercion failed (plan/create): %s", _static_plan_exc)
+    try:
+        strip_llm_static_route_next_hop_if_not_explicit_in_prompt(
+            req.intent_description or "",
+            _parsed_guard,
+            client_supplied_next_hop=_client_supplied_static_route_next_hop(
+                req.params if isinstance(req.params, dict) else None
+            ),
+        )
+    except Exception as _static_strip_plan_exc:
+        logger.debug("static route next_hop strip failed (plan/create): %s", _static_strip_plan_exc)
     correct_ospf_params_from_natural_language(req.intent_description or "", _parsed_guard)
     _apply_ospf_nl_strips(req.intent_description or "", _parsed_guard, req.params)
     parsed = ParsedIntent.model_validate(_parsed_guard)
@@ -2925,21 +3003,6 @@ async def plan_ansible(
                     "validation_notice": vr.validation_notice,
                     "params_need_context_fix": True,
                     "interfaces_disambiguation": iface_dis,
-                    "target_hosts": resolved_hosts,
-                },
-            )
-
-    # Static route: when next_hop is an IP, validate it against known interface subnets from planning context.
-    if schema_action_plan == "configure_static_route" and resolved_hosts:
-        vr_nh = validate_static_route_next_hop_ip_against_context(p_inv, resolved_hosts, planning_context)
-        if not vr_nh.ok:
-            raise HTTPException(
-                422,
-                detail={
-                    "message": "Provided next-hop IP is not consistent with planned network context.",
-                    "invalid_entities": vr_nh.invalid_entities,
-                    "validation_notice": vr_nh.validation_notice,
-                    "params_need_context_fix": True,
                     "target_hosts": resolved_hosts,
                 },
             )
@@ -4572,6 +4635,56 @@ def _switch_role_disambiguation(intent_description: str) -> Optional[dict[str, A
     }
 
 
+def _routing_type_disambiguation(intent_description: str) -> Optional[dict[str, Any]]:
+    """
+    Detect vague prompts like "Create a route on devices" where the intent could be:
+    - static route (destination + next-hop/egress)
+    - OSPF (dynamic routing)
+
+    When ambiguous, return a chat disambiguation block so the UI can ask before we coerce.
+    """
+    text = (intent_description or "").strip()
+    if not text:
+        return None
+    lower = text.lower()
+    if "route" not in lower and "routing" not in lower:
+        return None
+    # If user explicitly mentioned either, do not disambiguate.
+    if "ospf" in lower:
+        return None
+    if "static route" in lower or "default route" in lower:
+        return None
+    # If a prefix/next-hop exists, it's almost certainly static route.
+    if re.search(r"\b(?:\d{1,3}\.){3}\d{1,3}/\d{1,2}\b", lower):
+        return None
+    if re.search(r"\b(?:via|next\s*hop|gateway)\b", lower):
+        return None
+    # Avoid prompting for other routing protocols.
+    if any(k in lower for k in ("bgp", "eigrp", "isis", "is-is", "rip", "pim")):
+        return None
+
+    options = [
+        {
+            "id": "static_route",
+            "label": "Static route",
+            "clarification": "static route",
+            "matches": [],
+        },
+        {
+            "id": "ospf",
+            "label": "OSPF (dynamic routing)",
+            "clarification": "OSPF",
+            "matches": [],
+        },
+        {"id": "custom", "label": "Enter your custom answer", "clarification": "", "matches": []},
+    ]
+    return {
+        "kind": "routing_type",
+        "question": "Do you mean a **static route** or **OSPF**?",
+        "options": options,
+    }
+
+
 def _apply_numeric_subset_fallback(intent_description: str, resolved: List[str]) -> tuple[List[str], str]:
     """
     When user said e.g. 'access switch 1, 2, and 3' but we got too many devices,
@@ -4913,6 +5026,23 @@ def _merge_intent_pipeline_interactive_asks(
     out_dd = devices_disambiguation
     out_pd = params_disambiguation
 
+    # Interactive asks can be stale after we coerce/strip parameters from natural language
+    # (e.g. static-route destination/next_hop extracted post-parse). Only surface missing_required
+    # asks that are still missing under the current schema view.
+    still_missing: set[str] = set()
+    missing_computed = False
+    try:
+        from ansible.intent_validation import get_schema_for_parsed_intent, validate_completeness
+
+        schema_now = get_schema_for_parsed_intent(parsed_intent)
+        if schema_now:
+            _m, _ = validate_completeness(parsed_intent, schema_now)
+            still_missing = {str(x).strip() for x in (_m or []) if str(x).strip()}
+            missing_computed = True
+    except Exception:
+        still_missing = set()
+        missing_computed = False
+
     # Chat / Target inventory picks are authoritative: never surface stale pipeline device asks.
     authoritative_planned_targets = False
     if preview_resolved_hosts and db_manager is not None:
@@ -4970,6 +5100,8 @@ def _merge_intent_pipeline_interactive_asks(
         elif kind == "missing_required":
             field = str(ask.get("field") or "").strip()
             if not field:
+                continue
+            if missing_computed and field not in still_missing:
                 continue
             existing_fields = [
                 f for f in (out_pd or {}).get("fields") or [] if isinstance(f, dict)
@@ -5124,6 +5256,42 @@ def _preview_parse_and_rag(
         secondary_list = _normalize_secondary_intents(raw_secondary)
         parsed_dict["secondary_intents"] = secondary_list
         parsed_dict["parameters"] = params_dict
+        routing_disambiguation_early = _routing_type_disambiguation(intent_description)
+
+        # If the user explicitly clarified OSPF, treat it as a real OSPF configure operation.
+        # Otherwise the UI shows action=unknown and the schema can't ask for missing OSPF parameters.
+        try:
+            _tl2 = str(intent_description or "").strip().lower()
+            _pa2 = str(parsed_dict.get("action") or parsed.action or "").strip().lower().replace("-", "_")
+            _pf2 = str(parsed_dict.get("feature") or parsed.feature or "").strip().lower().replace("-", "_")
+            if "ospf" in _tl2 and (_pa2 in ("unknown", "") or _pf2 == "routing"):
+                parsed_dict["action"] = "configure_ospf"
+                parsed_dict["feature"] = "ospf"
+                _cats_norm2 = {str(c).strip().lower().replace("-", "_") for c in (categories or []) if str(c).strip()}
+                if "ospf" not in _cats_norm2:
+                    categories.append("ospf")
+        except Exception:
+            pass
+
+        # Heuristic recovery for vague routing prompts: only coerce when we are NOT asking
+        # the user to pick between static route vs OSPF.
+        if not routing_disambiguation_early:
+            try:
+                _pa_raw = str(parsed_dict.get("action") or parsed.action or "").strip().lower().replace("-", "_")
+                _pf_raw = str(parsed_dict.get("feature") or parsed.feature or "").strip().lower().replace("-", "_")
+                _cats_raw = [str(c).strip() for c in categories if str(c).strip()]
+                _cats_norm = {str(c).strip().lower().replace("-", "_") for c in _cats_raw}
+                _tl = str(intent_description or "").strip().lower()
+                _mentions_route = "route" in _tl
+                _mentions_ospf = "ospf" in _tl
+                if _mentions_route and not _mentions_ospf and (_pa_raw in ("unknown", "") or _pf_raw in ("routing", "")):
+                    parsed_dict["action"] = "configure_static_route"
+                    parsed_dict["feature"] = "static_route"
+                    # Keep template categories aligned.
+                    if "static_route" not in _cats_norm:
+                        categories.append("static_route")
+            except Exception:
+                pass
         if params_dict.get("_intent_parse_error"):
             reasoning.insert(
                 0,
@@ -5137,8 +5305,8 @@ def _preview_parse_and_rag(
             if f and f not in categories:
                 categories.append(f)
         intent_type = getattr(parsed.intent_type, "value", parsed.intent_type)
-        intent_action = parsed.action or "configure"
-        intent_feature = (parsed.feature or "").strip() or (categories[0] if categories else "general")
+        intent_action = str(parsed_dict.get("action") or parsed.action or "configure")
+        intent_feature = (str(parsed_dict.get("feature") or parsed.feature or "").strip() or (categories[0] if categories else "general"))
         categories = _sanitize_template_categories(
             categories,
             intent_action,
@@ -5246,6 +5414,7 @@ def _preview_parse_and_rag(
     else:
         resolved, _numeric_subset_note = _apply_numeric_subset_fallback(intent_description, resolved)
     switch_disambiguation_early = _switch_role_disambiguation(intent_description)
+    routing_disambiguation_early = _routing_type_disambiguation(intent_description)
     _dd_pre = _deduce_target_devices(intent_description, resolved, explicit_user_targets=explicit_targets_from_ui)
     _map_pre: List[Dict[str, Any]] = list(_dd_pre.get("mapping") or [])
     if (
@@ -5529,14 +5698,16 @@ def _preview_parse_and_rag(
         except Exception as _ipt_exc:
             logger.debug("Attach intent_pipeline in preview: %s", _ipt_exc)
 
-    # Disambiguation: ambiguous "Switch 1 and Switch 2" without role keywords (computed earlier).
-    if switch_disambiguation_early:
-        parsed_dict["disambiguation"] = switch_disambiguation_early
+    # Disambiguation: ask user before coercing ambiguous routing prompts or switch-role prompts.
+    # Routing-type disambiguation takes priority because otherwise schema is "unknown" and the UI has nothing to ask.
+    _dis = routing_disambiguation_early or switch_disambiguation_early
+    if _dis:
+        parsed_dict["disambiguation"] = _dis
         # Put it near the top so user sees it immediately.
         reasoning.insert(
             1,
             "### 1b. Clarification needed\n"
-            "- **Your prompt is ambiguous** (e.g. “Switch 1/2” could be core, distribution, or access).\n"
+            "- **Your prompt is ambiguous** and needs clarification before generating.\n"
             "- Please pick one of the options in the chat to proceed.",
         )
     else:
@@ -5657,6 +5828,28 @@ async def preview_intent(
 
     # Deterministic VLAN id/name from natural language (LLM often drops them on long device phrases).
     merge_extracted_vlan_params_into_parsed_intent(parsed_intent, req.intent_description or "")
+
+    # Static routes: ensure destination/next-hop are filled from the prompt (or alternate keys)
+    # before tree/schema completeness checks build UI questions.
+    try:
+        correct_static_route_params_from_natural_language(
+            req.intent_description or "",
+            parsed_intent,
+        )
+    except Exception as _static_exc:
+        logger.debug("static route prompt coercion failed (preview pre-tree): %s", _static_exc)
+
+    # Static routes: never accept an LLM-invented next-hop when the prompt didn't state it.
+    try:
+        strip_llm_static_route_next_hop_if_not_explicit_in_prompt(
+            req.intent_description or "",
+            parsed_intent,
+            client_supplied_next_hop=_client_supplied_static_route_next_hop(
+                req.params if isinstance(req.params, dict) else None
+            ),
+        )
+    except Exception as _static_strip_exc:
+        logger.debug("static route next_hop strip failed (preview pre-tree): %s", _static_strip_exc)
 
     # Before tree + schema completeness, drop LLM-invented OSPF fields the user did not state
     # (so disambiguation is built against real gaps, not hallucinated networks/router-id).
@@ -6324,54 +6517,8 @@ async def preview_intent(
                 interface_names_override=_preview_iface_override or None,
             )
             iface_names_invalid = not inv_validation_result.ok
-            # Static route next-hop IP semantic validation against planned context.
-            if schema_action_iface == "configure_static_route":
-                vr_nh = validate_static_route_next_hop_ip_against_context(
-                    params, resolved_hosts, planning_context_preview
-                )
-                if not vr_nh.ok:
-                    if inv_validation_result and not inv_validation_result.ok:
-                        inv_validation_result.invalid_entities.extend(vr_nh.invalid_entities)
-                        inv_validation_result.validation_notice = "\n\n".join(
-                            [inv_validation_result.validation_notice, vr_nh.validation_notice]
-                        ).strip()
-                    else:
-                        inv_validation_result = vr_nh
-                    iface_names_invalid = True
         except Exception as exc:
             logger.debug("Preview interface inventory validation failed: %s", exc)
-
-    # Static route: validate next_hop IP against planned interface subnets even when
-    # no interface-like token exists (e.g. next_hop is an IP).
-    if (
-        not all_if_shutdown_expanded_preview
-        and _db is not None
-        and resolved_hosts
-        and schema_action_iface == "configure_static_route"
-    ):
-        try:
-            if planning_context_preview is None:
-                planning_context_preview = await run_in_threadpool(
-                    build_scoped_planning_context,
-                    _db,
-                    resolved_hosts,
-                    feature="interface",
-                    query=req.intent_description or "",
-                )
-            vr_nh = validate_static_route_next_hop_ip_against_context(
-                params, resolved_hosts, planning_context_preview
-            )
-            if not vr_nh.ok:
-                if inv_validation_result and not inv_validation_result.ok:
-                    inv_validation_result.invalid_entities.extend(vr_nh.invalid_entities)
-                    inv_validation_result.validation_notice = "\n\n".join(
-                        [inv_validation_result.validation_notice, vr_nh.validation_notice]
-                    ).strip()
-                else:
-                    inv_validation_result = vr_nh
-                iface_names_invalid = True
-        except Exception as exc:
-            logger.debug("Preview static_route next_hop validation failed: %s", exc)
 
     # Reasoning must reflect merged client params (Playbook Studio: interfaces, trunk, native VLAN).
     # `parsed_intent["parameters"]` is updated earlier, but re-merge `req.params` here so a single
@@ -6768,6 +6915,11 @@ async def preview_intent(
         correct_interface_l3_params_from_natural_language(req.intent_description or "", parsed_intent)
     except Exception as _l3_preview_exc:
         logger.debug("interface L3 prompt coercion (preview) failed: %s", _l3_preview_exc)
+
+    try:
+        correct_static_route_params_from_natural_language(req.intent_description or "", parsed_intent)
+    except Exception as _static_preview_exc:
+        logger.debug("static route prompt coercion (preview) failed: %s", _static_preview_exc)
     try:
         correct_ospf_params_from_natural_language(req.intent_description or "", parsed_intent)
     except Exception as _ospf_preview_exc:

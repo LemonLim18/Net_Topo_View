@@ -86,6 +86,26 @@ class TestIntentTreeEnginePhase2StaticRoute(unittest.TestCase):
         )
         self.assertTrue(res.needs_target_devices)
 
+    def test_default_route_missing_next_hop_is_asked(self):
+        parsed_intent = {
+            "action": "configure_static_route",
+            "feature": "static_route",
+            "parameters": {
+                "destination": "0.0.0.0/0",
+                "next_hop": "",
+            },
+            "device_deduction": {},
+        }
+        res = evaluate_intent_tree(
+            intent_description="Add a default route on router 2",
+            parsed_intent=parsed_intent,
+            resolved_hosts=["SW1"],
+            db_manager=None,
+        )
+        fields = (res.params_disambiguation or {}).get("fields") or []
+        field_names = [f.get("field") for f in fields if isinstance(f, dict)]
+        self.assertEqual(field_names, ["next_hop"])
+
 
 if __name__ == "__main__":
     unittest.main()

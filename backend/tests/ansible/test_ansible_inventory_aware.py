@@ -249,3 +249,24 @@ def test_planning_context_readiness_allows_ospf_with_stale_inventory_when_device
 
     assert readiness["ready"] is True
     assert not any("freshness is stale" in issue for issue in readiness["issues"])
+
+
+def test_planning_context_readiness_allows_static_route_with_stale_inventory_when_device_fields_present():
+    readiness = planning_context_readiness(
+        {
+            "target_hosts": ["R1"],
+            "feature": "static_route",
+            "inventory": {"source": "netbox", "freshness": {"freshness_class": "stale"}},
+            "planned_topology": {"source": "netbox", "freshness": {"freshness_class": "stale"}},
+            "devices": [
+                {
+                    "hostname": "R1",
+                    "management_ip": "10.0.0.1",
+                    "vendor": "cisco_ios",
+                    "interfaces": [],
+                }
+            ],
+        }
+    )
+    assert readiness["ready"] is True
+    assert not any("freshness is stale" in issue for issue in readiness["issues"])

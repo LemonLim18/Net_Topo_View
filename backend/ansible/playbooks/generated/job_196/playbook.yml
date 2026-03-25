@@ -1,0 +1,12 @@
+---
+- name: Configure Static Routes (Cisco IOS)
+  hosts: "Acc_Cisco_2"
+  gather_facts: no
+  ignore_unreachable: true
+  tasks:
+    - name: Configure static route (Cisco IOS)
+      cisco.ios.ios_config:
+        lines:
+          - "ip route 172.16.0.0 255.255.0.0 Acc_Cisco_2:Ethernet0/2"
+      when:
+        - inventory_hostname in groups.get('vendor_cisco_ios', [])

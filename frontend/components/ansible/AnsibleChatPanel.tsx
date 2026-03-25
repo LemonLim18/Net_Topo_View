@@ -96,6 +96,7 @@ function parseIntent(text: string): {
     lower.includes('vlan')          ? 'vlan'      :
     lower.includes('ospf')          ? 'ospf'      :
     lower.includes('bgp')           ? 'bgp'       :
+    (lower.includes('static route') || lower.includes('default route')) ? 'static_route' :
     looksLikeIfaceShutdown || looksLikeIfaceConfigure || lower.includes('interface') ? 'interface' :
     lower.includes('acl') || lower.includes('access-list') ? 'acl' :
     lower.includes('route')         ? 'routing'   :
@@ -335,6 +336,34 @@ function sanitizeIPv4Input(raw: string): string {
   return normalized.join('.');
 }
 
+function isValidIPv4Cidr(raw: string): boolean {
+  const s = String(raw || '').trim();
+  // Allow bare IPv4 (treat as /32 for static-route destination UX).
+  if (isValidIPv4Address(s)) return true;
+  const m = s.match(/^((?:\d{1,3}\.){3}\d{1,3})\/(\d{1,2})$/);
+  if (!m) return false;
+  const ip = m[1];
+  const pfx = Number(m[2]);
+  if (!isValidIPv4Address(ip)) return false;
+  return Number.isInteger(pfx) && pfx >= 0 && pfx <= 32;
+}
+
+function sanitizeIPv4CidrInput(raw: string): string {
+  const src = String(raw || '');
+  const slashIdx = src.indexOf('/');
+  if (slashIdx === -1) {
+    // Let the user type the IP part; keep only digits/dots.
+    return sanitizeIPv4Input(src);
+  }
+
+  const ipPartRaw = src.slice(0, slashIdx);
+  const pfxPartRaw = src.slice(slashIdx + 1);
+  const ipPart = sanitizeIPv4Input(ipPartRaw);
+  const pfxDigits = pfxPartRaw.replace(/[^\d]/g, '').slice(0, 2); // 0-32
+  if (!pfxDigits) return ipPart;
+  return `${ipPart}/${pfxDigits}`;
+}
+
 // ── VS Code-style markdown renderer ──────────────────────────────────────────
 interface MarkdownProps { content: string; onOpenFile?: (path: string) => void; }
 
@@ -480,6 +509,8 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
   const [previewLockedTargetHosts, setPreviewLockedTargetHosts] = useState<string[]>([]);
   /** Merged params (vlan_id/name, target_hosts, interfaces, …) so each follow-up preview does not drop prior answers. */
   const [previewAccumulatedParams, setPreviewAccumulatedParams] = useState<Record<string, unknown>>({});
+  /** Which prompt text the accumulated params belong to (prevents cross-prompt leakage). */
+  const [previewAccumulatedIntentText, setPreviewAccumulatedIntentText] = useState<string>('');
   /** Latest local planned context used for interface option pickers in params wizard. */
   const [plannedPickerDevices, setPlannedPickerDevices] = useState<PlannedDeviceInterfaces[]>([]);
   /** Device options for params wizard (target_devices) from planned context only. */
@@ -755,6 +786,7 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
     (res: any, intentText: string): boolean => {
       const secMerge = res?.parsed_intent?.secondary_intents;
       if (Array.isArray(secMerge) && secMerge.length) {
+        // Secondary intents are only meaningful for the same prompt text.
         setPreviewAccumulatedParams((prev) => ({ ...prev, secondary_intents: secMerge }));
       }
       const devicesDis = res?.devices_disambiguation as
@@ -1046,7 +1078,8 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
     abortControllerRef.current = ac;
     try {
       const { vendor, feature, params: parsedParams } = parseIntent(intentText);
-      const merged = { ...parsedParams, ...previewAccumulatedParams, target_hosts: hosts };
+      const scopedPrev = previewAccumulatedIntentText === intentText ? previewAccumulatedParams : {};
+      const merged = { ...parsedParams, ...scopedPrev, target_hosts: hosts };
 
       // Fallback hydration: when preview response omits interfaces_for_selection/interfaces_disambiguation,
       // build per-host interface options from local planned topology so params wizard never renders blank.
@@ -1101,6 +1134,7 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
 
       setPreviewLockedTargetHosts(hosts);
       setPreviewAccumulatedParams(merged);
+      setPreviewAccumulatedIntentText(intentText);
       const res = await ansibleApi.previewIntent(
         {
           intent_description: intentText,
@@ -1317,13 +1351,14 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
       }
       const mergedIface: Record<string, unknown> = {
         ...parsedParams,
-        ...previewAccumulatedParams,
+        ...(previewAccumulatedIntentText === intentText ? previewAccumulatedParams : {}),
         ...ifaceParams,
       };
       if (effectiveTargetHosts?.length) {
         mergedIface.target_hosts = effectiveTargetHosts;
       }
       setPreviewAccumulatedParams(mergedIface);
+      setPreviewAccumulatedIntentText(intentText);
       if (effectiveTargetHosts?.length) {
         setPreviewLockedTargetHosts(effectiveTargetHosts);
       }
@@ -1628,14 +1663,21 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
     setMessages(prev => [...prev, { id: loadingId, role: 'assistant', content: '', isLoading: true, timestamp: Date.now() }]);
     try {
       const { vendor, feature, target_hosts } = parseIntent(clarifiedText);
+      // Preserve authoritative device picks across disambiguation steps.
+      // Otherwise the backend will ask for target devices again even when the user already selected them.
+      const th =
+        previewLockedTargetHosts.length > 0
+          ? previewLockedTargetHosts
+          : Array.from(selectedDevices);
       const res = await ansibleApi.previewIntent({
         intent_description: clarifiedText,
-        target_hosts: target_hosts?.length ? target_hosts : undefined,
+        target_hosts: th.length ? th : (target_hosts?.length ? target_hosts : undefined),
         vendor: vendor || undefined,
         feature: feature || undefined,
         provider: ansibleModel.provider,
         model: ansibleModel.model,
         ollama_base_url: ansibleModel.ollama_base_url ?? undefined,
+        params: th.length ? { target_hosts: th } : undefined,
         skip_rag: true,
       }, { signal: ac.signal });
       abortControllerRef.current = null;
@@ -1667,7 +1709,17 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
       setStudioOpen(true);
     }
     setGenerating(false);
-  }, [disambiguation, disambiguationChoice, disambiguationCustom, ansibleModel, parseIntent, addMsg, applyPreviewFollowUps]);
+  }, [
+    disambiguation,
+    disambiguationChoice,
+    disambiguationCustom,
+    ansibleModel,
+    parseIntent,
+    addMsg,
+    applyPreviewFollowUps,
+    previewLockedTargetHosts,
+    selectedDevices,
+  ]);
 
   const handleStop = useCallback(() => {
     if (abortControllerRef.current) {
@@ -2526,6 +2578,80 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
                                         );
                                       }
 
+                                      if (normalizedField === 'destination') {
+                                        const ipKey = `${vk}__ip`;
+                                        const pfxKey = `${vk}__pfx`;
+                                        const rawCombined = String((paramsDisambiguationValues[vk] ?? '') as string | number).trim();
+                                        const [rawIpPart, rawPfxPart] = rawCombined.split('/');
+                                        const ipState = String((paramsDisambiguationValues[ipKey] ?? rawIpPart ?? '') as string).trim();
+                                        const pfxStateRaw = paramsDisambiguationValues[pfxKey];
+                                        const pfxState =
+                                          typeof pfxStateRaw === 'number'
+                                            ? String(pfxStateRaw)
+                                            : String(pfxStateRaw ?? (rawPfxPart ?? '')).replace('/', '').trim();
+
+                                        const setCombined = (ip: string, pfx: string) => {
+                                          const ipClean = String(ip || '').trim();
+                                          const pfxClean = String(pfx || '').replace('/', '').trim();
+                                          const combined = ipClean && pfxClean !== '' ? `${ipClean}/${pfxClean}` : ipClean;
+                                          setParamsDisambiguationValues((prev) => ({
+                                            ...prev,
+                                            [ipKey]: ipClean,
+                                            [pfxKey]: pfxClean === '' ? '' : parseInt(pfxClean, 10),
+                                            [vk]: combined,
+                                          }));
+                                        };
+
+                                        return (
+                                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mt-1">
+                                            <div>
+                                              <div className="text-xs text-base-content/60 mb-1">Network address</div>
+                                              <input
+                                                type="text"
+                                                className="input input-sm input-bordered w-full font-mono"
+                                                placeholder="172.16.0.0"
+                                                value={ipState}
+                                                onChange={(e) => {
+                                                  const ip = sanitizeIPv4Input(e.target.value);
+                                                  setCombined(ip, pfxState);
+                                                }}
+                                              />
+                                            </div>
+                                            <div>
+                                              <div className="text-xs text-base-content/60 mb-1">Prefix length</div>
+                                              <div className="flex items-center gap-2 relative group">
+                                                <div className="flex items-center justify-center h-8 px-2 rounded-l bg-base-300 border border-base-content/20 text-base-content/60 font-mono text-sm">
+                                                  /
+                                                </div>
+                                                <input
+                                                  type="number"
+                                                  min={0}
+                                                  max={32}
+                                                  className="input input-sm input-bordered flex-1 rounded-l-none font-mono"
+                                                  placeholder="0-32"
+                                                  value={pfxState}
+                                                  onChange={(e) => {
+                                                    const v = e.target.value;
+                                                    const n = v === '' ? '' : parseInt(v, 10);
+                                                    if (
+                                                      v === '' ||
+                                                      (!isNaN(n as number) && (n as number) >= 0 && (n as number) <= 32)
+                                                    ) {
+                                                      setCombined(ipState, v);
+                                                    }
+                                                  }}
+                                                  onKeyDown={(e) => {
+                                                    if (['e', 'E', '+', '-', '.'].includes(e.key)) {
+                                                      e.preventDefault();
+                                                    }
+                                                  }}
+                                                />
+                                              </div>
+                                            </div>
+                                          </div>
+                                        );
+                                      }
+
                                       if (normalizedField === 'prefix_length' || normalizedField === 'subnet_mask') {
                                         return (
                                           <div className="flex items-center gap-2 relative group mt-1">
@@ -2562,6 +2688,162 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
                                         );
                                       }
 
+                                      if (normalizedField === 'next_hop') {
+                                        const modeKey = `${vk}__mode`;
+                                        const devKey = `${vk}__device`;
+                                        const modeRaw = String((paramsDisambiguationValues[modeKey] ?? '') as string).trim().toLowerCase();
+                                        const mode = modeRaw === 'interface' ? 'interface' : 'ip';
+
+                                        const selectedForTargetDevices = Object.entries(paramsDisambiguationValues)
+                                          .find(([key]) => key.startsWith('target_devices'))?.[1];
+                                        const selectedTargets: string[] = Array.isArray(selectedForTargetDevices)
+                                          ? selectedForTargetDevices.map((x) => String(x).trim()).filter(Boolean)
+                                          : typeof selectedForTargetDevices === 'string'
+                                            ? selectedForTargetDevices.split(/[\s,]+/).map((s) => s.trim()).filter(Boolean)
+                                            : previewLockedTargetHosts.length > 0
+                                              ? previewLockedTargetHosts
+                                              : Array.from(selectedDevices);
+
+                                        const candidateDevices =
+                                          selectedTargets.length > 0
+                                            ? plannedPickerDevices.filter((d) => selectedTargets.includes(d.hostname))
+                                            : plannedPickerDevices;
+                                        const chosenDevice =
+                                          String((paramsDisambiguationValues[devKey] ?? '') as string).trim() ||
+                                          (candidateDevices.length === 1 ? candidateDevices[0]!.hostname : '');
+                                        const deviceObj = candidateDevices.find((d) => d.hostname === chosenDevice) || candidateDevices[0];
+                                        const ifaceOptions = (deviceObj?.interfaces || []).map((i) => String(i.name || '').trim()).filter(Boolean);
+
+                                        const curNextHop = String((paramsDisambiguationValues[vk] ?? '') as string).trim();
+                                        const curIp = curNextHop.includes(':') && mode === 'ip' ? '' : curNextHop.split('/')[0] || '';
+                                        const curIface =
+                                          mode === 'interface'
+                                            ? (curNextHop.includes(':') ? curNextHop.split(':')[1] : '')
+                                            : '';
+
+                                        return (
+                                          <div className="space-y-2 mt-1">
+                                            <div className="flex flex-wrap gap-2">
+                                              <button
+                                                type="button"
+                                                className={`btn btn-xs ${mode === 'ip' ? 'btn-primary' : 'btn-ghost'}`}
+                                                onClick={() => {
+                                                  setParamsDisambiguationValues((prev) => {
+                                                    const next = { ...prev, [modeKey]: 'ip' as any };
+                                                    const v = String((next[vk] ?? '') as string).trim();
+                                                    if (v.includes(':')) next[vk] = '';
+                                                    return next;
+                                                  });
+                                                }}
+                                              >
+                                                Next-hop IP
+                                              </button>
+                                              <button
+                                                type="button"
+                                                className={`btn btn-xs ${mode === 'interface' ? 'btn-primary' : 'btn-ghost'}`}
+                                                onClick={() => {
+                                                  setParamsDisambiguationValues((prev) => {
+                                                    const next = { ...prev, [modeKey]: 'interface' as any };
+                                                    const v = String((next[vk] ?? '') as string).trim();
+                                                    if (v && !v.includes(':')) next[vk] = '';
+                                                    return next;
+                                                  });
+                                                }}
+                                              >
+                                                Egress interface
+                                              </button>
+                                            </div>
+
+                                            {mode === 'ip' ? (
+                                              <div className="grid grid-cols-1 gap-2">
+                                                <div>
+                                                  <div className="text-xs text-base-content/60 mb-1">IP address</div>
+                                                  <input
+                                                    type="text"
+                                                    className="input input-sm input-bordered w-full font-mono"
+                                                    placeholder="10.10.1.1"
+                                                    value={String(curIp)}
+                                                    onChange={(e) => {
+                                                      const raw = sanitizeIPv4Input(e.target.value);
+                                                      setParamsDisambiguationValues((prev) => ({
+                                                        ...prev,
+                                                        [vk]: raw,
+                                                      }));
+                                                    }}
+                                                  />
+                                                </div>
+                                              </div>
+                                            ) : (
+                                              <div className="space-y-2">
+                                                {candidateDevices.length > 1 ? (
+                                                  <div>
+                                                    <div className="text-xs text-base-content/60 mb-1">Target device</div>
+                                                    <select
+                                                      className="select select-sm select-bordered w-full font-mono"
+                                                      value={chosenDevice}
+                                                      onChange={(e) => {
+                                                        const host = String(e.target.value || '').trim();
+                                                        setParamsDisambiguationValues((prev) => ({
+                                                          ...prev,
+                                                          [devKey]: host,
+                                                          [vk]: '',
+                                                        }));
+                                                      }}
+                                                    >
+                                                      <option value="" disabled>
+                                                        Select device…
+                                                      </option>
+                                                      {candidateDevices.map((d) => (
+                                                        <option key={`${vk}-dev-${d.hostname}`} value={d.hostname}>
+                                                          {d.hostname}
+                                                        </option>
+                                                      ))}
+                                                    </select>
+                                                  </div>
+                                                ) : chosenDevice ? (
+                                                  <div className="text-xs text-base-content/60">
+                                                    Device: <span className="font-mono">{chosenDevice}</span>
+                                                  </div>
+                                                ) : null}
+
+                                                <div>
+                                                  <div className="text-xs text-base-content/60 mb-1">Egress interface</div>
+                                                  <select
+                                                    className="select select-sm select-bordered w-full font-mono"
+                                                    value={curIface}
+                                                    onChange={(e) => {
+                                                      const iface = String(e.target.value || '').trim();
+                                                      const host = chosenDevice || deviceObj?.hostname || '';
+                                                      const qualified = host && iface ? `${host}:${iface}` : '';
+                                                      setParamsDisambiguationValues((prev) => ({
+                                                        ...prev,
+                                                        [devKey]: host,
+                                                        [vk]: qualified,
+                                                      }));
+                                                    }}
+                                                    disabled={!deviceObj || ifaceOptions.length === 0}
+                                                  >
+                                                    <option value="" disabled>
+                                                      {deviceObj ? 'Select interface…' : 'Select device first…'}
+                                                    </option>
+                                                    {ifaceOptions.map((name) => (
+                                                      <option key={`${vk}-iface-${name}`} value={name}>
+                                                        {name}
+                                                      </option>
+                                                    ))}
+                                                  </select>
+                                                  {!deviceObj || ifaceOptions.length === 0 ? (
+                                                    <div className="text-[11px] text-warning-content/80 mt-1">
+                                                      No planned interfaces found for this device. Refresh planned topology/local DB and try again.
+                                                    </div>
+                                                  ) : null}
+                                                </div>
+                                              </div>
+                                            )}
+                                          </div>
+                                        );
+                                      }
+
                                       return (
                                         <input
                                           type={
@@ -2581,7 +2863,13 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
                                           }
                                           value={String((paramsDisambiguationValues[vk] ?? '') as string | number)}
                                           onChange={(e) => {
-                                            const v = e.target.value;
+                                            const raw = e.target.value;
+                                            const v =
+                                              f.field === 'destination'
+                                                ? sanitizeIPv4CidrInput(raw)
+                                                : f.field === 'next_hop'
+                                                  ? String(raw || '').trim()
+                                                  : raw;
                                             setParamsDisambiguationValues((prev) => ({
                                               ...prev,
                                               [vk]:
@@ -2646,6 +2934,12 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
                                       const fl = String(f.field || '').toLowerCase();
                                       if (fl === 'ip_address' && !isValidIPv4Address(String(v))) return true;
                                       if (fl === 'network_address' && !isValidIPv4Address(String(v))) return true;
+                                      if (fl === 'destination' && !isValidIPv4Cidr(String(v))) return true;
+                                      if (fl === 'next_hop') {
+                                        const s = String(v || '').trim();
+                                        // next_hop can be an egress interface name; only enforce IPv4 format when it looks like an IP.
+                                        if (s.includes('.') && !isValidIPv4Address(s)) return true;
+                                      }
                                       if (fl === 'access_vlan' || fl === 'native_vlan') {
                                         if (typeof v === 'number' && (v < 1 || v > 4094)) return true;
                                       }
@@ -2684,6 +2978,28 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
                                     const v = paramsDisambiguationValues[vk];
                                     if (v === undefined || v === '' || v === null) return;
                                     if (Array.isArray(v) && v.length === 0) return;
+                                    // Special handling: next_hop wizard can be IP-mode or interface-mode.
+                                    // - IP-mode: keep plain IPv4 (ignore optional /prefix UI)
+                                    // - interface-mode: keep qualified token "host:Interface"
+                                    if (String(f.field || '').toLowerCase() === 'next_hop') {
+                                      const modeKey = `${vk}__mode`;
+                                      const modeRaw = String((paramsDisambiguationValues[modeKey] ?? '') as string)
+                                        .trim()
+                                        .toLowerCase();
+                                      const mode = modeRaw === 'interface' ? 'interface' : 'ip';
+                                      if (mode === 'ip') {
+                                        const ip = String(v || '').trim().split('/')[0];
+                                        if (!ip) return;
+                                        if (f.secondary_intent_index !== undefined && f.secondary_intent_index !== null) {
+                                          const sidx = f.secondary_intent_index;
+                                          if (!secondaryPatches[sidx]) secondaryPatches[sidx] = {};
+                                          secondaryPatches[sidx][f.field] = ip;
+                                        } else {
+                                          primaryParams[f.field] = ip;
+                                        }
+                                        return;
+                                      }
+                                    }
                                     const sidx = f.secondary_intent_index;
                                     if (sidx !== undefined && sidx !== null) {
                                       if (!secondaryPatches[sidx]) secondaryPatches[sidx] = {};
@@ -2737,9 +3053,10 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
                                   abortControllerRef.current = ac;
                                   try {
                                     const { vendor, feature, params: parsedParams } = parseIntent(intentText);
+                                    const scopedPrev = previewAccumulatedIntentText === intentText ? previewAccumulatedParams : {};
                                     const merged: Record<string, unknown> = {
                                       ...parsedParams,
-                                      ...previewAccumulatedParams,
+                                      ...scopedPrev,
                                       ...params,
                                     };
                                     // OSPF wizard uses network_address + prefix_length + area; drop stale
@@ -2767,6 +3084,7 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
                                       merged.target_hosts = th;
                                     }
                                     setPreviewAccumulatedParams(merged);
+                                    setPreviewAccumulatedIntentText(intentText);
                                     const res = await ansibleApi.previewIntent({
                                       intent_description: intentText,
                                       target_hosts: th,

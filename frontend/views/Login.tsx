@@ -48,13 +48,15 @@ const Login: React.FC<LoginProps> = ({ onLogin }) => {
 
             <div className="card w-96 bg-base-100/90 backdrop-blur shadow-2xl z-10">
                 <div className="card-body">
-                    <div className="flex justify-center mb-4">
-                        <div className="p-4 bg-gradient-to-tr from-primary to-secondary rounded-xl text-white shadow-lg">
-                            <Shield className="w-8 h-8" />
+                    <div className="flex justify-center mb-2">
+                        {/* <div className="p-4 bg-gradient-to-tr from-primary to-secondary rounded-xl text-white shadow-lg"> */}
+                        <div className="p-2 bg-white rounded-3xl shadow-lg flex items-center justify-center">
+                            {/* <Shield className="w-8 h-8" /> */}
+                            <img src="/logo.png" alt="CogniShield" className="w-16 h-16 object-contain" />
                         </div>
                     </div>
                     <h2 className="card-title justify-center text-2xl font-bold mb-1">CogniShield</h2>
-                    <p className="text-center text-xs text-base-content/60 mb-6 uppercase tracking-wider">Secure Network Operations</p>
+                    <p className="text-center text-xs text-base-content/60 mb-6 uppercase tracking-wider">LLM-Powered Campus Network Automation</p>
                     
                     <form onSubmit={handleLogin} className="space-y-4">
                         <div className="form-control">

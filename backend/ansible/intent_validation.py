@@ -362,6 +362,57 @@ def _intent_to_flat_fields(intent: Dict[str, Any], schema: Dict[str, Any]) -> Di
     flat["classification_rules"] = params.get("classification_rules")
     flat["interface_apply"] = params.get("interface_apply")
 
+    # Static route: allow alternate LLM keys so we don't ask the user for values
+    # that already exist in the parsed intent under different names.
+    schema_action = str(schema.get("action") or "").strip().lower().replace("-", "_")
+    if schema_action == "configure_static_route":
+        def _nonempty_str(v: Any) -> bool:
+            return v is not None and str(v).strip() != ""
+
+        def _first_static_route_from_nested(p: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+            # Common shapes seen in regression logs:
+            # - parameters.static_routes: [{destination, next_hop}]
+            # - parameters.interfaces[i].static_routes: [{destination, next_hop}]
+            sr = p.get("static_routes") or p.get("routes") or p.get("static_route")
+            if isinstance(sr, list):
+                for item in sr:
+                    if isinstance(item, dict) and _nonempty_str(item.get("destination")):
+                        return item
+            if isinstance(p.get("interfaces"), list):
+                for iface in p.get("interfaces") or []:
+                    if not isinstance(iface, dict):
+                        continue
+                    nested = iface.get("static_routes") or iface.get("static_route") or []
+                    if isinstance(nested, list):
+                        for item in nested:
+                            if isinstance(item, dict) and _nonempty_str(item.get("destination")):
+                                return item
+            return None
+
+        if not _nonempty_str(flat.get("destination")):
+            # “default route” often appears as a boolean.
+            if params.get("default_route") is True:
+                flat["destination"] = "0.0.0.0/0"
+            else:
+                for k in ("destination_network", "network", "route_destination", "destination_prefix"):
+                    if _nonempty_str(params.get(k)):
+                        flat["destination"] = str(params.get(k)).strip()
+                        break
+                if not _nonempty_str(flat.get("destination")):
+                    nested = _first_static_route_from_nested(params)
+                    if nested and _nonempty_str(nested.get("destination")):
+                        flat["destination"] = str(nested.get("destination")).strip()
+
+        if not _nonempty_str(flat.get("next_hop")):
+            for k in ("gateway", "next_hop_ip", "route_gateway"):
+                if _nonempty_str(params.get(k)):
+                    flat["next_hop"] = str(params.get(k)).strip()
+                    break
+            if not _nonempty_str(flat.get("next_hop")):
+                nested = _first_static_route_from_nested(params)
+                if nested and _nonempty_str(nested.get("next_hop")):
+                    flat["next_hop"] = str(nested.get("next_hop")).strip()
+
     return flat
 
 
@@ -1640,6 +1691,138 @@ def correct_ospf_params_from_natural_language(
             _apply(sec)
 
 
+def _extract_static_route_patch_from_prompt(intent_description: str) -> Dict[str, Any]:
+    """
+    Best-effort extraction for static route prompts so the wizard can be populated.
+
+    Supports:
+    - destination CIDR: 10.10.10.0/24
+    - next hop IP: 192.168.1.1 after “via” / “next hop” / “gateway”
+    - next hop egress interface: after “via” (e.g. GigabitEthernet0/1)
+    - default route: “default route” → 0.0.0.0/0
+    """
+    text = str(intent_description or "").strip()
+    if not text:
+        return {}
+
+    out: Dict[str, Any] = {}
+    tl = text.lower()
+
+    if re.search(r"\bdefault\b.*\broute\b", tl) or re.search(r"\b0\.0\.0\.0/0\b", tl):
+        out["destination"] = "0.0.0.0/0"
+
+    # Destination CIDR
+    cidr_m = re.search(r"\b((?:\d{1,3}\.){3}\d{1,3})/(\d{1,2})\b", text)
+    if cidr_m:
+        ip_s = cidr_m.group(1)
+        pfx_s = cidr_m.group(2)
+        try:
+            pfx = int(pfx_s)
+            if 0 <= pfx <= 32:
+                ipaddress.IPv4Address(ip_s)
+                out["destination"] = f"{ip_s}/{pfx}"
+        except Exception:
+            pass
+
+    # Next hop IP (prefer IP if present)
+    nh_ip_m = re.search(
+        r"\b(?:via|next\s*hop|gateway)\s+((?:\d{1,3}\.){3}\d{1,3})\b",
+        text,
+        re.I,
+    )
+    if nh_ip_m:
+        ip_s = nh_ip_m.group(1)
+        try:
+            ipaddress.IPv4Address(ip_s)
+            out["next_hop"] = ip_s
+        except Exception:
+            pass
+
+    # Next hop egress interface (if we didn't find an IP)
+    if not out.get("next_hop"):
+        nh_iface_m = re.search(
+            r"\bvia\s+((?:GigabitEthernet|TenGigabitEthernet|FastEthernet|Ethernet|Gi|Te|Fa|Eth)\s*\d+(?:/\d+){1,2})\b",
+            text,
+            re.I,
+        )
+        if nh_iface_m:
+            iface = nh_iface_m.group(1) or ""
+            iface = re.sub(r"\s+", "", iface)
+            if iface:
+                out["next_hop"] = iface
+
+    return out
+
+
+def correct_static_route_params_from_natural_language(
+    intent_description: str,
+    parsed_intent: Dict[str, Any],
+) -> None:
+    """
+    Patch parsed intent parameters from the user prompt for static routes.
+
+    Never overrides client-provided / already-present values: only fills when empty.
+    """
+    if not isinstance(parsed_intent, dict):
+        return
+
+    patch = _extract_static_route_patch_from_prompt(intent_description)
+    if not patch:
+        return
+
+    def _apply(container: Dict[str, Any]) -> None:
+        # Accept both shapes: `parameters` (preview/create) and `params` (some internal callers).
+        p = container.get("parameters")
+        if not isinstance(p, dict):
+            p = container.get("params")
+        if not isinstance(p, dict):
+            return
+        p = dict(p)
+
+        if not str(p.get("destination") or "").strip():
+            if patch.get("destination"):
+                p["destination"] = patch["destination"]
+            else:
+                # Alternate keys produced by the legacy/parser.
+                for k in ("destination_network", "network", "route_destination", "destination_prefix"):
+                    if str(p.get(k) or "").strip():
+                        p["destination"] = str(p.get(k)).strip()
+                        break
+                if not str(p.get("destination") or "").strip() and p.get("default_route") is True:
+                    p["destination"] = "0.0.0.0/0"
+
+        if not str(p.get("next_hop") or "").strip():
+            if patch.get("next_hop"):
+                p["next_hop"] = patch["next_hop"]
+            else:
+                for k in ("gateway", "next_hop_ip", "route_gateway"):
+                    if str(p.get(k) or "").strip():
+                        p["next_hop"] = str(p.get(k)).strip()
+                        break
+
+        # Write back to the existing key(s) so downstream completeness checks see it.
+        if isinstance(container.get("parameters"), dict):
+            container["parameters"] = p
+        if isinstance(container.get("params"), dict):
+            container["params"] = p
+        if not isinstance(container.get("parameters"), dict) and not isinstance(container.get("params"), dict):
+            container["parameters"] = p
+
+    act = str(parsed_intent.get("action") or "").strip().lower().replace("-", "_")
+    feat = str(parsed_intent.get("feature") or "").strip().lower()
+    # Some paths label the feature as "routing" even for static routes.
+    if act == "configure_static_route" or feat in ("static_route", "routing"):
+        _apply(parsed_intent)
+
+    for sec in parsed_intent.get("secondary_intents") or []:
+        if not isinstance(sec, dict):
+            continue
+        sa = str(sec.get("action") or "").strip().lower().replace("-", "_")
+        sf = str(sec.get("feature") or "").strip().lower()
+        if sa == "configure_static_route" or sf in ("static_route", "routing"):
+            _apply(sec)
+
+
 def prompt_contains_explicit_ospf_process_id(intent_description: str) -> bool:
     """
     True when the user text clearly states an OSPF routing process number (not a device name like "router 2").
@@ -1689,6 +1872,74 @@ def prompt_contains_explicit_ospf_router_id_in_prompt(intent_description: str) -
     if not text:
         return False
     return bool(re.search(r"\brouter[\s_-]*id\s+\d{1,3}(?:\.\d{1,3}){3}\b", text, re.I))
+
+
+def prompt_contains_explicit_static_route_next_hop(intent_description: str) -> bool:
+    """
+    True when the prompt explicitly states the route target (next-hop IP or egress interface),
+    e.g. "via 192.0.2.1" / "next hop 192.0.2.1" / "via GigabitEthernet0/1".
+    """
+    text = str(intent_description or "").strip()
+    if not text:
+        return False
+    # via <ip> / via <iface>
+    if re.search(r"\bvia\s+(?:\d{1,3}(?:\.\d{1,3}){3})\b", text, re.I):
+        return True
+    if re.search(
+        r"\bvia\s+(?:GigabitEthernet|TenGigabitEthernet|FastEthernet|Ethernet|Gi|Te|Fa|Eth)\s*\d+(?:/\d+){1,2}\b",
+        text,
+        re.I,
+    ):
+        return True
+    if re.search(r"\b(?:next\s*hop|gateway)\s+\d{1,3}(?:\.\d{1,3}){3}\b", text, re.I):
+        return True
+    return False
+
+
+def strip_llm_static_route_next_hop_if_not_explicit_in_prompt(
+    intent_description: str,
+    parsed_intent: Dict[str, Any],
+    *,
+    client_supplied_next_hop: bool = False,
+) -> None:
+    """
+    Remove LLM-invented `next_hop` for static routes when the prompt does not state it,
+    so the UI must ask. Never strip when the client already provided `next_hop`.
+    """
+    if not isinstance(parsed_intent, dict):
+        return
+    if client_supplied_next_hop or prompt_contains_explicit_static_route_next_hop(intent_description or ""):
+        return
+
+    def _strip(container: Dict[str, Any]) -> None:
+        p = container.get("parameters")
+        if not isinstance(p, dict):
+            p = container.get("params")
+        if not isinstance(p, dict):
+            return
+        p = dict(p)
+        p.pop("next_hop", None)
+        p.pop("gateway", None)
+        p.pop("next_hop_ip", None)
+        p.pop("route_gateway", None)
+        if isinstance(container.get("parameters"), dict):
+            container["parameters"] = p
+        if isinstance(container.get("params"), dict):
+            container["params"] = p
+        if not isinstance(container.get("parameters"), dict) and not isinstance(container.get("params"), dict):
+            container["parameters"] = p
+
+    act = str(parsed_intent.get("action") or "").strip().lower().replace("-", "_")
+    feat = str(parsed_intent.get("feature") or "").strip().lower().replace("-", "_")
+    if act == "configure_static_route" or feat in ("static_route", "routing"):
+        _strip(parsed_intent)
+    for sec in parsed_intent.get("secondary_intents") or []:
+        if not isinstance(sec, dict):
+            continue
+        sa = str(sec.get("action") or "").strip().lower().replace("-", "_")
+        sf = str(sec.get("feature") or "").strip().lower().replace("-", "_")
+        if sa == "configure_static_route" or sf in ("static_route", "routing"):
+            _strip(sec)
 
 
 def client_supplied_ospf_advertisement_params(params: Optional[Dict[str, Any]]) -> bool:

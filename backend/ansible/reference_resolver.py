@@ -131,7 +131,7 @@ def _target_hosts_from_intent(intent: Dict[str, Any]) -> List[str]:
 _VLAN_INTENT_SCHEMA_PATH = _REFERENCE_DIR / "vlan" / "intent_schema.json"
 
 # Known features that have reference playbooks (subdirs under reference/)
-_KNOWN_FEATURES = frozenset({"vlan", "interface", "ospf"})
+_KNOWN_FEATURES = frozenset({"vlan", "interface", "ospf", "static_route"})
 
 # Vendors that have single-vendor playbooks under reference/{feature}/{vendor}/
 _KNOWN_VENDORS = frozenset({"cisco_ios", "huawei_vrp", "juniper_junos"})
@@ -615,6 +615,8 @@ def resolve_playbook_template_path(
         Path to the template file, or None if no reference exists.
     """
     feature = (feature or "").strip().lower()
+    if feature in ("routing", "static-route", "static"):
+        feature = "static_route"
     if not feature or feature not in _KNOWN_FEATURES:
         return None
 
@@ -638,7 +640,7 @@ def resolve_playbook_template_path(
             return single_path
     # For vlan/interface with no vendor info (e.g. planning_context empty), default to multi_vendor
     # so we always get the correct reference format instead of LLM/bundle wrong format.
-    if feature in {"vlan", "interface", "ospf"}:
+    if feature in {"vlan", "interface", "ospf", "static_route"}:
         multi_path = base / "multi_vendor" / _MULTI_VENDOR_TEMPLATE
         if multi_path.exists():
             return multi_path
@@ -746,6 +748,8 @@ def get_template_vars(
     interfaces_config_with_vlan (module-ready), target_hosts.
     """
     feature = (feature or "").strip().lower()
+    if feature in ("routing", "static-route", "static"):
+        feature = "static_route"
     if feature == "interface":
         normalized_i = _normalize_intent_to_interface_shape(intent)
         target_hosts = list(normalized_i.get("target_hosts") or [])
@@ -874,6 +878,61 @@ def get_template_vars(
             "networks": networks,
             "passive_interfaces": params_x.get("passive_interfaces") or [],
             "redistribution": sorted(set(redistribution)),
+        }
+
+    if feature == "static_route":
+        params_x = dict(intent.get("params") or {})
+        target_hosts = list(
+            intent.get("target_hosts")
+            or params_x.get("target_hosts")
+            or params_x.get("target_devices")
+            or []
+        )
+
+        destination = str(params_x.get("destination") or "").strip()
+        next_hop = str(params_x.get("next_hop") or "").strip()
+        admin_distance_raw = params_x.get("admin_distance")
+        vrf_name_raw = params_x.get("vrf_name")
+
+        admin_distance: Optional[int] = None
+        try:
+            if admin_distance_raw is not None and str(admin_distance_raw).strip() != "":
+                admin_distance = int(admin_distance_raw)
+        except Exception:
+            admin_distance = None
+
+        vrf_name = str(vrf_name_raw or "").strip() if vrf_name_raw is not None else ""
+
+        destination_network = ""
+        destination_netmask = ""
+        prefix_length: Optional[int] = None
+        if destination:
+            # Accept both CIDR and bare IPv4 (treat bare as /32).
+            dest_norm = destination
+            if "/" not in dest_norm:
+                try:
+                    ipaddress.IPv4Address(dest_norm)
+                    dest_norm = f"{dest_norm}/32"
+                except Exception:
+                    dest_norm = destination
+            try:
+                net = ipaddress.IPv4Network(dest_norm, strict=False)
+                destination_network = str(net.network_address)
+                destination_netmask = str(net.netmask)
+                prefix_length = int(net.prefixlen)
+                destination = dest_norm
+            except Exception:
+                destination_network = str(destination).split("/")[0]
+
+        return {
+            "target_hosts": ",".join(str(h).strip() for h in target_hosts if str(h).strip()) or "all",
+            "destination": destination,
+            "destination_network": destination_network,
+            "destination_netmask": destination_netmask,
+            "prefix_length": prefix_length if prefix_length is not None else "",
+            "next_hop": next_hop,
+            "admin_distance": admin_distance,
+            "vrf_name": vrf_name,
         }
 
     normalized = _normalize_intent_to_schema_shape(intent)

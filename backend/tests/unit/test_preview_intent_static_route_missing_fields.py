@@ -6,7 +6,7 @@ import ansible.api as ansible_api
 
 
 class TestPreviewIntentStaticRouteMissingFields(unittest.TestCase):
-    def test_preview_intent_raises_422_with_questions_before_generation(self):
+    def test_preview_intent_returns_params_disambiguation_before_generation(self):
         # Ensure tree logic doesn't depend on DB access.
         old_db = getattr(ansible_api, "_db", None)
         ansible_api._db = None
@@ -58,19 +58,14 @@ class TestPreviewIntentStaticRouteMissingFields(unittest.TestCase):
             async def _run():
                 return await ansible_api.preview_intent(req, user={"username": "tester", "role": "admin"})
 
-            with self.assertRaises(Exception) as ctx:
-                asyncio.run(_run())
-
-            exc = ctx.exception
-            status = getattr(exc, "status_code", None)
-            self.assertEqual(status, 422)
-            detail = getattr(exc, "detail", None) or {}
-            missing = detail.get("missing_fields") or []
-            questions = detail.get("questions") or []
-            self.assertIn("destination", missing)
-            self.assertIn("next_hop", missing)
-            self.assertTrue(any(q.get("field") == "destination" for q in questions))
-            self.assertTrue(any(q.get("field") == "next_hop" for q in questions))
+            res = asyncio.run(_run())
+            pdis = res.get("params_disambiguation") or {}
+            fields = pdis.get("fields") or []
+            field_names = [q.get("field") for q in fields if isinstance(q, dict)]
+            # Default routes should auto-fill the destination (0.0.0.0/0),
+            # so we only ask for next-hop.
+            self.assertNotIn("destination", field_names)
+            self.assertIn("next_hop", field_names)
         finally:
             ansible_api._preview_parse_and_rag = old_fn
             ansible_api._db = old_db
