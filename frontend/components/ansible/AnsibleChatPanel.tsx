@@ -1,8 +1,8 @@
 import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import ReactMarkdown from 'react-markdown';
 import { DiffEditor } from '@monaco-editor/react';
-import { Send, Loader2, Bot, Sparkles, AlertCircle, FileCode, RotateCcw, ChevronRight, Paperclip, X, TriangleAlert, ChevronDown, Check, Undo2, RefreshCw, Square } from 'lucide-react';
-import { ansibleApi, llmApi, netboxApi, ragApi } from '../../src/services/api';
+import { Send, Loader2, Bot, Sparkles, AlertCircle, FileCode, ChevronRight, Paperclip, X, TriangleAlert, ChevronDown, Check, Undo2, Square, History, Plus, Trash2 } from 'lucide-react';
+import { ansibleApi, llmApi, netboxApi } from '../../src/services/api';
 import { Toast } from '../../src/utils/swal';
 import {
   buildPlannedInventoryPreselectChips,
@@ -10,7 +10,7 @@ import {
 } from '../../src/utils/interfaceInventoryPreselect';
 import { parseNativeVlanNumberFromPrompt, userPromptSuggestsNativeVlanIntent } from '../../src/utils/vlanPromptHints';
 import type { LlmRuntimeState } from '../../src/services/api';
-import type { AnsibleGeneratedArtifactFile, AnsibleMessage, AnsibleJob, AnsibleProposedEdit } from '../../typesLLM';
+import type { AnsibleGeneratedArtifactFile, AnsibleMessage, AnsibleJob, AnsibleProposedEdit, ChatSession } from '../../typesLLM';
 import { PlaybookStudioOverlay, type IntentSchemaInspectorPayload } from './PlaybookStudioOverlay';
 import {
   DEFAULT_LLM_PROVIDER,
@@ -20,6 +20,95 @@ import {
 
 const ANSIBLE_MODEL_STORAGE_KEY = 'ansibleStudio.selectedModel';
 const OLLAMA_BASE_URL_STORAGE_KEY = 'llmRuntimeSelector.ollamaBaseUrl';
+const ANSIBLE_CHAT_SESSIONS_KEY = 'ansibleChat.sessions.v1';
+const ANSIBLE_CHAT_CURRENT_SESSION_KEY = 'ansibleChat.currentSessionId.v1';
+
+type AnsibleChatSessionRecord = ChatSession & { messages: AnsibleMessage[] };
+
+function createWelcomeMessage(): AnsibleMessage {
+  return {
+    id: crypto.randomUUID(),
+    role: 'assistant',
+    content: '**Ansible AI** ready.\n\nDescribe what you want to configure in plain English. For example:\n\n> *Configure VLAN 100 named DATA on all access switches*\n\nOr use **`/template`** to generate from a Config Engine template:\n\n> `/template cisco_ios vlan {"vlan_id":100,"vlan_name":"DATA"}`\n\nI will generate an Ansible playbook, which you can then review, dry-run, and deploy.',
+    timestamp: Date.now(),
+  };
+}
+
+function fallbackSessionTitle(messages: AnsibleMessage[]): string {
+  const firstUser = messages.find((msg) => msg.role === 'user' && String(msg.content || '').trim());
+  if (!firstUser) return 'New Chat';
+  const singleLine = String(firstUser.content).replace(/\s+/g, ' ').trim();
+  return singleLine.length > 38 ? `${singleLine.slice(0, 38)}...` : singleLine;
+}
+
+function normalizeStoredMessages(raw: unknown): AnsibleMessage[] {
+  if (!Array.isArray(raw)) return [createWelcomeMessage()];
+  const parsed = raw
+    .filter((msg): msg is Record<string, unknown> => Boolean(msg) && typeof msg === 'object')
+    .map((msg) => ({
+      ...msg,
+      id: String(msg.id || crypto.randomUUID()),
+      role: (msg.role === 'user' || msg.role === 'assistant' || msg.role === 'system') ? msg.role : 'assistant',
+      content: String(msg.content || ''),
+      timestamp: Number(msg.timestamp || Date.now()),
+    })) as AnsibleMessage[];
+  return parsed.length > 0 ? parsed : [createWelcomeMessage()];
+}
+
+function loadStoredAnsibleSessions(): AnsibleChatSessionRecord[] {
+  try {
+    const raw = localStorage.getItem(ANSIBLE_CHAT_SESSIONS_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .filter((entry): entry is Record<string, unknown> => Boolean(entry) && typeof entry === 'object')
+      .map((entry) => ({
+        id: String(entry.id || crypto.randomUUID()),
+        title: String(entry.title || 'New Chat'),
+        updatedAt: Number(entry.updatedAt || Date.now()),
+        messages: normalizeStoredMessages(entry.messages),
+      }))
+      .sort((a, b) => b.updatedAt - a.updatedAt);
+  } catch {
+    return [];
+  }
+}
+
+function loadStoredCurrentAnsibleSessionId(sessions: AnsibleChatSessionRecord[]): string | null {
+  const raw = localStorage.getItem(ANSIBLE_CHAT_CURRENT_SESSION_KEY);
+  if (raw && sessions.some((session) => session.id === raw)) return raw;
+  return sessions[0]?.id ?? null;
+}
+
+function normalizeSessionRecord(session: {
+  id: string;
+  title: string;
+  updatedAt: number | string;
+  createdAt?: string;
+  messages: unknown;
+}): AnsibleChatSessionRecord {
+  const updatedAt =
+    typeof session.updatedAt === 'number'
+      ? session.updatedAt
+      : Number(session.updatedAt || Date.now());
+  return {
+    id: String(session.id || crypto.randomUUID()),
+    title: String(session.title || 'New Chat'),
+    updatedAt: Number.isFinite(updatedAt) ? updatedAt : Date.now(),
+    messages: normalizeStoredMessages(session.messages),
+  };
+}
+
+function createSessionRecord(): AnsibleChatSessionRecord {
+  const messages = [createWelcomeMessage()];
+  return {
+    id: crypto.randomUUID(),
+    title: 'New Chat',
+    updatedAt: Date.now(),
+    messages,
+  };
+}
 
 /** Renders ``**bold**`` segments as real bold (backend wizard copy uses markdown-style emphasis). */
 function renderChatEmphasis(text: string): React.ReactNode {
@@ -28,7 +117,7 @@ function renderChatEmphasis(text: string): React.ReactNode {
   return parts.map((part, i) => {
     if (/^\*\*[^*]+\*\*$/.test(part)) {
       return (
-        <strong key={i} className="font-semibold">
+        <strong key={i} className="font-semibold" style={{ color: '#e2c08d' }}>
           {part.slice(2, -2)}
         </strong>
       );
@@ -559,7 +648,7 @@ const VscodeMarkdown: React.FC<MarkdownProps> = ({ content, onOpenFile }) => (
       em:   ({ children }) => <em style={{ fontStyle: 'italic', color: '#9cdcfe' }}>{children}</em>,
       code: ({ children, className }) => {
         if (className?.includes('language-')) return null; // handed by pre
-        return <code style={{ fontFamily: 'monospace', fontSize: 12, background: '#0a0a0a', color: '#ce9178', padding: '1px 6px', borderRadius: 3, border: '1px solid #3c3c3c' }}>{children}</code>;
+        return <code style={{ fontFamily: 'monospace', fontSize: 12, background: '#1c1c1c', color: '#ce9178', padding: '1px 6px', borderRadius: 3, border: '1px solid #3c3c3c' }}>{children}</code>;
       },
       pre: ({ children }) => {
         const codeEl = children as React.ReactElement<any>;
@@ -589,7 +678,18 @@ const VscodeMarkdown: React.FC<MarkdownProps> = ({ content, onOpenFile }) => (
       ul: ({ children }) => <ul style={{ listStyle: 'none', paddingLeft: 0, margin: '6px 0' }}>{children}</ul>,
       ol: ({ children }) => <ol style={{ paddingLeft: 16, margin: '6px 0', color: '#cccccc', fontSize: 13 }}>{children}</ol>,
       li: ({ children }) => <li style={{ display: 'flex', gap: 6, color: '#cccccc', fontSize: 13, lineHeight: 1.5, marginBottom: 3 }}><span style={{ color: '#569cd6', flexShrink: 0 }}>›</span><span>{children}</span></li>,
-      blockquote: ({ children }) => <blockquote style={{ margin: '6px 0', paddingLeft: 10, borderLeft: '2px solid #569cd6', color: '#9aa0aa', fontStyle: 'italic', fontSize: 12 }}>{children}</blockquote>,
+      blockquote: ({ children }) => (
+        <blockquote style={{ 
+          borderLeft: '3px solid #007acc', 
+          background: 'rgba(0, 122, 204, 0.05)',
+          margin: '8px 0', 
+          padding: '4px 12px',
+          color: '#9cdcfe',
+          fontStyle: 'italic'
+        }}>
+          {children}
+        </blockquote>
+      ),
       h1: ({ children }) => <h1 style={{ fontSize: 14, fontWeight: 700, color: '#e2e2e2', margin: '10px 0 4px' }}>{children}</h1>,
       h2: ({ children }) => <h2 style={{ fontSize: 13, fontWeight: 600, color: '#e2e2e2', margin: '8px 0 4px' }}>{children}</h2>,
       h3: ({ children }) => <h3 style={{ fontSize: 12, fontWeight: 600, color: '#9cdcfe', margin: '6px 0 2px' }}>{children}</h3>,
@@ -617,12 +717,20 @@ interface AnsibleModelSelection {
 const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
   onPlaybookReady, onOpenFile, activeJob,
 }) => {
-  const [messages, setMessages] = useState<AnsibleMessage[]>([{
-    id:        'welcome',
-    role:      'assistant',
-    content:   '**Ansible AI** ready.\n\nDescribe what you want to configure in plain English. For example:\n\n> *Configure VLAN 100 named DATA on all access switches*\n\nOr use **`/template`** to generate from a Config Engine template:\n\n> `/template cisco_ios vlan {"vlan_id":100,"vlan_name":"DATA"}`\n\nI will generate an Ansible playbook, which you can then review, dry-run, and deploy.',
-    timestamp: Date.now(),
-  }]);
+  const initialStoredSessions = useMemo(() => loadStoredAnsibleSessions(), []);
+  const initialStoredSessionId = useMemo(
+    () => loadStoredCurrentAnsibleSessionId(initialStoredSessions),
+    [initialStoredSessions],
+  );
+  const initialStoredMessages = useMemo(() => {
+    const existing = initialStoredSessions.find((session) => session.id === initialStoredSessionId) || initialStoredSessions[0];
+    return existing?.messages?.length ? existing.messages : [createWelcomeMessage()];
+  }, [initialStoredSessionId, initialStoredSessions]);
+  const [sessions, setSessions] = useState<AnsibleChatSessionRecord[]>(initialStoredSessions);
+  const [currentSessionId, setCurrentSessionId] = useState<string | null>(initialStoredSessionId);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [sessionsHydrated, setSessionsHydrated] = useState(false);
+  const [messages, setMessages] = useState<AnsibleMessage[]>(initialStoredMessages);
   const [input, setInput]               = useState('');
   const [isGenerating, setGenerating]   = useState(false);
   const [isDragOver, setIsDragOver]     = useState(false);
@@ -635,10 +743,12 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
   );
   const [modelSearch, setModelSearch]   = useState('');
   const [modelDropdownOpen, setModelDropdownOpen] = useState(false);
-  const [isRebuildingRag, setIsRebuildingRag] = useState(false);
   const bottomRef      = useRef<HTMLDivElement>(null);
   const textareaRef    = useRef<HTMLTextAreaElement>(null);
   const fileInputRef   = useRef<HTMLInputElement>(null);
+  const historyDropdownRef = useRef<HTMLDivElement>(null);
+  const sessionsHydratingRef = useRef(true);
+  const sessionPersistTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const dragCounterRef = useRef(0);
   const modelDropdownRef = useRef<HTMLDivElement>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
@@ -647,6 +757,14 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
   const [hydratedFilePaths, setHydratedFilePaths] = useState<Record<string, string[]>>({});
   const [studioOpen, setStudioOpen] = useState(false);
   const [studioIntent, setStudioIntent] = useState('');
+
+  // Auto-grow textarea height as user types
+  useEffect(() => {
+    if (textareaRef.current) {
+      textareaRef.current.style.height = 'auto';
+      textareaRef.current.style.height = `${textareaRef.current.scrollHeight}px`;
+    }
+  }, [input]);
   const [disambiguation, setDisambiguation] = useState<{
     messageId: string;
     question: string;
@@ -720,6 +838,217 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
   useEffect(() => {
     previewAccumulatedParamsRef.current = previewAccumulatedParams;
   }, [previewAccumulatedParams]);
+
+  const resetTransientChatState = useCallback(() => {
+    abortControllerRef.current?.abort();
+    abortControllerRef.current = null;
+    loadingPhaseTimeoutRef.current.forEach((timeoutId) => clearTimeout(timeoutId));
+    loadingPhaseTimeoutRef.current = [];
+    setGenerating(false);
+    setInput('');
+    setAttachedFiles([]);
+    setStudioOpen(false);
+    setStudioIntent('');
+    setStudioInitialPreview(null);
+    setDisambiguation(null);
+    setDisambiguationChoice('access');
+    setDisambiguationCustom('');
+    setInterfaceDisambiguation(null);
+    setSelectedInterfacesByDevice({});
+    setParamsDisambiguation(null);
+    setParamsDisambiguationValues({});
+    setParamsDisambiguationStep(0);
+    setParamsWizardNextLoading(false);
+    setDeviceDisambiguation(null);
+    setSelectedDevices(new Set());
+    setPreviewLockedTargetHosts([]);
+    setPreviewAccumulatedParams({});
+    setPreviewAccumulatedIntentText('');
+    setPlannedPickerDevices([]);
+    setPlannedPickerDeviceNames([]);
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    const hydrateSessions = async () => {
+      sessionsHydratingRef.current = true;
+      try {
+        const remote = await ansibleApi.listChatSessions();
+        if (cancelled) return;
+        const remoteSessions = (remote.sessions || []).map(normalizeSessionRecord).sort((a, b) => b.updatedAt - a.updatedAt);
+        if (remoteSessions.length > 0) {
+          const preferredId = loadStoredCurrentAnsibleSessionId(remoteSessions) || remoteSessions[0].id;
+          const selected = remoteSessions.find((session) => session.id === preferredId) || remoteSessions[0];
+          setSessions(remoteSessions);
+          setCurrentSessionId(selected.id);
+          setMessages(selected.messages?.length ? selected.messages : [createWelcomeMessage()]);
+          return;
+        }
+
+        if (initialStoredSessions.length > 0) {
+          const migrated = initialStoredSessions.map(normalizeSessionRecord).sort((a, b) => b.updatedAt - a.updatedAt);
+          setSessions(migrated);
+          const selected = migrated.find((session) => session.id === initialStoredSessionId) || migrated[0];
+          setCurrentSessionId(selected?.id ?? null);
+          setMessages(selected?.messages?.length ? selected.messages : [createWelcomeMessage()]);
+          for (const session of migrated) {
+            try {
+              await ansibleApi.upsertChatSession({
+                id: session.id,
+                title: session.title,
+                messages: session.messages,
+              });
+            } catch {
+              // best-effort migration
+            }
+          }
+          return;
+        }
+
+        const fresh = createSessionRecord();
+        setSessions([fresh]);
+        setCurrentSessionId(fresh.id);
+        setMessages(fresh.messages);
+        try {
+          await ansibleApi.upsertChatSession({
+            id: fresh.id,
+            title: fresh.title,
+            messages: fresh.messages,
+          });
+        } catch {
+          // keep local-only until backend is reachable
+        }
+      } catch {
+        if (cancelled) return;
+        if (initialStoredSessions.length > 0) {
+          const fallback = initialStoredSessions.map(normalizeSessionRecord).sort((a, b) => b.updatedAt - a.updatedAt);
+          setSessions(fallback);
+          const selected = fallback.find((session) => session.id === initialStoredSessionId) || fallback[0];
+          setCurrentSessionId(selected?.id ?? null);
+          setMessages(selected?.messages?.length ? selected.messages : [createWelcomeMessage()]);
+        } else {
+          const fresh = createSessionRecord();
+          setSessions([fresh]);
+          setCurrentSessionId(fresh.id);
+          setMessages(fresh.messages);
+        }
+      } finally {
+        if (!cancelled) {
+          sessionsHydratingRef.current = false;
+          setSessionsHydrated(true);
+        }
+      }
+    };
+    hydrateSessions();
+    return () => {
+      cancelled = true;
+    };
+  }, [initialStoredSessionId, initialStoredSessions]);
+
+  const startNewSession = useCallback(() => {
+    resetTransientChatState();
+    const session = createSessionRecord();
+    setSessions((prev) => [session, ...prev]);
+    setCurrentSessionId(session.id);
+    setMessages(session.messages);
+    setHistoryOpen(false);
+  }, [resetTransientChatState]);
+
+  const handleSelectSession = useCallback((sessionId: string) => {
+    if (sessionId === currentSessionId) {
+      setHistoryOpen(false);
+      return;
+    }
+    const session = sessions.find((entry) => entry.id === sessionId);
+    if (!session) return;
+    resetTransientChatState();
+    setCurrentSessionId(sessionId);
+    setMessages(session.messages?.length ? session.messages : [createWelcomeMessage()]);
+    setHistoryOpen(false);
+  }, [currentSessionId, resetTransientChatState, sessions]);
+
+  const handleDeleteSession = useCallback((sessionId: string) => {
+    ansibleApi.deleteChatSession(sessionId).catch(() => {
+      // keep local deletion even if backend cleanup fails
+    });
+    const remaining = sessions.filter((entry) => entry.id !== sessionId);
+    if (remaining.length === 0) {
+      const fallback = createSessionRecord();
+      resetTransientChatState();
+      setSessions([fallback]);
+      setCurrentSessionId(fallback.id);
+      setMessages(fallback.messages);
+      setHistoryOpen(false);
+      return;
+    }
+    setSessions(remaining);
+    if (currentSessionId === sessionId) {
+      const fallback = remaining[0];
+      resetTransientChatState();
+      setCurrentSessionId(fallback.id);
+      setMessages(fallback.messages?.length ? fallback.messages : [createWelcomeMessage()]);
+    }
+    setHistoryOpen(false);
+  }, [currentSessionId, resetTransientChatState, sessions]);
+
+  useEffect(() => {
+    if (sessionsHydrated && sessions.length === 0) {
+      startNewSession();
+    }
+  }, [sessions.length, sessionsHydrated, startNewSession]);
+
+  useEffect(() => {
+    if (!currentSessionId) return;
+    setSessions((prev) => {
+      const title = fallbackSessionTitle(messages);
+      const updatedAt = messages[messages.length - 1]?.timestamp || Date.now();
+      const next = prev.map((session) =>
+        session.id === currentSessionId
+          ? { ...session, title, updatedAt, messages }
+          : session,
+      );
+      if (next.some((session) => session.id === currentSessionId)) {
+        return [...next].sort((a, b) => b.updatedAt - a.updatedAt);
+      }
+      return [{ id: currentSessionId, title, updatedAt, messages }, ...next].sort((a, b) => b.updatedAt - a.updatedAt);
+    });
+  }, [currentSessionId, messages]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(ANSIBLE_CHAT_SESSIONS_KEY, JSON.stringify(sessions));
+    } catch {
+      // ignore persistence failures
+    }
+  }, [sessions]);
+
+  useEffect(() => {
+    try {
+      if (currentSessionId) localStorage.setItem(ANSIBLE_CHAT_CURRENT_SESSION_KEY, currentSessionId);
+      else localStorage.removeItem(ANSIBLE_CHAT_CURRENT_SESSION_KEY);
+    } catch {
+      // ignore persistence failures
+    }
+  }, [currentSessionId]);
+
+  useEffect(() => {
+    if (!sessionsHydrated || sessionsHydratingRef.current || !currentSessionId) return;
+    const current = sessions.find((session) => session.id === currentSessionId);
+    if (!current) return;
+    if (sessionPersistTimeoutRef.current) clearTimeout(sessionPersistTimeoutRef.current);
+    sessionPersistTimeoutRef.current = setTimeout(() => {
+      ansibleApi.upsertChatSession({
+        id: current.id,
+        title: current.title,
+        messages: current.messages,
+      }).catch(() => {
+        // local persistence is still available if backend save fails
+      });
+    }, 350);
+    return () => {
+      if (sessionPersistTimeoutRef.current) clearTimeout(sessionPersistTimeoutRef.current);
+    };
+  }, [currentSessionId, sessions, sessionsHydrated]);
 
   // Auto-fill params wizard interface fields when user explicitly asks for "all interfaces".
   // This avoids forcing another manual interface selection step.
@@ -829,6 +1158,11 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
     return prettifyModelLabel(ansibleModel.provider, ansibleModel.model);
   }, [ansibleModel.provider, ansibleModel.model]);
 
+  const currentSession = useMemo(
+    () => sessions.find((session) => session.id === currentSessionId) ?? null,
+    [currentSessionId, sessions],
+  );
+
   const persistAnsibleModel = useCallback((sel: AnsibleModelSelection) => {
     setAnsibleModel(sel);
     try {
@@ -859,6 +1193,17 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
     document.addEventListener('mousedown', onOutside);
     return () => document.removeEventListener('mousedown', onOutside);
   }, [modelDropdownOpen]);
+
+  useEffect(() => {
+    if (!historyOpen) return;
+    const onOutside = (e: MouseEvent) => {
+      if (historyDropdownRef.current && !historyDropdownRef.current.contains(e.target as Node)) {
+        setHistoryOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', onOutside);
+    return () => document.removeEventListener('mousedown', onOutside);
+  }, [historyOpen]);
 
   // Hydrate file list from job for messages that show "X generated files" but only had playbookPath (e.g. old responses)
   useEffect(() => {
@@ -2131,32 +2476,6 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); }
   };
 
-  const clearMessages = () => {
-    setPreviewLockedTargetHosts([]);
-    setPreviewAccumulatedParams({});
-    setMessages([{
-      id: 'welcome', role: 'assistant', timestamp: Date.now(),
-      content: '**Ansible AI** is ready. Describe your configuration intent.',
-    }]);
-  };
-
-  const handleRebuildRag = useCallback(async () => {
-    setIsRebuildingRag(true);
-    try {
-      const result = await ragApi.rebuild();
-      const errors = result?.errors ?? [];
-      if (errors.length > 0) {
-        Toast.warning('RAG Rebuild finished with errors', `${result?.total_chunks ?? 0} chunks; ${errors.length} error(s). Check Knowledge Base for details.`);
-      } else {
-        Toast.success('RAG Rebuild started', `Re-ingestion runs in the background. ${result?.total_chunks ?? 0} chunks will be updated.`);
-      }
-    } catch (err: any) {
-      Toast.error('RAG Rebuild failed', err?.message ?? 'Could not start rebuild.');
-    } finally {
-      setIsRebuildingRag(false);
-    }
-  }, []);
-
   /* ── Proposed edits block (diff + Keep/Undo per file, Keep All/Undo All) ── */
   function ProposedEditsBlock({
     edits,
@@ -2297,65 +2616,69 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
         <div className="flex items-center gap-2">
           <Sparkles className="w-3.5 h-3.5 text-primary shrink-0" />
           <span className="text-[11px] font-semibold tracking-wider whitespace-nowrap uppercase text-base-content/90">Ansible AI</span>
-          {/* VSCode-style model selector */}
-          <div ref={modelDropdownRef} style={{ position: 'relative' }}>
+          <span className="text-[11px] text-base-content/55 max-w-[150px] truncate" title={currentSession?.title || 'New Chat'}>
+            {currentSession?.title || 'New Chat'}
+          </span>
+        </div>
+        <div className="flex items-center gap-1">
+          <div ref={historyDropdownRef} style={{ position: 'relative' }}>
             <button
               type="button"
-              onClick={() => setModelDropdownOpen((o) => !o)}
-              style={{
-                display: 'flex', alignItems: 'center', gap: 4, padding: '2px 8px', borderRadius: 4,
-                background: modelDropdownOpen ? '#3c3c3c' : 'transparent', border: '1px solid transparent',
-                color: '#9cdcfe', fontSize: 11, fontFamily: 'inherit', cursor: 'pointer',
-              }}
-              className="hover:bg-[#2d2d2d]"
+              onClick={() => setHistoryOpen((open) => !open)}
+              title="Session history"
+              style={{ padding: '3px 4px', borderRadius: 3, background: 'transparent', border: 'none', color: historyOpen ? '#9cdcfe' : '#666', cursor: 'pointer' }}
+              className="hover:bg-[#2d2d2d] transition-colors"
             >
-              <span style={{ maxWidth: 60, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{currentModelLabel}</span>
-              <ChevronDown style={{ width: 12, height: 12, opacity: modelDropdownOpen ? 1 : 0.7, transform: modelDropdownOpen ? 'rotate(180deg)' : 'none', transition: 'transform 0.15s' }} />
+              <History style={{ width: 13, height: 13 }} />
             </button>
-            {modelDropdownOpen && (
+            {historyOpen && (
               <div
                 style={{
-                  position: 'absolute', top: '100%', left: 0, marginTop: 2, zIndex: 100,
-                  minWidth: 220, maxWidth: 320, maxHeight: 280,
-                  background: '#252526', border: '1px solid #3c3c3c', borderRadius: 4, boxShadow: '0 4px 12px rgba(0,0,0,0.4)',
-                  display: 'flex', flexDirection: 'column', overflow: 'hidden',
+                  position: 'absolute', top: '100%', right: 0, marginTop: 4, zIndex: 100,
+                  width: 300, maxHeight: 360, overflow: 'hidden', display: 'flex', flexDirection: 'column',
+                  background: '#252526', border: '1px solid #3c3c3c', borderRadius: 6, boxShadow: '0 8px 18px rgba(0,0,0,0.45)',
                 }}
               >
-                <div style={{ padding: 6, borderBottom: '1px solid #3c3c3c' }}>
-                  <input
-                    type="text"
-                    placeholder="Search models"
-                    value={modelSearch}
-                    onChange={(e) => setModelSearch(e.target.value)}
-                    autoFocus
-                    style={{
-                      width: '100%', padding: '4px 8px', fontSize: 12, background: '#3c3c3c', border: '1px solid #555',
-                      borderRadius: 4, color: '#cccccc', outline: 'none',
-                    }}
-                  />
+                <div style={{ padding: '8px 10px', borderBottom: '1px solid #3c3c3c', fontSize: 11, color: '#cccccc', fontWeight: 600 }}>
+                  Session History
                 </div>
-                <div style={{ overflowY: 'auto', flex: 1, padding: 4 }}>
-                  {filteredModelOptions.length === 0 ? (
-                    <div style={{ padding: 8, fontSize: 11, color: '#858585' }}>No models found</div>
+                <div style={{ overflowY: 'auto', maxHeight: 320, padding: 6 }}>
+                  {sessions.length === 0 ? (
+                    <div style={{ padding: 10, fontSize: 11, color: '#858585' }}>No saved sessions</div>
                   ) : (
-                    filteredModelOptions.map((opt) => {
-                      const isSelected = ansibleModel.provider === opt.providerName && ansibleModel.model === opt.modelName;
+                    sessions.map((session) => {
+                      const selected = session.id === currentSessionId;
                       return (
-                        <button
-                          key={`${opt.providerName}::${opt.modelName}`}
-                          type="button"
-                          onClick={() => handleSelectModel(opt.providerName, opt.modelName)}
+                        <div
+                          key={session.id}
                           style={{
-                            width: '100%', textAlign: 'left', padding: '5px 8px', borderRadius: 4, border: 'none',
-                            background: isSelected ? '#0e639c' : 'transparent', color: isSelected ? '#fff' : '#cccccc',
-                            fontSize: 12, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6,
+                            display: 'flex', alignItems: 'center', gap: 8, padding: '7px 8px', borderRadius: 4,
+                            background: selected ? '#0e639c' : 'transparent', color: selected ? '#fff' : '#cccccc',
+                            marginBottom: 4,
                           }}
-                          className="hover:bg-[#2d2d2d]"
+                          className={selected ? '' : 'hover:bg-[#2d2d2d]'}
                         >
-                          {isSelected && <span style={{ color: '#4fc3f7' }}>✓</span>}
-                          <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{opt.displayLabel}</span>
-                          <span style={{ fontSize: 10, color: '#858585', flexShrink: 0 }}>{opt.providerName === 'ollama' ? 'Local' : 'Cloud'}</span>
-                        </button>
+                          <button
+                            type="button"
+                            onClick={() => handleSelectSession(session.id)}
+                            style={{ flex: 1, textAlign: 'left', background: 'transparent', border: 'none', color: 'inherit', cursor: 'pointer' }}
+                          >
+                            <div style={{ fontSize: 12, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                              {session.title}
+                            </div>
+                            <div style={{ fontSize: 10, opacity: 0.72 }}>
+                              {new Date(session.updatedAt).toLocaleString()}
+                            </div>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleDeleteSession(session.id)}
+                            title="Delete session"
+                            style={{ background: 'transparent', border: 'none', color: selected ? '#fff' : '#858585', cursor: 'pointer', padding: 2 }}
+                          >
+                            <Trash2 style={{ width: 12, height: 12 }} />
+                          </button>
+                        </div>
                       );
                     })
                   )}
@@ -2363,8 +2686,15 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
               </div>
             )}
           </div>
-        </div>
-        <div className="flex items-center gap-1">
+          <button
+            type="button"
+            onClick={startNewSession}
+            title="New session"
+            style={{ padding: '3px 4px', borderRadius: 3, background: 'transparent', border: 'none', color: '#666', cursor: 'pointer' }}
+            className="hover:bg-[#2d2d2d] transition-colors"
+          >
+            <Plus style={{ width: 13, height: 13 }} />
+          </button>
           {activeJob && (
             <span style={{
               fontSize: 10, padding: '1px 7px', borderRadius: 10,
@@ -2373,20 +2703,21 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
               border:     `1px solid ${activeJob.status === 'success' ? '#2e7d32' : activeJob.status === 'failed' ? '#c62828' : activeJob.status === 'running' ? '#f9a825' : '#3c3c3c'}`,
             }}>#{activeJob.jobId} · {activeJob.status}</span>
           )}
-          <button
+          {/* <button
             onClick={handleRebuildRag}
             disabled={isRebuildingRag}
             title="Rebuild RAG (re-ingest reference docs so the LLM uses the latest Ansible reference)"
             style={{ padding: '3px 4px', borderRadius: 3, background: 'transparent', border: 'none', color: '#666', cursor: isRebuildingRag ? 'wait' : 'pointer' }}
-            className="hover:bg-[#2d2d2d] transition-colors disabled:opacity-50"
+            className="hover:bg-[#2d2d2d] flex items-center gap-1 transition-colors disabled:opacity-50"
           >
             <RefreshCw style={{ width: 13, height: 13 }} className={isRebuildingRag ? 'animate-spin' : ''} />
-          </button>
-          <button onClick={clearMessages} title="Clear"
+            <p className="text-[10px]">RAG</p>
+          </button> */}
+          {/* <button onClick={clearMessages} title="Clear"
             style={{ padding: '3px 4px', borderRadius: 3, background: 'transparent', border: 'none', color: '#666', cursor: 'pointer' }}
             className="hover:bg-[#2d2d2d] transition-colors">
             <RotateCcw style={{ width: 13, height: 13 }} />
-          </button>
+          </button> */}
         </div>
       </div>
 
@@ -2404,8 +2735,8 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
                   <span className="text-[11px] font-semibold text-base-content">You</span>
                   <span className="text-[10px] text-base-content/50">{new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
                 </div>
-                <div className="pl-6 text-sm text-base-content/90 leading-relaxed font-sans select-text">
-                  {msg.content}
+                <div className="pl-6 select-text">
+                  <VscodeMarkdown content={msg.content} />
                 </div>
               </div>
             ) : (
@@ -3818,8 +4149,8 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
             </div>
           )}
 
-          {/* Textarea + buttons row */}
-          <div className="flex gap-2 items-end p-2">
+          {/* Textarea Area */}
+          <div className="p-2 pb-0">
             <textarea
               ref={textareaRef}
               placeholder={attachedFiles.length ? 'Add a message or send file as-is…' : 'Ask Ansible AI or drop a file…'}
@@ -3827,44 +4158,123 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
               onChange={e => setInput(e.target.value)}
               onKeyDown={handleKeyDown}
               disabled={isGenerating}
-              rows={2}
-              className="flex-1 bg-transparent border-none outline-none resize-none text-sm text-base-content placeholder-base-content/50 min-h-[52px] max-h-[120px] leading-relaxed"
+              rows={1}
+              className="w-full bg-transparent border-none outline-none resize-none text-sm text-base-content placeholder-base-content/50 min-h-[38px] max-h-[250px] leading-md overflow-hidden"
             />
-            {/* Attach File as Context button */}
-            <button
-              type="button"
-              onClick={() => fileInputRef.current?.click()}
-              title="Attach File as Context"
-              aria-label="Attach File as Context"
-              className="p-1.5 rounded border-none cursor-pointer bg-transparent text-base-content/50 shrink-0 self-end transition-colors hover:text-primary"
-            >
-              <Paperclip className="w-4 h-4" />
-            </button>
-            {/* Send or Stop button */}
-            {/* {isGenerating ? ( */}
-            {isGenerating ? (
+          </div>
+
+          {/* Action Row - Segments similar to the example */}
+          <div className="flex items-center justify-between px-3 py-2 border-t border-base-content/5 bg-base-200/50">
+            <div className="flex items-center gap-2">
+              {/* Restore Paperclip Attachment Button */}
               <button
                 type="button"
-                onClick={handleStop}
-                title="Stop generation"
-                className="btn btn-ghost rounded-full btn-sm btn-square text-red-600 hover:bg-red-600/20"
-                aria-label="Stop"
+                onClick={() => fileInputRef.current?.click()}
+                title="Attach File (📎)"
+                className="btn btn-ghost btn-xs btn-square opacity-60 hover:opacity-100 hover:text-primary"
               >
-                <Square className="w-4 h-4 fill-current" />
+                <Paperclip className="w-4 h-4" />
               </button>
-            ) : (
-              <button
-                type="button"
-                onClick={handleSend}
-                disabled={!input.trim() && attachedFiles.length === 0}
-                title="Send (Enter)"
-                className={`p-1.5 rounded-full border-none shrink-0 self-end transition-colors btn btn-sm btn-square ${
-                  (input.trim() || attachedFiles.length > 0) ? 'btn-primary' : 'btn-ghost opacity-50 cursor-not-allowed'
-                }`}
-              >
-                <Send className="w-4 h-4" />
-              </button>
-            )}
+
+              {/* Model Selector Trigger */}
+              <div ref={modelDropdownRef} className="relative">
+                <button
+                  type="button"
+                  onClick={() => setModelDropdownOpen((o) => !o)}
+                  className={`flex items-center gap-1.5 px-2 py-1.5 rounded-md transition-all text-[11px] font-medium
+                    ${modelDropdownOpen ? 'bg-base-content/10 text-primary' : 'hover:bg-base-content/5 text-base-content/70 hover:text-base-content'}
+                  `}
+                >
+                  <Sparkles className="w-3 h-3 text-primary" />
+                  <span className="truncate max-w-[120px]">{currentModelLabel}</span>
+                  <ChevronDown className={`w-3 h-3 transition-transform duration-200 ${modelDropdownOpen ? 'rotate-180' : ''}`} />
+                </button>
+
+                {modelDropdownOpen && (
+                  <div
+                    style={{
+                      position: 'absolute',
+                      bottom: 'calc(100% + 8px)',
+                      left: 0,
+                      zIndex: 300,
+                      width: 210,
+                      backgroundColor: '#18181b', // Solid zinc-900 (fully opaque)
+                      border: '1px solid #3f3f46', // Solid zinc-700 border
+                      borderRadius: 10,
+                      boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.8), 0 10px 10px -5px rgba(0, 0, 0, 0.8)',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      overflow: 'hidden',
+                    }}
+                    className="animate-in fade-in zoom-in-95 duration-100"
+                  >
+                    <div 
+                      style={{ backgroundColor: '#27272a' }} // Solid zinc-800 header
+                      className="px-3 py-2 text-[10px] font-semibold text-zinc-400 border-b border-white/5 uppercase tracking-wider"
+                    >
+                      Model
+                    </div>
+                    <div 
+                      style={{ backgroundColor: '#18181b' }} // Solid zinc-900 (fully opaque list)
+                      className="overflow-y-auto max-h-60 p-1 custom-scrollbar"
+                    >
+                      {filteredModelOptions.map((opt) => {
+                        const isSelected = ansibleModel.provider === opt.providerName && ansibleModel.model === opt.modelName;
+                        return (
+                          <button
+                            key={`${opt.providerName}::${opt.modelName}`}
+                            type="button"
+                            onClick={() => handleSelectModel(opt.providerName, opt.modelName)}
+                            className={`flex items-center gap-2 w-full text-left px-2.5 py-1.5 rounded-md text-[11px] transition-colors mb-0.5
+                              ${isSelected 
+                                ? 'bg-primary text-primary-content font-semibold' 
+                                : 'hover:bg-base-content/10 text-base-content/70 hover:text-base-content'
+                              }
+                            `}
+                          >
+                            <span className="flex-1 truncate">{opt.displayLabel}</span>
+                            <span className={`text-[8px] px-1 rounded uppercase font-bold ${
+                              isSelected ? 'bg-primary-content/20' : 'bg-base-content/10 text-base-content/40'
+                            }`}>
+                              {opt.providerName === 'ollama' ? 'Local' : 'Cloud'}
+                            </span>
+                            {isSelected && <Check className="w-3.5 h-3.5" />}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Right Group: Action Buttons */}
+            <div className="flex items-center gap-2">
+              {isGenerating ? (
+                <button
+                  type="button"
+                  onClick={handleStop}
+                  title="Stop generation"
+                  className="btn btn-ghost btn-xs btn-square text-error hover:bg-error/10"
+                >
+                  <Square className="w-3.5 h-3.5 fill-current" />
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={handleSend}
+                  disabled={!input.trim() && attachedFiles.length === 0}
+                  title="Send (Enter)"
+                  className={`btn btn-xs btn-square rounded-lg transition-all ${
+                    (input.trim() || attachedFiles.length > 0)
+                      ? 'btn-primary shadow-sm'
+                      : 'btn-ghost text-primary cursor-not-allowed'
+                  }`}
+                >
+                  <Send className="w-3.5 h-3.5" />
+                </button>
+              )}
+            </div>
           </div>
         </div>
 

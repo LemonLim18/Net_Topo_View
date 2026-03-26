@@ -216,7 +216,7 @@ const OnboardingView: React.FC<{ setView: (id: ViewId) => void }> = ({ setView }
             )}
 
             {devices.length > 0 && (
-              <div className="overflow-x-auto rounded-lg border border-base-300">
+              <div className="overflow-x-auto max-h-[370px] rounded-lg border border-base-300">
                 <table className="table table-sm w-full">
                   <thead className="bg-base-200">
                     <tr>

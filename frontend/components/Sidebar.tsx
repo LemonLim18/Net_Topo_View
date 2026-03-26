@@ -17,7 +17,6 @@ import {
   PackagePlus,
   History,
   ListChecks,
-  Columns,
   ChevronLeft,
   ChevronRight,
   FileCode2,
@@ -46,12 +45,12 @@ const Sidebar: React.FC<SidebarProps> = ({ currentView, setView, user, onLogout,
   const isAdmin = normalizedRole === 'admin';
 
   // ── Menu Item ──
-  const MenuItem = ({ id, label, icon: Icon }: { id: ViewId, label: string, icon: any }) => {
+  const MenuItem = ({ id, label, icon: Icon, iconColor, textColor }: { id: ViewId, label: string, icon: any, iconColor?: string, textColor?: string }) => {
     const isActive = currentView === id;
     return (
       <li>
         <a
-          className={`flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors cursor-pointer
+          className={`flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors cursor-pointer 
             ${isActive
               ? 'bg-primary/20 text-primary font-semibold border-l-2 border-primary'
               : 'hover:bg-base-200'
@@ -61,8 +60,8 @@ const Sidebar: React.FC<SidebarProps> = ({ currentView, setView, user, onLogout,
           onClick={() => setView(id)}
           title={label}
         >
-          <Icon className={`h-4 w-4 flex-shrink-0 ${isActive ? 'text-primary' : ''}`} />
-          {!collapsed && <span className="whitespace-nowrap overflow-hidden">{label}</span>}
+          <Icon className={`h-4 w-4 flex-shrink-0 ${isActive ? 'text-primary' : (iconColor || '')}`} />
+          {!collapsed && <span className={`whitespace-nowrap overflow-hidden ${isActive ? '' : (textColor || '')}`}>{label}</span>}
         </a>
       </li>
     );
@@ -96,7 +95,7 @@ const Sidebar: React.FC<SidebarProps> = ({ currentView, setView, user, onLogout,
             onClick={(e) => { e.preventDefault(); onToggle(); }}
           >
             <Icon className={`h-4 w-4 ${iconColor}`} />
-            {label}
+            <div className={`${iconColor}`}>{label}</div>
           </summary>
           <ul>{children}</ul>
         </details>
@@ -135,7 +134,7 @@ const Sidebar: React.FC<SidebarProps> = ({ currentView, setView, user, onLogout,
 
       {/* Navigation Menu */}
       <ul className={`menu ${collapsed ? 'p-1' : 'p-2'} w-full grow overflow-y-auto min-h-0 flex-col flex-nowrap`}>
-        <MenuItem id="overview" label="Dashboard" icon={Home} />
+        <MenuItem id="overview" label="Dashboard" icon={Home} iconColor="text-warning" textColor="text-warning" />
 
         <SectionHeader
           label="Network"
@@ -144,13 +143,13 @@ const Sidebar: React.FC<SidebarProps> = ({ currentView, setView, user, onLogout,
           open={networkOpen}
           onToggle={() => setNetworkOpen(!networkOpen)}
         >
-          <MenuItem id="drift" label="Compliance / Drift" icon={GitCompareArrows} />
-          <MenuItem id="netbox_devices" label="Device Inventory" icon={Server} />
-          <MenuItem id="onboarding" label="Onboard Device" icon={PackagePlus} />
-          <MenuItem id="net_perf" label="Performance" icon={Activity} />
-          <MenuItem id="template_studio" label="Template Studio" icon={FileCode2} />
-          <MenuItem id="config_backup" label="Config Backup" icon={HardDrive} />
-          <MenuItem id="topology" label="Topology Map" icon={Network} />
+          <MenuItem id="drift" label="Compliance / Drift" icon={GitCompareArrows} iconColor="text-primary"/>
+          <MenuItem id="netbox_devices" label="Device Inventory" icon={Server} iconColor="text-primary"/>
+          <MenuItem id="onboarding" label="Onboard Device" icon={PackagePlus} iconColor="text-primary"/>
+          <MenuItem id="net_perf" label="Performance" icon={Activity} iconColor="text-primary"/>
+          <MenuItem id="template_studio" label="Template Studio" icon={FileCode2} iconColor="text-primary"/>
+          <MenuItem id="config_backup" label="Config Backup" icon={HardDrive} iconColor="text-primary"/>
+          <MenuItem id="topology" label="Topology Map" icon={Network} iconColor="text-primary"/>
         </SectionHeader>
 
         <SectionHeader
@@ -161,13 +160,13 @@ const Sidebar: React.FC<SidebarProps> = ({ currentView, setView, user, onLogout,
           onToggle={() => setAutomationOpen(!automationOpen)}
         >
           {/* <MenuItem id="net_chat" label="Network Copilot" icon={BotMessageSquare} /> */}
-          <MenuItem id="ansible_studio" label="Ansible Studio" icon={Workflow} />
-          <MenuItem id="intent_parser" label="Intent Parser" icon={BotMessageSquare} />
-          <MenuItem id="intent_history" label="Intent History" icon={History} />
-          <MenuItem id="playbook_comparison" label="Playbook Compare" icon={Columns} />
-          {isAdmin && <MenuItem id="approval_queue" label="Approval Queue" icon={ListChecks} />}
-          <MenuItem id="sdn_dashboard" label="SDN Controllers" icon={Network} />
-          <MenuItem id="knowledge_base" label="Knowledge Base" icon={BookOpen} />
+          <MenuItem id="ansible_studio" label="Ansible Studio" icon={Workflow} iconColor="text-accent"/>
+          <MenuItem id="intent_parser" label="Intent Parser" icon={BotMessageSquare} iconColor="text-accent"/>
+          <MenuItem id="intent_history" label="Intent History" icon={History} iconColor="text-accent"/>
+          {/* <MenuItem id="playbook_comparison" label="Playbook Compare" icon={Columns} /> */}
+          {isAdmin && <MenuItem id="approval_queue" label="Approval Queue" icon={ListChecks} iconColor="text-accent"/>}
+          <MenuItem id="sdn_dashboard" label="SDN Controllers" icon={Network} iconColor="text-accent"/>
+          <MenuItem id="knowledge_base" label="Knowledge Base" icon={BookOpen} iconColor="text-accent"/>
         </SectionHeader>
         <SectionHeader
           label="Security"
@@ -176,11 +175,11 @@ const Sidebar: React.FC<SidebarProps> = ({ currentView, setView, user, onLogout,
           open={securityOpen}
           onToggle={() => setSecurityOpen(!securityOpen)}
           >
-          <MenuItem id="sec_dashboard" label="Security Dashboard" icon={Gauge} />
-          <MenuItem id="sec_events" label="SIEM & Events" icon={ShieldAlert} />
-          <MenuItem id="sec_analysis" label="Threat Analysis" icon={ScanSearch} />
-          <MenuItem id="sec_chat" label="Security Copilot" icon={BotMessageSquare} />
-          <MenuItem id="incidents" label="Incident Response" icon={Siren} />
+          <MenuItem id="sec_dashboard" label="Security Dashboard" icon={Gauge} iconColor="text-secondary"/>
+          <MenuItem id="sec_events" label="SIEM & Events" icon={ShieldAlert} iconColor="text-secondary"/>
+          <MenuItem id="sec_analysis" label="Threat Analysis" icon={ScanSearch} iconColor="text-secondary"/>
+          <MenuItem id="sec_chat" label="Security Copilot" icon={BotMessageSquare} iconColor="text-secondary"/>
+          <MenuItem id="incidents" label="Incident Response" icon={Siren} iconColor="text-secondary"/>
         </SectionHeader>
       </ul>
 

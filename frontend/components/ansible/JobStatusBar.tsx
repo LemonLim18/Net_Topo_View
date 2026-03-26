@@ -201,7 +201,7 @@ const JobStatusBar: React.FC<JobStatusBarProps> = ({
   );
 
   return (
-    <div className="h-full min-h-0 flex flex-col border-t border-base-300 bg-base-100">
+    <div className="flex-1 min-h-0 flex flex-col border-t border-base-300 bg-base-100">
       {/* Pipeline step indicator */}
       <div className="flex items-center gap-0 px-4 py-2 border-b border-base-200">
         {STAGES.map((s, idx) => {

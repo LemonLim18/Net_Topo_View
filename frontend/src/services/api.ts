@@ -1293,6 +1293,36 @@ export const ansibleApi = {
       { method: 'DELETE' }
     ),
 
+  listChatSessions: () =>
+    request<{
+      sessions: {
+        id: string;
+        title: string;
+        updatedAt: number | string;
+        createdAt?: string;
+        messages: any[];
+      }[];
+    }>('/ansible/chat-sessions'),
+
+  upsertChatSession: (session: { id: string; title: string; messages: any[] }) =>
+    request<{
+      session: {
+        id: string;
+        title: string;
+        updatedAt: number | string;
+        createdAt?: string;
+        messages: any[];
+      };
+    }>(`/ansible/chat-sessions/${encodeURIComponent(session.id)}`, {
+      method: 'PUT',
+      body: JSON.stringify(session),
+    }),
+
+  deleteChatSession: (sessionId: string) =>
+    request<{ deleted: string }>(`/ansible/chat-sessions/${encodeURIComponent(sessionId)}`, {
+      method: 'DELETE',
+    }),
+
   /** Rename (or move) a file/folder. Returns new path. */
   renamePath: (fromPath: string, toPath: string) =>
     request<{ from_path: string; to_path: string; status: string }>('/ansible/files/rename', {

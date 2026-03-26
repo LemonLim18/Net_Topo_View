@@ -3,26 +3,21 @@ import AnsibleFileTree                              from '../components/ansible/
 import PlaybookEditor                               from '../components/ansible/PlaybookEditor';
 import JobStatusBar                                 from '../components/ansible/JobStatusBar';
 import AnsibleChatPanel                             from '../components/ansible/AnsibleChatPanel';
-import IntentParseWorkbench                         from '../components/ansible/IntentParseWorkbench';
-import SSHConnectModal                             from '../components/SSHConnectModal';
-import type { SSHTab }                             from '../components/SSHTerminalPanel';
-import { ansibleApi, configApi, sshApi }          from '../src/services/api';
+import SSHTerminalDrawer, { type SSHTab }           from '../components/ansible/SSHTerminalDrawer';
+import { ansibleApi, configApi }                    from '../src/services/api';
 import type {
-  AnsibleTab, AnsibleJob, AnsibleGeneratedArtifactFile,
-  AnsibleOutputSession,
+  AnsibleTab, AnsibleJob, AnsibleCheckResult, AnsibleGeneratedArtifactFile,
 } from '../typesLLM';
 import type { SSHConnectionState } from '../components/SSHTerminal';
 import type { User }               from '../types';
-import { normalizeUserRole } from '../types';
 
 const ANSIBLE_TABS_KEY = 'ansible.tabs';
 const ANSIBLE_ACTIVE_TAB_KEY = 'ansible.activeTabId';
-const ANSIBLE_STATUS_BAR_HEIGHT_KEY = 'ansible.statusBarHeight';
-const STATUS_BAR_HEIGHT_MIN = 100;
-const STATUS_BAR_HEIGHT_MAX = 600;
-const STATUS_BAR_HEIGHT_DEFAULT = 220;
+const ANSIBLE_TERMINAL_HEIGHT_KEY = 'ansible.terminalHeight';
+const ANSIBLE_TERMINAL_MIN_KEY = 'ansible.terminalMinimized';
 const ANSIBLE_FILE_TREE_WIDTH_KEY = 'ansible.fileTreeWidth';
 const ANSIBLE_CHAT_PANEL_WIDTH_KEY = 'ansible.chatPanelWidth';
+const ANSIBLE_STATUS_BAR_HEIGHT_KEY = 'ansible.statusBarHeight';
 const FILE_TREE_MIN = 160;
 const FILE_TREE_MAX = 480;
 const FILE_TREE_DEFAULT = 200;
@@ -39,23 +34,28 @@ function ResizeHandle({
   onResize,
   onDragStart,
   onDragEnd,
+  orientation = 'vertical',
 }: {
-  onResize: (deltaX: number) => void;
+  onResize: (delta: number) => void;
   onDragStart?: () => void;
   onDragEnd?: () => void;
+  orientation?: 'vertical' | 'horizontal';
 }) {
-  const startRef = useRef<{ x: number } | null>(null);
+  const startRef = useRef<{ x: number; y: number } | null>(null);
 
   const onMouseDown = useCallback(
     (e: React.MouseEvent) => {
       e.preventDefault();
-      startRef.current = { x: e.clientX };
+      startRef.current = { x: e.clientX, y: e.clientY };
       onDragStart?.();
       const onMouseMove = (move: MouseEvent) => {
         if (startRef.current === null) return;
-        const deltaX = move.clientX - startRef.current.x;
-        startRef.current.x = move.clientX;
-        onResize(deltaX);
+        const delta = orientation === 'vertical' 
+          ? move.clientX - startRef.current.x 
+          : move.clientY - startRef.current.y;
+        
+        startRef.current = { x: move.clientX, y: move.clientY };
+        onResize(delta);
       };
       const onMouseUp = () => {
         startRef.current = null;
@@ -65,24 +65,26 @@ function ResizeHandle({
         document.body.style.cursor = '';
         document.body.style.userSelect = '';
       };
-      document.body.style.cursor = 'col-resize';
+      document.body.style.cursor = orientation === 'vertical' ? 'col-resize' : 'row-resize';
       document.body.style.userSelect = 'none';
       document.addEventListener('mousemove', onMouseMove);
       document.addEventListener('mouseup', onMouseUp);
     },
-    [onResize, onDragStart, onDragEnd]
+    [onResize, onDragStart, onDragEnd, orientation]
   );
 
   return (
     <div
       role="separator"
-      aria-orientation="vertical"
+      aria-orientation={orientation}
       onMouseDown={onMouseDown}
       style={{
-        width: 6,
-        minWidth: 6,
+        width: orientation === 'vertical' ? 6 : '100%',
+        height: orientation === 'vertical' ? '100%' : 6,
+        minWidth: orientation === 'vertical' ? 6 : undefined,
+        minHeight: orientation === 'vertical' ? undefined : 6,
         flexShrink: 0,
-        cursor: 'col-resize',
+        cursor: orientation === 'vertical' ? 'col-resize' : 'row-resize',
         background: 'transparent',
       }}
       className="hover:bg-base-300/30 transition-colors"
@@ -90,50 +92,8 @@ function ResizeHandle({
   );
 }
 
-/** Horizontal resize handle; drag to change the height of the panel below the handle. */
-function VerticalResizeHandle({ onResize }: { onResize: (deltaY: number) => void }) {
-  const startRef = useRef<{ y: number } | null>(null);
-
-  const onMouseDown = useCallback(
-    (e: React.MouseEvent) => {
-      e.preventDefault();
-      startRef.current = { y: e.clientY };
-      const onMouseMove = (move: MouseEvent) => {
-        if (startRef.current === null) return;
-        const deltaY = move.clientY - startRef.current.y;
-        startRef.current.y = move.clientY;
-        onResize(deltaY);
-      };
-      const onMouseUp = () => {
-        startRef.current = null;
-        document.removeEventListener('mousemove', onMouseMove);
-        document.removeEventListener('mouseup', onMouseUp);
-        document.body.style.cursor = '';
-        document.body.style.userSelect = '';
-      };
-      document.body.style.cursor = 'row-resize';
-      document.body.style.userSelect = 'none';
-      document.addEventListener('mousemove', onMouseMove);
-      document.addEventListener('mouseup', onMouseUp);
-    },
-    [onResize]
-  );
-
-  return (
-    <div
-      role="separator"
-      aria-orientation="horizontal"
-      onMouseDown={onMouseDown}
-      className="h-1.5 shrink-0 cursor-row-resize hover:bg-primary/30 transition-colors flex items-center justify-center"
-      title="Drag to resize output panel"
-    >
-      <div className="w-12 h-0.5 rounded-full bg-base-300 opacity-60" />
-    </div>
-  );
-}
-
 const AnsibleStudioView: React.FC<AnsibleStudioViewProps> = ({ user }) => {
-  const userRole = normalizeUserRole((user as any)?.role);
+  const userRole = (user as any)?.role ?? 'viewer';
 
   const getStoredTabs = (): AnsibleTab[] => {
     try {
@@ -165,20 +125,13 @@ const AnsibleStudioView: React.FC<AnsibleStudioViewProps> = ({ user }) => {
   const [activeTabId, setActiveTabId] = useState<string | null>(() => localStorage.getItem(ANSIBLE_ACTIVE_TAB_KEY));
   const [activeJobId, setActiveJobId] = useState<number | null>(null);
   const [job, setJob]                 = useState<AnsibleJob | null>(null);
+  const [checkResult, setCheckResult] = useState<AnsibleCheckResult | null>(null);
   const [isChecking, setIsChecking]   = useState(false);
 
   // ── SSE state ────────────────────────────────────────────────────────────
   const [sseLines, setSseLines]       = useState<string[]>([]);
   const [isStreaming, setIsStreaming] = useState(false);
   const esRef = useRef<EventSource | null>(null);
-
-  // ── Output tab (IDE-style): sessions for Check / Deploy / Plan logs ──────
-  const [outputSessions, setOutputSessions]   = useState<AnsibleOutputSession[]>([]);
-  const [activeOutputId, setActiveOutputId]   = useState<string | null>(null);
-  const [splitOutputId, setSplitOutputId]     = useState<string | null>(null);
-  const deploySessionIdRef = useRef<string | null>(null);
-  const [streamingSessionId, setStreamingSessionId] = useState<string | null>(null);
-  const deployPollTimerRef = useRef<number | null>(null);
 
   // ── File tree ────────────────────────────────────────────────────────────
   const [fileTreeRefresh, setFileTreeRefresh] = useState(0);
@@ -197,24 +150,18 @@ const AnsibleStudioView: React.FC<AnsibleStudioViewProps> = ({ user }) => {
   const [sshTabs, setSshTabs]             = useState<SSHTab[]>([]);
   const [activeSshTab, setActiveSshTab]   = useState<string | null>(null);
   const [sshTabStates, setSshTabStates]   = useState<Record<string, SSHConnectionState>>({});
-  const [statusBarHeight, setStatusBarHeight] = useState(() => {
-    const raw = Number(localStorage.getItem(ANSIBLE_STATUS_BAR_HEIGHT_KEY));
-    return Number.isFinite(raw) && raw >= STATUS_BAR_HEIGHT_MIN && raw <= STATUS_BAR_HEIGHT_MAX
-      ? raw
-      : STATUS_BAR_HEIGHT_DEFAULT;
+  const [terminalHeight, setTerminalHeight] = useState(() => {
+    const raw = Number(localStorage.getItem(ANSIBLE_TERMINAL_HEIGHT_KEY));
+    return Number.isFinite(raw) && raw >= 140 ? raw : 220;
   });
+  const [terminalMinimized, setTerminalMinimized] = useState(() => localStorage.getItem(ANSIBLE_TERMINAL_MIN_KEY) !== 'false');
   const [pendingHostname, setPendingHostname] = useState('');
   const [pendingHost, setPendingHost]         = useState('');
   const [modalOpen, setModalOpen]             = useState(false);
-
-  /** Center column: playbook editor vs Intent Parse workbench (REFACTOR_FRONTEND.md). */
-  const [centerStudioMode, setCenterStudioMode] = useState<'playbook' | 'intent'>('playbook');
-
-  const handleStatusBarResize = useCallback((deltaY: number) => {
-    setStatusBarHeight((h) =>
-      Math.min(STATUS_BAR_HEIGHT_MAX, Math.max(STATUS_BAR_HEIGHT_MIN, h - deltaY))
-    );
-  }, []);
+  const [statusBarHeight, setStatusBarHeight] = useState(() => {
+    const raw = Number(localStorage.getItem(ANSIBLE_STATUS_BAR_HEIGHT_KEY));
+    return Number.isFinite(raw) && raw >= 100 ? raw : 200;
+  });
 
   // ── Helpers ──────────────────────────────────────────────────────────────
   const activeTab = tabs.find(t => t.id === activeTabId) ?? null;
@@ -238,16 +185,6 @@ const AnsibleStudioView: React.FC<AnsibleStudioViewProps> = ({ user }) => {
   useEffect(() => {
     if (activeJobId) refreshJob(activeJobId);
   }, [activeJobId, refreshJob]);
-  useEffect(() => {
-    if (!activeJobId) return;
-    // Keep periodic polling only while an active operation is running.
-    // Otherwise this endpoint can spam logs with low-value "200 OK" noise.
-    if (!isStreaming && !isChecking) return;
-    const t = window.setInterval(() => {
-      refreshJob(activeJobId);
-    }, 4000);
-    return () => window.clearInterval(t);
-  }, [activeJobId, refreshJob, isStreaming, isChecking]);
 
   useEffect(() => {
     localStorage.setItem(ANSIBLE_TABS_KEY, JSON.stringify(tabs));
@@ -259,8 +196,12 @@ const AnsibleStudioView: React.FC<AnsibleStudioViewProps> = ({ user }) => {
   }, [activeTabId]);
 
   useEffect(() => {
-    localStorage.setItem(ANSIBLE_STATUS_BAR_HEIGHT_KEY, String(statusBarHeight));
-  }, [statusBarHeight]);
+    localStorage.setItem(ANSIBLE_TERMINAL_HEIGHT_KEY, String(terminalHeight));
+  }, [terminalHeight]);
+
+  useEffect(() => {
+    localStorage.setItem(ANSIBLE_TERMINAL_MIN_KEY, String(terminalMinimized));
+  }, [terminalMinimized]);
 
   useEffect(() => {
     localStorage.setItem(ANSIBLE_FILE_TREE_WIDTH_KEY, String(fileTreeWidth));
@@ -269,6 +210,10 @@ const AnsibleStudioView: React.FC<AnsibleStudioViewProps> = ({ user }) => {
   useEffect(() => {
     localStorage.setItem(ANSIBLE_CHAT_PANEL_WIDTH_KEY, String(chatPanelWidth));
   }, [chatPanelWidth]);
+
+  useEffect(() => {
+    localStorage.setItem(ANSIBLE_STATUS_BAR_HEIGHT_KEY, String(statusBarHeight));
+  }, [statusBarHeight]);
 
   useEffect(() => {
     if (!tabs.length) {
@@ -347,6 +292,7 @@ const AnsibleStudioView: React.FC<AnsibleStudioViewProps> = ({ user }) => {
     files?: AnsibleGeneratedArtifactFile[];
   }) => {
     setActiveJobId(payload.jobId);
+    setCheckResult(null);
     setSseLines([]);
     if (payload.entrypointPath) {
       openTab(payload.entrypointPath, payload.name, payload.content, false, false, payload.jobId);
@@ -414,52 +360,14 @@ const AnsibleStudioView: React.FC<AnsibleStudioViewProps> = ({ user }) => {
     setFileTreeRefresh(n => n + 1);
   }, [activeTab]);
 
-  // Reload active tab content from disk (so edits made outside the UI or accepted file updates are shown)
-  const handleReload = useCallback(async () => {
-    if (!activeTab) return;
-    let path = (activeTab.path || activeTab.id || '').replace(/\\/g, '/');
-    if (/^templates\//.test(path) || /^schemas\//.test(path)) return;
-    // Tab opened from chat may have id "job_13" with no path; backend expects playbooks/generated/job_13/playbook.yml
-    if (/^job_\d+$/.test(path)) {
-      const jobNum = path.replace('job_', '');
-      path = `playbooks/generated/job_${jobNum}/playbook.yml`;
-    }
-    try {
-      const r = await ansibleApi.readFile(path);
-      updateTabContent(activeTab.id, r.content);
-    } catch { /* ignore */ }
-  }, [activeTab, updateTabContent]);
-
   // ── Check (dry-run) ──────────────────────────────────────────────────────
   const handleCheck = useCallback(async () => {
     if (!activeJobId) return;
     setIsChecking(true);
+    setCheckResult(null);
     try {
       const r = await ansibleApi.checkPlaybook(activeJobId);
-      // Append to Output tab (IDE-style)
-      const ts = new Date().toLocaleTimeString();
-      const lines: string[] = [
-        `[${ts}] Check (dry-run) — Job ${activeJobId}`,
-        `Dry-Run Result  rc=${r.rc}  changed=${r.changed}  ${r.summary ?? ''}  ${r.rc !== 0 ? 'FAILED' : 'OK'}`,
-        '',
-      ];
-      if (r.rc !== 0 && r.stderr?.trim()) {
-        lines.push('Why it failed:', r.stderr.trim(), '');
-      } else if (r.stderr?.trim()) {
-        lines.push('--- stderr ---', r.stderr.trim(), '');
-      }
-      if (r.diff?.trim()) {
-        lines.push('--- output ---', r.diff.trim());
-      }
-      const session: AnsibleOutputSession = {
-        id: `check-${activeJobId}-${Date.now()}`,
-        label: `Check — Job ${activeJobId}`,
-        type: 'check',
-        createdAt: Date.now(),
-        lines,
-      };
-      setOutputSessions(prev => [session, ...prev].slice(0, 50));
-      setActiveOutputId(session.id);
+      setCheckResult({ rc: r.rc, diff: r.diff, changed: r.changed, summary: r.summary ?? '' });
       await refreshJob(activeJobId);
     } finally {
       setIsChecking(false);
@@ -469,26 +377,8 @@ const AnsibleStudioView: React.FC<AnsibleStudioViewProps> = ({ user }) => {
   // ── Approve ──────────────────────────────────────────────────────────────
   const handleApprove = useCallback(async () => {
     if (!activeJobId) return;
-    const ts = new Date().toLocaleTimeString();
-    const session: AnsibleOutputSession = {
-      id: `approve-${activeJobId}-${Date.now()}`,
-      label: `Approve — Job ${activeJobId}`,
-      type: 'plan',
-      createdAt: Date.now(),
-      lines: [`[${ts}] Approve — Job ${activeJobId}`, 'Approval request sent.'],
-    };
-    setOutputSessions(prev => [session, ...prev].slice(0, 50));
-    setActiveOutputId(session.id);
     await ansibleApi.approveJob(activeJobId);
     await refreshJob(activeJobId);
-    const ts2 = new Date().toLocaleTimeString();
-    setOutputSessions(prev =>
-      prev.map(s =>
-        s.id === session.id
-          ? { ...s, lines: [...s.lines, `[${ts2}] Approval complete.`] }
-          : s
-      )
-    );
   }, [activeJobId, refreshJob]);
 
   // ── Deploy (SSE) ─────────────────────────────────────────────────────────
@@ -497,31 +387,8 @@ const AnsibleStudioView: React.FC<AnsibleStudioViewProps> = ({ user }) => {
     setSseLines([]);
     setIsStreaming(true);
 
-    const sessionId = `deploy-${activeJobId}-${Date.now()}`;
-    const deploySession: AnsibleOutputSession = {
-      id: sessionId,
-      label: `Deploy — Job ${activeJobId}`,
-      type: 'deploy',
-      createdAt: Date.now(),
-      lines: [
-        `[${new Date().toLocaleTimeString()}] Deploy requested — Job ${activeJobId}`,
-        'Streaming execution logs…',
-      ],
-    };
-    deploySessionIdRef.current = sessionId;
-    setStreamingSessionId(sessionId);
-    setOutputSessions(prev => [deploySession, ...prev].slice(0, 50));
-    setActiveOutputId(sessionId);
-
     const es = ansibleApi.streamJobOutput(activeJobId);
     esRef.current = es;
-
-    // Poll job state during deploy so the UI reflects Apply/Commit stage
-    // and the Deploy button shows its loading indicator while running.
-    if (deployPollTimerRef.current) window.clearInterval(deployPollTimerRef.current);
-    deployPollTimerRef.current = window.setInterval(() => {
-      refreshJob(activeJobId);
-    }, 1500);
 
     es.onmessage = (e: MessageEvent) => {
       try {
@@ -529,91 +396,21 @@ const AnsibleStudioView: React.FC<AnsibleStudioViewProps> = ({ user }) => {
         if (data.done) {
           es.close();
           setIsStreaming(false);
-          if (deployPollTimerRef.current) {
-            window.clearInterval(deployPollTimerRef.current);
-            deployPollTimerRef.current = null;
-          }
-          deploySessionIdRef.current = null;
-          setStreamingSessionId(null);
           refreshJob(activeJobId);
-          const tsDone = new Date().toLocaleTimeString();
-          setOutputSessions(prev =>
-            prev.map(s =>
-              s.id === sessionId
-                ? { ...s, lines: [...s.lines, `[${tsDone}] Deploy stream finished.`] }
-                : s
-            )
-          );
           return;
         }
-        const line = `[${data.stage}] ${data.details ?? data.line ?? ''}`;
-        setSseLines(prev => [...prev, line].slice(-200));
-        setOutputSessions(prev =>
-          prev.map(s =>
-            s.id === deploySessionIdRef.current
-              ? { ...s, lines: [...s.lines, line].slice(-500) }
-              : s
-          )
-        );
+        setSseLines(prev => [...prev, `[${data.stage}] ${data.details ?? data.line ?? ''}`].slice(-200));
       } catch { /* ignore */ }
     };
-    es.onerror = () => {
-      es.close();
-      setIsStreaming(false);
-      if (deployPollTimerRef.current) {
-        window.clearInterval(deployPollTimerRef.current);
-        deployPollTimerRef.current = null;
-      }
-      deploySessionIdRef.current = null;
-      setStreamingSessionId(null);
-      const tsErr = new Date().toLocaleTimeString();
-      setOutputSessions(prev =>
-        prev.map(s =>
-          s.id === sessionId
-            ? { ...s, lines: [...s.lines, `[${tsErr}] Stream disconnected or completed unexpectedly.`] }
-            : s
-        )
-      );
-    };
+    es.onerror = () => { es.close(); setIsStreaming(false); };
 
     try {
-      const execResult = await ansibleApi.executeJob(activeJobId);
-      const tsExec = new Date().toLocaleTimeString();
-      setOutputSessions(prev =>
-        prev.map(s =>
-          s.id === sessionId
-            ? { ...s, lines: [...s.lines, `[${tsExec}] Deploy API completed: rc=${execResult.rc} changed=${execResult.changed} ${execResult.success ? 'SUCCESS' : 'FAILED'} ${execResult.summary ?? ''}`] }
-            : s
-        )
-      );
-      await refreshJob(activeJobId);
+      await ansibleApi.executeJob(activeJobId);
     } catch (err) {
       es.close();
       setIsStreaming(false);
-      if (deployPollTimerRef.current) {
-        window.clearInterval(deployPollTimerRef.current);
-        deployPollTimerRef.current = null;
-      }
-      deploySessionIdRef.current = null;
-      setStreamingSessionId(null);
-      const tsFail = new Date().toLocaleTimeString();
-      const errMsg = err instanceof Error ? err.message : String(err);
-      setOutputSessions(prev =>
-        prev.map(s =>
-          s.id === sessionId
-            ? { ...s, lines: [...s.lines, `[${tsFail}] Deploy request failed before execution stream completed. ${errMsg}`] }
-            : s
-        )
-      );
-      await refreshJob(activeJobId);
     }
   }, [activeJobId, refreshJob]);
-
-  const handleDeleteOutputSession = useCallback((id: string) => {
-    setOutputSessions(prev => prev.filter(s => s.id !== id));
-    setActiveOutputId(prev => (prev === id ? null : prev));
-    setSplitOutputId(prev => (prev === id ? null : prev));
-  }, []);
 
   // ── Re-generate ──────────────────────────────────────────────────────────
   const handleRegenerate = useCallback(() => {
@@ -621,10 +418,8 @@ const AnsibleStudioView: React.FC<AnsibleStudioViewProps> = ({ user }) => {
     if (activeTab) closeTab(activeTab.id);
     setActiveJobId(null);
     setJob(null);
+    setCheckResult(null);
     setSseLines([]);
-    setOutputSessions([]);
-    setActiveOutputId(null);
-    setSplitOutputId(null);
   }, [activeTab, closeTab]);
 
   // ── SSH helpers ──────────────────────────────────────────────────────────
@@ -633,46 +428,6 @@ const AnsibleStudioView: React.FC<AnsibleStudioViewProps> = ({ user }) => {
     setPendingHost(host);
     setModalOpen(true);
   }, []);
-
-  const handleConnectSsh = useCallback(
-    async (hostname: string, _host: string, username: string, password: string, port: number, saveToVault: boolean) => {
-      const { session_id, host: resolvedHost } = await sshApi.connectWithCreds(
-        hostname,
-        username,
-        password,
-        port,
-        saveToVault,
-      );
-      setSshTabs(prev => [
-        ...prev,
-        { sessionId: session_id, hostname, host: resolvedHost, wsUrl: sshApi.getWsUrl(session_id) },
-      ]);
-      setActiveSshTab(session_id);
-    },
-    [],
-  );
-
-  const handleCloseSshTab = useCallback(
-    async (sessionId: string) => {
-      try {
-        await sshApi.closeSession(sessionId);
-      } catch {
-        // Session may already be closed
-      }
-
-      setSshTabs(prev => {
-        const remaining = prev.filter(t => t.sessionId !== sessionId);
-        setActiveSshTab(prevActive => (prevActive === sessionId ? (remaining[0]?.sessionId ?? null) : prevActive));
-        return remaining;
-      });
-      setSshTabStates(prev => {
-        const next = { ...prev };
-        delete next[sessionId];
-        return next;
-      });
-    },
-    [],
-  );
 
   return (
     <div className="flex flex-col h-full overflow-hidden select-none">
@@ -688,7 +443,6 @@ const AnsibleStudioView: React.FC<AnsibleStudioViewProps> = ({ user }) => {
             onFileOpen={handleFileOpen}
             selectedPath={activeTab?.id ?? null}
             refreshTrigger={fileTreeRefresh}
-            onAfterRefresh={handleReload}
           />
         </div>
 
@@ -700,76 +454,65 @@ const AnsibleStudioView: React.FC<AnsibleStudioViewProps> = ({ user }) => {
 
         {/* Centre: Editor + job status + terminal (terminal scoped here, not behind chat) */}
         <div className="flex flex-col grow min-w-0 overflow-hidden">
-          <div className="flex gap-1 px-2 py-1 border-b border-base-300 bg-base-100 shrink-0 text-xs">
-            <button
-              type="button"
-              className={`btn btn-xs ${centerStudioMode === 'playbook' ? 'btn-primary' : 'btn-ghost'}`}
-              onClick={() => setCenterStudioMode('playbook')}
-            >
-              Playbook
-            </button>
-            <button
-              type="button"
-              className={`btn btn-xs ${centerStudioMode === 'intent' ? 'btn-primary' : 'btn-ghost'}`}
-              onClick={() => setCenterStudioMode('intent')}
-            >
-              Intent parse
-            </button>
-          </div>
           <div className="grow min-h-0 overflow-hidden">
-            {centerStudioMode === 'playbook' ? (
-              <PlaybookEditor
-                tabs={tabs}
-                activeTabId={activeTabId}
-                onTabSelect={handleTabSelect}
-                onTabClose={closeTab}
-                onChange={updateTabContent}
-                onSave={() => handleSave()}
-                onCheck={handleCheck}
-                onApprove={handleApprove}
-                onDeploy={handleDeploy}
-                onRegenerate={handleRegenerate}
-                job={job}
-                isChecking={isChecking}
-                userRole={userRole}
-              />
-            ) : (
-              <IntentParseWorkbench userRole={userRole} />
-            )}
+            <PlaybookEditor
+              tabs={tabs}
+              activeTabId={activeTabId}
+              onTabSelect={handleTabSelect}
+              onTabClose={closeTab}
+              onChange={updateTabContent}
+              onSave={() => handleSave()}
+              onCheck={handleCheck}
+              onApprove={handleApprove}
+              onDeploy={handleDeploy}
+              onRegenerate={handleRegenerate}
+              job={job}
+              checkResult={checkResult}
+              isChecking={isChecking}
+              userRole={userRole}
+            />
           </div>
-          <VerticalResizeHandle onResize={handleStatusBarResize} />
+
+          <ResizeHandle
+            orientation="horizontal"
+            onResize={(deltaY) =>
+              setStatusBarHeight((h) => Math.max(80, Math.min(800, h - deltaY)))
+            }
+          />
+
           <div
-            className="shrink-0 overflow-hidden flex flex-col border-t border-base-300 bg-base-100"
-            style={{ height: statusBarHeight, minHeight: STATUS_BAR_HEIGHT_MIN, maxHeight: STATUS_BAR_HEIGHT_MAX }}
+            className="shrink-0 overflow-hidden flex flex-col bg-base-100 border-t border-base-300"
+            style={{ height: statusBarHeight }}
           >
             <JobStatusBar
-            job={job}
-            sseLines={sseLines}
-            isStreaming={isStreaming}
-            outputSessions={outputSessions}
-            activeOutputId={activeOutputId}
-            onSelectOutputSession={setActiveOutputId}
-            onDeleteOutputSession={handleDeleteOutputSession}
-            splitOutputId={splitOutputId}
-            onSetSplitOutputId={setSplitOutputId}
-            streamingSessionId={streamingSessionId}
-
-              sshTabs={sshTabs}
-              activeSshTabId={activeSshTab}
-              sshTabStates={sshTabStates}
-              onSelectSshTab={setActiveSshTab}
-              onCloseSshTab={handleCloseSshTab}
-              onOpenSshModal={openSSHTerminal}
-              onConnectionChangeSsh={(sid, state) => setSshTabStates(prev => ({ ...prev, [sid]: state }))}
-          />
+              job={job}
+              sseLines={sseLines}
+              isStreaming={isStreaming}
+            />
           </div>
 
-          <SSHConnectModal
-            hostname={pendingHostname}
-            host={pendingHost}
-            isOpen={modalOpen}
-            onConnect={handleConnectSsh}
-            onClose={() => setModalOpen(false)}
+          <SSHTerminalDrawer
+            tabs={sshTabs}
+            activeTabId={activeSshTab}
+            tabStates={sshTabStates}
+            height={terminalHeight}
+            minimized={terminalMinimized}
+            pendingHostname={pendingHostname}
+            pendingHost={pendingHost}
+            modalOpen={modalOpen}
+            onSelectTab={setActiveSshTab}
+            onCloseTab={(sid) => setSshTabs(prev => prev.filter(t => t.sessionId !== sid))}
+            onConnectionChange={(sid, state) =>
+              setSshTabStates(prev => ({ ...prev, [sid]: state }))
+            }
+            onToggleMinimize={() => setTerminalMinimized(v => !v)}
+            onOpenModal={openSSHTerminal}
+            onCloseModal={() => setModalOpen(false)}
+            onTabAdded={(tab) => {
+              setSshTabs(prev => [...prev, tab]);
+              setActiveSshTab(tab.sessionId);
+            }}
+            onHeightChange={setTerminalHeight}
           />
         </div>
 

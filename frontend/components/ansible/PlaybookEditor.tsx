@@ -5,12 +5,13 @@ import remarkGfm from 'remark-gfm';
 import {
   X, Save, Download, Play, ShieldCheck, RefreshCw, FlaskConical, Lock, FileText, Check
 } from 'lucide-react';
-import type { AnsibleTab, AnsibleJob } from '../../typesLLM';
+import type { AnsibleTab, AnsibleJob, AnsibleCheckResult } from '../../typesLLM';
 
 interface PlaybookEditorProps {
   tabs:            AnsibleTab[];
   activeTabId:     string | null;
   job:             AnsibleJob | null;
+  checkResult?:    AnsibleCheckResult | null;
   isChecking?:     boolean;
   userRole:        string;
   onTabSelect:     (id: string) => void;
@@ -37,7 +38,7 @@ const getDisplayName = (tab: AnsibleTab) => {
 };
 
 const PlaybookEditor: React.FC<PlaybookEditorProps> = ({
-  tabs, activeTabId, job, isChecking = false,
+  tabs, activeTabId, job, checkResult = null, isChecking = false,
   userRole,   onTabSelect, onTabClose, onChange, onSave,
   onCheck, onApprove, onDeploy, onRegenerate,
 }) => {

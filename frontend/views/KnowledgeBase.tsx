@@ -181,15 +181,43 @@ const KnowledgeBase: React.FC = () => {
               Upload vendor documentation, SOPs, and CLI references for the AI agent to consult.
             </p>
           </div>
-          <button
-            className={`btn btn-ghost btn-sm gap-2 ${(statusLoading || docsLoading) ? 'loading' : ''}`}
-            onClick={loadAll}
-            disabled={statusLoading || docsLoading}
-          >
-            {!(statusLoading || docsLoading) && <RefreshCw className="h-4 w-4" />}
-            Refresh
-          </button>
+          <div className="flex gap-2">
+            {/* <button
+              className={`btn btn-warning btn-sm gap-2 shrink-0 ${rebuilding ? 'loading' : ''}`}
+              onClick={handleRebuild}
+              disabled={rebuilding || status?.available === false}
+            >
+              {!rebuilding && <RefreshCw className="h-4 w-4" />}
+              {rebuilding ? 'Rebuilding…' : 'Rebuild'}
+            </button> */}
+            <button
+              className={`btn btn-ghost btn-sm gap-2 ${(statusLoading || docsLoading) ? 'loading' : ''}`}
+              onClick={loadAll}
+              disabled={statusLoading || docsLoading}
+            >
+              {!(statusLoading || docsLoading) && <RefreshCw className="h-4 w-4" />}
+              Refresh
+            </button>
+            <button
+              className={`btn btn-warning btn-sm gap-2 shrink-0 ${rebuilding ? 'loading' : ''}`}
+              onClick={handleRebuild}
+              disabled={rebuilding || status?.available === false}
+            >
+              {!rebuilding && <RefreshCw className="h-4 w-4" />}
+              {rebuilding ? 'Rebuilding…' : 'Rebuild'}
+            </button>
+          </div>
         </div>
+
+        {/* ── Info Banner ── */}
+        {/* <div className="alert alert-info text-xs py-2 px-4">
+          <Info className="h-4 w-4 shrink-0" />
+          <span>
+            Uploaded files are saved to <code className="bg-info/20 px-1 rounded">backend/knowledge_base/</code> and
+            remain available for future rebuilds. Deleting a document only removes its vector chunks — the
+            source file is preserved.
+          </span>
+        </div> */}
 
         {/* ── Status Cards ── */}
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
@@ -362,7 +390,7 @@ const KnowledgeBase: React.FC = () => {
                   </p>
                 </div>
               ) : (
-                <div className="overflow-x-auto">
+                <div className="overflow-x-auto max-h-[360px]">
                   <table className="table table-sm table-zebra">
                     <thead>
                       <tr>
@@ -421,66 +449,7 @@ const KnowledgeBase: React.FC = () => {
           </div>
         </div>
 
-        {/* ── Rebuild Section ── */}
-        <div className="card bg-base-100 shadow">
-          <div className="card-body p-5">
-            <div className="flex items-start justify-between gap-4">
-              <div>
-                <h2 className="font-semibold text-sm flex items-center gap-2">
-                  <RefreshCw className="h-4 w-4 text-warning" />
-                  Rebuild Knowledge Base
-                </h2>
-                <p className="text-xs text-base-content/50 mt-1">
-                  Re-ingests files in <code className="text-xs bg-base-200 px-1 rounded">backend/knowledge_base/</code> and
-                  all <code className="text-xs bg-base-200 px-1 rounded">backend/ansible/reference/**/reference.md</code> (Ansible reference library).
-                  Run after adding or changing docs so the vector store is up to date. Vector DB: ChromaDB (<code className="text-xs">backend/rag/README.md</code>).
-                </p>
-              </div>
-              <button
-                className={`btn btn-warning btn-sm gap-2 shrink-0 ${rebuilding ? 'loading' : ''}`}
-                onClick={handleRebuild}
-                disabled={rebuilding || status?.available === false}
-              >
-                {!rebuilding && <RefreshCw className="h-4 w-4" />}
-                {rebuilding ? 'Rebuilding…' : 'Rebuild'}
-              </button>
-            </div>
-
-            {rebuildResult && (
-              <div className="mt-4 p-3 bg-base-200 rounded-lg text-xs space-y-1">
-                <div className="flex gap-4">
-                  <span><span className="font-medium">Files processed:</span> {rebuildResult.files_processed}</span>
-                  <span><span className="font-medium">Chunks stored:</span> {rebuildResult.total_chunks}</span>
-                  {(rebuildResult.errors || []).length > 0 && (
-                    <span className="text-error"><span className="font-medium">Errors:</span> {rebuildResult.errors.length}</span>
-                  )}
-                </div>
-                {(rebuildResult.errors || []).length > 0 && (
-                  <details className="mt-2">
-                    <summary className="cursor-pointer text-error flex items-center gap-1">
-                      <ChevronDown className="h-3 w-3" /> Show errors
-                    </summary>
-                    <ul className="mt-1 space-y-0.5 pl-4">
-                      {(rebuildResult.errors || []).map((e, i) => (
-                        <li key={i} className="text-error font-mono">{e}</li>
-                      ))}
-                    </ul>
-                  </details>
-                )}
-              </div>
-            )}
-          </div>
-        </div>
-
-        {/* ── Info Banner ── */}
-        <div className="alert alert-info text-xs py-2 px-4">
-          <Info className="h-4 w-4 shrink-0" />
-          <span>
-            Uploaded files are saved to <code className="bg-info/20 px-1 rounded">backend/knowledge_base/</code> and
-            remain available for future rebuilds. Deleting a document only removes its vector chunks — the
-            source file is preserved.
-          </span>
-        </div>
+        
 
       </div>
     </div>

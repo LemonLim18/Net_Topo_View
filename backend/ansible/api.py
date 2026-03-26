@@ -8182,6 +8182,12 @@ class CreateFromTemplateRequest(BaseModel):
     device_id:    int = 0
 
 
+class AnsibleChatSessionRequest(BaseModel):
+    id: str
+    title: str
+    messages: List[Dict[str, Any]] = []
+
+
 @router.post(
     "/create-from-template",
     summary="Generate a playbook from a Config Engine template (no LLM needed)",
@@ -8328,6 +8334,88 @@ async def create_from_template(
 
 
 # ── M23: file-server endpoints ────────────────────────────────────────────
+
+def _serialize_ansible_chat_session_row(row: Any) -> Dict[str, Any]:
+    payload = {
+        "id": row["id"],
+        "title": row["title"],
+        "updatedAt": row["updated_at"],
+        "createdAt": row["created_at"],
+        "messages": [],
+    }
+    try:
+        raw_messages = json.loads(row["messages_json"] or "[]")
+        payload["messages"] = raw_messages if isinstance(raw_messages, list) else []
+    except Exception:
+        payload["messages"] = []
+    return payload
+
+
+@router.get("/chat-sessions", summary="List Ansible AI chat sessions for the current user")
+async def list_chat_sessions(
+    user: dict = Depends(require_role("engineer", "admin")),
+):
+    if _db is None:
+        raise HTTPException(503, "Database not initialized")
+    with _db._connect() as conn:
+        rows = conn.execute(
+            "SELECT id, title, messages_json, created_at, updated_at "
+            "FROM ansible_chat_sessions WHERE owner_username = ? "
+            "ORDER BY updated_at DESC",
+            (user.get("username", ""),),
+        ).fetchall()
+    return {"sessions": [_serialize_ansible_chat_session_row(row) for row in rows]}
+
+
+@router.put("/chat-sessions/{session_id}", summary="Create or update an Ansible AI chat session")
+async def upsert_chat_session(
+    session_id: str,
+    body: AnsibleChatSessionRequest,
+    user: dict = Depends(require_role("engineer", "admin")),
+):
+    if _db is None:
+        raise HTTPException(503, "Database not initialized")
+    if body.id != session_id:
+        raise HTTPException(400, "Session id mismatch")
+    title = (body.title or "").strip() or "New Chat"
+    messages_json = json.dumps(body.messages or [])
+    owner = user.get("username", "")
+    updated_at = int(datetime.now(timezone.utc).timestamp() * 1000)
+    with _db._connect() as conn:
+        conn.execute(
+            "INSERT INTO ansible_chat_sessions (id, owner_username, title, messages_json, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, datetime('now'), ?) "
+            "ON CONFLICT(id) DO UPDATE SET "
+            "owner_username = excluded.owner_username, "
+            "title = excluded.title, "
+            "messages_json = excluded.messages_json, "
+            "updated_at = excluded.updated_at",
+            (session_id, owner, title, messages_json, updated_at),
+        )
+        row = conn.execute(
+            "SELECT id, title, messages_json, created_at, updated_at "
+            "FROM ansible_chat_sessions WHERE id = ? AND owner_username = ?",
+            (session_id, owner),
+        ).fetchone()
+    return {"session": _serialize_ansible_chat_session_row(row)}
+
+
+@router.delete("/chat-sessions/{session_id}", summary="Delete an Ansible AI chat session")
+async def delete_chat_session(
+    session_id: str,
+    user: dict = Depends(require_role("engineer", "admin")),
+):
+    if _db is None:
+        raise HTTPException(503, "Database not initialized")
+    with _db._connect() as conn:
+        cur = conn.execute(
+            "DELETE FROM ansible_chat_sessions WHERE id = ? AND owner_username = ?",
+            (session_id, user.get("username", "")),
+        )
+    if cur.rowcount == 0:
+        raise HTTPException(404, f"Chat session '{session_id}' not found")
+    return {"deleted": session_id}
+
 
 @router.get("/files", summary="List ansible file tree (reference, generated, playbooks, roles, inventory, awx)")
 async def list_files(user: dict = Depends(get_current_user)):

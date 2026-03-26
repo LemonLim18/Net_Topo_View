@@ -64,6 +64,11 @@ const ApprovalQueueView: React.FC<Props> = () => {
     approved: false,
     rejected: false,
   });
+  const [loaded, setLoaded] = useState<Record<QueueTab, boolean>>({
+    pending: false,
+    approved: false,
+    rejected: false,
+  });
   const [actionId, setActionId] = useState<number | null>(null);
   const [commentModal, setCommentModal] = useState<{
     id: number;
@@ -81,6 +86,7 @@ const ApprovalQueueView: React.FC<Props> = () => {
     try {
       const res = await deployApi.listApprovalQueue(tab, 100);
       setItems((prev) => ({ ...prev, [tab]: res.items }));
+      setLoaded((prev) => ({ ...prev, [tab]: true }));
     } catch (err: any) {
       Toast.error(`Failed to load ${TAB_LABELS[tab]}`, err.message);
     } finally {
@@ -93,10 +99,10 @@ const ApprovalQueueView: React.FC<Props> = () => {
   }, [loadTab]);
 
   useEffect(() => {
-    if (items[activeTab].length === 0 && !loading[activeTab]) {
+    if (!loaded[activeTab] && !loading[activeTab]) {
       loadTab(activeTab);
     }
-  }, [activeTab, items, loading, loadTab]);
+  }, [activeTab, loaded, loading, loadTab]);
 
   const refreshAllTabs = useCallback(async () => {
     await Promise.all([

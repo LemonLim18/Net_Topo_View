@@ -340,6 +340,21 @@ CREATE INDEX IF NOT EXISTS idx_context_event_log_created ON context_event_log(cr
 CREATE INDEX IF NOT EXISTS idx_context_event_log_source  ON context_event_log(source);
 CREATE INDEX IF NOT EXISTS idx_context_event_log_action  ON context_event_log(action);
 
+-- -----------------------------------------------------------
+-- 16c. Ansible Chat Sessions
+-- -----------------------------------------------------------
+CREATE TABLE IF NOT EXISTS ansible_chat_sessions (
+    id              TEXT PRIMARY KEY,
+    owner_username  TEXT    NOT NULL,
+    title           TEXT    NOT NULL,
+    messages_json   TEXT    NOT NULL,
+    created_at      TEXT    DEFAULT (datetime('now')),
+    updated_at      TEXT    DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_ansible_chat_sessions_owner_updated
+    ON ansible_chat_sessions(owner_username, updated_at DESC);
+
 
 -- -----------------------------------------------------------
 -- 17. Agent Plans (M25 — Persist plan/execute workflow state)
