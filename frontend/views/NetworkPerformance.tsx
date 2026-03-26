@@ -673,6 +673,8 @@ const NetworkPerformance: React.FC = () => {
   const [selectedInterface, setSelectedInterface] = useState<string>('');
   const [rangeMinutes, setRangeMinutes] = useState<number>(60);
   const [sortConfig, setSortConfig] = useState<SortConfig | null>(null);
+  const fetchAllInFlightRef = React.useRef(false);
+  const fetchHistoryInFlightRef = React.useRef(false);
 
   const requestSort = (key: string) => {
     let direction: SortDirection = 'desc';
@@ -709,6 +711,8 @@ const NetworkPerformance: React.FC = () => {
   }, [focusDevice, focusedDevice]);
 
   const fetchAll = useCallback(async () => {
+    if (fetchAllInFlightRef.current) return;
+    fetchAllInFlightRef.current = true;
     setIsLoading(true);
     try {
       const requests: Promise<any>[] = [
@@ -749,48 +753,56 @@ const NetworkPerformance: React.FC = () => {
       setHasLoadedSummaryGraphs(true);
       Toast.error('Load failed', 'Could not fetch monitoring data');
     } finally {
+      fetchAllInFlightRef.current = false;
       setIsLoading(false);
     }
   }, [focusDevice, selectedInterface]);
 
   const fetchHistory = useCallback(async () => {
+    if (fetchHistoryInFlightRef.current) return;
+    fetchHistoryInFlightRef.current = true;
     try {
       const reqDevice = focusDevice || undefined;
       const ifFilter = selectedInterface || undefined;
-      const [cpu, mem, tIn, tOut, err, disc, iuIn, iuOut, imIn, imOut, ibIn, ibOut, speed] = await Promise.all([
-        monitorApi.getMetricHistory(reqDevice, 'cpu', rangeMinutes, 240, ifFilter),
-        monitorApi.getMetricHistory(reqDevice, 'memory', rangeMinutes, 240, ifFilter),
-        monitorApi.getMetricHistory(reqDevice, 'interface_traffic', rangeMinutes, 240, ifFilter),
-        monitorApi.getMetricHistory(reqDevice, 'interface_out', rangeMinutes, 240, ifFilter),
-        monitorApi.getMetricHistory(reqDevice, 'errors', rangeMinutes, 240, ifFilter),
-        monitorApi.getMetricHistory(reqDevice, 'discards', rangeMinutes, 240, ifFilter),
-        monitorApi.getMetricHistory(reqDevice, 'pkts_in_ucast', rangeMinutes, 240, ifFilter),
-        monitorApi.getMetricHistory(reqDevice, 'pkts_out_ucast', rangeMinutes, 240, ifFilter),
-        monitorApi.getMetricHistory(reqDevice, 'pkts_in_mcast', rangeMinutes, 240, ifFilter),
-        monitorApi.getMetricHistory(reqDevice, 'pkts_out_mcast', rangeMinutes, 240, ifFilter),
-        monitorApi.getMetricHistory(reqDevice, 'pkts_in_bcast', rangeMinutes, 240, ifFilter),
-        monitorApi.getMetricHistory(reqDevice, 'pkts_out_bcast', rangeMinutes, 240, ifFilter),
-        monitorApi.getMetricHistory(reqDevice, 'if_speed', rangeMinutes, 240, ifFilter),
-      ]);
+      const metrics = [
+        'cpu',
+        'memory',
+        'interface_traffic',
+        'interface_out',
+        'errors',
+        'discards',
+        'pkts_in_ucast',
+        'pkts_out_ucast',
+        'pkts_in_mcast',
+        'pkts_out_mcast',
+        'pkts_in_bcast',
+        'pkts_out_bcast',
+        'if_speed',
+      ];
+      const batch = await monitorApi.getMetricHistoryBatch(metrics, reqDevice, rangeMinutes, 240, ifFilter);
+      const historyData = ((batch as any).data || {}) as Record<string, MetricPoint[]>;
+      const pointsFor = (metricName: string) =>
+        ((historyData[metricName] || []) as MetricPoint[]).filter((p) => isValidDeviceKey(p.device));
 
-      const d = (r: any) => (((r as any).data || []) as MetricPoint[]).filter((p) => isValidDeviceKey(p.device));
-      setCpuPoints(d(cpu));
-      setMemPoints(d(mem));
-      setTrafficIn(d(tIn));
-      setTrafficOut(d(tOut));
-      setErrors(d(err));
-      setDiscards(d(disc));
-      setInUcast(d(iuIn));
-      setOutUcast(d(iuOut));
-      setInMcast(d(imIn));
-      setOutMcast(d(imOut));
-      setInBcast(d(ibIn));
-      setOutBcast(d(ibOut));
-      setSpeedPoints(d(speed));
+      setCpuPoints(pointsFor('cpu'));
+      setMemPoints(pointsFor('memory'));
+      setTrafficIn(pointsFor('interface_traffic'));
+      setTrafficOut(pointsFor('interface_out'));
+      setErrors(pointsFor('errors'));
+      setDiscards(pointsFor('discards'));
+      setInUcast(pointsFor('pkts_in_ucast'));
+      setOutUcast(pointsFor('pkts_out_ucast'));
+      setInMcast(pointsFor('pkts_in_mcast'));
+      setOutMcast(pointsFor('pkts_out_mcast'));
+      setInBcast(pointsFor('pkts_in_bcast'));
+      setOutBcast(pointsFor('pkts_out_bcast'));
+      setSpeedPoints(pointsFor('if_speed'));
       setHasLoadedHistoryGraphs(true);
     } catch {
       setHasLoadedHistoryGraphs(true);
       // Charts degrade gracefully.
+    } finally {
+      fetchHistoryInFlightRef.current = false;
     }
   }, [focusDevice, selectedInterface, rangeMinutes]);
 

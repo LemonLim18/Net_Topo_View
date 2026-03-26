@@ -28,6 +28,7 @@ from auth.auth import (
     create_access_token,
     get_current_user,
     hash_password,
+    normalize_role,
     seed_default_admin,
     verify_password,
 )
@@ -39,6 +40,7 @@ router = APIRouter(prefix="/auth", tags=["Authentication (M15)"])
 
 _DB_PATH = Path(__file__).resolve().parent.parent / "db" / "netauto.db"
 _vault = CredentialVault()
+_ALLOWED_ROLES = {"admin", "engineer", "operator", "auditor"}
 
 
 def _connect():
@@ -64,7 +66,12 @@ class LoginResponse(BaseModel):
 class CreateUserRequest(BaseModel):
     username: str
     password: str
-    role: str = "auditor"
+    role: str = "engineer"
+
+
+class SignupRequest(BaseModel):
+    username: str
+    password: str
 
 
 class UpdateRoleRequest(BaseModel):
@@ -111,8 +118,46 @@ async def login(body: LoginRequest):
             user={
                 "id": row["id"],
                 "username": row["username"],
-                "role": row["role"],
+                "role": normalize_role(row["role"]),
                 "lastLogin": row["last_login"] or "",
+            },
+        )
+    finally:
+        conn.close()
+
+
+@router.post("/signup", response_model=LoginResponse, status_code=201)
+async def signup(body: SignupRequest):
+    """Self-service signup for engineer accounts."""
+    username = body.username.strip()
+    if not username:
+        raise HTTPException(400, "Username is required")
+    if len(body.password) < 4:
+        raise HTTPException(400, "Password must be at least 4 characters")
+
+    conn = _connect()
+    try:
+        existing = conn.execute(
+            "SELECT id FROM users WHERE username = ?",
+            (username,),
+        ).fetchone()
+        if existing:
+            raise HTTPException(409, f"User '{username}' already exists")
+
+        hashed = hash_password(body.password)
+        cur = conn.execute(
+            "INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)",
+            (username, hashed, "engineer"),
+        )
+        conn.commit()
+        token = create_access_token(cur.lastrowid, username, "engineer")
+        return LoginResponse(
+            access_token=token,
+            user={
+                "id": cur.lastrowid,
+                "username": username,
+                "role": "engineer",
+                "lastLogin": "",
             },
         )
     finally:
@@ -136,7 +181,7 @@ async def get_me(user=Depends(get_current_user)):
         return {
             "id": row["id"],
             "username": row["username"],
-            "role": row["role"],
+            "role": normalize_role(row["role"]),
             "lastLogin": row["last_login"] or "",
             "createdAt": row["created_at"],
         }
@@ -154,7 +199,13 @@ async def list_users(user=Depends(require_admin)):
         rows = conn.execute(
             "SELECT id, username, role, is_active, last_login, created_at FROM users ORDER BY id"
         ).fetchall()
-        return [dict(r) for r in rows]
+        return [
+            {
+                **dict(r),
+                "role": normalize_role(r["role"]),
+            }
+            for r in rows
+        ]
     finally:
         conn.close()
 
@@ -162,8 +213,9 @@ async def list_users(user=Depends(require_admin)):
 @router.post("/users", status_code=201)
 async def create_user(body: CreateUserRequest, user=Depends(require_admin)):
     """Create a new user."""
-    if body.role not in ("admin", "operator", "auditor"):
-        raise HTTPException(400, "Role must be: admin, operator, or auditor")
+    requested_role = normalize_role(body.role)
+    if requested_role not in {"admin", "engineer", "auditor"}:
+        raise HTTPException(400, "Role must be: admin, engineer, or auditor")
 
     conn = _connect()
     try:
@@ -176,10 +228,10 @@ async def create_user(body: CreateUserRequest, user=Depends(require_admin)):
         hashed = hash_password(body.password)
         cur = conn.execute(
             "INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)",
-            (body.username, hashed, body.role),
+            (body.username, hashed, requested_role),
         )
         conn.commit()
-        return {"id": cur.lastrowid, "username": body.username, "role": body.role}
+        return {"id": cur.lastrowid, "username": body.username, "role": requested_role}
     finally:
         conn.close()
 
@@ -187,8 +239,9 @@ async def create_user(body: CreateUserRequest, user=Depends(require_admin)):
 @router.put("/users/{user_id}/role")
 async def update_user_role(user_id: int, body: UpdateRoleRequest, user=Depends(require_admin)):
     """Update a user's role."""
-    if body.role not in ("admin", "operator", "auditor"):
-        raise HTTPException(400, "Role must be: admin, operator, or auditor")
+    requested_role = normalize_role(body.role)
+    if requested_role not in {"admin", "engineer", "auditor"}:
+        raise HTTPException(400, "Role must be: admin, engineer, or auditor")
 
     conn = _connect()
     try:
@@ -196,9 +249,9 @@ async def update_user_role(user_id: int, body: UpdateRoleRequest, user=Depends(r
         if not existing:
             raise HTTPException(404, f"User {user_id} not found")
 
-        conn.execute("UPDATE users SET role = ? WHERE id = ?", (body.role, user_id))
+        conn.execute("UPDATE users SET role = ? WHERE id = ?", (requested_role, user_id))
         conn.commit()
-        return {"id": user_id, "role": body.role}
+        return {"id": user_id, "role": requested_role}
     finally:
         conn.close()
 

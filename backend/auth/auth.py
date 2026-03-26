@@ -116,6 +116,18 @@ def verify_password(plain: str, hashed: str) -> bool:
         return False
 
 
+def normalize_role(role: Optional[str]) -> str:
+    """Normalize legacy roles to the current RBAC vocabulary."""
+    value = str(role or "").strip().lower()
+    if value in {"operator", "engineer"}:
+        return "engineer"
+    if value in {"auditor", "viewer"}:
+        return "auditor"
+    if value == "admin":
+        return "admin"
+    return value or "auditor"
+
+
 # ---------------------------------------------------------------------------
 # JWT tokens
 # ---------------------------------------------------------------------------
@@ -142,7 +154,7 @@ def create_access_token(
     payload = {
         "sub": str(user_id),
         "username": username,
-        "role": role,
+        "role": normalize_role(role),
         "iat": now,
     }
     if expire_delta is not None:
@@ -179,7 +191,7 @@ async def get_current_user(
         return {
             "user_id": 0,
             "username": "anonymous",
-            "role": "admin",  # Default full access until RBAC is enforced
+            "role": "viewer",
         }
 
     try:
@@ -187,7 +199,7 @@ async def get_current_user(
         return {
             "user_id": int(payload["sub"]),
             "username": payload["username"],
-            "role": payload["role"],
+            "role": normalize_role(payload.get("role")),
         }
     except Exception as e:
         raise HTTPException(
@@ -221,21 +233,30 @@ def seed_default_admin() -> None:
             conn.close()
             return
 
-        # Check if any admin exists
-        existing = conn.execute("SELECT id FROM users WHERE role = 'admin'").fetchone()
-        if existing:
-            conn.close()
-            return
+        # Seed the default admin account when missing.
+        existing_admin = conn.execute("SELECT id FROM users WHERE role = 'admin'").fetchone()
+        if not existing_admin:
+            hashed = hash_password("admin")
+            conn.execute(
+                "INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)",
+                ("admin", hashed, "admin"),
+            )
+            logger.info("Seeded default admin user (admin/admin)")
 
-        # Seed the default admin
-        hashed = hash_password("admin")
-        conn.execute(
-            "INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)",
-            ("admin", hashed, "admin"),
-        )
+        # Seed a default engineer account for RBAC onboarding flows.
+        existing_engineer = conn.execute(
+            "SELECT id FROM users WHERE username = ?",
+            ("engineer",),
+        ).fetchone()
+        if not existing_engineer:
+            hashed = hash_password("engineer")
+            conn.execute(
+                "INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)",
+                ("engineer", hashed, "engineer"),
+            )
+            logger.info("Seeded default engineer user (engineer/engineer)")
         conn.commit()
         conn.close()
-        logger.info("Seeded default admin user (admin/admin)")
 
     except Exception as e:
         logger.error("Failed to seed admin user: %s", e)

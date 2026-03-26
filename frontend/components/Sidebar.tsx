@@ -24,6 +24,7 @@ import {
   HardDrive,
 } from 'lucide-react';
 import type { ViewId, User } from '../types';
+import { normalizeUserRole } from '../types';
 import { Confirm } from '../src/utils/swal';
 
 interface SidebarProps {
@@ -41,6 +42,8 @@ const Sidebar: React.FC<SidebarProps> = ({ currentView, setView, user, onLogout,
   const [automationOpen, setAutomationOpen] = useState(true);
 
   if (!user) return null;
+  const normalizedRole = normalizeUserRole(user.role);
+  const isAdmin = normalizedRole === 'admin';
 
   // ── Menu Item ──
   const MenuItem = ({ id, label, icon: Icon }: { id: ViewId, label: string, icon: any }) => {
@@ -124,7 +127,7 @@ const Sidebar: React.FC<SidebarProps> = ({ currentView, setView, user, onLogout,
             </div>
             <div>
               <div className="font-bold text-sm">{user.username}</div>
-              <div className="text-xs opacity-60 capitalize">{user.role}</div>
+              <div className="text-xs opacity-60 capitalize">{normalizedRole}</div>
             </div>
           </div>
         )}
@@ -162,7 +165,7 @@ const Sidebar: React.FC<SidebarProps> = ({ currentView, setView, user, onLogout,
           <MenuItem id="intent_parser" label="Intent Parser" icon={BotMessageSquare} />
           <MenuItem id="intent_history" label="Intent History" icon={History} />
           <MenuItem id="playbook_comparison" label="Playbook Compare" icon={Columns} />
-          <MenuItem id="approval_queue" label="Approval Queue" icon={ListChecks} />
+          {isAdmin && <MenuItem id="approval_queue" label="Approval Queue" icon={ListChecks} />}
           <MenuItem id="sdn_dashboard" label="SDN Controllers" icon={Network} />
           <MenuItem id="knowledge_base" label="Knowledge Base" icon={BookOpen} />
         </SectionHeader>

@@ -154,7 +154,7 @@ ipv4
 **Notification**: The ACL definition can be done on the Huawei device, but the ACL application on the interface cannot be done on Huawei CE6800/12800. AR1000V can do the ACL traffic, but it lacks alotta features including lldp which is required.
 
 
-- [ ] Add ACL rule on devices *(generic / ambiguous test)*  
+- [/] Add ACL rule on devices *(generic / ambiguous test)*  
 
 
 ## 6️⃣ QoS

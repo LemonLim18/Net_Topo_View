@@ -13,6 +13,7 @@ import type {
 } from '../typesLLM';
 import type { SSHConnectionState } from '../components/SSHTerminal';
 import type { User }               from '../types';
+import { normalizeUserRole } from '../types';
 
 const ANSIBLE_TABS_KEY = 'ansible.tabs';
 const ANSIBLE_ACTIVE_TAB_KEY = 'ansible.activeTabId';
@@ -132,7 +133,7 @@ function VerticalResizeHandle({ onResize }: { onResize: (deltaY: number) => void
 }
 
 const AnsibleStudioView: React.FC<AnsibleStudioViewProps> = ({ user }) => {
-  const userRole = (user as any)?.role ?? 'viewer';
+  const userRole = normalizeUserRole((user as any)?.role);
 
   const getStoredTabs = (): AnsibleTab[] => {
     try {

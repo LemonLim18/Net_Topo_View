@@ -65,7 +65,19 @@ async def job_drift_check() -> None:
 
         # Push drift results over WebSocket
         if _broadcast_fn is not None and results:
-            drift_count = sum(1 for e in results if e.get("has_drift", False)) if isinstance(results, list) else 0
+            drift_count = (
+                sum(
+                    1
+                    for e in results
+                    if (
+                        e.get("has_drift", False)
+                        if isinstance(e, dict)
+                        else getattr(e, "has_drift", False)
+                    )
+                )
+                if isinstance(results, list)
+                else 0
+            )
             try:
                 await _broadcast_fn({
                     "event": "drift_check_complete",

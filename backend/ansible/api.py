@@ -3565,7 +3565,11 @@ async def check_playbook(
     )
 
 
-@router.post("/jobs/{job_id}/approve", summary="Operator approves job for execution")
+class ReviewJobRequest(BaseModel):
+    comment: str = ""
+
+
+@router.post("/jobs/{job_id}/approve", summary="Admin approves job for execution")
 async def approve_job(
     job_id: int,
     user:   dict = Depends(require_role("admin")),
@@ -3577,14 +3581,90 @@ async def approve_job(
     if _db is None:
         raise HTTPException(503, "Database not initialized")
 
+    request_id = None
     with _db._connect() as conn:
+        row = conn.execute(
+            "SELECT request_id FROM jobs WHERE id = ?",
+            (job_id,),
+        ).fetchone()
+        if not row:
+            raise HTTPException(404, f"Job {job_id} not found")
+        request_id = row["request_id"]
         conn.execute(
             "UPDATE jobs SET status = 'approved', stage = 'approve' WHERE id = ?",
             (job_id,),
         )
 
+    if request_id is not None:
+        try:
+            from deploy.change_request import ChangeRequestService
+            from deploy.audit import AuditLogger
+
+            ChangeRequestService(_db).approve(request_id, actor=user.get("username", "admin"))
+            AuditLogger(_db).log(
+                action="approve",
+                request_id=request_id,
+                job_id=job_id,
+                actor=user.get("username", "admin"),
+                comment="Playbook approved for deployment",
+            )
+        except Exception as exc:
+            logger.warning("Job %d approval did not fully sync request state: %s", job_id, exc)
+
     logger.info("Job %d approved by %s", job_id, user.get("username"))
     return {"job_id": job_id, "status": "approved", "approved_by": user.get("username")}
+
+
+@router.post("/jobs/{job_id}/reject", summary="Admin rejects job and returns review feedback")
+async def reject_job(
+    job_id: int,
+    body: ReviewJobRequest,
+    user: dict = Depends(require_role("admin")),
+):
+    if _db is None:
+        raise HTTPException(503, "Database not initialized")
+
+    request_id = None
+    with _db._connect() as conn:
+        row = conn.execute(
+            "SELECT request_id, status FROM jobs WHERE id = ?",
+            (job_id,),
+        ).fetchone()
+        if not row:
+            raise HTTPException(404, f"Job {job_id} not found")
+        request_id = row["request_id"]
+        conn.execute(
+            "UPDATE jobs SET status = 'rejected', stage = 'approve', error_message = ? WHERE id = ?",
+            (body.comment.strip() or "Rejected by admin review", job_id),
+        )
+        conn.execute(
+            "INSERT INTO job_steps (job_id, stage, status, details) VALUES (?, ?, ?, ?)",
+            (
+                job_id,
+                "approve",
+                "failed",
+                body.comment.strip() or "Playbook rejected by admin review.",
+            ),
+        )
+
+    if request_id is not None:
+        try:
+            from deploy.change_request import ChangeRequestService
+            from deploy.audit import AuditLogger
+
+            ChangeRequestService(_db).reject(request_id, actor=user.get("username", "admin"))
+            AuditLogger(_db).log(
+                action="reject",
+                request_id=request_id,
+                job_id=job_id,
+                actor=user.get("username", "admin"),
+                comment=body.comment.strip() or "Playbook rejected by admin review",
+            )
+        except Exception as exc:
+            logger.warning("Job %d rejection did not fully sync request state: %s", job_id, exc)
+
+    logger.info("Job %d rejected by %s", job_id, user.get("username"))
+    return {"job_id": job_id, "status": "rejected", "reviewed_by": user.get("username")}
 
 
 @router.post(
@@ -3594,7 +3674,7 @@ async def approve_job(
 )
 async def execute_playbook(
     job_id: int,
-    user:   dict = Depends(require_role("admin")),
+    user:   dict = Depends(require_role("engineer", "admin")),
 ):
     """
     Execute the stored playbook.  Job must be in 'approved' state.
@@ -7993,7 +8073,7 @@ class CreateAndPlanRequest(BaseModel):
 )
 async def create_and_plan(
     req:  CreateAndPlanRequest,
-    user: dict = Depends(get_current_user),
+    user: dict = Depends(require_role("engineer", "admin")),
 ):
     """
     Single-shot endpoint for the Ansible Studio AI chat:
@@ -8063,6 +8143,20 @@ async def create_and_plan(
 
     # Delegate to plan_ansible logic (pass through LLM provider/model for playbook generation)
     result = await plan_ansible(job_id=job_id, req=plan_req, user=user)
+    try:
+        from deploy.audit import AuditLogger
+        from deploy.change_request import ChangeRequestService
+
+        ChangeRequestService(_db).submit_for_approval(cr_id, actor=user.get("username", "ansible_studio"))
+        AuditLogger(_db).log(
+            action="submit",
+            request_id=cr_id,
+            job_id=job_id,
+            actor=user.get("username", "ansible_studio"),
+            comment="Playbook submitted for admin approval",
+        )
+    except Exception as exc:
+        logger.warning("create_and_plan: could not mark request pending approval for job %d: %s", job_id, exc)
     return {
         "job_id":      job_id,
         "request_id":  cr_id,
@@ -8094,7 +8188,7 @@ class CreateFromTemplateRequest(BaseModel):
 )
 async def create_from_template(
     req:  CreateFromTemplateRequest,
-    user: dict = Depends(get_current_user),
+    user: dict = Depends(require_role("engineer", "admin")),
 ):
     """
     Deterministic path: render vendor config via the Config Engine's Jinja2
@@ -8209,6 +8303,20 @@ async def create_from_template(
         "Template-based playbook created job=%d vendor=%s feature=%s user=%s",
         job_id, req.vendor, req.feature, user.get("username"),
     )
+    try:
+        from deploy.audit import AuditLogger
+        from deploy.change_request import ChangeRequestService
+
+        ChangeRequestService(_db).submit_for_approval(cr_id, actor=user.get("username", "ansible_studio"))
+        AuditLogger(_db).log(
+            action="submit",
+            request_id=cr_id,
+            job_id=job_id,
+            actor=user.get("username", "ansible_studio"),
+            comment="Template playbook submitted for admin approval",
+        )
+    except Exception as exc:
+        logger.warning("create_from_template: could not mark request pending approval for job %d: %s", job_id, exc)
     return {
         "job_id":       job_id,
         "request_id":   cr_id,
@@ -8297,7 +8405,7 @@ def _is_writable_relative_path(relative_path: str) -> bool:
 async def write_file(
     file_path: str,
     body:       WriteFileRequest,
-    user:       dict = Depends(require_role("operator", "admin")),
+    user:       dict = Depends(require_role("engineer", "admin")),
 ):
     path_to_write = file_path.replace("\\", "/").strip("/")
     if path_to_write.startswith("generated/"):
@@ -8320,7 +8428,7 @@ async def write_file(
 async def create_file(
     file_path: str,
     body:      CreateFileRequest,
-    user:      dict = Depends(require_role("operator", "admin")),
+    user:      dict = Depends(require_role("engineer", "admin")),
 ):
     path, rel_parts = _safe_writable_path(file_path)
     if len(rel_parts) < 2:
@@ -8336,7 +8444,7 @@ async def create_file(
 @router.post("/files/create-folder/{folder_path:path}", summary="Create a new ansible folder")
 async def create_folder(
     folder_path: str,
-    user:        dict = Depends(require_role("operator", "admin")),
+    user:        dict = Depends(require_role("engineer", "admin")),
 ):
     path, rel_parts = _safe_writable_path(folder_path)
     if len(rel_parts) < 2:
@@ -8351,7 +8459,7 @@ async def create_folder(
 @router.delete("/files/{target_path:path}", summary="Delete ansible file or folder")
 async def delete_path(
     target_path: str,
-    user:        dict = Depends(require_role("operator", "admin")),
+    user:        dict = Depends(require_role("engineer", "admin")),
 ):
     path_to_delete = target_path.replace("\\", "/").strip("/")
     # Virtual job folder (generated/job_XX): delete both playbooks/generated/job_XX and roles/generated/job_XX
@@ -8397,7 +8505,7 @@ async def delete_path(
 @router.post("/files/rename", summary="Rename or move a file or folder")
 async def rename_path(
     body: RenameRequest,
-    user: dict = Depends(require_role("operator", "admin")),
+    user: dict = Depends(require_role("engineer", "admin")),
 ):
     from_raw = body.from_path.replace("\\", "/").strip("/")
     to_raw = body.to_path.replace("\\", "/").strip("/")
@@ -8710,7 +8818,7 @@ def _append_playbook_version(
 async def refine_playbook(
     job_id: int,
     req:    RefineRequest,
-    user:   dict = Depends(require_role("operator")),
+    user:   dict = Depends(require_role("engineer", "admin")),
 ):
     """
     Sends the current playbook + validation errors/feedback to the LLM.

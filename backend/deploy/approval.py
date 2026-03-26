@@ -1,42 +1,28 @@
 """
-M4 Deployment Pipeline — Approval Gate API.
+M4 Deployment Pipeline - Approval Gate API.
 
-REST endpoints for human approval / rejection of change requests before
-the pipeline is allowed to push config.  Designed to be mounted into the
-main FastAPI app via deploy/api.py.
-
-Routes exposed:
-  POST /api/deploy/{request_id}/approve  → approve the request
-  POST /api/deploy/{request_id}/reject   → reject / send back to DRAFT
-  GET  /api/deploy/{request_id}/status   → current status (lightweight)
+Admin-only approval queue and request lifecycle endpoints.
 """
 
 import logging
-from fastapi import APIRouter, Depends, HTTPException, status as http_status
-from pydantic import BaseModel
 from typing import Optional
 
+from fastapi import APIRouter, Depends, HTTPException, status as http_status
+from pydantic import BaseModel
+
+from auth.rbac import require_admin
 from db.manager import DatabaseManager
-from deploy.models import RequestStatus
-from deploy.change_request import ChangeRequestService
 from deploy.audit import AuditLogger
+from deploy.change_request import ChangeRequestService
+from deploy.models import RequestStatus
 
 logger = logging.getLogger("deploy.approval")
 router = APIRouter(prefix="/api/deploy", tags=["deploy-approval"])
 
 
-# ---------------------------------------------------------------------------
-# Request bodies
-# ---------------------------------------------------------------------------
-
 class ApprovalBody(BaseModel):
-    actor: str = "admin"
     comment: Optional[str] = None
 
-
-# ---------------------------------------------------------------------------
-# Dependency — reuse app-level db_manager injected by backend.py
-# ---------------------------------------------------------------------------
 
 _db_manager: Optional[DatabaseManager] = None
 
@@ -52,20 +38,69 @@ def _get_db() -> DatabaseManager:
     return _db_manager
 
 
-# ---------------------------------------------------------------------------
-# Endpoints
-# ---------------------------------------------------------------------------
+def _latest_audit(
+    db: DatabaseManager,
+    *,
+    request_id: Optional[int] = None,
+    job_id: Optional[int] = None,
+) -> dict:
+    clauses = []
+    params = []
+    if request_id is not None:
+        clauses.append("request_id = ?")
+        params.append(request_id)
+    if job_id is not None:
+        clauses.append("job_id = ?")
+        params.append(job_id)
+    if not clauses:
+        return {}
+
+    with db._connect() as conn:
+        row = conn.execute(
+            "SELECT action, actor, comment, created_at "
+            f"FROM audit_log WHERE {' AND '.join(clauses)} AND action IN ('approve', 'reject') "
+            "ORDER BY id DESC LIMIT 1",
+            tuple(params),
+        ).fetchone()
+    return dict(row) if row else {}
+
+
+def _queue_status_where(status_filter: str) -> tuple[str, str]:
+    normalized = (status_filter or "pending").strip().lower()
+    if normalized == "approved":
+        return "status = 'approved'", "status = 'approved'"
+    if normalized == "rejected":
+        return "status = 'rejected'", "status = 'rejected'"
+    return "status = 'pending_approval'", "stage = 'plan' AND status = 'pending'"
+
+
+def _serialize_queue_item(item_type: str, row, db: DatabaseManager) -> dict:
+    request_id = row["request_id"] if "request_id" in row.keys() else row["id"]
+    job_id = row["id"] if item_type == "ansible_job" else None
+    review = _latest_audit(db, request_id=request_id, job_id=job_id)
+    return {
+        "id": row["id"],
+        "type": item_type,
+        "title": row["title"],
+        "requester": row["requester"] or "system",
+        "status": row["status"],
+        "created_at": row["created_at"],
+        "request_id": request_id,
+        "entrypoint_path": row["ansible_entrypoint_path"] if "ansible_entrypoint_path" in row.keys() else None,
+        "review_comment": review.get("comment"),
+        "review_actor": review.get("actor"),
+        "reviewed_at": review.get("created_at"),
+    }
+
 
 @router.post("/{request_id}/approve")
 async def approve_request(
     request_id: int,
     body: ApprovalBody,
     db: DatabaseManager = Depends(_get_db),
+    user: dict = Depends(require_admin),
 ):
-    """
-    Approve a change request that is in PENDING_APPROVAL state.
-    Transitions it to APPROVED so the pipeline can proceed.
-    """
+    """Approve a change request that is in PENDING_APPROVAL state."""
     svc = ChangeRequestService(db)
     req = svc.get(request_id)
     if req is None:
@@ -74,20 +109,21 @@ async def approve_request(
     if req.status != RequestStatus.PENDING_APPROVAL:
         raise HTTPException(
             http_status.HTTP_409_CONFLICT,
-            f"Cannot approve — current status is '{req.status.value}', expected 'pending_approval'",
+            f"Cannot approve - current status is '{req.status.value}', expected 'pending_approval'",
         )
 
-    ok = svc.approve(request_id, actor=body.actor)
+    actor = user.get("username", "admin")
+    ok = svc.approve(request_id, actor=actor)
     if not ok:
         raise HTTPException(http_status.HTTP_500_INTERNAL_SERVER_ERROR, "Approval transition failed")
 
     AuditLogger(db).log(
         action="approve",
         request_id=request_id,
-        actor=body.actor,
+        actor=actor,
         comment=body.comment or "Approved via API",
     )
-    logger.info("Request #%d approved by %s", request_id, body.actor)
+    logger.info("Request #%d approved by %s", request_id, actor)
     return {"status": "approved", "request_id": request_id}
 
 
@@ -96,10 +132,9 @@ async def reject_request(
     request_id: int,
     body: ApprovalBody,
     db: DatabaseManager = Depends(_get_db),
+    user: dict = Depends(require_admin),
 ):
-    """
-    Reject a pending change request — moves it back to DRAFT.
-    """
+    """Reject a pending change request."""
     svc = ChangeRequestService(db)
     req = svc.get(request_id)
     if req is None:
@@ -108,20 +143,21 @@ async def reject_request(
     if req.status != RequestStatus.PENDING_APPROVAL:
         raise HTTPException(
             http_status.HTTP_409_CONFLICT,
-            f"Cannot reject — current status is '{req.status.value}'",
+            f"Cannot reject - current status is '{req.status.value}'",
         )
 
-    ok = svc.reject(request_id, actor=body.actor)
+    actor = user.get("username", "admin")
+    ok = svc.reject(request_id, actor=actor)
     if not ok:
         raise HTTPException(http_status.HTTP_500_INTERNAL_SERVER_ERROR, "Rejection transition failed")
 
     AuditLogger(db).log(
         action="reject",
         request_id=request_id,
-        actor=body.actor,
+        actor=actor,
         comment=body.comment or "Rejected via API",
     )
-    logger.info("Request #%d rejected by %s", request_id, body.actor)
+    logger.info("Request #%d rejected by %s", request_id, actor)
     return {"status": "rejected", "request_id": request_id}
 
 
@@ -129,6 +165,7 @@ async def reject_request(
 async def get_request_status(
     request_id: int,
     db: DatabaseManager = Depends(_get_db),
+    user: dict = Depends(require_admin),
 ):
     """Return the current status of a change request."""
     svc = ChangeRequestService(db)
@@ -143,66 +180,58 @@ async def get_request_status(
     }
 
 
-@router.get("/queue/pending")
-async def list_pending_approvals(
+@router.get("/queue")
+async def list_approval_queue(
+    status_filter: str = "pending",
     limit: int = 50,
     db: DatabaseManager = Depends(_get_db),
+    user: dict = Depends(require_admin),
 ):
-    """
-    Phase 16 — List all change requests in PENDING_APPROVAL state.
-    Aggregates from both deployment pipeline and ansible jobs.
-    """
-    pending_items = []
+    """Admin-only approval queue with Pending, Approved, and Rejected tabs."""
+    request_where, job_where = _queue_status_where(status_filter)
+    items = []
 
-    # 1. Deployment change requests
     try:
         with db._connect() as conn:
             rows = conn.execute(
                 "SELECT id, title, requester, status, created_at "
-                "FROM change_requests WHERE status = 'pending_approval' "
+                f"FROM change_requests WHERE {request_where} "
                 "ORDER BY created_at DESC LIMIT ?",
                 (limit,),
             ).fetchall()
-            for r in rows:
-                pending_items.append({
-                    "id": r["id"],
-                    "type": "change_request",
-                    "title": r["title"],
-                    "requester": r["requester"],
-                    "status": "pending_approval",
-                    "created_at": r["created_at"],
-                })
+        items.extend(_serialize_queue_item("change_request", row, db) for row in rows)
     except Exception as e:
-        logger.debug("Could not fetch pending change_requests: %s", e)
+        logger.debug("Could not fetch %s change_requests: %s", status_filter, e)
 
-    # 2. Ansible jobs awaiting approval
     try:
         with db._connect() as conn:
             rows = conn.execute(
-                "SELECT j.id, j.status, j.stage, j.created_at, "
-                "       cr.title, cr.requester "
+                "SELECT j.id, j.request_id, j.status, j.stage, j.created_at, j.ansible_entrypoint_path, "
+                "       COALESCE(cr.title, 'Ansible Job #' || j.id) AS title, "
+                "       COALESCE(cr.requester, 'system') AS requester "
                 "FROM jobs j "
                 "LEFT JOIN change_requests cr ON j.request_id = cr.id "
-                "WHERE j.stage = 'plan' AND j.status = 'pending' "
+                f"WHERE {job_where} "
                 "ORDER BY j.created_at DESC LIMIT ?",
                 (limit,),
             ).fetchall()
-            for r in rows:
-                pending_items.append({
-                    "id": r["id"],
-                    "type": "ansible_job",
-                    "title": r["title"] or f"Ansible Job #{r['id']}",
-                    "requester": r["requester"] or "system",
-                    "status": "awaiting_approval",
-                    "created_at": r["created_at"],
-                })
+        items.extend(_serialize_queue_item("ansible_job", row, db) for row in rows)
     except Exception as e:
-        logger.debug("Could not fetch pending ansible jobs: %s", e)
+        logger.debug("Could not fetch %s ansible jobs: %s", status_filter, e)
 
-    # Sort combined results by created_at descending
-    pending_items.sort(key=lambda x: x.get("created_at", ""), reverse=True)
-
+    items.sort(key=lambda x: x.get("created_at", ""), reverse=True)
     return {
-        "items": pending_items[:limit],
-        "total": len(pending_items),
+        "items": items[:limit],
+        "total": len(items),
+        "status_filter": status_filter,
     }
+
+
+@router.get("/queue/pending")
+async def list_pending_approvals(
+    limit: int = 50,
+    db: DatabaseManager = Depends(_get_db),
+    user: dict = Depends(require_admin),
+):
+    """Backward-compatible alias for the Pending queue."""
+    return await list_approval_queue("pending", limit, db, user)

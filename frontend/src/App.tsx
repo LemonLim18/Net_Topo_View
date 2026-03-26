@@ -30,6 +30,7 @@ import { DeviceProvider } from '../contexts/DeviceContext';
 import { Bot } from 'lucide-react';
 
 import type { ViewId, User } from '../types';
+import { normalizeUserRole } from '../types';
 
 const CURRENT_VIEW_KEY = 'currentView';
 const SELECTED_DEVICE_KEY = 'selectedDeviceId';
@@ -101,7 +102,7 @@ const App: React.FC = () => {
         setUser({
           id: me.id,
           username: me.username,
-          role: me.role as User['role'],
+          role: normalizeUserRole(me.role) as User['role'],
           lastLogin: me.lastLogin || new Date().toISOString(),
         });
       })
@@ -139,6 +140,12 @@ const App: React.FC = () => {
   useEffect(() => {
     localStorage.setItem('sidebarCollapsed', String(sidebarCollapsed));
   }, [sidebarCollapsed]);
+
+  useEffect(() => {
+    if (view === 'approval_queue' && normalizeUserRole(user?.role) !== 'admin') {
+      setView('overview');
+    }
+  }, [view, user]);
 
   // --- Button Dragging Logic ---
   const handleButtonMouseDown = (e: React.MouseEvent) => {
@@ -236,7 +243,9 @@ const App: React.FC = () => {
 
       // Phase 16 — Approval Queue Dashboard
       case 'approval_queue':
-        return <ApprovalQueueView setView={setView} />;
+        return normalizeUserRole(user?.role) === 'admin'
+          ? <ApprovalQueueView setView={setView} />
+          : <OverviewDashboard setView={setView} setSelectedDeviceId={setSelectedDeviceId} />;
 
       // Template Studio — Jinja2 template editor
       case 'template_studio':

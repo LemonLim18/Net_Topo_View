@@ -207,6 +207,12 @@ class DatabaseManager:
                     logger.info("M22 migration: added %s.%s", table, col)
                 except Exception:
                     pass  # column already exists
+            try:
+                conn.execute(
+                    "UPDATE users SET role = 'engineer' WHERE lower(role) = 'operator'"
+                )
+            except Exception:
+                pass
         # M0: SSH credential columns on devices
         _m0_columns = [
             ("devices", "ssh_user",     "TEXT"),

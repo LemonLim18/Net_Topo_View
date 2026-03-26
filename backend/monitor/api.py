@@ -1,6 +1,7 @@
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from typing import Optional, Dict, Any, List, Set, Tuple
+from starlette.concurrency import run_in_threadpool
 import csv
 from datetime import datetime
 import io
@@ -1223,29 +1224,13 @@ class StatusResponse(BaseModel):
     details: Optional[Dict[str, Any]] = None
 
 
-@router.post("/update-config", response_model=StatusResponse)
-async def update_telegraf_config():
-    """Regenerate Telegraf configuration based on current inventory."""
-    try:
-        db = DatabaseManager("db/netauto.db")
-        gen = TelegrafConfigGenerator(db)
-        gen.regenerate_config("telegraf.conf")
-        return StatusResponse(status="success", message="Telegraf configuration regenerated.")
-    except Exception as e:
-        logger.error(f"Error updating config: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.get("/status", response_model=StatusResponse)
-async def get_monitor_status():
-    """Check if InfluxDB and monitored devices are reachable."""
+def _get_monitor_status_sync() -> StatusResponse:
     details: Dict[str, Any] = {
         "influxdb": {"url": INFLUXDB_URL, "reachable": False},
         "devices_monitored": 0,
         "devices_source": "sqlite",
     }
 
-    # 1. Probe InfluxDB health endpoint
     try:
         req = urllib.request.Request(f"{INFLUXDB_URL}/health", method="GET")
         with urllib.request.urlopen(req, timeout=5) as resp:
@@ -1255,7 +1240,6 @@ async def get_monitor_status():
     except Exception as exc:
         details["influxdb"]["error"] = str(exc)
 
-    # 2. Count monitored devices from DB
     try:
         db = DatabaseManager("db/netauto.db")
         with db._connect() as conn:
@@ -1266,7 +1250,6 @@ async def get_monitor_status():
 
     influx_ok = details["influxdb"]["reachable"]
 
-    # 2b. If DB is empty, derive device count from Influx telemetry.
     if INFLUXDB_TOKEN and details["devices_monitored"] == 0:
         try:
             influx_devices = _influx_device_summary(limit=500)
@@ -1275,7 +1258,6 @@ async def get_monitor_status():
         except Exception as exc:
             details["influx_devices_error"] = str(exc)
 
-    # 3. Check Prometheus health (optional)
     try:
         prom_status = prom_health()
         details["prometheus"] = prom_status
@@ -1289,17 +1271,10 @@ async def get_monitor_status():
         f"Prometheus {'reachable' if prom_ok else 'disabled/unreachable'}, "
         f"{details['devices_monitored']} device(s) monitored ({details['devices_source']})"
     )
-
     return StatusResponse(status=overall, message=msg, details=details)
 
 
-@router.get("/metrics/latest")
-async def get_latest_metrics(device: Optional[str] = None, devices: Optional[str] = None, limit: int = 30):
-    """
-    Query latest SNMP/telemetry metrics from InfluxDB (if available),
-    otherwise return device status from the local DB.
-    """
-    # Try InfluxDB first
+def _get_latest_metrics_sync(device: Optional[str] = None, devices: Optional[str] = None, limit: int = 30):
     selected_devices = _parse_device_filters(device, devices)
 
     if INFLUXDB_TOKEN:
@@ -1337,7 +1312,6 @@ from(bucket: "{INFLUXDB_BUCKET}")
         except Exception as exc:
             logger.debug("InfluxDB query failed, falling back to DB: %s", exc)
 
-    # Fallback: device table from SQLite
     try:
         db = DatabaseManager("db/netauto.db")
         with db._connect() as conn:
@@ -1353,8 +1327,7 @@ from(bucket: "{INFLUXDB_BUCKET}")
         raise HTTPException(500, f"Failed to retrieve metrics: {exc}")
 
 
-@router.get("/metrics/history")
-async def get_metric_history(
+def _get_metric_history_sync(
     device: Optional[str] = None,
     devices: Optional[str] = None,
     interface: Optional[str] = None,
@@ -1362,18 +1335,6 @@ async def get_metric_history(
     range_minutes: int = 60,
     limit: int = 120,
 ):
-    """
-    Query time-series metric history from InfluxDB for charting.
-
-    Parameters:
-        device:        Hostname or IP to filter (optional)
-        interface:     Specific interface name (optional)
-        metric:        Metric name — cpu | memory | interface_traffic | discards | errors
-        range_minutes: How far back to look (default: 60)
-        limit:         Max data points (default: 120)
-
-    Returns list of {time, device, field, value} objects.
-    """
     if not INFLUXDB_TOKEN:
         return {"source": "unavailable", "data": [], "message": "InfluxDB not configured"}
 
@@ -1458,7 +1419,6 @@ async def get_metric_history(
                         }
                     )
 
-        # Ensure stable rendering order in charts.
         data_points.sort(key=lambda p: (p.get("time", ""), p.get("device", ""), p.get("field", "")))
         return {
             "source": "influxdb",
@@ -1473,12 +1433,40 @@ async def get_metric_history(
         return {"source": "error", "metric": metric, "data": [], "error": str(exc)}
 
 
-@router.get("/metrics/summary")
-async def get_device_metrics_summary(limit: int = 50):
-    """
-    Return per-device summary metrics: latest CPU, memory, interface count, status.
-    Combines InfluxDB latest + SQLite device info.
-    """
+def _get_metric_history_batch_sync(
+    metrics: List[str],
+    device: Optional[str] = None,
+    devices: Optional[str] = None,
+    interface: Optional[str] = None,
+    range_minutes: int = 60,
+    limit: int = 120,
+):
+    data: Dict[str, List[Dict[str, Any]]] = {}
+    sources: Set[str] = set()
+    for metric_name in metrics:
+        res = _get_metric_history_sync(
+            device=device,
+            devices=devices,
+            interface=interface,
+            metric=metric_name,
+            range_minutes=range_minutes,
+            limit=limit,
+        )
+        data[metric_name] = list(res.get("data") or [])
+        source = str(res.get("source") or "").strip()
+        if source:
+            sources.add(source)
+    source_value = sources.pop() if len(sources) == 1 else ("mixed" if sources else "unknown")
+    return {
+        "source": source_value,
+        "metrics": metrics,
+        "data": data,
+        "selected_interface": interface,
+        "selected_devices": _parse_device_filters(device, devices),
+    }
+
+
+def _get_device_metrics_summary_sync(limit: int = 50):
     devices = []
     try:
         db = DatabaseManager("db/netauto.db")
@@ -1497,7 +1485,7 @@ async def get_device_metrics_summary(limit: int = 50):
                     "model": r["model"] or "",
                     "os_version": r["os_version"] or "",
                     "last_polled": r["last_polled"] or "",
-                    "cpu": None,  # filled from InfluxDB below
+                    "cpu": None,
                     "memory": None,
                     "errors": 0,
                     "discards": 0,
@@ -1511,17 +1499,14 @@ async def get_device_metrics_summary(limit: int = 50):
     if INFLUXDB_TOKEN:
         try:
             influx_device_map = _influx_device_summary(limit=max(limit, 100))
-
         except Exception as exc:
             logger.debug("InfluxDB enrichment failed: %s", exc)
 
-    # If no inventory devices were found, fall back entirely to Influx discovery.
     if not devices and influx_device_map:
         fallback_devices = list(influx_device_map.values())
         fallback_devices.sort(key=lambda d: (d.get("hostname") or d.get("mgmt_ip") or ""))
         return {"devices": fallback_devices[:limit], "source": "influxdb"}
 
-    # Enrich DB inventory rows from Influx metrics.
     for d in devices:
         ip = d.get("mgmt_ip") or ""
         host = d.get("hostname") or ""
@@ -1565,9 +1550,7 @@ async def get_device_metrics_summary(limit: int = 50):
     return {"devices": devices, "source": "sqlite+influx"}
 
 
-@router.get("/metrics/interfaces")
-async def get_device_interfaces(device: str = "", interface: Optional[str] = None):
-    """Return latest interface snapshot for a selected device."""
+def _get_device_interfaces_sync(device: str = "", interface: Optional[str] = None):
     if not device:
         raise HTTPException(400, "Provide ?device=IP-or-hostname")
     try:
@@ -1578,9 +1561,7 @@ async def get_device_interfaces(device: str = "", interface: Optional[str] = Non
         return {"device": device, "interfaces": [], "error": str(exc)}
 
 
-@router.get("/metrics/hostnames")
-async def get_device_hostnames():
-    """Return IP → sysName mapping for all monitored devices."""
+def _get_device_hostnames_sync():
     if not INFLUXDB_TOKEN:
         return {"hostnames": {}}
     try:
@@ -1601,6 +1582,110 @@ from(bucket: "{INFLUXDB_BUCKET}")
     except Exception as exc:
         logger.debug("Hostnames query failed: %s", exc)
         return {"hostnames": {}}
+
+
+@router.post("/update-config", response_model=StatusResponse)
+async def update_telegraf_config():
+    """Regenerate Telegraf configuration based on current inventory."""
+    try:
+        db = DatabaseManager("db/netauto.db")
+        gen = TelegrafConfigGenerator(db)
+        gen.regenerate_config("telegraf.conf")
+        return StatusResponse(status="success", message="Telegraf configuration regenerated.")
+    except Exception as e:
+        logger.error(f"Error updating config: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/status", response_model=StatusResponse)
+async def get_monitor_status():
+    """Check if InfluxDB and monitored devices are reachable."""
+    return await run_in_threadpool(_get_monitor_status_sync)
+
+
+@router.get("/metrics/latest")
+async def get_latest_metrics(device: Optional[str] = None, devices: Optional[str] = None, limit: int = 30):
+    """
+    Query latest SNMP/telemetry metrics from InfluxDB (if available),
+    otherwise return device status from the local DB.
+    """
+    return await run_in_threadpool(_get_latest_metrics_sync, device, devices, limit)
+
+
+@router.get("/metrics/history")
+async def get_metric_history(
+    device: Optional[str] = None,
+    devices: Optional[str] = None,
+    interface: Optional[str] = None,
+    metric: str = "cpu",
+    range_minutes: int = 60,
+    limit: int = 120,
+):
+    """
+    Query time-series metric history from InfluxDB for charting.
+
+    Parameters:
+        device:        Hostname or IP to filter (optional)
+        interface:     Specific interface name (optional)
+        metric:        Metric name — cpu | memory | interface_traffic | discards | errors
+        range_minutes: How far back to look (default: 60)
+        limit:         Max data points (default: 120)
+
+    Returns list of {time, device, field, value} objects.
+    """
+    return await run_in_threadpool(
+        _get_metric_history_sync,
+        device,
+        devices,
+        interface,
+        metric,
+        range_minutes,
+        limit,
+    )
+
+
+@router.get("/metrics/history-batch")
+async def get_metric_history_batch(
+    metrics: str,
+    device: Optional[str] = None,
+    devices: Optional[str] = None,
+    interface: Optional[str] = None,
+    range_minutes: int = 60,
+    limit: int = 120,
+):
+    metric_list = [item.strip() for item in (metrics or "").split(",") if item.strip()]
+    if not metric_list:
+        raise HTTPException(400, "Provide at least one metric via ?metrics=cpu,memory,...")
+    return await run_in_threadpool(
+        _get_metric_history_batch_sync,
+        metric_list,
+        device,
+        devices,
+        interface,
+        range_minutes,
+        limit,
+    )
+
+
+@router.get("/metrics/summary")
+async def get_device_metrics_summary(limit: int = 50):
+    """
+    Return per-device summary metrics: latest CPU, memory, interface count, status.
+    Combines InfluxDB latest + SQLite device info.
+    """
+    return await run_in_threadpool(_get_device_metrics_summary_sync, limit)
+
+
+@router.get("/metrics/interfaces")
+async def get_device_interfaces(device: str = "", interface: Optional[str] = None):
+    """Return latest interface snapshot for a selected device."""
+    return await run_in_threadpool(_get_device_interfaces_sync, device, interface)
+
+
+@router.get("/metrics/hostnames")
+async def get_device_hostnames():
+    """Return IP → sysName mapping for all monitored devices."""
+    return await run_in_threadpool(_get_device_hostnames_sync)
 
 
 # ═══════════════════════════════════════════════════════════════════════════

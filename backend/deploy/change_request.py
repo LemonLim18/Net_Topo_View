@@ -25,8 +25,9 @@ class ChangeRequestService:
 
     VALID_TRANSITIONS: dict[RequestStatus, list[RequestStatus]] = {
         RequestStatus.DRAFT:            [RequestStatus.PENDING_APPROVAL],
-        RequestStatus.PENDING_APPROVAL: [RequestStatus.APPROVED, RequestStatus.DRAFT],
-        RequestStatus.APPROVED:         [RequestStatus.RUNNING, RequestStatus.DRAFT],
+        RequestStatus.PENDING_APPROVAL: [RequestStatus.APPROVED, RequestStatus.REJECTED, RequestStatus.DRAFT],
+        RequestStatus.APPROVED:         [RequestStatus.RUNNING, RequestStatus.REJECTED, RequestStatus.DRAFT],
+        RequestStatus.REJECTED:         [],
         RequestStatus.RUNNING:          [RequestStatus.COMPLETED, RequestStatus.FAILED, RequestStatus.ROLLED_BACK],
         RequestStatus.COMPLETED:        [],
         RequestStatus.FAILED:           [RequestStatus.DRAFT],
@@ -138,7 +139,7 @@ class ChangeRequestService:
         return self.transition(request_id, RequestStatus.APPROVED, actor)
 
     def reject(self, request_id: int, actor: str = "system") -> bool:
-        return self.transition(request_id, RequestStatus.DRAFT, actor)
+        return self.transition(request_id, RequestStatus.REJECTED, actor)
 
     def mark_running(self, request_id: int) -> bool:
         return self.transition(request_id, RequestStatus.RUNNING, "pipeline")

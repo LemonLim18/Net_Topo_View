@@ -108,7 +108,7 @@ CREATE TABLE IF NOT EXISTS change_requests (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     title           TEXT    NOT NULL,
     description     TEXT,
-    status          TEXT    DEFAULT 'draft',    -- draft | pending_approval | approved | running | completed | failed | rolled_back
+    status          TEXT    DEFAULT 'draft',    -- draft | pending_approval | approved | rejected | running | completed | failed | rolled_back
     requester       TEXT,                       -- user or 'ai_agent'
     created_at      TEXT    DEFAULT (datetime('now')),
     updated_at      TEXT    DEFAULT (datetime('now'))
@@ -122,7 +122,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     request_id      INTEGER NOT NULL REFERENCES change_requests(id) ON DELETE CASCADE,
     device_id       INTEGER NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
-    status          TEXT    DEFAULT 'pending',  -- pending | running | success | failed | rolled_back
+    status          TEXT    DEFAULT 'pending',  -- pending | approved | rejected | running | success | failed | rolled_back
     stage           TEXT,                       -- current pipeline stage (e.g. 'snapshot_pre')
     snapshot_pre_id INTEGER REFERENCES config_snapshots(id),
     snapshot_post_id INTEGER REFERENCES config_snapshots(id),
@@ -239,7 +239,7 @@ CREATE TABLE IF NOT EXISTS users (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     username      TEXT    NOT NULL UNIQUE,
     password_hash TEXT    NOT NULL,
-    role          TEXT    DEFAULT 'auditor',   -- admin | operator | auditor
+    role          TEXT    DEFAULT 'engineer',  -- admin | engineer | auditor
     is_active     BOOLEAN DEFAULT 1,
     created_at    TEXT    DEFAULT (datetime('now')),
     last_login    TEXT

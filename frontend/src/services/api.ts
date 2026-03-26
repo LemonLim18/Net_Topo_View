@@ -82,9 +82,9 @@ export const deployApi = {
   listJobs: () =>
     request<any[]>('/deploy/jobs'),
 
-  /** Phase 16 — List pending approvals (change requests + ansible jobs). */
-  listPendingApprovals: (limit = 50) => {
-    const url = `${BASE_URL}/api/deploy/queue/pending?limit=${limit}`;
+  /** Approval queue (Pending / Approved / Rejected). */
+  listApprovalQueue: (statusFilter: 'pending' | 'approved' | 'rejected' = 'pending', limit = 50) => {
+    const url = `${BASE_URL}/api/deploy/queue?status_filter=${statusFilter}&limit=${limit}`;
     const token = localStorage.getItem('auth_token');
     return fetch(url, {
       headers: {
@@ -94,11 +94,26 @@ export const deployApi = {
     }).then(async r => {
       if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || r.statusText);
       return r.json() as Promise<{
-        items: { id: number; type: string; title: string; requester: string; status: string; created_at: string }[];
+        items: {
+          id: number;
+          type: string;
+          title: string;
+          requester: string;
+          status: string;
+          created_at: string;
+          request_id: number;
+          entrypoint_path?: string | null;
+          review_comment?: string | null;
+          review_actor?: string | null;
+          reviewed_at?: string | null;
+        }[];
         total: number;
+        status_filter: string;
       }>;
     });
   },
+
+  listPendingApprovals: (limit = 50) => deployApi.listApprovalQueue('pending', limit),
 
   /** Phase 16 — Approve a change request. */
   approveRequest: (requestId: number, actor = 'admin', comment?: string) => {
@@ -345,6 +360,25 @@ export const monitorApi = {
     if (interfaceName) params.set('interface', interfaceName);
     if (devices && devices.length > 0) params.set('devices', devices.join(','));
     return request<{ source: string; metric: string; data: any[] }>(`/monitor/metrics/history?${params}`);
+  },
+
+  getMetricHistoryBatch: (
+    metrics: string[],
+    device?: string,
+    rangeMinutes = 60,
+    limit = 120,
+    interfaceName?: string,
+    devices?: string[],
+  ) => {
+    const params = new URLSearchParams({
+      metrics: metrics.join(','),
+      range_minutes: String(rangeMinutes),
+      limit: String(limit),
+    });
+    if (device) params.set('device', device);
+    if (interfaceName) params.set('interface', interfaceName);
+    if (devices && devices.length > 0) params.set('devices', devices.join(','));
+    return request<{ source: string; metrics: string[]; data: Record<string, any[]> }>(`/monitor/metrics/history-batch?${params}`);
   },
 
   /** Phase 10 — Get per-device summary with CPU/memory enrichment */
@@ -761,13 +795,19 @@ export const authApi = {
       body: JSON.stringify({ username, password }),
     }),
 
+  signup: (username: string, password: string) =>
+    request<{ access_token: string; token_type: string; user: { id: number; username: string; role: string; lastLogin: string } }>('/auth/signup', {
+      method: 'POST',
+      body: JSON.stringify({ username, password }),
+    }),
+
   me: () =>
     request<{ id: number; username: string; role: string; lastLogin: string; createdAt: string }>('/auth/me'),
 
   listUsers: () =>
     request<{ id: number; username: string; role: string; is_active: boolean; last_login: string; created_at: string }[]>('/auth/users'),
 
-  createUser: (username: string, password: string, role: string = 'auditor') =>
+  createUser: (username: string, password: string, role: string = 'engineer') =>
     request<{ id: number; username: string; role: string }>('/auth/users', {
       method: 'POST',
       body: JSON.stringify({ username, password, role }),
@@ -1170,6 +1210,12 @@ export const ansibleApi = {
     request<{ job_id: number; status: string; approved_by: string }>(
       `/ansible/jobs/${jobId}/approve`,
       { method: 'POST' }
+    ),
+
+  rejectJob: (jobId: number, comment?: string) =>
+    request<{ job_id: number; status: string; reviewed_by: string }>(
+      `/ansible/jobs/${jobId}/reject`,
+      { method: 'POST', body: JSON.stringify({ comment: comment || '' }) }
     ),
 
   /** Execute the approved playbook (admin only). */

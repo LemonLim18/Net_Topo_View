@@ -18,6 +18,7 @@ class RequestStatus(str, Enum):
     DRAFT = "draft"
     PENDING_APPROVAL = "pending_approval"
     APPROVED = "approved"
+    REJECTED = "rejected"
     RUNNING = "running"
     COMPLETED = "completed"
     FAILED = "failed"
@@ -26,6 +27,8 @@ class RequestStatus(str, Enum):
 
 class JobStatus(str, Enum):
     PENDING = "pending"
+    APPROVED = "approved"
+    REJECTED = "rejected"
     RUNNING = "running"
     SUCCESS = "success"
     FAILED = "failed"

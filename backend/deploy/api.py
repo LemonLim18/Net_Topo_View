@@ -76,7 +76,7 @@ class ExecuteJob(BaseModel):
 async def create_request(
     req: CreateRequest,
     pipeline: DeploymentPipeline = Depends(get_pipeline),
-    _user: dict = Depends(require_role("operator")),
+    _user: dict = Depends(require_role("engineer", "admin")),
 ):
     """Create a new logical Change Request."""
     req_id = pipeline.create_change_request(req.title, req.requester, req.description)
@@ -86,7 +86,7 @@ async def create_request(
 async def add_job(
     job: CreateJob,
     pipeline: DeploymentPipeline = Depends(get_pipeline),
-    _user: dict = Depends(require_role("operator")),
+    _user: dict = Depends(require_role("engineer", "admin")),
 ):
     """Add a deployment job (target device) to a request."""
     job_id = pipeline.add_job(job.request_id, job.device_id)
@@ -105,7 +105,7 @@ async def plan_job(
     job_id: int,
     plan: PlanJob,
     pipeline: DeploymentPipeline = Depends(get_pipeline),
-    _user: dict = Depends(require_role("operator")),
+    _user: dict = Depends(require_role("engineer", "admin")),
 ):
     """Run Stage 1: Generate configuration and rollback."""
     success = await run_in_threadpool(

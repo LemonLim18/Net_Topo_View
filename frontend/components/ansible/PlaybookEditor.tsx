@@ -44,7 +44,7 @@ const PlaybookEditor: React.FC<PlaybookEditorProps> = ({
   const activeTabRef = useRef<HTMLDivElement>(null);
   const activeTab = tabs.find(t => t.id === activeTabId) ?? null;
   const isAdmin   = userRole === 'admin';
-  const isOp      = userRole === 'admin' || userRole === 'operator';
+  const canEdit   = userRole === 'admin' || userRole === 'engineer';
   
   // Auto-scroll active tab into view
   useEffect(() => {
@@ -88,6 +88,7 @@ const PlaybookEditor: React.FC<PlaybookEditorProps> = ({
   // Derive action states
   const hasPlaybook = !!activeTab?.jobId;
   const isApproved  = job?.status === 'approved';
+  const isRejected  = job?.status === 'rejected';
   const isDeploying = job?.status === 'running';
   const isDone      = job?.status === 'success' || job?.status === 'failed';
   const hasExecutedBefore = job?.status === 'success' || job?.status === 'failed';
@@ -97,13 +98,11 @@ const PlaybookEditor: React.FC<PlaybookEditorProps> = ({
   // move to success/failed status after the first run; we still want Deploy to stay available.
   const canDeploy = isApproved || job?.status === 'success' || job?.status === 'failed';
   const approveTitle = !isAdmin
-    ? 'Admin role required for device deployment approval'
+    ? 'Admin approval is required before deployment'
     : 'Approve playbook for device deployment';
-  const deployTitle = !isAdmin
-    ? 'Admin role required for deployment to devices'
-    : !canDeploy
-      ? 'Job must be approved first'
-      : 'Deploy to all target devices';
+  const deployTitle = !canDeploy
+    ? 'Job must be approved by an admin first'
+    : 'Deploy to all target devices';
 
   return (
     <div className="flex flex-col h-full min-h-0 bg-base-200">
@@ -205,12 +204,21 @@ const PlaybookEditor: React.FC<PlaybookEditorProps> = ({
         <button
           className={`btn btn-xs gap-1 ${isDeploying ? 'btn-disabled' : 'btn-success'}`}
           onClick={onDeploy}
-          disabled={!isAdmin || !canDeploy || isDeploying}
+          disabled={!canEdit || !canDeploy || isDeploying}
           title={deployTitle}
         >
           <Play className="h-3 w-3" />
           {isDeploying ? 'Deploying…' : hasExecutedBefore ? 'Re-Deploy' : 'Deploy'}
         </button>
+
+        {!isAdmin && hasPlaybook && !isApproved && !isRejected && (
+          <span className="badge badge-warning badge-sm">Awaiting Admin Approval</span>
+        )}
+        {isRejected && (
+          <span className="badge badge-error badge-sm" title="Rejected by admin review">
+            Rejected
+          </span>
+        )}
 
         <div className="ml-auto flex items-center gap-2">
           {activeTab?.name.endsWith('.md') && (
@@ -223,7 +231,7 @@ const PlaybookEditor: React.FC<PlaybookEditorProps> = ({
               <FileText className="h-3 w-3" /> {isMdPreview ? 'Close Preview' : 'Preview'}
             </button>
           )}
-          {activeTab && !activeTab.isReadOnly && isOp && (
+          {activeTab && !activeTab.isReadOnly && canEdit && (
             <button
               className={`btn btn-xs gap-1 ${activeTab.isDirty ? 'btn-primary' : 'btn-ghost'}`}
               onClick={() => onSave(activeTab.id)}

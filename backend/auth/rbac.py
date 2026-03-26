@@ -25,7 +25,7 @@ from typing import Any, Dict, Tuple
 
 from fastapi import Depends, HTTPException, status
 
-from auth.auth import get_current_user
+from auth.auth import get_current_user, normalize_role
 
 
 def require_role(*allowed_roles: str):
@@ -44,11 +44,15 @@ def require_role(*allowed_roles: str):
     async def _check(user: Dict[str, Any] = Depends(get_current_user)):
         if os.environ.get("AUTH_BYPASS_ROLES", "").strip() in ("1", "true", "yes"):
             return user
-        if user["role"] not in allowed_roles:
+        normalized_user_role = normalize_role(user.get("role"))
+        normalized_allowed = tuple(normalize_role(role) for role in allowed_roles)
+        if normalized_user_role not in normalized_allowed:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"Role '{user['role']}' is not authorized. Required: {', '.join(allowed_roles)}",
+                detail=f"Role '{normalized_user_role}' is not authorized. Required: {', '.join(normalized_allowed)}",
             )
+        user = dict(user)
+        user["role"] = normalized_user_role
         return user
 
     return _check
@@ -56,5 +60,6 @@ def require_role(*allowed_roles: str):
 
 # Convenience shortcuts
 require_admin = require_role("admin")
-require_operator = require_role("admin", "operator")
-require_any = require_role("admin", "operator", "auditor")
+require_engineer = require_role("admin", "engineer")
+require_operator = require_engineer
+require_any = require_role("admin", "engineer", "auditor")

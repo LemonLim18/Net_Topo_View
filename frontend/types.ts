@@ -52,7 +52,15 @@ export interface D3Link extends d3.SimulationLinkDatum<D3Node> {
 }
 
 // AAA Types
-export type UserRole = 'admin' | 'operator' | 'auditor';
+export type UserRole = 'admin' | 'engineer' | 'operator' | 'auditor';
+
+export const normalizeUserRole = (role: string | null | undefined): UserRole | 'viewer' => {
+  const value = (role || '').trim().toLowerCase();
+  if (value === 'admin') return 'admin';
+  if (value === 'engineer' || value === 'operator') return 'engineer';
+  if (value === 'auditor') return 'auditor';
+  return 'viewer';
+};
 
 export interface User {
     id?: number;
