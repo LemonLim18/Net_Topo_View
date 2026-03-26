@@ -37,6 +37,19 @@ function renderChatEmphasis(text: string): React.ReactNode {
   });
 }
 
+function describeError(err: unknown, fallback = 'Unexpected error'): string {
+  if (err instanceof Error && err.message) return err.message;
+  if (typeof err === 'string' && err.trim()) return err;
+  try {
+    const asAny = err as { message?: unknown } | null;
+    if (typeof asAny?.message === 'string' && asAny.message.trim()) return asAny.message;
+    if (asAny?.message !== undefined) return JSON.stringify(asAny.message);
+  } catch {
+    // ignore stringify issues
+  }
+  return fallback;
+}
+
 function prettifyModelLabel(providerName: string, modelName: string): string {
   if (providerName === 'gemini') {
     if (modelName === 'gemini-2.5-flash') return 'Gemini 2.5 Flash';
@@ -364,6 +377,10 @@ function mergeInterfacePickersFromPreviewResponse(res: any): PlannedDeviceInterf
   return Array.isArray(raw) ? raw : [];
 }
 
+function isAclAtomicWizardFieldName(fieldName: string): boolean {
+  return String(fieldName || '').toLowerCase().startsWith('_chat_acl_');
+}
+
 /** Value map key: disambiguate duplicate field names across primary vs secondary intents. */
 function previewFieldValueKey(f: PreviewParamField): string {
   if (f.secondary_intent_index !== undefined && f.secondary_intent_index !== null) {
@@ -472,6 +489,45 @@ function paramsWizardValueIncomplete(
     const n =
       typeof v === 'number' ? v : parseInt(String(v).replace('/', '').trim(), 10);
     if (Number.isNaN(n) || n < 0 || n > 32) return true;
+  }
+  if (fl === '_chat_acl_action') {
+    const s = String(v || '').trim().toLowerCase();
+    return !(s === 'permit' || s === 'deny');
+  }
+  if (fl === '_chat_acl_seq') {
+    const raw = String(v ?? '').trim();
+    if (!/^\d+$/.test(raw)) return true;
+    const n = parseInt(raw, 10);
+    return Number.isNaN(n) || n < 1;
+  }
+  if (fl === '_chat_acl_protocol') {
+    const s = String(v || '').trim().toLowerCase();
+    return !(['tcp', 'udp', 'icmp', 'ip'] as string[]).includes(s);
+  }
+  if (fl === '_chat_acl_source' || fl === '_chat_acl_destination') {
+    const s = String(v || '').trim();
+    if (!s) return true;
+    if (s.toLowerCase() === 'any') return false;
+    return !isValidIPv4Address(s);
+  }
+  if (fl === '_chat_acl_source_wildcard' || fl === '_chat_acl_dest_wildcard') {
+    const addrKey = fl.includes('source') ? '_chat_acl_source' : '_chat_acl_destination';
+    const addrVal = String(allValues[addrKey] ?? '').trim().toLowerCase();
+    const w = String(v || '').trim();
+    if (addrVal === 'any') return false; // wildcard not required
+    if (!addrVal) return true;
+    if (!w) return true;
+    return !isValidIPv4Address(w);
+  }
+  if (fl === '_chat_acl_source_port' || fl === '_chat_acl_destination_port') {
+    const proto = String(allValues['_chat_acl_protocol'] ?? '').trim().toLowerCase();
+    const raw = String(v ?? '').trim();
+    if (!raw) {
+      return proto === 'tcp' || proto === 'udp';
+    }
+    if (!/^\d+$/.test(raw)) return true;
+    const n = parseInt(raw, 10);
+    return Number.isNaN(n) || n < 1 || n > 65535;
   }
   return false;
 }
@@ -1006,7 +1062,13 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
       // handling interfaces first would hide the VLAN name step forever (early return).
       const paramsDis = res?.params_disambiguation;
       if (paramsDis?.fields?.length) {
-        const fieldsList = (paramsDis.fields || []) as Array<{ field?: string }>;
+        let fieldsList = (paramsDis.fields || []) as Array<{ field?: string }>;
+        // If backend provides atomic ACL wizard fields, never ask for the raw `rules` field.
+        // (rules is assembled client-side from `_chat_acl_*` inputs.)
+        const hasAclAtoms = fieldsList.some((f) => isAclAtomicWizardFieldName(String(f.field || '')));
+        if (hasAclAtoms) {
+          fieldsList = fieldsList.filter((f) => String(f.field || '').toLowerCase() !== 'rules');
+        }
         const askedFields = fieldsList.map((f) => String(f.field || "")).filter(Boolean);
         const ifaceForSel = res?.interfaces_for_selection;
         const wantsOnlyTargetDevices = askedFields.length === 1 && askedFields[0] === 'target_devices';
@@ -1054,47 +1116,47 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
         ) {
           // Do not handle here; fall through to the interface picker branch below.
         } else {
-        const menuMsgId = crypto.randomUUID();
-        const fieldsList = (paramsDis.fields || []) as PreviewParamField[];
-        const initVals: Record<string, string | number | string[] | number[]> = {};
-        const pParams = (res?.parsed_intent?.parameters || {}) as Record<string, unknown>;
-        const rawVid = pParams.vlan_id ?? (pParams.vlan as { id?: number } | undefined)?.id;
-        const vid =
-          rawVid !== undefined && rawVid !== null && rawVid !== ''
-            ? parseInt(String(rawVid), 10)
-            : NaN;
-        if (!Number.isNaN(vid)) {
-          for (const f of fieldsList) {
-            if (
-              f.field === 'trunk_vlans' &&
-              f.control === 'multi_select_integers' &&
-              Array.isArray(f.options) &&
-              f.options.every((x) => typeof x === 'number') &&
-              (f.options as number[]).includes(vid)
-            ) {
-              initVals[previewFieldValueKey(f)] = [vid];
+          const menuMsgId = crypto.randomUUID();
+          const wizardFields = fieldsList as PreviewParamField[];
+          const initVals: Record<string, string | number | string[] | number[]> = {};
+          const pParams = (res?.parsed_intent?.parameters || {}) as Record<string, unknown>;
+          const rawVid = pParams.vlan_id ?? (pParams.vlan as { id?: number } | undefined)?.id;
+          const vid =
+            rawVid !== undefined && rawVid !== null && rawVid !== ''
+              ? parseInt(String(rawVid), 10)
+              : NaN;
+          if (!Number.isNaN(vid)) {
+            for (const f of wizardFields) {
+              if (
+                f.field === 'trunk_vlans' &&
+                f.control === 'multi_select_integers' &&
+                Array.isArray(f.options) &&
+                f.options.every((x) => typeof x === 'number') &&
+                (f.options as number[]).includes(vid)
+              ) {
+                initVals[previewFieldValueKey(f)] = [vid];
+              }
             }
           }
-        }
-        setParamsDisambiguation({
-          messageId: menuMsgId,
-          question: paramsDis.question || 'Please provide the following.',
-          fields: paramsDis.fields,
-          intentText,
-        });
-        setParamsDisambiguationValues(initVals);
-        setParamsDisambiguationStep(0);
-        setMessages((prev) => [
-          ...prev,
-          {
-            id: menuMsgId,
-            role: 'assistant',
-            content: 'Clarifying for some missing information',
-            timestamp: Date.now(),
-            paramsDisambiguation: { question: paramsDis.question, fields: paramsDis.fields },
-          } as AnsibleMessage,
-        ]);
-        return true;
+          setParamsDisambiguation({
+            messageId: menuMsgId,
+            question: paramsDis.question || 'Please provide the following.',
+            fields: wizardFields,
+            intentText,
+          });
+          setParamsDisambiguationValues(initVals);
+          setParamsDisambiguationStep(0);
+          setMessages((prev) => [
+            ...prev,
+            {
+              id: menuMsgId,
+              role: 'assistant',
+              content: 'Clarifying for some missing information',
+              timestamp: Date.now(),
+              paramsDisambiguation: { question: paramsDis.question, fields: paramsDis.fields },
+            } as AnsibleMessage,
+          ]);
+          return true;
         }
       }
 
@@ -1186,6 +1248,36 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
     const cur = fields[step];
     const nxt = fields[step + 1];
     if (!cur || nxt === undefined) return;
+
+    // Auto-skip ACL wizard fields that become irrelevant based on earlier answers.
+    try {
+      const nextField = String(nxt.field || '').toLowerCase();
+      const proto = String(paramsDisambiguationValues['_chat_acl_protocol'] ?? '').trim().toLowerCase();
+      const src = String(paramsDisambiguationValues['_chat_acl_source'] ?? '').trim().toLowerCase();
+      const dst = String(paramsDisambiguationValues['_chat_acl_destination'] ?? '').trim().toLowerCase();
+      const isTcpUdp = proto === 'tcp' || proto === 'udp';
+      if (
+        (nextField === '_chat_acl_source_port' || nextField === '_chat_acl_destination_port') &&
+        proto &&
+        !isTcpUdp
+      ) {
+        setParamsDisambiguationValues((prev) => ({ ...prev, [previewFieldValueKey(nxt)]: '' }));
+        setParamsDisambiguationStep((s) => s + 1);
+        return;
+      }
+      if (nextField === '_chat_acl_source_wildcard' && src === 'any') {
+        setParamsDisambiguationValues((prev) => ({ ...prev, [previewFieldValueKey(nxt)]: '' }));
+        setParamsDisambiguationStep((s) => s + 1);
+        return;
+      }
+      if (nextField === '_chat_acl_dest_wildcard' && dst === 'any') {
+        setParamsDisambiguationValues((prev) => ({ ...prev, [previewFieldValueKey(nxt)]: '' }));
+        setParamsDisambiguationStep((s) => s + 1);
+        return;
+      }
+    } catch (_) {
+      // ignore
+    }
 
     if (paramsWizardValueIncomplete(cur, paramsDisambiguationValues)) {
       Toast.warning('Missing or invalid answer', 'Please complete this step before continuing.');
@@ -1391,10 +1483,9 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
       const isAbort = err instanceof DOMException && err.name === 'AbortError';
       if (isAbort) {
         addMsg({ role: 'assistant', content: 'The generation was cancelled by the user.' });
+      } else {
+        Toast.error('Could not continue with device selection', describeError(err, 'Preview refresh failed.'));
       }
-      setStudioInitialPreview(null);
-      setStudioIntent(intentText);
-      setStudioOpen(true);
     }
     setGenerating(false);
   }, [
@@ -1701,10 +1792,9 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
       const isAbort = err instanceof DOMException && err.name === 'AbortError';
       if (isAbort) {
         addMsg({ role: 'assistant', content: 'The generation was cancelled by the user.' });
+      } else {
+        Toast.error('Could not continue with interface selection', describeError(err, 'Preview refresh failed.'));
       }
-      setStudioInitialPreview(null);
-      setStudioIntent(intentText);
-      setStudioOpen(true);
     }
     setSelectedInterfacesByDevice({});
     setGenerating(false);
@@ -2008,10 +2098,9 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
       const isAbort = err instanceof DOMException && err.name === 'AbortError';
       if (isAbort) {
         addMsg({ role: 'assistant', content: 'The generation was cancelled by the user.' });
+      } else {
+        Toast.error('Could not continue clarification', describeError(err, 'Preview refresh failed.'));
       }
-      setStudioInitialPreview(null);
-      setStudioIntent(clarifiedText);
-      setStudioOpen(true);
     }
     setGenerating(false);
   }, [
@@ -3266,12 +3355,20 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
                                           value={String((paramsDisambiguationValues[vk] ?? '') as string | number)}
                                           onChange={(e) => {
                                             const raw = e.target.value;
+                                        const fl = String(f.field || '').toLowerCase();
                                             const v =
                                               f.field === 'destination'
                                                 ? sanitizeIPv4CidrInput(raw)
                                                 : f.field === 'next_hop'
                                                   ? String(raw || '').trim()
-                                                  : raw;
+                                              : (
+                                                fl === '_chat_acl_source' ||
+                                                fl === '_chat_acl_destination' ||
+                                                fl === '_chat_acl_source_wildcard' ||
+                                                fl === '_chat_acl_dest_wildcard'
+                                              )
+                                                ? sanitizeIPv4Input(raw)
+                                                : raw;
                                             setParamsDisambiguationValues((prev) => ({
                                               ...prev,
                                               [vk]:
@@ -3283,9 +3380,27 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
                                                   ? v === ''
                                                     ? ''
                                                     : parseInt(v, 10)
-                                                  : v,
+                                              : (
+                                                fl === '_chat_acl_seq' ||
+                                                fl === '_chat_acl_source_port' ||
+                                                fl === '_chat_acl_destination_port'
+                                              )
+                                                ? String(v || '').replace(/[^\d]/g, '')
+                                                : v,
                                             }));
                                           }}
+                                      onKeyDown={(e) => {
+                                        const fl = String(f.field || '').toLowerCase();
+                                        if (
+                                          fl === '_chat_acl_seq' ||
+                                          fl === '_chat_acl_source_port' ||
+                                          fl === '_chat_acl_destination_port'
+                                        ) {
+                                          if (['e', 'E', '+', '-', '.'].includes(e.key)) {
+                                            e.preventDefault();
+                                          }
+                                        }
+                                      }}
                                         />
                                       );
                                     })()
@@ -3402,8 +3517,60 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
                                       primaryParams.target_hosts = v.split(/[\s,]+/).map((s) => s.trim()).filter(Boolean);
                                     } else {
                                       primaryParams[f.field] = v;
+                                      if (f.field === 'acl_name') {
+                                        (primaryParams as any)._user_supplied_acl_name = true;
+                                      }
+                                      if (f.field === 'acl_type') {
+                                        (primaryParams as any)._user_supplied_acl_type = true;
+                                      }
                                     }
                                   });
+                                  // ACL atomic wizard fields → build `rules[]` and strip chat-only fields.
+                                  try {
+                                    const seqRaw = String((primaryParams as any)._chat_acl_seq ?? '').trim();
+                                    const seq = /^\d+$/.test(seqRaw) ? parseInt(seqRaw, 10) : 10;
+                                    const a = String((primaryParams as any)._chat_acl_action ?? '').trim().toLowerCase();
+                                    const proto = String((primaryParams as any)._chat_acl_protocol ?? '').trim().toLowerCase();
+                                    const srcRaw = String((primaryParams as any)._chat_acl_source ?? '').trim();
+                                    const src = srcRaw.toLowerCase() === 'any' ? 'any' : srcRaw;
+                                    const swc = String((primaryParams as any)._chat_acl_source_wildcard ?? '').trim();
+                                    const sportRaw = String((primaryParams as any)._chat_acl_source_port ?? '').trim();
+                                    const dstRaw = String((primaryParams as any)._chat_acl_destination ?? '').trim();
+                                    const dst = dstRaw.toLowerCase() === 'any' ? 'any' : dstRaw;
+                                    const dwc = String((primaryParams as any)._chat_acl_dest_wildcard ?? '').trim();
+                                    const dportRaw = String((primaryParams as any)._chat_acl_destination_port ?? '').trim();
+                                    const hasAnyAclAtom = Boolean(seqRaw || a || proto || src || dst || swc || dwc || sportRaw || dportRaw);
+                                    if (hasAnyAclAtom) {
+                                      const rule: Record<string, unknown> = {
+                                        seq,
+                                        action: a || 'deny',
+                                        protocol: proto || 'ip',
+                                        source: src || 'any',
+                                        destination: dst || 'any',
+                                      };
+                                      if (src !== 'any' && swc) rule.source_wildcard = swc;
+                                      if (dst !== 'any' && dwc) rule.dest_wildcard = dwc;
+                                      if ((proto === 'tcp' || proto === 'udp') && sportRaw) {
+                                        rule.source_port = sportRaw;
+                                      }
+                                      if ((proto === 'tcp' || proto === 'udp') && dportRaw) {
+                                        rule.port = dportRaw;
+                                      }
+                                      (primaryParams as any).rules = [rule];
+                                      (primaryParams as any)._user_supplied_acl_rules = true;
+                                      delete (primaryParams as any)._chat_acl_seq;
+                                      delete (primaryParams as any)._chat_acl_action;
+                                      delete (primaryParams as any)._chat_acl_protocol;
+                                      delete (primaryParams as any)._chat_acl_source;
+                                      delete (primaryParams as any)._chat_acl_source_wildcard;
+                                      delete (primaryParams as any)._chat_acl_source_port;
+                                      delete (primaryParams as any)._chat_acl_destination;
+                                      delete (primaryParams as any)._chat_acl_dest_wildcard;
+                                      delete (primaryParams as any)._chat_acl_destination_port;
+                                    }
+                                  } catch (_) {
+                                    // ignore
+                                  }
                                   const prevSecondary = (previewAccumulatedParams.secondary_intents as Array<Record<string, unknown>>) || [];
                                   const mergedSecondary = [...prevSecondary];
                                   for (const [idxStr, patch] of Object.entries(secondaryPatches)) {
@@ -3475,7 +3642,7 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
                                         ? mergedTargetsFromWizard
                                         : previewLockedTargetHosts.length > 0
                                           ? previewLockedTargetHosts
-                                          : safeParsedHostsForPreview(intentText);
+                                          : (safeParsedHostsForPreview(intentText) ?? []);
                                     if (th.length > 0) {
                                       merged.target_hosts = th;
                                     }
@@ -3483,7 +3650,7 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
                                     setPreviewAccumulatedIntentText(intentText);
                                     const res = await ansibleApi.previewIntent({
                                       intent_description: intentText,
-                                      target_hosts: th,
+                                      target_hosts: th.length > 0 ? th : undefined,
                                       vendor: vendor || undefined,
                                       feature: feature || undefined,
                                       provider: ansibleModel.provider,
@@ -3515,10 +3682,9 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
                                     const isAbort = err instanceof DOMException && err.name === 'AbortError';
                                     if (isAbort) {
                                       addMsg({ role: 'assistant', content: 'The generation was cancelled by the user.' });
+                                    } else {
+                                      Toast.error('Could not continue with the missing parameters', describeError(err, 'Preview refresh failed.'));
                                     }
-                                    setStudioInitialPreview(null);
-                                    setStudioIntent(intentText);
-                                    setStudioOpen(true);
                                   }
                                   setGenerating(false);
                                 }}

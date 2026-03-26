@@ -504,7 +504,23 @@ def validate_completeness(
     if action_or_feature:
         ok, type_errors = validate_types(intent, action_or_feature)
         if not ok:
-            errors.extend(type_errors)
+            # Avoid redundant/overwhelming schema errors for fields we already report as "missing".
+            # Example: rules is missing -> JSON-Schema may also emit "[] should be non-empty at rules".
+            # During the wizard flow the UI will ask for missing fields; type-errors should focus on
+            # format/type issues for *present* values.
+            if missing and type_errors:
+                missing_set = {str(m or "").strip().lower() for m in missing}
+                filtered: List[str] = []
+                for e in type_errors:
+                    el = str(e or "").lower()
+                    if any(f" at {m}" in el or el.endswith(f" {m}") or f"/{m}" in el for m in missing_set):
+                        continue
+                    if any(m in el and "should be non-empty" in el for m in missing_set):
+                        continue
+                    filtered.append(e)
+                errors.extend(filtered)
+            else:
+                errors.extend(type_errors)
 
     return missing, errors
 
@@ -1316,6 +1332,111 @@ def merge_prompt_aware_disambiguation_for_schema(
             "question": (params_disambiguation or {}).get("question") or "Please provide the following.",
             "fields": fields_list,
         }
+    if sa == "configure_acl":
+        # If preview didn't create params_disambiguation (but schema inspector shows missing),
+        # synthesize a base disambiguation from schema required fields, then expand `rules`
+        # into atomic chat fields.
+        if params_disambiguation is None:
+            try:
+                tmp_intent = {
+                    "action": schema.get("action"),
+                    "feature": schema.get("feature") or "acl",
+                    "parameters": dict(parameters or {}),
+                    "resolved_devices": list((parameters or {}).get("target_hosts") or []),
+                }
+                missing, _ = validate_completeness(tmp_intent, schema)
+                if missing:
+                    questions_acl = schema.get("questions") or {}
+                    base_fields: List[Dict[str, Any]] = []
+                    for sf in missing:
+                        param_key = schema_field_to_param_key(schema, sf)
+                        q = questions_acl.get(sf) or f"Please provide: {param_key}"
+                        base_fields.append({"field": param_key, "question": str(q)})
+                    params_disambiguation = {"question": "Please provide the following.", "fields": base_fields}
+            except Exception:
+                pass
+        # Replace the generic "rules" free-text question with atomic fields so the chat wizard can
+        # collect a rule safely without requiring JSON input.
+        if not params_disambiguation or not isinstance(params_disambiguation.get("fields"), list):
+            return params_disambiguation
+        fields_list = [f for f in (params_disambiguation.get("fields") or []) if isinstance(f, dict)]
+        fmap = {
+            str((f or {}).get("field") or "").strip().lower().replace("-", "_"): dict(f)
+            for f in fields_list
+            if str((f or {}).get("field") or "").strip()
+        }
+        out: List[Dict[str, Any]] = []
+
+        # Deterministic order for ACL configure prompts:
+        # acl_name -> acl_type -> rule number -> action -> protocol -> src -> src wildcard -> src port
+        # -> dst -> dst wildcard -> dst port
+        if "acl_name" in fmap:
+            out.append(dict(fmap["acl_name"]))
+        if "acl_type" in fmap:
+            out.append(dict(fmap["acl_type"]))
+        if "rules" in fmap:
+            out.extend(
+                [
+                    {
+                        "field": "_chat_acl_seq",
+                        "question": "Rule number / sequence (integer)?",
+                        "optional": False,
+                    },
+                    {
+                        "field": "_chat_acl_action",
+                        "question": "ACL action (permit or deny)?",
+                        "optional": False,
+                        "control": "single_select_strings",
+                        "options": ["permit", "deny"],
+                    },
+                    {
+                        "field": "_chat_acl_protocol",
+                        "question": "Protocol (tcp, udp, icmp, or ip)?",
+                        "optional": False,
+                        "control": "single_select_strings",
+                        "options": ["tcp", "udp", "icmp", "ip"],
+                    },
+                    {
+                        "field": "_chat_acl_source",
+                        "question": "Source (IPv4 or 'any')?",
+                        "optional": False,
+                    },
+                    {
+                        "field": "_chat_acl_source_wildcard",
+                        "question": "Source wildcard mask (e.g. 0.0.0.255) — leave blank if source is 'any'.",
+                        "optional": True,
+                    },
+                    {
+                        "field": "_chat_acl_source_port",
+                        "question": "Source port (number) — required for tcp/udp, leave blank for icmp/ip.",
+                        "optional": True,
+                    },
+                    {
+                        "field": "_chat_acl_destination",
+                        "question": "Destination (IPv4 or 'any')?",
+                        "optional": False,
+                    },
+                    {
+                        "field": "_chat_acl_dest_wildcard",
+                        "question": "Destination wildcard mask (e.g. 0.0.0.255) — leave blank if destination is 'any'.",
+                        "optional": True,
+                    },
+                    {
+                        "field": "_chat_acl_destination_port",
+                        "question": "Destination port (number) — required for tcp/udp, leave blank for icmp/ip.",
+                        "optional": True,
+                    },
+                ]
+            )
+        for f in fields_list:
+            fn = str((f or {}).get("field") or "").strip().lower().replace("-", "_")
+            if fn in {"acl_name", "acl_type", "rules"}:
+                continue
+            out.append(dict(f))
+        return {
+            "question": (params_disambiguation or {}).get("question") or "Please provide the following.",
+            "fields": out,
+        }
     if sa == "configure_interface":
         # If user already stated allowed VLAN IDs in prompt, do not re-ask trunk_vlans.
         vlan_ids_from_prompt = _extract_vlan_ids_from_prompt(intent_description or "")
@@ -1909,10 +2030,6 @@ def correct_acl_params_from_natural_language(
         # IPv4 literal
         if re.search(r"\b(?:\d{1,3}\.){3}\d{1,3}(?:/\d{1,2})?\b", tl):
             return "ipv4"
-        # If the rules explicitly mention common IPv4-only semantics, assume ipv4.
-        # (This avoids re-asking for simple "deny tcp port 80" cases that don't specify IP family yet.)
-        if any(k in tl for k in ("tcp", "udp", "icmp", "ip ")):
-            return "ipv4"
         return None
 
     _explicit_family = _prompt_explicit_acl_family(text)
@@ -1945,6 +2062,49 @@ def correct_acl_params_from_natural_language(
         if _explicit_family and not str(p.get("acl_type") or "").strip():
             p = dict(p)
             p["acl_type"] = _explicit_family
+        # If the prompt is vague ("add ACL rule") and the LLM guessed defaults (name/type/rules),
+        # do NOT treat them as authoritative — force the UI wizard to ask.
+        tlp = text.lower()
+        user_supplied_acl_name = bool(p.get("_user_supplied_acl_name"))
+        user_supplied_acl_type = bool(p.get("_user_supplied_acl_type"))
+        user_supplied_acl_rules = bool(p.get("_user_supplied_acl_rules"))
+        prompt_has_rule_semantics = bool(
+            re.search(r"\b(permit|deny|allow|block)\b", tlp)
+            or re.search(r"\b(tcp|udp|icmp|ip)\b", tlp)
+            or re.search(r"\bssh\b", tlp)
+            or re.search(r"\bport\b", tlp)
+        )
+        _m_acl_named = re.search(r"\bacl\s+([a-z][a-z0-9_-]{0,63})\b", tlp, re.I)
+        _acl_named_token = str(_m_acl_named.group(1) if _m_acl_named else "").lower()
+        prompt_mentions_acl_name_or_number = bool(
+            re.search(r"\bacl\s+(?:name|number)\b", tlp)
+            or re.search(r"\bacl\s+[0-9]{1,6}\b", tlp)
+            or (
+                _m_acl_named
+                and _acl_named_token
+                not in {"rule", "rules", "device", "devices", "on", "for", "to"}
+            )
+        )
+        if not prompt_has_rule_semantics:
+            # No rule semantics in prompt -> rules must come from explicit user wizard input only.
+            if not user_supplied_acl_rules and "rules" in p:
+                p = dict(p)
+                p.pop("rules", None)
+            # Drop guessed family unless explicitly stated (ipv4/v6 or literal addresses).
+            if not _explicit_family and not user_supplied_acl_type and str(p.get("acl_type") or "").strip():
+                p = dict(p)
+                p.pop("acl_type", None)
+            # Drop placeholder names commonly emitted by LLMs when prompt didn't specify.
+            an = str(p.get("acl_name") or "").strip()
+            if an and not user_supplied_acl_name and not prompt_mentions_acl_name_or_number:
+                p = dict(p)
+                p.pop("acl_name", None)
+            if isinstance(container.get("parameters"), dict):
+                container["parameters"] = p
+            if isinstance(container.get("params"), dict):
+                container["params"] = p
+            if not isinstance(container.get("parameters"), dict) and not isinstance(container.get("params"), dict):
+                container["parameters"] = p
         rules = p.get("rules")
         if not isinstance(rules, list):
             # If the user clearly expressed ACL rule intent (e.g. deny icmp) but parser dropped rules,

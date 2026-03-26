@@ -1,42 +1,19 @@
 - name: Configure ACL (Huawei VRP)
   hosts: "Acc_Huawei_3"
   gather_facts: no
-  connection: network_cli
+  connection: ansible.netcommon.network_cli
   tasks:
+
     - name: Configure ACL on Huawei VRP
       community.network.ce_config:
-        lines:
-
-
-
-
-          - "undo acl name BLOCK_ICMP"
+        parents:
           - "acl name BLOCK_ICMP advance"
-
-
-
+        lines:
           - "rule deny icmp source any destination any"
 
-
-          - "return"
-
-
-
-
-
-
-
-
-
-
-
-
-    - name: Apply ACL to GigabitEthernet1/0/3 on Huawei VRP (replace semantics)
+    - name: Apply ACL to interface
       community.network.ce_config:
-        lines:
+        parents:
           - "interface GigabitEthernet1/0/3"
-          - "undo traffic-filter inbound"
-          - "undo traffic-filter outbound"
+        lines:
           - "traffic-filter inbound acl name BLOCK_ICMP"
-          - "quit"
-

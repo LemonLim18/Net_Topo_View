@@ -957,6 +957,75 @@ def test_reference_fill_multi_vendor_interface_keeps_huawei_name_normalization()
     assert 'parents: "interface {{ item.name }}"' in rendered  # Cisco path unchanged
 
 
+def test_reference_fill_huawei_acl_reports_change_correctly_in_check_mode():
+    intent = {
+        "target_hosts": ["Acc_Huawei_3"],
+        "params": {
+            "acl_name": "BLOCK_ICMP",
+            "acl_type": "ipv4",
+            "rules": [
+                {
+                    "action": "deny",
+                    "protocol": "icmp",
+                    "source": "any",
+                    "destination": "any",
+                }
+            ],
+            "apply_to": ["GigabitEthernet1/0/3 in"],
+        },
+    }
+    rendered = fill_playbook_from_reference("acl", ["huawei_vrp"], intent)
+    assert isinstance(rendered, str) and rendered
+    assert "display current-configuration | include acl name BLOCK_ICMP" in rendered
+    assert "display current-configuration interface GE1/0/3 | include traffic-filter" in rendered
+    assert "Apply ACL to GE1/0/3 on Huawei VRP" in rendered
+    assert "rule 10 deny icmp source any destination any" in rendered
+    assert '_acl_identifier: "acl name BLOCK_ICMP"' in rendered
+    assert 'changed_when: "{{ (_acl_would_change | bool) if ansible_check_mode else (acl_cfg_result.changed | default(false)) }}"' in rendered
+    assert "traffic-filter inbound acl name BLOCK_ICMP" in rendered
+    assert "undo traffic-filter inbound" not in rendered
+    assert "undo traffic-filter outbound" not in rendered
+    assert 'changed_when: "{{ (_tf_would_change | bool) if ansible_check_mode else (tf_apply_result.changed | default(false)) }}"' in rendered
+    assert "{{ acl_name }}" not in rendered
+    assert "{{ _dir" not in rendered
+
+
+def test_reference_fill_multi_vendor_acl_has_huawei_prechecks_and_changed_logic():
+    intent = {
+        "target_hosts": ["Acc_Cisco_1", "Acc_Huawei_3"],
+        "params": {
+            "acl_name": "2000",
+            "acl_type": "ipv4",
+            "rules": [
+                {
+                    "action": "permit",
+                    "protocol": "tcp",
+                    "source": "192.168.1.0",
+                    "source_wildcard": "0.0.0.255",
+                    "destination": "any",
+                    "port": 22,
+                }
+            ],
+            "apply_to": ["GigabitEthernet1/0/3 in"],
+        },
+    }
+    rendered = fill_playbook_from_reference("acl", ["cisco_ios", "huawei_vrp"], intent)
+    assert isinstance(rendered, str) and rendered
+    assert "register: acl_precheck_huawei" in rendered
+    assert "display current-configuration | include acl number 2000" in rendered
+    assert "register: acl_cfg_result_huawei" in rendered
+    assert "register: tf_precheck_huawei" in rendered
+    assert "register: tf_apply_result_huawei" in rendered
+    assert "display current-configuration interface GE1/0/3 | include traffic-filter" in rendered
+    assert "Apply ACL to GE1/0/3 on Huawei VRP" in rendered
+    assert "interface GigabitEthernet1/0/3" in rendered  # Cisco path remains unchanged.
+    assert "rule 10 permit tcp source 192.168.1.0 0.0.0.255 destination any destination-port eq 22" in rendered
+    assert "undo traffic-filter inbound" not in rendered
+    assert "undo traffic-filter outbound" not in rendered
+    assert 'changed_when: "{{ (_tf_would_change | bool) if ansible_check_mode else (tf_apply_result_huawei.changed | default(false)) }}"' in rendered
+    assert "traffic-filter inbound acl 2000" in rendered
+
+
 def test_reference_fill_huawei_vlan_keeps_interface_name_normalization():
     intent = {
         "target_hosts": ["Acc_Huawei_3"],
@@ -1022,6 +1091,34 @@ def test_reference_fill_ospf_cisco_renders_redistribution_lines():
     assert isinstance(rendered, str) and rendered
     assert "redistribute static" in rendered
     assert "redistribute connected" in rendered
+
+
+def test_reference_fill_ospf_huawei_maps_passive_interface_to_short_name():
+    intent = {
+        "target_hosts": ["Acc_Huawei_3"],
+        "params": {
+            "process_id": 1,
+            "passive_interfaces": ["Acc_Huawei_3:GigabitEthernet1/0/3"],
+        },
+    }
+    rendered = fill_playbook_from_reference("ospf", ["huawei_vrp"], intent)
+    assert isinstance(rendered, str) and rendered
+    assert "silent-interface GE1/0/3" in rendered
+    assert "silent-interface GigabitEthernet1/0/3" not in rendered
+
+
+def test_reference_fill_static_route_multi_vendor_maps_huawei_next_hop_only():
+    intent = {
+        "target_hosts": ["Acc_Cisco_1", "Acc_Huawei_3"],
+        "params": {
+            "destination": "10.10.10.0/24",
+            "next_hop": "GigabitEthernet1/0/3",
+        },
+    }
+    rendered = fill_playbook_from_reference("static_route", ["cisco_ios", "huawei_vrp"], intent)
+    assert isinstance(rendered, str) and rendered
+    assert "ip route 10.10.10.0 255.255.255.0 GigabitEthernet1/0/3" in rendered
+    assert "ip route-static 10.10.10.0 255.255.255.0 GE1/0/3" in rendered
 
 
 def test_reference_fill_juniper_interface_renders_successfully():

@@ -3,6 +3,13 @@
   gather_facts: no
   connection: network_cli
   tasks:
+    - name: Pre-check ACL existence on Huawei VRP (for check-mode changed reporting)
+      community.network.ce_command:
+        commands:
+          - "display current-configuration | include acl {% if ((acl_name | string) | trim).isdigit() %}number{% else %}name{% endif %} {{ acl_name }}"
+      register: acl_precheck
+      changed_when: false
+
     - name: Configure ACL on Huawei VRP
       community.network.ce_config:
         lines:
@@ -20,11 +27,22 @@
 {% if rule is string %}
           - "{{ rule }}"
 {% else %}
-          - "rule {% if rule.seq is defined %}{{ rule.seq }} {% endif %}{{ rule.action }} {% if rule.protocol is defined %}{{ rule.protocol }} {% endif %}source {{ rule.source }}{% if rule.source_wildcard is defined %} {{ rule.source_wildcard }}{% endif %}{% if rule.destination is defined %} destination {{ rule.destination }}{% endif %}{% if rule.dest_wildcard is defined %} {{ rule.dest_wildcard }}{% endif %}{% if rule.port is defined %} destination-port eq {{ rule.port }}{% endif %}{% if rule.log is defined and rule.log %} logging{% endif %}"
+{% set _rule_seq = (rule.seq if rule.seq is defined else (loop.index * 10)) %}
+          - "rule {{ _rule_seq }} {{ rule.action }} {% if rule.protocol is defined %}{{ rule.protocol }} {% endif %}source {{ rule.source }}{% if rule.source_wildcard is defined %} {{ rule.source_wildcard }}{% endif %}{% if rule.source_port is defined %} source-port eq {{ rule.source_port }}{% endif %}{% if rule.destination is defined %} destination {{ rule.destination }}{% endif %}{% if rule.dest_wildcard is defined %} {{ rule.dest_wildcard }}{% endif %}{% if rule.port is defined %} destination-port eq {{ rule.port }}{% endif %}{% if rule.log is defined and rule.log %} logging{% endif %}"
 {% endif %}
 {% endfor %}
           - "return"
 {% endif %}
+      register: acl_cfg_result
+      vars:
+        _acl_identifier: "acl {% if _is_numbered %}number{% else %}name{% endif %} {{ acl_name }}"
+        _rules_requested: {% if _has_rules %}true{% else %}false{% endif %}
+{% raw %}
+        _acl_cfg_text: "{{ (acl_precheck.stdout | default([])) | join('\n') }}"
+        _acl_exists: "{{ _acl_identifier in _acl_cfg_text }}"
+        _acl_would_change: "{{ (not (_acl_exists | bool)) or (_rules_requested | bool) }}"
+      changed_when: "{{ (_acl_would_change | bool) if ansible_check_mode else (acl_cfg_result.changed | default(false)) }}"
+{% endraw %}
 
 {% for ap in (apply_to or []) %}
 {% if ap is string %}
@@ -38,14 +56,28 @@
 {% set _iface = (ap.interface | default(ap.get('interface')) | default(ap.get('name')) | string) %}
 {% set _dir = (ap.direction | default(ap.get('direction')) | default(acl_direction | default('in')) | string) %}
 {% endif %}
-{% if _iface | trim %}
-    - name: Apply ACL to {{ _iface }} on Huawei VRP (replace semantics)
+{% set _iface_hw = (_iface | replace('TenGigabitEthernet', '10GE') | replace('GigabitEthernet', 'GE')) %}
+{% if _iface_hw | trim %}
+    - name: Pre-check traffic-filter on {{ _iface_hw }} (for check-mode changed reporting)
+      community.network.ce_command:
+        commands:
+          - "display current-configuration interface {{ _iface_hw }} | include traffic-filter"
+      register: tf_precheck
+      changed_when: false
+
+    - name: Apply ACL to {{ _iface_hw }} on Huawei VRP (replace semantics)
       community.network.ce_config:
         lines:
-          - "interface {{ _iface }}"
-          - "undo traffic-filter inbound"
-          - "undo traffic-filter outbound"
+          - "interface {{ _iface_hw }}"
           - "traffic-filter {{ 'inbound' if _dir in ['in', 'inbound'] else 'outbound' }} acl{% if ((acl_name | string) | trim).isdigit() %} {{ acl_name }}{% else %} name {{ acl_name }}{% endif %}"
           - "quit"
+      register: tf_apply_result
+      vars:
+        _tf_expected_line: "traffic-filter {{ 'inbound' if _dir in ['in', 'inbound'] else 'outbound' }} acl{% if ((acl_name | string) | trim).isdigit() %} {{ acl_name }}{% else %} name {{ acl_name }}{% endif %}"
+{% raw %}
+        _tf_text: "{{ (tf_precheck.stdout | default([])) | join('\n') }}"
+        _tf_would_change: "{{ _tf_expected_line not in _tf_text }}"
+      changed_when: "{{ (_tf_would_change | bool) if ansible_check_mode else (tf_apply_result.changed | default(false)) }}"
+{% endraw %}
 {% endif %}
 {% endfor %}

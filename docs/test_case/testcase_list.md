@@ -149,31 +149,9 @@ ipv4
 
 - [/] Apply ACL BLOCK_HTTP outbound on GigabitEthernet1/0/2 on SW1  
 
-- [ ] Create ACL to deny ICMP and apply it on access switch 3  
+- [*] Create ACL to deny ICMP and apply it on access switch 3  
 
-**Change Made Here**:
-const candidateDevices =
-    plannedPickerDeviceNames.length > 0
-      ? plannedPickerDeviceNames
-      : filteredDevices.map((d) => d.hostname);
-    (() => {
-      // Prefer backend-provided options for target_devices questions.
-      // This avoids stale UI state (e.g. previous single-host picker) from
-      // shrinking the current device-choice list.
-      if (
-        isTargetDeviceField &&
-        Array.isArray((f as any).options) &&
-        (f as any).options.every((x: unknown) => typeof x === 'string')
-      ) {
-        const opts = ((f as any).options as string[])
-          .map((x) => String(x || '').trim())
-          .filter(Boolean);
-        if (opts.length > 0) return opts;
-      }
-      return plannedPickerDeviceNames.length > 0
-        ? plannedPickerDeviceNames
-        : filteredDevices.map((d) => d.hostname);
-    })();
+**Notification**: The ACL definition can be done on the Huawei device, but the ACL application on the interface cannot be done on Huawei CE6800/12800. AR1000V can do the ACL traffic, but it lacks alotta features including lldp which is required.
 
 
 - [ ] Add ACL rule on devices *(generic / ambiguous test)*  

@@ -30,9 +30,11 @@
 {% set _dst_wc = (rule.dest_wildcard | default('') | string) %}
 {% set _src_part = _src if (_src | lower) == 'any' else (_src ~ (' ' ~ _src_wc if _src_wc else '')) %}
 {% set _dst_part = _dst if (_dst | lower) == 'any' else (_dst ~ (' ' ~ _dst_wc if _dst_wc else '')) %}
-{% set _port = (rule.port | default('') | string) %}
-{% set _port_part = (' eq ' ~ _port) if (_port and not (_port | lower).startswith('eq')) else ((' ' ~ _port) if _port else '') %}
-          - "access-list {{ acl_name }} {{ rule.action }}{% if rule.protocol is defined %} {{ rule.protocol }}{% endif %} {{ _src_part }} {{ _dst_part }}{{ _port_part }}{% if rule.log is defined and rule.log %} log{% endif %}"
+{% set _sport = (rule.source_port | default('') | string) %}
+{% set _dport = (rule.port | default('') | string) %}
+{% set _sport_part = (' eq ' ~ _sport) if (_sport and not (_sport | lower).startswith('eq')) else ((' ' ~ _sport) if _sport else '') %}
+{% set _dport_part = (' eq ' ~ _dport) if (_dport and not (_dport | lower).startswith('eq')) else ((' ' ~ _dport) if _dport else '') %}
+          - "access-list {{ acl_name }} {{ rule.action }}{% if rule.protocol is defined %} {{ rule.protocol }}{% endif %} {{ _src_part }}{{ _sport_part }} {{ _dst_part }}{{ _dport_part }}{% if rule.log is defined and rule.log %} log{% endif %}"
 {% endif %}
 {% endfor %}
 {% endif %}
@@ -64,14 +66,16 @@
 {% set _dst_wc = (rule.dest_wildcard | default('') | string) %}
 {% set _src_part = _src if (_src | lower) == 'any' else (_src ~ (' ' ~ _src_wc if _src_wc else '')) %}
 {% set _dst_part = _dst if (_dst | lower) == 'any' else (_dst ~ (' ' ~ _dst_wc if _dst_wc else '')) %}
-{% set _port = (rule.port | default('') | string) %}
-{% set _port_part = (' eq ' ~ _port) if (_port and not (_port | lower).startswith('eq')) else ((' ' ~ _port) if _port else '') %}
+{% set _sport = (rule.source_port | default('') | string) %}
+{% set _dport = (rule.port | default('') | string) %}
+{% set _sport_part = (' eq ' ~ _sport) if (_sport and not (_sport | lower).startswith('eq')) else ((' ' ~ _sport) if _sport else '') %}
+{% set _dport_part = (' eq ' ~ _dport) if (_dport and not (_dport | lower).startswith('eq')) else ((' ' ~ _dport) if _dport else '') %}
 {% set _seq_raw = (rule.seq | string) if (rule.seq is defined and (rule.seq | string) | trim) else '' %}
 {% set _seq_num = (_seq_raw | int) if _seq_raw else 0 %}
 {% set _seq = (_seq_raw if _seq_num >= 10 else ((loop.index * 10) | string)) %}
 {% if (rule.action | default('') | string | lower) == 'deny' %}{% set ns.has_deny = true %}{% endif %}
 {% if (rule.action | default('') | string | lower) == 'permit' and (rule.protocol | default('') | string | lower) == 'ip' and (_src | lower) == 'any' and (_dst | lower) == 'any' %}{% set ns.has_permit_any_any = true %}{% endif %}
-          - "{{ _seq }} {{ rule.action }}{% if rule.protocol is defined %} {{ rule.protocol }}{% endif %} {{ _src_part }} {{ _dst_part }}{{ _port_part }}{% if rule.log is defined and rule.log %} log{% endif %}"
+          - "{{ _seq }} {{ rule.action }}{% if rule.protocol is defined %} {{ rule.protocol }}{% endif %} {{ _src_part }}{{ _sport_part }} {{ _dst_part }}{{ _dport_part }}{% if rule.log is defined and rule.log %} log{% endif %}"
 {% endif %}
 {% endfor %}
 {% if ns.has_deny and not ns.has_permit_any_any %}

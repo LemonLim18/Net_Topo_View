@@ -623,6 +623,11 @@ async def create_link(body: LinkCreate):
 
         # Manual links are strict: NetBox cable creation must succeed.
         if body.discovery_protocol == "manual":
+            if not src_dev.netbox_id or not dst_dev.netbox_id:
+                raise HTTPException(
+                    409,
+                    "One or both devices are not synced to NetBox yet; sync the devices first before creating the link",
+                )
             nb = NetBoxClient.get_client()
             if not nb or not nb.api:
                 raise HTTPException(503, "NetBox connection unavailable; link not created")

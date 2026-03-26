@@ -1,0 +1,59 @@
+- name: Configure ACL (Cisco IOS)
+  hosts: "Acc_Cisco_2"
+  gather_facts: no
+  connection: network_cli
+  tasks:
+
+
+
+
+    - name: Reset numbered ACL on Cisco IOS (replace semantics)
+      cisco.ios.ios_config:
+        match: none
+        lines:
+          - "no access-list 2067"
+
+
+
+    - name: Configure numbered ACL on Cisco IOS
+      cisco.ios.ios_config:
+        match: line
+        replace: line
+        lines:
+
+
+
+
+
+
+
+
+
+
+
+
+          - "access-list 2067 permit tcp 192.168.67.0 0.0.0.255 eq 67 10.10.67.0 0.0.0.248 eq 6767"
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    - name: Apply ACL to Ethernet0/2 on Cisco IOS (replace semantics)
+      cisco.ios.ios_config:
+        match: none
+        parents:
+          - "interface Ethernet0/2"
+        lines:
+          - "no ip access-group"
+          - "ip access-group 2067 in"
+

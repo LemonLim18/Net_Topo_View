@@ -322,21 +322,25 @@ class NetBoxClient:
     #  Write helpers — best-effort push to NetBox
     # ------------------------------------------------------------------
 
-    def _set_device_custom_fields(self, device, ssh_user: str = None, ssh_password: str = None, os_version: str = None):
-        """Write custom fields (ssh_user, ssh_password, os_version) to NetBox device via direct PATCH so they persist."""
-        if not device or not self.api:
-            return
+    def _build_device_custom_fields(self, ssh_user: str = None, ssh_password: str = None, os_version: str = None):
+        """Build the NetBox custom_fields payload for device credential metadata."""
         slugs = get_ssh_custom_field_slugs()
         os_version_slug = get_os_version_custom_field_slug()
         cf = {}
         # Only send ssh_user/ssh_password when non-empty; NetBox may mark them required and reject empty
         if ssh_user is not None and str(ssh_user).strip() != "":
-            cf[slugs["username"]] = ssh_user
+            cf[slugs["username"]] = str(ssh_user).strip()
         if ssh_password is not None and str(ssh_password).strip() != "":
-            cf[slugs["password"]] = ssh_password
-        if os_version is not None:
-            cf[os_version_slug] = os_version
+            cf[slugs["password"]] = str(ssh_password).strip()
+        if os_version is not None and str(os_version).strip() != "":
+            cf[os_version_slug] = str(os_version).strip()
+        return cf
 
+    def _set_device_custom_fields(self, device, ssh_user: str = None, ssh_password: str = None, os_version: str = None):
+        """Write custom fields (ssh_user, ssh_password, os_version) to NetBox device via direct PATCH so they persist."""
+        if not device or not self.api:
+            return
+        cf = self._build_device_custom_fields(ssh_user, ssh_password, os_version)
         if not cf:
             return
         try:
@@ -430,6 +434,9 @@ class NetBoxClient:
             }
             if platform_id:
                 payload["platform"] = platform_id
+            custom_fields = self._build_device_custom_fields(ssh_user, ssh_password, os_version)
+            if custom_fields:
+                payload["custom_fields"] = custom_fields
 
             result = self.api.dcim.devices.create(payload)
             logger.info(f"Created device '{name}' in NetBox (id={result.id})")

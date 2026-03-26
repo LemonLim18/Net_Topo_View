@@ -884,6 +884,15 @@ export function PlaybookStudioOverlay({
         delete params.interfaces;
         delete params.interfaces_config;
       }
+      if (String(params.acl_name ?? '').trim()) {
+        (params as any)._user_supplied_acl_name = true;
+      }
+      if (String(params.acl_type ?? '').trim()) {
+        (params as any)._user_supplied_acl_type = true;
+      }
+      if (Array.isArray(params.rules) && (params.rules as unknown[]).length > 0) {
+        (params as any)._user_supplied_acl_rules = true;
+      }
     }
     if (parsedAction === 'configure_qos') {
       if (Array.isArray(params.interface_apply) && params.interface_apply.length > 0) {

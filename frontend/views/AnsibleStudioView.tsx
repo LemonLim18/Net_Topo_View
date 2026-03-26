@@ -576,7 +576,16 @@ const AnsibleStudioView: React.FC<AnsibleStudioViewProps> = ({ user }) => {
     };
 
     try {
-      await ansibleApi.executeJob(activeJobId);
+      const execResult = await ansibleApi.executeJob(activeJobId);
+      const tsExec = new Date().toLocaleTimeString();
+      setOutputSessions(prev =>
+        prev.map(s =>
+          s.id === sessionId
+            ? { ...s, lines: [...s.lines, `[${tsExec}] Deploy API completed: rc=${execResult.rc} changed=${execResult.changed} ${execResult.success ? 'SUCCESS' : 'FAILED'} ${execResult.summary ?? ''}`] }
+            : s
+        )
+      );
+      await refreshJob(activeJobId);
     } catch (err) {
       es.close();
       setIsStreaming(false);
@@ -587,13 +596,15 @@ const AnsibleStudioView: React.FC<AnsibleStudioViewProps> = ({ user }) => {
       deploySessionIdRef.current = null;
       setStreamingSessionId(null);
       const tsFail = new Date().toLocaleTimeString();
+      const errMsg = err instanceof Error ? err.message : String(err);
       setOutputSessions(prev =>
         prev.map(s =>
           s.id === sessionId
-            ? { ...s, lines: [...s.lines, `[${tsFail}] Deploy request failed before execution stream completed.`] }
+            ? { ...s, lines: [...s.lines, `[${tsFail}] Deploy request failed before execution stream completed. ${errMsg}`] }
             : s
         )
       );
+      await refreshJob(activeJobId);
     }
   }, [activeJobId, refreshJob]);
 

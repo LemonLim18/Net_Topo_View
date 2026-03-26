@@ -8456,7 +8456,24 @@ async def stream_job_output(
     _TERMINAL = {"success", "failed", "rolled_back"}
 
     async def event_generator():
-        last_step_id = 0
+        # Stream only steps produced after this subscription starts.
+        # This avoids replaying old failed/success logs on re-deploy.
+        with _db._connect() as conn:
+            seed = conn.execute(
+                "SELECT COALESCE(MAX(id), 0) AS max_id FROM job_steps WHERE job_id = ?",
+                (job_id,),
+            ).fetchone()
+            initial_job = conn.execute(
+                "SELECT status, stage FROM jobs WHERE id = ?",
+                (job_id,),
+            ).fetchone()
+
+        last_step_id = int((seed["max_id"] if seed else 0) or 0)
+        initial_status = str((initial_job["status"] if initial_job else "") or "").strip().lower()
+        # Re-deploy may subscribe while job is still terminal from a previous run.
+        # Do not emit done immediately in that case; wait for new activity or status transition.
+        saw_non_terminal = initial_status not in _TERMINAL
+        saw_new_activity = False
         while True:
             try:
                 with _db._connect() as conn:
@@ -8474,6 +8491,7 @@ async def stream_job_output(
 
                 for step in new_steps:
                     last_step_id = step["id"]
+                    saw_new_activity = True
                     import json as _json
                     data = _json.dumps({
                         "stage":      step["stage"],
@@ -8485,7 +8503,10 @@ async def stream_job_output(
 
                 _status = str(job_row["status"] or "").strip().lower() if job_row else ""
                 _stage = str(job_row["stage"] or "").strip().lower() if job_row else ""
-                if job_row and (_status in _TERMINAL or (_status == "approved" and _stage in {"commit", "rollback"})):
+                if _status and _status not in _TERMINAL:
+                    saw_non_terminal = True
+                _is_terminal_now = (_status in _TERMINAL) or (_status == "approved" and _stage in {"commit", "rollback"})
+                if job_row and _is_terminal_now and (saw_non_terminal or saw_new_activity):
                     import json as _json
                     yield f"data: {_json.dumps({'done': True, 'status': _status or 'unknown', 'stage': _stage or ''})}\n\n"
                     return

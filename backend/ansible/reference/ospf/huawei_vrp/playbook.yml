@@ -16,7 +16,7 @@
           - "  network {{ net.network }} {{ net.wildcard }}"
 {% endfor %}
 {% for iface in passive_interfaces | default([]) %}
-          - " silent-interface {{ (iface | string).split(':')[-1] }}"
+          - " silent-interface {{ (iface | string).split(':')[-1] | replace('TenGigabitEthernet', '10GE') | replace('GigabitEthernet', 'GE') }}"
 {% endfor %}
 {% for proto in redistribution | default([]) %}
           - " import-route {{ proto }}"
