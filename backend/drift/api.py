@@ -5,14 +5,52 @@ from datetime import datetime
 import logging
 
 from db.manager import DatabaseManager
+from drift.alerts import DriftAlertGenerator
+from drift.auto_fix import AutoRemediator
+from drift.classifier import DriftClassifier
 from drift.comparator import DriftComparator
 from drift.models import DriftEvent
+from drift.scoring import DriftScorer
 
 logger = logging.getLogger("drift.api")
 
 DB_PATH = "db/netauto.db"
 
 router = APIRouter()
+
+
+def _enrich_event_and_side_effects(db: DatabaseManager, event: DriftEvent) -> DriftEvent:
+    """
+    Make drift checks actionable:
+    - classify with LLM (best-effort, no hard dependency),
+    - emit security alerts for medium/high severity,
+    - attach safe remediation suggestions for low-severity drift.
+    """
+    if not event.has_drift:
+        return event
+
+    try:
+        event = DriftClassifier().classify(event)
+    except Exception as exc:
+        logger.debug("Drift classifier skipped for %s: %s", event.hostname, exc)
+
+    try:
+        DriftAlertGenerator(db).emit(event)
+    except Exception as exc:
+        logger.debug("Drift alert emission skipped for %s: %s", event.hostname, exc)
+
+    try:
+        suggestions = AutoRemediator(db).generate_fix(event) or []
+        if suggestions:
+            event.diff_text = (
+                (event.diff_text or "")
+                + "\n\nSuggested safe remediation commands:\n"
+                + "\n".join(f"- {line}" for line in suggestions[:30])
+            ).strip()
+    except Exception as exc:
+        logger.debug("Drift remediation suggestions skipped for %s: %s", event.hostname, exc)
+
+    return event
 
 
 @router.get("/drift/events")
@@ -39,7 +77,12 @@ async def check_drift_for_device(hostname: str):
     if not event:
         raise HTTPException(status_code=404, detail=f"Device {hostname} not found or no config history")
 
+    event = await run_in_threadpool(_enrich_event_and_side_effects, db, event)
     await run_in_threadpool(db.save_drift_event, event)
+    try:
+        await run_in_threadpool(DriftScorer(db).score_device, event.device_id, event.hostname)
+    except Exception as exc:
+        logger.debug("Drift scoring update failed for %s: %s", event.hostname, exc)
     return event
 
 
@@ -63,7 +106,12 @@ def run_network_drift_check():
             event = comparator.check_drift(dev.hostname)
             if event:
                 if event.has_drift:
+                    event = _enrich_event_and_side_effects(db, event)
                     db.save_drift_event(event)
+                    try:
+                        DriftScorer(db).score_device(event.device_id, event.hostname)
+                    except Exception as exc:
+                        logger.debug("Drift scoring update failed for %s: %s", event.hostname, exc)
                 results.append(event)
         except Exception as e:
             logger.warning("Drift check failed for %s: %s", dev.hostname, e)
@@ -102,10 +150,21 @@ async def drift_summary():
         if sev in severity_counts:
             severity_counts[sev] += 1
 
+    avg_score = compliance_pct
+    lowest_scores = []
+    try:
+        scorer = DriftScorer(db)
+        avg_score = scorer.network_average()
+        lowest_scores = scorer.get_scores()[:5]
+    except Exception as exc:
+        logger.debug("Drift scoring summary unavailable: %s", exc)
+
     return {
         "total_devices": total,
         "compliant": compliant,
         "drifted": drifted,
         "compliance_pct": compliance_pct,
         "severity_breakdown": severity_counts,
+        "compliance_score_avg": avg_score,
+        "lowest_compliance_devices": lowest_scores,
     }

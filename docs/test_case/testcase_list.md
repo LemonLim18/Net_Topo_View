@@ -156,6 +156,11 @@ ipv4
 
 - [/] Add ACL rule on devices *(generic / ambiguous test)*  
 
+Prompt:
+Now, I would like to do for the prompt of category QoS, so it can be done in this way:
+1. Create the reference template for all the Cisco, Huawei, Juniper, multi-vendor
+2. Cross-checked for all the required parameters, and ensure the correct category specific intent schema and the operation-specific intent schema are created to provide the info of required parameters for the specific operations.
+3. 
 
 ## 6️⃣ QoS
 

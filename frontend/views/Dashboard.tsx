@@ -843,12 +843,20 @@ const Dashboard: React.FC = () => {
     }, [sshTabs]);
 
     // --- SSH connect with user-provided credentials ---
-    const handleSSHConnect = useCallback(async (username: string, password: string, port: number, saveToVault: boolean) => {
-        if (!sshConnectTarget) return;
+    const handleSSHConnect = useCallback(async (
+        hostname: string,
+        host: string,
+        username: string,
+        password: string,
+        port: number,
+        saveToVault: boolean,
+    ) => {
+        const targetHostname = hostname || sshConnectTarget?.hostname || host;
+        if (!targetHostname) return;
 
         try {
             const result = await sshApi.connectWithCreds(
-                sshConnectTarget.hostname,
+                targetHostname,
                 username,
                 password,
                 port,
@@ -867,9 +875,9 @@ const Dashboard: React.FC = () => {
             setSshMinimized(false);
             setSshConnectTarget(null);
             if (result.saved_to_vault) {
-                Toast.success('SSH Connected', `Connected to ${sshConnectTarget.hostname} — credentials saved to vault`);
+                Toast.success('SSH Connected', `Connected to ${targetHostname} — credentials saved to vault`);
             } else {
-                Toast.success('SSH Connected', `Connected to ${sshConnectTarget.hostname}`);
+                Toast.success('SSH Connected', `Connected to ${targetHostname}`);
             }
         } catch (err: any) {
             const msg = err.message || 'Failed to connect';
