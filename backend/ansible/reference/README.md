@@ -93,7 +93,9 @@ reference/
     huawei_vrp/
     juniper_junos/
     multi_vendor/
-  (acl, qos, static_route are in Test_Reference/ — not ingested by RAG)
+   acl/
+   qos/
+   static_route/
 ```
 
 Each `{feature}/{vendor}/` has `reference.md`, `playbook.yml`, `inventory.yml`.
@@ -106,9 +108,10 @@ Each `{feature}/{vendor}/` has `reference.md`, `playbook.yml`, `inventory.yml`.
 |-------------|-----------|------------|---------------|-----------------------------|
 | **vlan**    | ✅        | ✅         | ✅            | ✅ `vlan/multi_vendor/`     |
 | **interface** | ✅        | ✅         | ✅            | ✅ `interface/multi_vendor/` (shutdown/enable) |
+| **qos**     | ✅        | ✅         | ✅            | ✅ `qos/multi_vendor/`      |
 | **ospf**    | ✅        | ✅         | ✅            | ✅ `ospf/multi_vendor/`     |
 
-**Other features (acl, qos, static_route)** live in `Test_Reference/`; copy into `reference/` when you want them ingested by RAG.
+All core intent features now have official references under `reference/` and are ingested on RAG rebuild.
 
 **RAG ingestion:** On **RAG Rebuild**, each `reference/**/reference.md` is ingested with `doc_type=ansible_reference`, `applicable_feature`, and `vendor` from the path. Plan-ansible retrieves by intent feature and device vendor so the LLM gets the right reference.
 

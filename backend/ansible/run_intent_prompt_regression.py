@@ -257,6 +257,26 @@ def _assert_preview_against_golden(
         actual_json = {}
 
     # expected params disambiguation fields contains
+    if expected.get("expected_categories_contains"):
+        cats = actual_json.get("categories") if isinstance(actual_json, dict) else None
+        actual_cats = [str(x) for x in (cats or []) if str(x).strip()]
+        exp_cats = [str(x) for x in (expected.get("expected_categories_contains") or []) if str(x).strip()]
+        if not _fields_contains(actual_cats, exp_cats):
+            notes.append(
+                f"categories mismatch: expected to contain {exp_cats}, actual={actual_cats}"
+            )
+            return False, notes, actual_json
+
+    if expected.get("expected_action_in"):
+        parsed = actual_json.get("parsed_intent") if isinstance(actual_json, dict) else None
+        action = str((parsed or {}).get("action") or "").strip()
+        expected_actions = [str(x).strip() for x in (expected.get("expected_action_in") or []) if str(x).strip()]
+        if action not in expected_actions:
+            notes.append(
+                f"action mismatch: expected one of {expected_actions}, actual={action or '(empty)'}"
+            )
+            return False, notes, actual_json
+
     if expected.get("expected_params_disambiguation_fields_contains"):
         actual_fields = _collect_disambiguation_fields(actual_json)
         exp_fields = expected.get("expected_params_disambiguation_fields_contains") or []

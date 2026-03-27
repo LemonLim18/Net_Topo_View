@@ -45,7 +45,7 @@ interface SchemaProperty {
 }
 
 function ensureTemplateEditorLanguage(monaco: Monaco) {
-  if (!monaco.languages.getLanguages().some((lang) => lang.id === TEMPLATE_EDITOR_LANGUAGE)) {
+  if (!monaco.languages.getLanguages().some((lang: { id: string }) => lang.id === TEMPLATE_EDITOR_LANGUAGE)) {
     monaco.languages.register({
       id: TEMPLATE_EDITOR_LANGUAGE,
       extensions: ['.j2', '.jinja2'],

@@ -1,0 +1,48 @@
+---
+- name: Configure QoS (Huawei VRP)
+  hosts: "{{ target_hosts | default('all') }}"
+  gather_facts: no
+  connection: network_cli
+  tasks:
+    - name: Configure traffic classifier/behavior/policy on Huawei VRP
+      community.network.ce_config:
+        lines:
+          - "traffic classifier {{ policy_name | default('QOS_POLICY', true) }}_CLASS operator and"
+{% for rule in classification_rules | default([]) %}
+{% if rule is string %}
+          - " if-match {{ rule }}"
+{% endif %}
+{% endfor %}
+          - "traffic behavior {{ policy_name | default('QOS_POLICY', true) }}_BEHAVIOR"
+{% if (marking_dscp | default('', true) | string | trim) != '' %}
+          - " remark dscp {{ marking_dscp }}"
+{% endif %}
+{% if police_rate | default('', true) | string | trim %}
+          - " car cir {{ police_rate }}"
+{% endif %}
+          - "traffic policy {{ policy_name | default('QOS_POLICY', true) }}"
+          - " classifier {{ policy_name | default('QOS_POLICY', true) }}_CLASS behavior {{ policy_name | default('QOS_POLICY', true) }}_BEHAVIOR"
+      when:
+        - ((policy_name | default('QOS_POLICY', true) | string | trim) != '') or ((marking_dscp | default('', true) | string | trim) != '')
+
+{% for ap in (interface_apply | default([])) %}
+{% if ap is string %}
+{% set _tok = (ap | string).strip() %}
+{% set _parts = _tok.split() %}
+{% set _last = (_parts[-1] if (_parts | length) > 0 else '') %}
+{% set _dir = (_last if _last in ['in','out','inbound','outbound'] else (direction | default('out'))) %}
+{% set _iface_tok = (' '.join(_parts[:-1]) if _last in ['in','out','inbound','outbound'] else _tok) %}
+{% set _iface = (_iface_tok.split(':', 1)[1] if ':' in _iface_tok else _iface_tok) %}
+{% else %}
+{% set _iface = (ap.interface | default(ap.get('interface')) | default(ap.get('name')) | string) %}
+{% set _dir = (ap.direction | default(ap.get('direction')) | default(direction | default('out')) | string) %}
+{% endif %}
+{% if _iface | trim %}
+    - name: Apply traffic policy on {{ _iface }} (Huawei VRP)
+      community.network.ce_config:
+        lines:
+          - "interface {{ _iface | replace('TenGigabitEthernet', '10GE') | replace('GigabitEthernet', 'GE') }}"
+          - " traffic-policy {{ policy_name | default('QOS_POLICY', true) }} {{ 'inbound' if _dir in ['in', 'inbound'] else 'outbound' }}"
+          - " quit"
+{% endif %}
+{% endfor %}

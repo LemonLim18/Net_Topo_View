@@ -1,0 +1,23 @@
+---
+all:
+  children:
+    vendor_cisco_ios:
+      vars:
+        ansible_network_os: ios
+        ansible_connection: network_cli
+      hosts: {}
+    vendor_huawei_vrp:
+      vars:
+        ansible_network_os: ce
+        ansible_connection: network_cli
+      hosts: {}
+    vendor_juniper_junos:
+      vars:
+        ansible_network_os: junos
+        ansible_connection: netconf
+      hosts: {}
+    access_switches:
+      children:
+        vendor_cisco_ios: {}
+        vendor_huawei_vrp: {}
+        vendor_juniper_junos: {}

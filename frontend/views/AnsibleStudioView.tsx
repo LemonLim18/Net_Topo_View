@@ -6,7 +6,7 @@ import AnsibleChatPanel                             from '../components/ansible/
 import SSHTerminalDrawer, { type SSHTab }           from '../components/ansible/SSHTerminalDrawer';
 import { ansibleApi, configApi }                    from '../src/services/api';
 import type {
-  AnsibleTab, AnsibleJob, AnsibleCheckResult, AnsibleGeneratedArtifactFile,
+  AnsibleTab, AnsibleJob, AnsibleCheckResult, AnsibleGeneratedArtifactFile, AnsibleOutputSession,
 } from '../typesLLM';
 import type { SSHConnectionState } from '../components/SSHTerminal';
 import type { User }               from '../types';
@@ -131,6 +131,10 @@ const AnsibleStudioView: React.FC<AnsibleStudioViewProps> = ({ user }) => {
   // ── SSE state ────────────────────────────────────────────────────────────
   const [sseLines, setSseLines]       = useState<string[]>([]);
   const [isStreaming, setIsStreaming] = useState(false);
+  const [outputSessions, setOutputSessions] = useState<AnsibleOutputSession[]>([]);
+  const [activeOutputId, setActiveOutputId] = useState<string | null>(null);
+  const [splitOutputId, setSplitOutputId] = useState<string | null>(null);
+  const [streamingSessionId, setStreamingSessionId] = useState<string | null>(null);
   const esRef = useRef<EventSource | null>(null);
 
   // ── File tree ────────────────────────────────────────────────────────────
@@ -367,7 +371,32 @@ const AnsibleStudioView: React.FC<AnsibleStudioViewProps> = ({ user }) => {
     setCheckResult(null);
     try {
       const r = await ansibleApi.checkPlaybook(activeJobId);
-      setCheckResult({ rc: r.rc, diff: r.diff, changed: r.changed, summary: r.summary ?? '' });
+      setCheckResult({
+        rc: r.rc,
+        diff: r.diff,
+        changed: r.changed,
+        summary: r.summary ?? '',
+        stderr: r.stderr,
+      });
+      const lines: string[] = [
+        `[check] job=${activeJobId} rc=${r.rc} changed=${r.changed ? '1' : '0'}`,
+        r.summary ? `summary: ${r.summary}` : '',
+        r.stderr ? `\n[stderr]\n${r.stderr}` : '',
+        r.diff ? `\n[diff]\n${r.diff}` : '',
+      ].filter(Boolean);
+      const sessionId = `check-${activeJobId}-${Date.now()}`;
+      setOutputSessions((prev) => [
+        {
+          id: sessionId,
+          label: `Check #${activeJobId}`,
+          type: 'check',
+          createdAt: Date.now(),
+          lines,
+        },
+        ...prev,
+      ]);
+      setActiveOutputId(sessionId);
+      setSplitOutputId((prev) => (prev && prev === sessionId ? null : prev));
       await refreshJob(activeJobId);
     } finally {
       setIsChecking(false);
@@ -386,6 +415,19 @@ const AnsibleStudioView: React.FC<AnsibleStudioViewProps> = ({ user }) => {
     if (!activeJobId) return;
     setSseLines([]);
     setIsStreaming(true);
+    const deploySessionId = `deploy-${activeJobId}-${Date.now()}`;
+    setStreamingSessionId(deploySessionId);
+    setOutputSessions((prev) => [
+      {
+        id: deploySessionId,
+        label: `Deploy #${activeJobId}`,
+        type: 'deploy',
+        createdAt: Date.now(),
+        lines: [`[deploy] job=${activeJobId} started`],
+      },
+      ...prev,
+    ]);
+    setActiveOutputId(deploySessionId);
 
     const es = ansibleApi.streamJobOutput(activeJobId);
     esRef.current = es;
@@ -396,19 +438,54 @@ const AnsibleStudioView: React.FC<AnsibleStudioViewProps> = ({ user }) => {
         if (data.done) {
           es.close();
           setIsStreaming(false);
+          setStreamingSessionId(null);
+          setOutputSessions((prev) =>
+            prev.map((s) =>
+              s.id === deploySessionId
+                ? { ...s, lines: [...s.lines, '[deploy] stream complete'] }
+                : s,
+            ),
+          );
           refreshJob(activeJobId);
           return;
         }
-        setSseLines(prev => [...prev, `[${data.stage}] ${data.details ?? data.line ?? ''}`].slice(-200));
+        const line = `[${data.stage}] ${data.details ?? data.line ?? ''}`;
+        setSseLines(prev => [...prev, line].slice(-200));
+        setOutputSessions((prev) =>
+          prev.map((s) =>
+            s.id === deploySessionId
+              ? { ...s, lines: [...s.lines, line].slice(-500) }
+              : s,
+          ),
+        );
       } catch { /* ignore */ }
     };
-    es.onerror = () => { es.close(); setIsStreaming(false); };
+    es.onerror = () => {
+      es.close();
+      setIsStreaming(false);
+      setStreamingSessionId(null);
+      setOutputSessions((prev) =>
+        prev.map((s) =>
+          s.id === deploySessionId
+            ? { ...s, lines: [...s.lines, '[deploy] stream error or disconnected'] }
+            : s,
+        ),
+      );
+    };
 
     try {
       await ansibleApi.executeJob(activeJobId);
     } catch (err) {
       es.close();
       setIsStreaming(false);
+      setStreamingSessionId(null);
+      setOutputSessions((prev) =>
+        prev.map((s) =>
+          s.id === deploySessionId
+            ? { ...s, lines: [...s.lines, `[deploy] execute error: ${String(err)}`] }
+            : s,
+        ),
+      );
     }
   }, [activeJobId, refreshJob]);
 
@@ -420,6 +497,7 @@ const AnsibleStudioView: React.FC<AnsibleStudioViewProps> = ({ user }) => {
     setJob(null);
     setCheckResult(null);
     setSseLines([]);
+    setStreamingSessionId(null);
   }, [activeTab, closeTab]);
 
   // ── SSH helpers ──────────────────────────────────────────────────────────
@@ -488,6 +566,17 @@ const AnsibleStudioView: React.FC<AnsibleStudioViewProps> = ({ user }) => {
               job={job}
               sseLines={sseLines}
               isStreaming={isStreaming}
+              outputSessions={outputSessions}
+              activeOutputId={activeOutputId}
+              onSelectOutputSession={setActiveOutputId}
+              onDeleteOutputSession={(id) => {
+                setOutputSessions((prev) => prev.filter((s) => s.id !== id));
+                setActiveOutputId((prev) => (prev === id ? null : prev));
+                setSplitOutputId((prev) => (prev === id ? null : prev));
+              }}
+              splitOutputId={splitOutputId}
+              onSetSplitOutputId={setSplitOutputId}
+              streamingSessionId={streamingSessionId}
             />
           </div>
 

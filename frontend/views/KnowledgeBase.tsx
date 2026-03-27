@@ -11,7 +11,6 @@ import {
   AlertTriangle,
   Loader2,
   Info,
-  ChevronDown,
 } from 'lucide-react';
 import { ragApi, type RagDocument, type RagStatus } from '../src/services/api';
 import { Toast } from '../src/utils/swal';
@@ -74,7 +73,7 @@ const KnowledgeBase: React.FC = () => {
 
   // Rebuild
   const [rebuilding, setRebuilding] = useState(false);
-  const [rebuildResult, setRebuildResult] = useState<{ files_processed: number; total_chunks: number; errors: string[] } | null>(null);
+  const [_rebuildResult, setRebuildResult] = useState<{ files_processed: number; total_chunks: number; errors: string[] } | null>(null);
 
   // Filter
   const [filterVendor, setFilterVendor] = useState('');

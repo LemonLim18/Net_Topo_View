@@ -329,7 +329,16 @@ def _coerce_params_for_validation(params: Dict[str, Any]) -> None:
     if isinstance(params.get("acl_type"), str):
         params["acl_type"] = params["acl_type"].strip().lower()
     if isinstance(params.get("qos_type"), str):
-        params["qos_type"] = params["qos_type"].strip().lower()
+        qos_type_raw = params["qos_type"].strip().lower()
+        qos_type_aliases = {
+            "class based": "class-map",
+            "class-based": "class-map",
+            "class based qos": "class-map",
+            "policy based": "policy-map",
+            "policy-based": "policy-map",
+            "service policy": "service-policy",
+        }
+        params["qos_type"] = qos_type_aliases.get(qos_type_raw, qos_type_raw)
 
     # Configure_interface conditional shared values:
     # If the UI collected a shared `access_vlan` / `trunk_vlans` / `subnet_mask`,
@@ -896,7 +905,8 @@ def _build_devices_disambiguation(
     if not ambiguous_unique and not missing_tokens:
         return None
 
-    candidate_devices = ambiguous_unique or resolved_hosts or list(all_hosts)
+    # Device picker options must always come from planned inventory hostnames.
+    candidate_devices = ambiguous_unique or list(all_hosts)
     return {
         "ambiguous_devices": ambiguous_unique,
         "missing_devices": missing_tokens,
@@ -1446,6 +1456,45 @@ def _merge_client_authoritative_preview_params(
     _p_out = dict(parsed_intent.get("parameters") or {})
     apply_chat_interface_wizard_to_parameters(_p_out)
     _coerce_params_for_validation(_p_out)
+
+    # QoS guard: when the user explicitly answers wizard fields for apply/mark/police,
+    # drop stale parser-generated QoS fields that do not belong to that operation shape.
+    try:
+        feat = str(parsed_intent.get("feature") or "").strip().lower().replace("-", "_")
+        if feat == "qos":
+            trusted_keys = {
+                str(k).strip().lower().replace("-", "_")
+                for k, v in (req_params or {}).items()
+                if v not in (None, "", [], {})
+            }
+            has_user_apply = bool(trusted_keys & {"interface_apply", "apply_to", "interfaces"})
+            has_user_mark = "marking_dscp" in trusted_keys or "dscp" in trusted_keys or "dscp_value" in trusted_keys
+            has_user_police = bool(trusted_keys & {"police_rate", "policer_rate", "rate_limit", "bandwidth_limit"})
+
+            if has_user_apply:
+                ia = _p_out.get("interface_apply")
+                if ia in (None, "", []):
+                    ia = _p_out.get("apply_to") or _p_out.get("interfaces")
+                if isinstance(ia, str) and ia.strip():
+                    _p_out["interface_apply"] = [ia.strip()]
+                elif isinstance(ia, list):
+                    _p_out["interface_apply"] = ia
+                for stale_key in ("classification_rules", "qos_type", "marking_dscp", "police_rate"):
+                    if stale_key not in trusted_keys:
+                        _p_out.pop(stale_key, None)
+
+            if has_user_mark:
+                for stale_key in ("classification_rules", "qos_type", "police_rate"):
+                    if stale_key not in trusted_keys:
+                        _p_out.pop(stale_key, None)
+
+            if has_user_police:
+                for stale_key in ("classification_rules", "qos_type"):
+                    if stale_key not in trusted_keys:
+                        _p_out.pop(stale_key, None)
+    except Exception:
+        pass
+
     parsed_intent["parameters"] = _p_out
 
 
@@ -1848,6 +1897,24 @@ def _resolve_backend_intent_request(req, user: dict) -> tuple["PlanAnsibleReques
             _pf = str(parsed.feature or "").strip().lower().replace("-", "_")
             _routeish = ("route" in _tl or "routing" in _tl) and "traceroute" not in _tl
             _aclish = "acl" in _tl or "access-list" in _tl or "access list" in _tl
+            _qosish = (
+                "qos" in _tl
+                or "quality of service" in _tl
+                or "service-policy" in _tl
+                or "service policy" in _tl
+                or "traffic policy" in _tl
+                or "policy-map" in _tl
+                or "class-map" in _tl
+                or "dscp" in _tl
+                or "policing" in _tl
+                or "prioritize" in _tl
+            )
+            _has_iface_hint_qos = bool(
+                re.search(r"\b(?:interface|port|gigabitethernet|ethernet|ten\s*gig|uplink)\b", _tl)
+            )
+            _mark_qos = ("mark" in _tl and "dscp" in _tl) or bool(re.search(r"\bdscp\s*\d+\b", _tl))
+            _police_qos = any(k in _tl for k in ("police", "policing", "rate-limit", "rate limit", "shape"))
+            _create_qos = any(k in _tl for k in ("create qos", "create qos policy", "policy-map", "class-map"))
             _applyish = (
                 "apply acl" in _tl
                 or "access-group" in _tl
@@ -1872,6 +1939,19 @@ def _resolve_backend_intent_request(req, user: dict) -> tuple["PlanAnsibleReques
                     parsed.feature = "acl"
                 if _pa in ("unknown", "", "apply_acl"):
                     parsed.action = "apply_acl_to_interface" if _applyish else "configure_acl"
+            elif _qosish and (_pa in ("unknown", "", "configure") or _pf in ("", "general", "interface", "qos")):
+                parsed.intent_type = IntentType.CONFIGURE
+                parsed.feature = "qos"
+                if _mark_qos:
+                    parsed.action = "mark_qos_dscp"
+                elif _police_qos:
+                    parsed.action = "create_qos_policing_policy"
+                elif _create_qos:
+                    parsed.action = "create_qos_policy"
+                elif _has_iface_hint_qos:
+                    parsed.action = "apply_qos_policy_to_interface"
+                else:
+                    parsed.action = "configure_qos"
         except Exception:
             pass
     if parsed.intent_type not in {IntentType.CONFIGURE, IntentType.DEPLOY}:
@@ -1905,6 +1985,24 @@ def _resolve_backend_intent_request(req, user: dict) -> tuple["PlanAnsibleReques
                 or "permit" in _tl
                 or "deny" in _tl
             )
+            _qosish = (
+                "qos" in _tl
+                or "quality of service" in _tl
+                or "service-policy" in _tl
+                or "service policy" in _tl
+                or "traffic policy" in _tl
+                or "policy-map" in _tl
+                or "class-map" in _tl
+                or "dscp" in _tl
+                or "policing" in _tl
+                or "prioritize" in _tl
+            )
+            _has_iface_hint_qos = bool(
+                re.search(r"\b(?:interface|port|gigabitethernet|ethernet|ten\s*gig|uplink)\b", _tl)
+            )
+            _mark_qos = ("mark" in _tl and "dscp" in _tl) or bool(re.search(r"\bdscp\s*\d+\b", _tl))
+            _police_qos = any(k in _tl for k in ("police", "policing", "rate-limit", "rate limit", "shape"))
+            _create_qos = any(k in _tl for k in ("create qos", "create qos policy", "policy-map", "class-map"))
             _applyish_acl = (
                 "apply acl" in _tl
                 or "access-group" in _tl
@@ -1928,6 +2026,21 @@ def _resolve_backend_intent_request(req, user: dict) -> tuple["PlanAnsibleReques
                     "configure_acl"
                     if _create_or_rule_acl
                     else ("apply_acl_to_interface" if _applyish_acl else "configure_acl")
+                )
+            if _qosish and (_pa in ("unknown", "", "configure") or str(parsed.feature or "").strip().lower().replace("-", "_") in ("", "general", "interface", "qos")):
+                parsed.feature = "qos"
+                parsed.action = (
+                    "mark_qos_dscp"
+                    if _mark_qos
+                    else (
+                        "create_qos_policing_policy"
+                        if _police_qos
+                        else (
+                            "create_qos_policy"
+                            if _create_qos
+                            else ("apply_qos_policy_to_interface" if _has_iface_hint_qos else "configure_qos")
+                        )
+                    )
                 )
         except Exception:
             pass
@@ -1969,6 +2082,30 @@ def _resolve_backend_intent_request(req, user: dict) -> tuple["PlanAnsibleReques
         if "route" in _tl and "ospf" not in _tl and (_pa in ("unknown", "") or _pf in ("routing", "")):
             _parsed_guard["action"] = "configure_static_route"
             _parsed_guard["feature"] = "static_route"
+        _qosish = (
+            "qos" in _tl
+            or "quality of service" in _tl
+            or "service-policy" in _tl
+            or "service policy" in _tl
+            or "traffic policy" in _tl
+            or "policy-map" in _tl
+            or "class-map" in _tl
+            or "dscp" in _tl
+            or "policing" in _tl
+            or "prioritize" in _tl
+        )
+        if _qosish and (_pa in ("unknown", "") or _pf in ("", "general", "interface", "qos")):
+            _parsed_guard["feature"] = "qos"
+            if ("mark" in _tl and "dscp" in _tl) or bool(re.search(r"\bdscp\s*\d+\b", _tl)):
+                _parsed_guard["action"] = "mark_qos_dscp"
+            elif any(k in _tl for k in ("police", "policing", "rate-limit", "rate limit", "shape")):
+                _parsed_guard["action"] = "create_qos_policing_policy"
+            elif any(k in _tl for k in ("create qos", "create qos policy", "policy-map", "class-map")):
+                _parsed_guard["action"] = "create_qos_policy"
+            elif bool(re.search(r"\b(?:interface|port|gigabitethernet|ethernet|ten\s*gig|uplink)\b", _tl)):
+                _parsed_guard["action"] = "apply_qos_policy_to_interface"
+            else:
+                _parsed_guard["action"] = "configure_qos"
     except Exception:
         pass
     _trunk_viol = _force_trunk_mode_for_prompt_invariant(
@@ -2066,6 +2203,16 @@ def _resolve_backend_intent_request(req, user: dict) -> tuple["PlanAnsibleReques
             _d = str(plan_params_merged.get("direction") or "").strip().lower()
             if _d:
                 plan_params_merged["acl_direction"] = "out" if _d.startswith("out") else "in"
+    # Authoritative attachment selectors must override stale free-text interface params.
+    # This mirrors preview behavior and prevents stale prompt interfaces from resurfacing.
+    try:
+        _has_apply_to = isinstance(plan_params_merged.get("apply_to"), list) and len(plan_params_merged.get("apply_to") or []) > 0
+        _has_interface_apply = isinstance(plan_params_merged.get("interface_apply"), list) and len(plan_params_merged.get("interface_apply") or []) > 0
+        if _has_apply_to or _has_interface_apply:
+            for _k in ("interfaces", "interfaces_config", "interface_binding", "interfaces_to_shutdown"):
+                plan_params_merged.pop(_k, None)
+    except Exception as _iface_auth_exc:
+        logger.debug("authoritative interface prune failed (plan_req): %s", _iface_auth_exc)
     plan_req = PlanAnsibleRequest(
         intent_description=req.intent_description,
         target_hosts=parsed.resolved_devices,
@@ -2102,6 +2249,15 @@ def _resolve_backend_intent_request(req, user: dict) -> tuple["PlanAnsibleReques
         merge_extracted_vlan_params_into_flat_params(params_dict, req.intent_description or "")
     apply_chat_interface_wizard_to_parameters(params_dict)
     _coerce_params_for_validation(params_dict)
+    # Keep create-and-plan parsed intent payload consistent with authoritative attachment fields.
+    try:
+        _has_apply_to = isinstance(params_dict.get("apply_to"), list) and len(params_dict.get("apply_to") or []) > 0
+        _has_interface_apply = isinstance(params_dict.get("interface_apply"), list) and len(params_dict.get("interface_apply") or []) > 0
+        if _has_apply_to or _has_interface_apply:
+            for _k in ("interfaces", "interfaces_config", "interface_binding", "interfaces_to_shutdown"):
+                params_dict.pop(_k, None)
+    except Exception as _iface_auth_exc2:
+        logger.debug("authoritative interface prune failed (parsed_dict): %s", _iface_auth_exc2)
     raw_secondary = params_dict.pop("_secondary_intents", None)
     parsed_dict["secondary_intents"] = _normalize_secondary_intents(raw_secondary)
     parsed_dict["parameters"] = params_dict
@@ -2560,6 +2716,41 @@ async def plan_ansible(
         intent_description=req.intent_description,
         feature=planning_feature or req.feature,
     )
+
+    # Early QoS interface guard: when the request explicitly carries interface attachment
+    # values, validate against planned inventory immediately so invalid names always
+    # return a 422 with option lists sourced from planned context.
+    try:
+        _feature_guard = str(req.feature or "").strip().lower().replace("-", "_")
+        _iface_override_guard = explicit_interface_names_from_request_params(plan_params)
+        if _feature_guard == "qos" and _iface_override_guard and resolved_hosts:
+            _vr_guard = validate_interface_params_against_context(
+                plan_params,
+                resolved_hosts,
+                planning_context,
+                interface_names_override=_iface_override_guard,
+            )
+            if not _vr_guard.ok:
+                _iface_dis = _interfaces_disambiguation_from_planning(
+                    planning_context,
+                    resolved_hosts,
+                    question="Select valid interface(s) from planned inventory.",
+                )
+                raise HTTPException(
+                    422,
+                    detail={
+                        "message": "One or more interface names are not present in planned inventory for the target device(s).",
+                        "invalid_entities": _vr_guard.invalid_entities,
+                        "validation_notice": _vr_guard.validation_notice,
+                        "params_need_context_fix": True,
+                        "interfaces_disambiguation": _iface_dis,
+                        "target_hosts": resolved_hosts,
+                    },
+                )
+    except HTTPException:
+        raise
+    except Exception as _qos_guard_exc:
+        logger.debug("create_and_plan QoS interface guard skipped: %s", _qos_guard_exc)
 
     # Optional agent RAG for LLM playbook path. Reference-first **vlan** / **interface** skip
     # vector retrieval here (deferred only if we need LLM fallback). ``build_full_context`` is
@@ -5328,9 +5519,15 @@ def _merge_intent_pipeline_interactive_asks(
         if authoritative_planned_targets and kind in ("invalid_inventory", "select_planned_devices"):
             continue
         if kind == "invalid_inventory" and not out_dd and db_manager is not None:
-            candidates = [str(x) for x in (ask.get("suggestions") or []) if str(x).strip()]
+            full_list = _all_inventory_hostnames_sorted(db_manager)
+            full_set = {str(x).strip().lower() for x in full_list}
+            candidates = [
+                str(x).strip()
+                for x in (ask.get("suggestions") or [])
+                if str(x).strip() and str(x).strip().lower() in full_set
+            ]
             if not candidates:
-                candidates = _all_inventory_hostnames_sorted(db_manager)
+                candidates = list(full_list)
             if candidates:
                 out_dd = {
                     "ambiguous_devices": [],
@@ -5347,8 +5544,13 @@ def _merge_intent_pipeline_interactive_asks(
                     ),
                 }
         elif kind == "select_planned_devices" and not out_dd and db_manager is not None:
-            shortlist = [str(x) for x in (ask.get("suggestions") or []) if str(x).strip()]
             full_list = _all_inventory_hostnames_sorted(db_manager)
+            full_set = {str(x).strip().lower() for x in full_list}
+            shortlist = [
+                str(x).strip()
+                for x in (ask.get("suggestions") or [])
+                if str(x).strip() and str(x).strip().lower() in full_set
+            ]
             if shortlist or full_list:
                 out_dd = {
                     "ambiguous_devices": [],
@@ -5579,6 +5781,50 @@ def _preview_parse_and_rag(
                 )
                 if "acl" not in _cats_acl:
                     categories.append("acl")
+        except Exception:
+            pass
+
+        # QoS recovery: prompts like "Configure QoS to prioritize voice traffic on GigabitEthernet..."
+        # may be labeled as query/unknown by some models. Promote to explicit QoS operations
+        # so schema selection, template retrieval, and one-pass missing-field questions work.
+        try:
+            _tl_qos = str(intent_description or "").strip().lower()
+            _pa_qos = str(parsed_dict.get("action") or parsed.action or "").strip().lower().replace("-", "_")
+            _pf_qos = str(parsed_dict.get("feature") or parsed.feature or "").strip().lower().replace("-", "_")
+            _cats_qos = {str(c).strip().lower().replace("-", "_") for c in (categories or []) if str(c).strip()}
+            _qosish = (
+                "qos" in _tl_qos
+                or "quality of service" in _tl_qos
+                or "service-policy" in _tl_qos
+                or "service policy" in _tl_qos
+                or "traffic policy" in _tl_qos
+                or "policy-map" in _tl_qos
+                or "class-map" in _tl_qos
+                or "dscp" in _tl_qos
+                or "policing" in _tl_qos
+                or "prioritize" in _tl_qos
+                or "qos" in _cats_qos
+            )
+            _has_iface_hint_qos = bool(
+                re.search(r"\b(?:interface|port|gigabitethernet|ethernet|ten\s*gig|uplink)\b", _tl_qos)
+            )
+            _mark_qos = ("mark" in _tl_qos and "dscp" in _tl_qos) or bool(re.search(r"\bdscp\s*\d+\b", _tl_qos))
+            _police_qos = any(k in _tl_qos for k in ("police", "policing", "rate-limit", "rate limit", "shape"))
+            _create_qos = any(k in _tl_qos for k in ("create qos", "create qos policy", "policy-map", "class-map"))
+            if _qosish and (_pa_qos in ("unknown", "", "configure") or _pf_qos in ("", "general", "interface", "qos")):
+                parsed_dict["feature"] = "qos"
+                if _mark_qos:
+                    parsed_dict["action"] = "mark_qos_dscp"
+                elif _police_qos:
+                    parsed_dict["action"] = "create_qos_policing_policy"
+                elif _create_qos:
+                    parsed_dict["action"] = "create_qos_policy"
+                elif _has_iface_hint_qos:
+                    parsed_dict["action"] = "apply_qos_policy_to_interface"
+                else:
+                    parsed_dict["action"] = "configure_qos"
+                if "qos" not in _cats_qos:
+                    categories.append("qos")
         except Exception:
             pass
 
@@ -6850,6 +7096,9 @@ async def preview_intent(
                     "configure_acl",
                     "apply_acl_to_interface",
                     "configure_qos",
+                    "apply_qos_policy_to_interface",
+                    "mark_qos_dscp",
+                    "create_qos_policing_policy",
                     "configure_ospf",
                     "configure_ospf_passive_interface",
                     "configure_static_route",
@@ -6996,6 +7245,9 @@ async def preview_intent(
                     "configure_acl",
                     "apply_acl_to_interface",
                     "configure_qos",
+                    "apply_qos_policy_to_interface",
+                    "mark_qos_dscp",
+                    "create_qos_policing_policy",
                     "configure_ospf",
                     "configure_ospf_passive_interface",
                     "configure_static_route",
@@ -7015,7 +7267,13 @@ async def preview_intent(
                         )
                     )
                     or (
-                        schema_action_iface == "configure_qos"
+                        schema_action_iface
+                        in (
+                            "configure_qos",
+                            "apply_qos_policy_to_interface",
+                            "mark_qos_dscp",
+                            "create_qos_policing_policy",
+                        )
                         and (
                             ("interface_apply" in set(missing_final or []))
                             or (

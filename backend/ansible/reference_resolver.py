@@ -131,7 +131,7 @@ def _target_hosts_from_intent(intent: Dict[str, Any]) -> List[str]:
 _VLAN_INTENT_SCHEMA_PATH = _REFERENCE_DIR / "vlan" / "intent_schema.json"
 
 # Known features that have reference playbooks (subdirs under reference/)
-_KNOWN_FEATURES = frozenset({"vlan", "interface", "ospf", "static_route", "acl"})
+_KNOWN_FEATURES = frozenset({"vlan", "interface", "ospf", "static_route", "acl", "qos"})
 
 # Vendors that have single-vendor playbooks under reference/{feature}/{vendor}/
 _KNOWN_VENDORS = frozenset({"cisco_ios", "huawei_vrp", "juniper_junos"})
@@ -640,7 +640,7 @@ def resolve_playbook_template_path(
             return single_path
     # For vlan/interface with no vendor info (e.g. planning_context empty), default to multi_vendor
     # so we always get the correct reference format instead of LLM/bundle wrong format.
-    if feature in {"vlan", "interface", "ospf", "static_route"}:
+    if feature in {"vlan", "interface", "ospf", "static_route", "qos"}:
         multi_path = base / "multi_vendor" / _MULTI_VENDOR_TEMPLATE
         if multi_path.exists():
             return multi_path
@@ -974,6 +974,74 @@ def get_template_vars(
             "acl_type": acl_type,
             "rules": rules_out,
             "apply_to": params_x.get("apply_to") or [],
+        }
+
+    if feature == "qos":
+        params_x = dict(intent.get("params") or {})
+        target_hosts = list(
+            intent.get("target_hosts")
+            or params_x.get("target_hosts")
+            or params_x.get("target_devices")
+            or []
+        )
+
+        def _string_or_empty(value: Any) -> str:
+            return str(value or "").strip()
+
+        policy_name = _string_or_empty(
+            params_x.get("policy_name")
+            or params_x.get("qos_policy")
+            or params_x.get("policy")
+        )
+        qos_type = _string_or_empty(params_x.get("qos_type") or params_x.get("qos_construct_type")).lower()
+        direction = _string_or_empty(params_x.get("direction") or params_x.get("service_direction")).lower()
+        traffic_type = _string_or_empty(params_x.get("traffic_type") or params_x.get("qos_class") or params_x.get("class_name"))
+        police_rate = _string_or_empty(
+            params_x.get("police_rate")
+            or params_x.get("policer_rate")
+            or params_x.get("rate_limit")
+            or params_x.get("bandwidth_limit")
+        )
+
+        marking_dscp: Any = params_x.get("marking_dscp")
+        if marking_dscp in (None, "", []):
+            marking_dscp = params_x.get("dscp")
+        if marking_dscp in (None, "", []):
+            marking_dscp = params_x.get("dscp_value")
+
+        classification_rules_raw = params_x.get("classification_rules") or params_x.get("classifier") or []
+        if isinstance(classification_rules_raw, str) and classification_rules_raw.strip():
+            classification_rules = [classification_rules_raw.strip()]
+        elif isinstance(classification_rules_raw, list):
+            classification_rules = classification_rules_raw
+        else:
+            classification_rules = []
+
+        interface_apply_raw = (
+            params_x.get("interface_apply")
+            or params_x.get("apply_to")
+            or params_x.get("interfaces")
+            or []
+        )
+        if isinstance(interface_apply_raw, str) and interface_apply_raw.strip():
+            interface_apply = [interface_apply_raw.strip()]
+        elif isinstance(interface_apply_raw, list):
+            interface_apply = interface_apply_raw
+        else:
+            interface_apply = []
+
+        return {
+            "target_hosts": ",".join(str(h).strip() for h in target_hosts if str(h).strip()) or "all",
+            "policy_name": policy_name,
+            "qos_type": qos_type,
+            "classification_rules": classification_rules,
+            "interface_apply": interface_apply,
+            "direction": direction,
+            "marking_dscp": marking_dscp,
+            "traffic_type": traffic_type,
+            "police_rate": police_rate,
+            "conform_action": _string_or_empty(params_x.get("conform_action")),
+            "exceed_action": _string_or_empty(params_x.get("exceed_action")),
         }
 
     normalized = _normalize_intent_to_schema_shape(intent)

@@ -4,10 +4,15 @@ feature: qos
 required:
   - policy_name
   - target_devices
+optional:
+  - policy_name
   - qos_type
   - classification_rules
-optional:
   - interface_apply
+  - direction
+  - marking_dscp
+  - traffic_type
+  - police_rate
 resolution_order:
   policy_name:
     - from_intent
@@ -26,9 +31,25 @@ resolution_order:
   interface_apply:
     - from_intent
     - ask_user
+  direction:
+    - from_intent
+    - ask_user
+  marking_dscp:
+    - from_intent
+    - ask_user
+  traffic_type:
+    - from_intent
+    - ask_user
+  police_rate:
+    - from_intent
+    - ask_user
 questions:
   policy_name: "QoS policy name?"
   target_devices: "Which devices?"
   qos_type: "QoS construct type (class-map, policy-map, or service-policy)?"
   classification_rules: "Classification (match DSCP/ACL/COS/IP) and actions?"
   interface_apply: "Apply to which interfaces and direction (in/out)?"
+  direction: "Direction on the interface (inbound/in or outbound/out)?"
+  marking_dscp: "Which DSCP value should be marked?"
+  traffic_type: "Which traffic type/class does this QoS rule target (voice/http/video/etc.)?"
+  police_rate: "What policing rate should be enforced (for example 5m or 1000000 bps)?"

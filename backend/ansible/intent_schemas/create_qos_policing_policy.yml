@@ -1,0 +1,48 @@
+# Intent schema: Create QoS policing policy
+action: create_qos_policing_policy
+feature: qos
+required:
+  - policy_name
+  - target_devices
+  - traffic_type
+  - police_rate
+optional:
+  - conform_action
+  - exceed_action
+  - interface_apply
+  - direction
+resolution_order:
+  policy_name:
+    - from_intent
+    - ask_user
+  target_devices:
+    - from_intent
+    - from_inventory
+    - ask_user
+  traffic_type:
+    - from_intent
+    - ask_user
+  police_rate:
+    - from_intent
+    - ask_user
+  conform_action:
+    - from_intent
+    - ask_user
+  exceed_action:
+    - from_intent
+    - ask_user
+  interface_apply:
+    - from_intent
+    - ask_user
+  direction:
+    - from_intent
+    - ask_user
+questions:
+  policy_name: "QoS policing policy name?"
+  target_devices: "Which devices?"
+  traffic_type: "Which traffic type/class should be policed (voice/http/video/etc.)?"
+  police_rate: "What policing rate should be enforced (for example 5m or 1000000 bps)?"
+  conform_action: "Conform action (transmit/remark/drop)?"
+  exceed_action: "Exceed action (drop/remark/transmit)?"
+  interface_apply: "Which interface(s) should this policing policy be applied to?"
+  direction: "Direction on the interface (inbound/in or outbound/out)?"

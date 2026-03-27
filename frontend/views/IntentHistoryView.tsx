@@ -59,7 +59,7 @@ interface IntentItem {
   created_at?: string;
 }
 
-const IntentHistoryView: React.FC<Props> = ({ setView }) => {
+const IntentHistoryView: React.FC<Props> = ({ setView: _setView }) => {
   const [intents, setIntents] = useState<IntentItem[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);

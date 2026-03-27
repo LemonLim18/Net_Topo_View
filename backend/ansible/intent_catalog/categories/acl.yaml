@@ -28,8 +28,8 @@ operations:
     optional_parameters: [acl_direction, direction]
     keyword_triggers:
       - "apply acl"
-      - "inbound"
-      - "outbound"
+      - "ip access-group"
+      - "traffic-filter"
     rules:
       - "Apply existing ACL to interfaces; set direction inbound/outbound on each interface or acl_direction."
 

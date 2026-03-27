@@ -1,0 +1,38 @@
+# Intent schema: Mark traffic with DSCP
+action: mark_qos_dscp
+feature: qos
+required:
+  - target_devices
+  - marking_dscp
+  - traffic_type
+optional:
+  - policy_name
+  - interface_apply
+  - direction
+resolution_order:
+  target_devices:
+    - from_intent
+    - from_inventory
+    - ask_user
+  marking_dscp:
+    - from_intent
+    - ask_user
+  traffic_type:
+    - from_intent
+    - ask_user
+  policy_name:
+    - from_intent
+    - ask_user
+  interface_apply:
+    - from_intent
+    - ask_user
+  direction:
+    - from_intent
+    - ask_user
+questions:
+  target_devices: "Which devices?"
+  marking_dscp: "Which DSCP value should be marked?"
+  traffic_type: "Which traffic type/class should be marked (voice/http/video/etc.)?"
+  policy_name: "QoS policy name to use for this marking rule?"
+  interface_apply: "Which interface(s) should receive this marking policy?"
+  direction: "Direction on the interface (inbound/in or outbound/out)?"

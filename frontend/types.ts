@@ -77,6 +77,8 @@ export type ViewId =
   | 'topology'
   | 'netbox_devices'
   | 'drift'
+  | 'policy_builder'
+  | 'compliance_device_detail'
   | 'net_perf' 
   | 'net_chat'
   | 'knowledge_base'

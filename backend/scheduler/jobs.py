@@ -94,6 +94,25 @@ async def job_drift_check() -> None:
 
 
 # ────────────────────────────────────────────────────────
+# Job 2b: Policy Compliance Scan
+# ────────────────────────────────────────────────────────
+async def job_compliance_scan() -> None:
+    """Periodic policy-driven compliance scan across all devices."""
+    try:
+        logger.info("[Scheduler] Compliance-scan job triggered")
+        from db.manager import DatabaseManager
+        from compliance.api import _scan_all_devices_job
+
+        db = DatabaseManager("db/netauto.db")
+        job_id = db.create_compliance_job("scheduled")
+        # Run in threadpool style by letting the job function do blocking work.
+        await asyncio.get_running_loop().run_in_executor(None, _scan_all_devices_job, job_id)
+        logger.info("[Scheduler] Compliance-scan complete (job_id=%s)", job_id)
+    except Exception:
+        logger.exception("[Scheduler] Compliance-scan job failed")
+
+
+# ────────────────────────────────────────────────────────
 # Job 3: Security Audit
 # ────────────────────────────────────────────────────────
 def job_security_audit() -> None:

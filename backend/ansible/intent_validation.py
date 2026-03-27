@@ -232,7 +232,16 @@ def _normalize_intent_for_type_schema(intent: Dict[str, Any], schema_key: str) -
     elif schema_key == "configure_qos":
         out["target_hosts"] = flat.get("target_devices") or []
         out["policy_name"] = str(flat.get("policy_name") or "").strip()
-        out["qos_type"] = str(flat.get("qos_type") or "").strip().lower()
+        _qos_type_raw = str(flat.get("qos_type") or "").strip().lower()
+        _qos_type_aliases = {
+            "class based": "class-map",
+            "class-based": "class-map",
+            "class based qos": "class-map",
+            "policy based": "policy-map",
+            "policy-based": "policy-map",
+            "service policy": "service-policy",
+        }
+        out["qos_type"] = _qos_type_aliases.get(_qos_type_raw, _qos_type_raw)
         cr = flat.get("classification_rules")
         if isinstance(cr, str) and cr.strip():
             out["classification_rules"] = [cr.strip()]
@@ -242,6 +251,51 @@ def _normalize_intent_for_type_schema(intent: Dict[str, Any], schema_key: str) -
             out["classification_rules"] = []
         if flat.get("interface_apply") is not None:
             out["interface_apply"] = flat.get("interface_apply")
+        if flat.get("direction") is not None:
+            out["direction"] = str(flat.get("direction") or "").strip().lower()
+        if flat.get("marking_dscp") is not None:
+            out["marking_dscp"] = flat.get("marking_dscp")
+        if flat.get("traffic_type") is not None:
+            out["traffic_type"] = str(flat.get("traffic_type") or "").strip()
+        if flat.get("police_rate") is not None:
+            out["police_rate"] = str(flat.get("police_rate") or "").strip()
+    elif schema_key == "create_qos_policy":
+        out = _normalize_intent_for_type_schema(intent, "configure_qos")
+    elif schema_key == "apply_qos_policy_to_interface":
+        out["target_hosts"] = flat.get("target_devices") or []
+        out["policy_name"] = str(flat.get("policy_name") or "").strip()
+        iap = flat.get("interface_apply")
+        if isinstance(iap, str) and iap.strip():
+            out["interface_apply"] = [iap.strip()]
+        elif isinstance(iap, list):
+            out["interface_apply"] = iap
+        else:
+            out["interface_apply"] = []
+        if flat.get("direction") is not None:
+            out["direction"] = str(flat.get("direction") or "").strip().lower()
+    elif schema_key == "mark_qos_dscp":
+        out["target_hosts"] = flat.get("target_devices") or []
+        out["marking_dscp"] = flat.get("marking_dscp")
+        out["traffic_type"] = str(flat.get("traffic_type") or "").strip()
+        if flat.get("policy_name") is not None:
+            out["policy_name"] = str(flat.get("policy_name") or "").strip()
+        if flat.get("interface_apply") is not None:
+            out["interface_apply"] = flat.get("interface_apply")
+        if flat.get("direction") is not None:
+            out["direction"] = str(flat.get("direction") or "").strip().lower()
+    elif schema_key == "create_qos_policing_policy":
+        out["target_hosts"] = flat.get("target_devices") or []
+        out["policy_name"] = str(flat.get("policy_name") or "").strip()
+        out["traffic_type"] = str(flat.get("traffic_type") or "").strip()
+        out["police_rate"] = str(flat.get("police_rate") or "").strip()
+        if flat.get("interface_apply") is not None:
+            out["interface_apply"] = flat.get("interface_apply")
+        if flat.get("direction") is not None:
+            out["direction"] = str(flat.get("direction") or "").strip().lower()
+        if flat.get("conform_action") is not None:
+            out["conform_action"] = str(flat.get("conform_action") or "").strip()
+        if flat.get("exceed_action") is not None:
+            out["exceed_action"] = str(flat.get("exceed_action") or "").strip()
     elif schema_key == "configure_static_route":
         out["target_hosts"] = flat.get("target_devices") or []
         out["destination"] = str(flat.get("destination") or "").strip()
@@ -361,7 +415,13 @@ def _intent_to_flat_fields(intent: Dict[str, Any], schema: Dict[str, Any]) -> Di
     flat["vrf_name"] = params.get("vrf_name")
     flat["qos_type"] = params.get("qos_type") or params.get("qos_construct_type")
     flat["classification_rules"] = params.get("classification_rules")
-    flat["interface_apply"] = params.get("interface_apply")
+    flat["interface_apply"] = params.get("interface_apply") or params.get("apply_to") or params.get("interfaces")
+    flat["direction"] = params.get("direction") or params.get("service_direction")
+    flat["marking_dscp"] = params.get("marking_dscp") or params.get("dscp") or params.get("dscp_value")
+    flat["traffic_type"] = params.get("traffic_type") or params.get("qos_class") or params.get("class_name")
+    flat["police_rate"] = params.get("police_rate") or params.get("policer_rate") or params.get("rate_limit") or params.get("bandwidth_limit")
+    flat["conform_action"] = params.get("conform_action")
+    flat["exceed_action"] = params.get("exceed_action")
 
     # ACL apply: if direction wasn't promoted to acl_direction, infer it from apply_to.
     # apply_to can be:
@@ -1260,9 +1320,87 @@ def configure_ospf_conditional_disambiguation_fields(
     return fields
 
 
+def configure_qos_conditional_disambiguation_fields(
+    parameters: Dict[str, Any],
+) -> List[Dict[str, Any]]:
+    """
+    QoS follow-up questions in one pass for generic ``configure_qos`` intents.
+    Specific action schemas (create/apply/mark/police) are preferred when detected.
+    """
+    p = dict(parameters or {})
+    fields: List[Dict[str, Any]] = []
+
+    def _nonempty(v: Any) -> bool:
+        if v is None:
+            return False
+        if isinstance(v, list):
+            return any(_nonempty(x) for x in v)
+        if isinstance(v, dict):
+            return bool(v)
+        return str(v).strip() != ""
+
+    has_policy = _nonempty(p.get("policy_name") or p.get("policy") or p.get("qos_policy"))
+    has_interface_apply = _nonempty(p.get("interface_apply") or p.get("apply_to") or p.get("interfaces"))
+    has_qos_type = _nonempty(p.get("qos_type") or p.get("qos_construct_type"))
+    has_classification = _nonempty(p.get("classification_rules") or p.get("classifier"))
+    has_marking = _nonempty(p.get("marking_dscp") or p.get("dscp") or p.get("dscp_value"))
+    has_traffic = _nonempty(p.get("traffic_type") or p.get("qos_class") or p.get("class_name"))
+    has_police_rate = _nonempty(p.get("police_rate") or p.get("policer_rate") or p.get("rate_limit") or p.get("bandwidth_limit"))
+
+    if not has_policy:
+        fields.append(
+            {
+                "field": "policy_name",
+                "question": "QoS policy name?",
+            }
+        )
+        return fields
+
+    if has_policy and has_interface_apply:
+        return fields
+
+    if has_marking:
+        if not has_traffic:
+            fields.append(
+                {
+                    "field": "traffic_type",
+                    "question": "Which traffic type/class should receive this DSCP marking (voice/http/video/etc.)?",
+                }
+            )
+        return fields
+
+    if has_police_rate or (has_policy and has_traffic and not has_classification):
+        if not has_police_rate:
+            fields.append(
+                {
+                    "field": "police_rate",
+                    "question": "What policing rate should be enforced (for example 5m or 1000000 bps)?",
+                }
+            )
+        return fields
+
+    if has_policy and (not has_qos_type or not has_classification):
+        if not has_qos_type:
+            fields.append(
+                {
+                    "field": "qos_type",
+                    "question": "QoS construct type (class-map, policy-map, or service-policy)?",
+                }
+            )
+        if not has_classification:
+            fields.append(
+                {
+                    "field": "classification_rules",
+                    "question": "Classification (match DSCP/ACL/COS/IP) and actions?",
+                }
+            )
+    return fields
+
+
 SECONDARY_INTENT_CONDITIONAL_DISAMBIGUATION_BY_ACTION: Dict[str, Callable[[Dict[str, Any]], List[Dict[str, Any]]]] = {
     "configure_interface": configure_interface_conditional_disambiguation_fields,
     "configure_ospf": configure_ospf_conditional_disambiguation_fields,
+    "configure_qos": configure_qos_conditional_disambiguation_fields,
 }
 
 
@@ -2895,6 +3033,24 @@ def get_schema_for_parsed_intent(parsed_intent: Dict[str, Any]) -> Optional[Dict
             schema = load_schema("configure_ospf_redistribute")
             if schema:
                 return schema
+
+    if feature == "qos" or action == "configure_qos" or canonical in (
+        "create_qos_policy",
+        "apply_qos_policy_to_interface",
+        "mark_qos_dscp",
+        "create_qos_policing_policy",
+    ):
+        qos_schema_by_canonical = {
+            "create_qos_policy": "create_qos_policy",
+            "apply_qos_policy_to_interface": "apply_qos_policy_to_interface",
+            "mark_qos_dscp": "mark_qos_dscp",
+            "create_qos_policing_policy": "create_qos_policing_policy",
+        }
+        ckey = qos_schema_by_canonical.get(canonical)
+        if ckey:
+            schema = load_schema(ckey)
+            if schema:
+                return schema
         if canonical in ("configure_passive_interface", "configure_ospf_passive_interface"):
             schema = load_schema("configure_ospf_passive_interface")
             if schema:
@@ -2965,6 +3121,10 @@ def get_required_params_hint_for_prompt() -> str:
         "configure_ospf_redistribute",
         "configure_static_route",
         "configure_acl",
+        "create_qos_policy",
+        "apply_qos_policy_to_interface",
+        "mark_qos_dscp",
+        "create_qos_policing_policy",
         "configure_qos",
     ):
         schema = load_schema(name)

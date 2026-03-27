@@ -83,6 +83,17 @@ class ConfigSnapshot:
     config_text: str
     config_hash: Optional[str] = None
     captured_at: Optional[str] = None
+    # M26: Compliance/baseline metadata (optional; keeps old callers working)
+    snapshot_type: str = "snapshot"              # snapshot | baseline | rollback | golden | actual
+    source_type: Optional[str] = None            # deploy_pipeline | manual | import | scan
+    normalized_config: Optional[str] = None      # canonicalized text used for diff/compliance
+    checksum: Optional[str] = None               # checksum of normalized_config (or config_text)
+    policy_version: Optional[int] = None
+    intent_id: Optional[str] = None
+    execution_id: Optional[int] = None
+    approved_by: Optional[str] = None
+    verified_by: Optional[str] = None
+    verified_at: Optional[str] = None
     id: Optional[int] = None
 
     def __post_init__(self):
@@ -90,6 +101,13 @@ class ConfigSnapshot:
             self.config_hash = hashlib.sha256(
                 self.config_text.encode("utf-8")
             ).hexdigest()
+        # If a normalized checksum wasn't provided, populate it deterministically.
+        # (This is used by compliance diffing; it is distinct from config_hash which
+        # is computed from raw config_text and kept for backward compatibility.)
+        if self.checksum is None:
+            base = self.normalized_config if (self.normalized_config is not None) else self.config_text
+            if base:
+                self.checksum = hashlib.sha256(base.encode("utf-8")).hexdigest()
 
 
 # -----------------------------------------------------------

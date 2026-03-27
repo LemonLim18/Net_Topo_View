@@ -5,7 +5,7 @@
  * live sync.  Each controller card shows status, managed device count,
  * last sync time, and quick-action buttons.
  */
-import React, { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import {
   Server,
   RefreshCw,
@@ -25,7 +25,7 @@ interface Props {
   setView: (v: ViewId) => void;
 }
 
-export default function SDNDashboardView({ setView }: Props) {
+export default function SDNDashboardView({ setView: _setView }: Props) {
   const [controllers, setControllers] = useState<SDNControllerDetail[]>([]);
   const [loading, setLoading] = useState(true);
   const [showAdd, setShowAdd] = useState(false);

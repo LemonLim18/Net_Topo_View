@@ -1,0 +1,41 @@
+---
+- name: Configure QoS (Juniper Junos)
+  hosts: "{{ target_hosts | default('all') }}"
+  gather_facts: no
+  connection: netconf
+  tasks:
+    - name: Configure class-of-service objects on Juniper Junos
+      juniper.device.junos_config:
+        lines:
+          - "set class-of-service classifiers dscp {{ policy_name | default('QOS_POLICY', true) }} forwarding-class {{ traffic_type | default('voice', true) }} loss-priority low code-points {{ marking_dscp | default('46', true) }}"
+{% if police_rate | default('', true) | string | trim %}
+          - "set firewall policer {{ policy_name | default('QOS_POLICY', true) }} if-exceeding bandwidth-limit {{ police_rate }}"
+          - "set firewall policer {{ policy_name | default('QOS_POLICY', true) }} then {{ exceed_action | default('discard', true) }}"
+{% endif %}
+      when:
+        - ((policy_name | default('QOS_POLICY', true) | string | trim) != '') or ((marking_dscp | default('', true) | string | trim) != '')
+
+{% for ap in (interface_apply | default([])) %}
+{% if ap is string %}
+{% set _tok = (ap | string).strip() %}
+{% set _parts = _tok.split() %}
+{% set _last = (_parts[-1] if (_parts | length) > 0 else '') %}
+{% set _dir = (_last if _last in ['in','out','inbound','outbound'] else (direction | default('out'))) %}
+{% set _iface_tok = (' '.join(_parts[:-1]) if _last in ['in','out','inbound','outbound'] else _tok) %}
+{% set _iface = (_iface_tok.split(':', 1)[1] if ':' in _iface_tok else _iface_tok) %}
+{% else %}
+{% set _iface = (ap.interface | default(ap.get('interface')) | default(ap.get('name')) | string) %}
+{% set _dir = (ap.direction | default(ap.get('direction')) | default(direction | default('out')) | string) %}
+{% endif %}
+{% if _iface | trim %}
+    - name: Apply scheduler map on {{ _iface }} (Juniper Junos)
+      juniper.device.junos_config:
+        lines:
+          - "set class-of-service interfaces {{ _iface }} unit 0 scheduler-map {{ policy_name | default('QOS_POLICY', true) }}"
+{% if _dir in ['in', 'inbound'] %}
+          - "set interfaces {{ _iface }} unit 0 family inet filter input {{ policy_name | default('QOS_POLICY', true) }}"
+{% else %}
+          - "set interfaces {{ _iface }} unit 0 family inet filter output {{ policy_name | default('QOS_POLICY', true) }}"
+{% endif %}
+{% endif %}
+{% endfor %}

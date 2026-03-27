@@ -188,7 +188,13 @@ class DeploymentPipeline:
             pre_config = driver.get_running_config()
             # Save snapshot
             snap_id = self.db_manager.save_config_snapshot(
-                ConfigSnapshot(device_id=job.device_id, config_text=pre_config)
+                ConfigSnapshot(
+                    device_id=job.device_id,
+                    config_text=pre_config,
+                    snapshot_type="rollback",      # pre-change snapshot reserved for rollback
+                    source_type="deploy_pipeline",
+                    execution_id=job_id,
+                )
             )
             
             with self.db_manager._connect() as conn:
@@ -273,8 +279,61 @@ class DeploymentPipeline:
             self.repo.log_step(job_id, PipelineStage.COMMIT, "Change verified. Saving post-snapshot.")
             
             post_config = driver.get_running_config()
+            # Baseline promotion gate:
+            # Only promote to baseline if the request/job was approved (approval gate),
+            # otherwise store as 'actual' and keep compliance baseline unchanged.
+            approved_by = None
+            request_status = None
+            job_status = None
+            try:
+                with self.db_manager._connect() as conn:
+                    jr = conn.execute(
+                        "SELECT request_id, status FROM jobs WHERE id = ?",
+                        (job_id,),
+                    ).fetchone()
+                    if jr:
+                        job_status = jr["status"]
+                        rid = jr["request_id"]
+                        rr = conn.execute(
+                            "SELECT status FROM change_requests WHERE id = ?",
+                            (rid,),
+                        ).fetchone()
+                        request_status = rr["status"] if rr else None
+                        # Try read the approver from deploy.audit_log (if present)
+                        try:
+                            ar = conn.execute(
+                                "SELECT actor, created_at FROM audit_log "
+                                "WHERE request_id = ? AND action = 'approve' "
+                                "ORDER BY id DESC LIMIT 1",
+                                (rid,),
+                            ).fetchone()
+                            if ar and ar.get("actor"):
+                                approved_by = ar["actor"]
+                        except Exception:
+                            approved_by = None
+            except Exception:
+                approved_by = None
+
+            is_approved = False
+            try:
+                if str(request_status or "").strip().lower() == "approved":
+                    is_approved = True
+                if str(job_status or "").strip().lower() == "approved":
+                    is_approved = True
+            except Exception:
+                is_approved = False
+
             snap_post_id = self.db_manager.save_config_snapshot(
-                ConfigSnapshot(device_id=job.device_id, config_text=post_config)
+                ConfigSnapshot(
+                    device_id=job.device_id,
+                    config_text=post_config,
+                    snapshot_type="baseline" if is_approved else "actual",
+                    source_type="deploy_pipeline",
+                    execution_id=job_id,
+                    approved_by=approved_by if is_approved else None,
+                    verified_by="pipeline",
+                    verified_at=datetime.utcnow().isoformat(),
+                )
             )
             
             with self.db_manager._connect() as conn:

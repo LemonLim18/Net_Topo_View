@@ -268,12 +268,46 @@ def _missing_for_catalog_field(
         return [] if _rules_satisfied(params) else ["rules"]
     if field == "interfaces":
         return [] if _interfaces_list_satisfied(params.get("interfaces")) else ["interfaces"]
+    if field == "interface_apply":
+        ia = params.get("interface_apply")
+        if _interfaces_list_satisfied(ia):
+            return []
+        ato = params.get("apply_to")
+        if _interfaces_list_satisfied(ato):
+            return []
+        if _interfaces_list_satisfied(params.get("interfaces")):
+            return []
+        return ["interface_apply"]
     if field == "interfaces_to_shutdown":
         v = params.get("interfaces_to_shutdown")
         return [] if _shutdown_targets_satisfied(v) else ["interfaces_to_shutdown"]
     if field == "policy_name":
         pn = params.get("policy_name") or params.get("qos_policy") or params.get("policy")
         return [] if _param_nonempty(pn) else ["policy_name"]
+    if field == "marking_dscp":
+        mv = params.get("marking_dscp")
+        if _param_nonempty(mv):
+            return []
+        for k in ("dscp", "dscp_value", "set_dscp"):
+            if _param_nonempty(params.get(k)):
+                return []
+        return ["marking_dscp"]
+    if field == "traffic_type":
+        tv = params.get("traffic_type")
+        if _param_nonempty(tv):
+            return []
+        for k in ("qos_class", "class_name", "class"):
+            if _param_nonempty(params.get(k)):
+                return []
+        return ["traffic_type"]
+    if field == "police_rate":
+        rv = params.get("police_rate")
+        if _param_nonempty(rv):
+            return []
+        for k in ("policer_rate", "rate_limit", "bandwidth_limit"):
+            if _param_nonempty(params.get(k)):
+                return []
+        return ["police_rate"]
     if field == "acl_name":
         an = (
             params.get("acl_name")

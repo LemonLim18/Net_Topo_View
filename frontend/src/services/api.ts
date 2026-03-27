@@ -1408,6 +1408,116 @@ export const driftApi = {
     }>('/drift/summary'),
 };
 
+// ───────────────────────── Policy Compliance APIs (M26) ─────────────────────────
+export interface PolicyRule {
+  id?: string;
+  action: string;
+  target?: string;
+  path?: string;
+  expected?: any;
+  severity?: 'low' | 'medium' | 'high' | 'critical' | string;
+  explanation?: string;
+  remediation?: string;
+  match_method?: string;
+  operator?: string;
+  role?: string;
+}
+
+export interface PolicyRecord {
+  policy_id: string;
+  name: string;
+  description?: string;
+  category: string;
+  enabled: boolean;
+  version?: number;
+  scope: {
+    vendors?: string[];
+    device_roles?: string[];
+    device_groups?: string[];
+    devices?: string[];
+  };
+  rules: PolicyRule[];
+  normalization?: { ignore_patterns?: string[]; [k: string]: any };
+  thresholds?: { auto_alert?: boolean; alert_severity_min?: string; [k: string]: any };
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface ComplianceResultRecord {
+  id?: number;
+  device_id: number;
+  hostname?: string;
+  vendor?: string | null;
+  role?: string | null;
+  baseline_snapshot_id?: number | null;
+  actual_snapshot_id?: number | null;
+  status: 'compliant' | 'drifted' | 'violated' | 'no_baseline' | 'no_actual' | 'unreachable' | 'partial' | string;
+  reason?: string;
+  compliance_score?: number | null;
+  severity?: string | null;
+  drift_pct?: number | null;
+  missing_lines?: string[];
+  extra_lines?: string[];
+  changed_lines?: Array<{ key?: string; baseline: string; actual: string }>;
+  violated_policies?: Array<{ policy_id?: string; policy_name?: string; severity?: string; message?: string }>;
+  checked_at?: string;
+}
+
+export const policyApi = {
+  list: (includeDisabled = true) =>
+    request<{ items: PolicyRecord[]; total: number }>(`/policies?include_disabled=${includeDisabled ? 'true' : 'false'}`),
+  get: (policyId: string) =>
+    request<{ policy: PolicyRecord }>(`/policies/${encodeURIComponent(policyId)}`),
+  create: (policy: PolicyRecord) =>
+    request<{ policy: PolicyRecord }>('/policies', { method: 'POST', body: JSON.stringify(policy) }),
+  update: (policyId: string, patch: Partial<PolicyRecord>) =>
+    request<{ policy: PolicyRecord }>(`/policies/${encodeURIComponent(policyId)}`, { method: 'PUT', body: JSON.stringify(patch) }),
+  remove: (policyId: string) =>
+    request<{ deleted: boolean; policy_id: string }>(`/policies/${encodeURIComponent(policyId)}`, { method: 'DELETE' }),
+  clone: (policyId: string, suffix = 'clone') =>
+    request<{ policy: PolicyRecord }>(`/policies/${encodeURIComponent(policyId)}/clone`, { method: 'POST', body: JSON.stringify({ suffix }) }),
+  test: (policyId: string, body: { snapshot_id?: number; device_id?: number }) =>
+    request<{ status: string; violations: any[] }>(`/policies/${encodeURIComponent(policyId)}/test`, { method: 'POST', body: JSON.stringify(body) }),
+  audit: (policyId: string, limit = 50) =>
+    request<{ items: any[]; total: number }>(`/policies/${encodeURIComponent(policyId)}/audit?limit=${limit}`),
+};
+
+export const complianceApi = {
+  summary: () =>
+    request<{
+      counts: Record<string, number>;
+      severity_breakdown: Record<string, number>;
+      compliance_pct: number;
+    }>('/compliance/summary'),
+  listResults: (limit = 200) =>
+    request<{ items: ComplianceResultRecord[]; total: number }>(`/compliance/results?limit=${limit}`),
+  deviceResults: (deviceId: number, limit = 20) =>
+    request<{ items: ComplianceResultRecord[]; total: number }>(`/compliance/results/${deviceId}?limit=${limit}`),
+  scanAll: () =>
+    request<{ status: string; job_id: number }>('/compliance/scan', { method: 'POST' }),
+  scanDevice: (deviceId: number) =>
+    request<{ result: ComplianceResultRecord }>(`/compliance/scan/${deviceId}`, { method: 'POST' }),
+  listAlerts: (limit = 50) =>
+    request<{ items: any[]; total: number }>(`/compliance/alerts?limit=${limit}`),
+  ackAlert: (alertId: number) =>
+    request<{ status: string; alert_id: number }>(`/compliance/alerts/${alertId}/ack`, { method: 'POST' }),
+  getBaseline: (deviceId: number) =>
+    request<{ baseline: { snapshot_id: number; device_id: number; captured_at?: string; snapshot_type?: string } | null }>(
+      `/devices/${deviceId}/baseline`
+    ),
+  setBaseline: (deviceId: number, snapshotId: number) =>
+    request<{ status: string; baseline_snapshot_id: number }>(`/devices/${deviceId}/baseline/set`, {
+      method: 'POST',
+      body: JSON.stringify({ snapshot_id: snapshotId }),
+    }),
+  listSnapshots: (deviceId: number, limit = 50) =>
+    request<{ items: any[]; total: number }>(`/devices/${deviceId}/snapshots?limit=${limit}`),
+  collectSnapshot: (deviceId: number) =>
+    request<{ status: string; snapshot_id: number }>(`/devices/${deviceId}/snapshots/collect`, { method: 'POST' }),
+  scopeOptions: () =>
+    request<{ available: boolean; roles: string[]; tags: string[]; sites: string[]; tenants: string[] }>('/compliance/scope/options'),
+};
+
 // ───────────────────────── Dashboard Summary ─────────────────────────
 export interface DashboardSummary {
   devices: { total: number; up: number; down: number; unknown: number };

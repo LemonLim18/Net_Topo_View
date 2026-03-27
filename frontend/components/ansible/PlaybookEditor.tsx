@@ -38,7 +38,7 @@ const getDisplayName = (tab: AnsibleTab) => {
 };
 
 const PlaybookEditor: React.FC<PlaybookEditorProps> = ({
-  tabs, activeTabId, job, checkResult = null, isChecking = false,
+  tabs, activeTabId, job, checkResult: _checkResult = null, isChecking = false,
   userRole,   onTabSelect, onTabClose, onChange, onSave,
   onCheck, onApprove, onDeploy, onRegenerate,
 }) => {

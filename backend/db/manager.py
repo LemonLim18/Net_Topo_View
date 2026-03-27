@@ -178,6 +178,109 @@ class DatabaseManager:
             except Exception as e:
                 logger.warning(f"Migration error creating index: {e}")
 
+            # M26: Compliance/baseline metadata columns on config_snapshots (safe for existing DBs)
+            _m26_snapshot_cols = [
+                ("config_snapshots", "snapshot_type", "TEXT DEFAULT 'snapshot'"),
+                ("config_snapshots", "source_type", "TEXT"),
+                ("config_snapshots", "normalized_config", "TEXT"),
+                ("config_snapshots", "checksum", "TEXT"),
+                ("config_snapshots", "policy_version", "INTEGER"),
+                ("config_snapshots", "intent_id", "TEXT"),
+                ("config_snapshots", "execution_id", "INTEGER"),
+                ("config_snapshots", "approved_by", "TEXT"),
+                ("config_snapshots", "verified_by", "TEXT"),
+                ("config_snapshots", "verified_at", "TEXT"),
+            ]
+            for table, col, col_def in _m26_snapshot_cols:
+                try:
+                    conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {col_def}")
+                    logger.info("M26 migration: added %s.%s", table, col)
+                except Exception:
+                    pass
+
+            # M26: Compliance tables. (For older DBs created before schema.sql included them.)
+            # We create them here as well to keep initialization tolerant.
+            try:
+                conn.execute(
+                    """CREATE TABLE IF NOT EXISTS policies (
+                        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                        policy_id       TEXT    NOT NULL UNIQUE,
+                        name            TEXT    NOT NULL,
+                        description     TEXT,
+                        category        TEXT    NOT NULL,
+                        scope_json      TEXT    NOT NULL,
+                        rules_json      TEXT    NOT NULL,
+                        normalization_json TEXT,
+                        thresholds_json TEXT,
+                        enabled         BOOLEAN DEFAULT 1,
+                        version         INTEGER DEFAULT 1,
+                        created_by      TEXT,
+                        updated_by      TEXT,
+                        created_at      TEXT    DEFAULT (datetime('now')),
+                        updated_at      TEXT    DEFAULT (datetime('now'))
+                    )"""
+                )
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_policies_enabled ON policies(enabled)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_policies_category_enabled ON policies(category, enabled)")
+            except Exception as e:
+                logger.warning("M26 migration: create policies failed: %s", e)
+
+            try:
+                conn.execute(
+                    """CREATE TABLE IF NOT EXISTS policy_audit_log (
+                        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                        policy_id       INTEGER NOT NULL REFERENCES policies(id) ON DELETE CASCADE,
+                        action          TEXT    NOT NULL,
+                        old_value_json  TEXT,
+                        new_value_json  TEXT,
+                        changed_by      TEXT,
+                        timestamp       TEXT    DEFAULT (datetime('now'))
+                    )"""
+                )
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_policy_audit_policy_ts ON policy_audit_log(policy_id, timestamp)")
+            except Exception as e:
+                logger.warning("M26 migration: create policy_audit_log failed: %s", e)
+
+            try:
+                conn.execute(
+                    """CREATE TABLE IF NOT EXISTS compliance_jobs (
+                        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                        run_mode        TEXT    NOT NULL,
+                        status          TEXT    DEFAULT 'running',
+                        started_at      TEXT    DEFAULT (datetime('now')),
+                        finished_at     TEXT,
+                        summary_json    TEXT,
+                        error_text      TEXT
+                    )"""
+                )
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_compliance_jobs_started ON compliance_jobs(started_at)")
+            except Exception as e:
+                logger.warning("M26 migration: create compliance_jobs failed: %s", e)
+
+            try:
+                conn.execute(
+                    """CREATE TABLE IF NOT EXISTS compliance_results (
+                        id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                        device_id           INTEGER NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+                        baseline_snapshot_id INTEGER REFERENCES config_snapshots(id),
+                        actual_snapshot_id  INTEGER REFERENCES config_snapshots(id),
+                        status              TEXT    NOT NULL,
+                        reason              TEXT,
+                        compliance_score    INTEGER,
+                        severity            TEXT,
+                        drift_pct           REAL,
+                        missing_lines_json  TEXT,
+                        extra_lines_json    TEXT,
+                        changed_lines_json  TEXT,
+                        violated_policies_json TEXT,
+                        checked_at          TEXT    DEFAULT (datetime('now'))
+                    )"""
+                )
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_compliance_results_device_checked ON compliance_results(device_id, checked_at DESC)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_compliance_results_status_checked ON compliance_results(status, checked_at DESC)")
+            except Exception as e:
+                logger.warning("M26 migration: create compliance_results failed: %s", e)
+
     # =============================================================
     # Initialisation
     # =============================================================
@@ -715,12 +818,25 @@ class DatabaseManager:
         with self._connect() as conn:
             cur = conn.execute(
                 """INSERT INTO config_snapshots
-                   (device_id, config_text, config_hash, captured_at)
-                   VALUES (?, ?, ?, ?)""",
+                   (device_id, config_text, config_hash, captured_at,
+                    snapshot_type, source_type, normalized_config, checksum,
+                    policy_version, intent_id, execution_id,
+                    approved_by, verified_by, verified_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     snapshot.device_id, snapshot.config_text,
                     snapshot.config_hash,
                     captured_at,
+                    getattr(snapshot, "snapshot_type", None) or "snapshot",
+                    getattr(snapshot, "source_type", None),
+                    getattr(snapshot, "normalized_config", None),
+                    getattr(snapshot, "checksum", None),
+                    getattr(snapshot, "policy_version", None),
+                    getattr(snapshot, "intent_id", None),
+                    getattr(snapshot, "execution_id", None),
+                    getattr(snapshot, "approved_by", None),
+                    getattr(snapshot, "verified_by", None),
+                    getattr(snapshot, "verified_at", None),
                 ),
             )
             snapshot_id = cur.lastrowid
@@ -748,12 +864,23 @@ class DatabaseManager:
             ).fetchone()
         if not row:
             return None
+        keys = row.keys()
         return ConfigSnapshot(
             id=row["id"],
             device_id=row["device_id"],
             config_text=row["config_text"],
             config_hash=row["config_hash"],
             captured_at=row["captured_at"],
+            snapshot_type=row["snapshot_type"] if "snapshot_type" in keys else "snapshot",
+            source_type=row["source_type"] if "source_type" in keys else None,
+            normalized_config=row["normalized_config"] if "normalized_config" in keys else None,
+            checksum=row["checksum"] if "checksum" in keys else None,
+            policy_version=row["policy_version"] if "policy_version" in keys else None,
+            intent_id=row["intent_id"] if "intent_id" in keys else None,
+            execution_id=row["execution_id"] if "execution_id" in keys else None,
+            approved_by=row["approved_by"] if "approved_by" in keys else None,
+            verified_by=row["verified_by"] if "verified_by" in keys else None,
+            verified_at=row["verified_at"] if "verified_at" in keys else None,
         )
 
     def get_config_history(self, device_id: int, limit: int = 10) -> List[ConfigSnapshot]:
@@ -771,9 +898,312 @@ class DatabaseManager:
                 config_text=r["config_text"],
                 config_hash=r["config_hash"],
                 captured_at=r["captured_at"],
+                snapshot_type=r["snapshot_type"] if "snapshot_type" in r.keys() else "snapshot",
+                source_type=r["source_type"] if "source_type" in r.keys() else None,
+                normalized_config=r["normalized_config"] if "normalized_config" in r.keys() else None,
+                checksum=r["checksum"] if "checksum" in r.keys() else None,
+                policy_version=r["policy_version"] if "policy_version" in r.keys() else None,
+                intent_id=r["intent_id"] if "intent_id" in r.keys() else None,
+                execution_id=r["execution_id"] if "execution_id" in r.keys() else None,
+                approved_by=r["approved_by"] if "approved_by" in r.keys() else None,
+                verified_by=r["verified_by"] if "verified_by" in r.keys() else None,
+                verified_at=r["verified_at"] if "verified_at" in r.keys() else None,
             )
             for r in rows
         ]
+
+    # =============================================================
+    # COMPLIANCE: Policies, audit, results, jobs  (persistent)
+    # =============================================================
+    def _now_iso(self) -> str:
+        return datetime.now(tz=TZ_UTC8).isoformat(timespec="seconds")
+
+    def create_policy(self, policy: Dict[str, Any], actor: str = "system") -> Dict[str, Any]:
+        """
+        Create a policy (version=1) and write an audit log entry.
+        Expects `policy` fields: policy_id, name, description, category, scope, rules,
+        normalization, thresholds, enabled.
+        Returns the stored row as dict.
+        """
+        now = self._now_iso()
+        with self._connect() as conn:
+            cur = conn.execute(
+                """INSERT INTO policies
+                   (policy_id, name, description, category, scope_json, rules_json,
+                    normalization_json, thresholds_json, enabled, version, created_by, updated_by, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)""",
+                (
+                    str(policy.get("policy_id") or "").strip(),
+                    str(policy.get("name") or "").strip(),
+                    policy.get("description"),
+                    str(policy.get("category") or "").strip(),
+                    json.dumps(policy.get("scope") or {}, ensure_ascii=False),
+                    json.dumps(policy.get("rules") or [], ensure_ascii=False),
+                    json.dumps(policy.get("normalization") or {}, ensure_ascii=False),
+                    json.dumps(policy.get("thresholds") or {}, ensure_ascii=False),
+                    1 if bool(policy.get("enabled", True)) else 0,
+                    actor,
+                    actor,
+                    now,
+                    now,
+                ),
+            )
+            pid = cur.lastrowid
+            conn.execute(
+                """INSERT INTO policy_audit_log (policy_id, action, old_value_json, new_value_json, changed_by, timestamp)
+                   VALUES (?, 'create', NULL, ?, ?, ?)""",
+                (pid, json.dumps(policy, ensure_ascii=False), actor, now),
+            )
+            row = conn.execute("SELECT * FROM policies WHERE id = ?", (pid,)).fetchone()
+        return dict(row) if row else {}
+
+    def list_policies(self, include_disabled: bool = True) -> List[Dict[str, Any]]:
+        q = "SELECT * FROM policies"
+        params: List[Any] = []
+        if not include_disabled:
+            q += " WHERE enabled = 1"
+        q += " ORDER BY updated_at DESC, id DESC"
+        with self._connect() as conn:
+            rows = conn.execute(q, params).fetchall()
+        return [self._hydrate_policy_row(r) for r in rows]
+
+    def get_policy_by_policy_id(self, policy_id: str) -> Optional[Dict[str, Any]]:
+        with self._connect() as conn:
+            row = conn.execute("SELECT * FROM policies WHERE policy_id = ?", (policy_id,)).fetchone()
+        return self._hydrate_policy_row(row) if row else None
+
+    def update_policy(self, policy_id: str, patch: Dict[str, Any], actor: str = "system") -> Optional[Dict[str, Any]]:
+        """
+        Update a policy and increment version.
+        Patch can include: name, description, category, scope, rules, normalization, thresholds, enabled.
+        """
+        now = self._now_iso()
+        with self._connect() as conn:
+            row = conn.execute("SELECT * FROM policies WHERE policy_id = ?", (policy_id,)).fetchone()
+            if not row:
+                return None
+            old = self._hydrate_policy_row(row)
+            new_obj = dict(old)
+            # Apply patch
+            for k in ("name", "description", "category", "enabled"):
+                if k in patch:
+                    new_obj[k] = patch[k]
+            if "scope" in patch:
+                new_obj["scope"] = patch.get("scope") or {}
+            if "rules" in patch:
+                new_obj["rules"] = patch.get("rules") or []
+            if "normalization" in patch:
+                new_obj["normalization"] = patch.get("normalization") or {}
+            if "thresholds" in patch:
+                new_obj["thresholds"] = patch.get("thresholds") or {}
+
+            next_version = int(row["version"] or 1) + 1
+            conn.execute(
+                """UPDATE policies
+                   SET name = ?, description = ?, category = ?, scope_json = ?, rules_json = ?,
+                       normalization_json = ?, thresholds_json = ?, enabled = ?, version = ?,
+                       updated_by = ?, updated_at = ?
+                   WHERE policy_id = ?""",
+                (
+                    str(new_obj.get("name") or "").strip(),
+                    new_obj.get("description"),
+                    str(new_obj.get("category") or "").strip(),
+                    json.dumps(new_obj.get("scope") or {}, ensure_ascii=False),
+                    json.dumps(new_obj.get("rules") or [], ensure_ascii=False),
+                    json.dumps(new_obj.get("normalization") or {}, ensure_ascii=False),
+                    json.dumps(new_obj.get("thresholds") or {}, ensure_ascii=False),
+                    1 if bool(new_obj.get("enabled", True)) else 0,
+                    next_version,
+                    actor,
+                    now,
+                    str(policy_id).strip(),
+                ),
+            )
+            conn.execute(
+                """INSERT INTO policy_audit_log (policy_id, action, old_value_json, new_value_json, changed_by, timestamp)
+                   VALUES (?, 'update', ?, ?, ?, ?)""",
+                (
+                    row["id"],
+                    json.dumps(old, ensure_ascii=False),
+                    json.dumps(new_obj, ensure_ascii=False),
+                    actor,
+                    now,
+                ),
+            )
+            row2 = conn.execute("SELECT * FROM policies WHERE policy_id = ?", (policy_id,)).fetchone()
+        return self._hydrate_policy_row(row2) if row2 else None
+
+    def delete_policy(self, policy_id: str, actor: str = "system") -> bool:
+        now = self._now_iso()
+        with self._connect() as conn:
+            row = conn.execute("SELECT * FROM policies WHERE policy_id = ?", (policy_id,)).fetchone()
+            if not row:
+                return False
+            old = self._hydrate_policy_row(row)
+            conn.execute(
+                """INSERT INTO policy_audit_log (policy_id, action, old_value_json, new_value_json, changed_by, timestamp)
+                   VALUES (?, 'delete', ?, NULL, ?, ?)""",
+                (row["id"], json.dumps(old, ensure_ascii=False), actor, now),
+            )
+            cur = conn.execute("DELETE FROM policies WHERE policy_id = ?", (policy_id,))
+            return cur.rowcount > 0
+
+    def list_policy_audit(self, policy_id: str, limit: int = 50) -> List[Dict[str, Any]]:
+        with self._connect() as conn:
+            prow = conn.execute("SELECT id FROM policies WHERE policy_id = ?", (policy_id,)).fetchone()
+            if not prow:
+                return []
+            rows = conn.execute(
+                "SELECT * FROM policy_audit_log WHERE policy_id = ? ORDER BY timestamp DESC, id DESC LIMIT ?",
+                (prow["id"], limit),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def create_compliance_job(self, run_mode: str) -> int:
+        with self._connect() as conn:
+            cur = conn.execute(
+                "INSERT INTO compliance_jobs (run_mode, status, started_at) VALUES (?, 'running', datetime('now'))",
+                (run_mode,),
+            )
+            return cur.lastrowid
+
+    def finish_compliance_job(self, job_id: int, status: str, summary: Optional[Dict[str, Any]] = None, error_text: str = "") -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE compliance_jobs SET status = ?, finished_at = datetime('now'), summary_json = ?, error_text = ? WHERE id = ?",
+                (status, json.dumps(summary or {}, ensure_ascii=False), error_text, job_id),
+            )
+
+    def insert_compliance_result(self, result: Dict[str, Any]) -> int:
+        """
+        Insert a compliance result row.
+        Expected: device_id, baseline_snapshot_id, actual_snapshot_id, status, reason,
+                  compliance_score, severity, drift_pct, missing_lines, extra_lines, changed_lines, violated_policies.
+        """
+        with self._connect() as conn:
+            cur = conn.execute(
+                """INSERT INTO compliance_results
+                   (device_id, baseline_snapshot_id, actual_snapshot_id, status, reason,
+                    compliance_score, severity, drift_pct,
+                    missing_lines_json, extra_lines_json, changed_lines_json, violated_policies_json, checked_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))""",
+                (
+                    result.get("device_id"),
+                    result.get("baseline_snapshot_id"),
+                    result.get("actual_snapshot_id"),
+                    result.get("status"),
+                    result.get("reason"),
+                    result.get("compliance_score"),
+                    result.get("severity"),
+                    result.get("drift_pct"),
+                    json.dumps(result.get("missing_lines") or [], ensure_ascii=False),
+                    json.dumps(result.get("extra_lines") or [], ensure_ascii=False),
+                    json.dumps(result.get("changed_lines") or [], ensure_ascii=False),
+                    json.dumps(result.get("violated_policies") or [], ensure_ascii=False),
+                ),
+            )
+            return cur.lastrowid
+
+    def get_latest_compliance_results(self, limit: int = 200) -> List[Dict[str, Any]]:
+        """
+        Returns the latest compliance result per device (deduplicated).
+        """
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT cr.*,
+                       d.hostname AS hostname,
+                       d.vendor   AS vendor,
+                       d.role     AS role
+                FROM compliance_results cr
+                JOIN (
+                    SELECT device_id, MAX(checked_at) AS max_checked
+                    FROM compliance_results
+                    GROUP BY device_id
+                ) latest
+                ON latest.device_id = cr.device_id AND latest.max_checked = cr.checked_at
+                LEFT JOIN devices d ON d.id = cr.device_id
+                ORDER BY cr.checked_at DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        return [self._hydrate_compliance_result_row(r) for r in rows]
+
+    def get_device_compliance_history(self, device_id: int, limit: int = 20) -> List[Dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT cr.*, d.hostname AS hostname, d.vendor AS vendor, d.role AS role "
+                "FROM compliance_results cr "
+                "LEFT JOIN devices d ON d.id = cr.device_id "
+                "WHERE cr.device_id = ? ORDER BY cr.checked_at DESC, cr.id DESC LIMIT ?",
+                (device_id, limit),
+            ).fetchall()
+        return [self._hydrate_compliance_result_row(r) for r in rows]
+
+    def get_latest_baseline_snapshot(self, device_id: int) -> Optional[ConfigSnapshot]:
+        """
+        Baseline selection rule: latest snapshot_type='baseline' first, else snapshot_type='golden'.
+        Returns None if none exists.
+        """
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT * FROM config_snapshots
+                WHERE device_id = ? AND snapshot_type IN ('baseline', 'golden')
+                ORDER BY
+                  CASE snapshot_type WHEN 'baseline' THEN 0 ELSE 1 END,
+                  captured_at DESC,
+                  id DESC
+                LIMIT 1
+                """,
+                (device_id,),
+            ).fetchone()
+        if not row:
+            return None
+        return self.get_config_snapshot(int(row["id"]))
+
+    def _hydrate_policy_row(self, row: Optional[sqlite3.Row]) -> Dict[str, Any]:
+        if not row:
+            return {}
+        out = dict(row)
+        try:
+            out["scope"] = json.loads(out.get("scope_json") or "{}")
+        except Exception:
+            out["scope"] = {}
+        try:
+            out["rules"] = json.loads(out.get("rules_json") or "[]")
+        except Exception:
+            out["rules"] = []
+        try:
+            out["normalization"] = json.loads(out.get("normalization_json") or "{}")
+        except Exception:
+            out["normalization"] = {}
+        try:
+            out["thresholds"] = json.loads(out.get("thresholds_json") or "{}")
+        except Exception:
+            out["thresholds"] = {}
+        # Remove raw JSON columns to keep contract clean
+        out.pop("scope_json", None)
+        out.pop("rules_json", None)
+        out.pop("normalization_json", None)
+        out.pop("thresholds_json", None)
+        return out
+
+    def _hydrate_compliance_result_row(self, row: sqlite3.Row) -> Dict[str, Any]:
+        out = dict(row)
+        for k, default in (
+            ("missing_lines_json", []),
+            ("extra_lines_json", []),
+            ("changed_lines_json", []),
+            ("violated_policies_json", []),
+        ):
+            try:
+                out[k.replace("_json", "")] = json.loads(out.get(k) or "[]")
+            except Exception:
+                out[k.replace("_json", "")] = default
+            out.pop(k, None)
+        return out
 
     # =============================================================
     # AUDIT LOG  (persistent, append-only)

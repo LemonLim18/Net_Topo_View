@@ -76,7 +76,18 @@ CREATE TABLE IF NOT EXISTS config_snapshots (
     device_id       INTEGER NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
     config_text     TEXT    NOT NULL,
     config_hash     TEXT,                       -- SHA-256 for deduplication
-    captured_at     TEXT    DEFAULT (datetime('now'))
+    captured_at     TEXT    DEFAULT (datetime('now')),
+    -- M26: Compliance & baseline metadata (added via manager migration; kept here for new DBs)
+    snapshot_type   TEXT    DEFAULT 'snapshot', -- snapshot | baseline | rollback | golden | actual
+    source_type     TEXT,                       -- deploy_pipeline | manual | import | scan
+    normalized_config TEXT,                     -- normalized form used for diff/compliance
+    checksum        TEXT,                       -- checksum of normalized_config (or config_text)
+    policy_version  INTEGER,                    -- policy version used when captured/promoted
+    intent_id       TEXT,                       -- link to intents.id when applicable
+    execution_id    INTEGER,                    -- link to jobs.id when applicable
+    approved_by     TEXT,
+    verified_by     TEXT,
+    verified_at     TEXT
 );
 
 -- -----------------------------------------------------------
@@ -98,6 +109,7 @@ CREATE INDEX IF NOT EXISTS idx_interfaces_device   ON interfaces(device_id);
 CREATE INDEX IF NOT EXISTS idx_links_src           ON links(src_device_id);
 CREATE INDEX IF NOT EXISTS idx_links_dst           ON links(dst_device_id);
 CREATE INDEX IF NOT EXISTS idx_snapshots_device    ON config_snapshots(device_id);
+CREATE INDEX IF NOT EXISTS idx_snapshots_device_type ON config_snapshots(device_id, snapshot_type, captured_at);
 CREATE INDEX IF NOT EXISTS idx_audit_created       ON audit_log(created_at);
 
 -- -----------------------------------------------------------
@@ -175,6 +187,74 @@ CREATE TABLE IF NOT EXISTS drift_events (
 
 CREATE INDEX IF NOT EXISTS idx_drift_device        ON drift_events(device_id);
 CREATE INDEX IF NOT EXISTS idx_drift_timestamp     ON drift_events(timestamp);
+
+-- -----------------------------------------------------------
+-- 9b. Policy Compliance (M26)
+-- -----------------------------------------------------------
+CREATE TABLE IF NOT EXISTS policies (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    policy_id       TEXT    NOT NULL UNIQUE,        -- stable external id (slug / uuid)
+    name            TEXT    NOT NULL,
+    description     TEXT,
+    category        TEXT    NOT NULL,               -- interface | vlan | ospf | static_route | acl | snmp | logging | ntp | ...
+    scope_json      TEXT    NOT NULL,               -- JSON: vendors, device_roles, device_groups, devices
+    rules_json      TEXT    NOT NULL,               -- JSON: array of rules
+    normalization_json TEXT,                        -- JSON: ignore_patterns, etc.
+    thresholds_json TEXT,                           -- JSON: auto_alert, alert_severity_min, score thresholds
+    enabled         BOOLEAN DEFAULT 1,
+    version         INTEGER DEFAULT 1,
+    created_by      TEXT,
+    updated_by      TEXT,
+    created_at      TEXT    DEFAULT (datetime('now')),
+    updated_at      TEXT    DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_policies_category_enabled ON policies(category, enabled);
+CREATE INDEX IF NOT EXISTS idx_policies_enabled ON policies(enabled);
+
+CREATE TABLE IF NOT EXISTS policy_audit_log (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    policy_id       INTEGER NOT NULL REFERENCES policies(id) ON DELETE CASCADE,
+    action          TEXT    NOT NULL,               -- create | update | enable | disable | delete | clone
+    old_value_json  TEXT,
+    new_value_json  TEXT,
+    changed_by      TEXT,
+    timestamp       TEXT    DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_policy_audit_policy_ts ON policy_audit_log(policy_id, timestamp);
+
+CREATE TABLE IF NOT EXISTS compliance_jobs (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_mode        TEXT    NOT NULL,               -- scheduled | manual | per_device
+    status          TEXT    DEFAULT 'running',      -- running | success | failed | partial
+    started_at      TEXT    DEFAULT (datetime('now')),
+    finished_at     TEXT,
+    summary_json    TEXT,
+    error_text      TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_compliance_jobs_started ON compliance_jobs(started_at);
+
+CREATE TABLE IF NOT EXISTS compliance_results (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    device_id           INTEGER NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+    baseline_snapshot_id INTEGER REFERENCES config_snapshots(id),
+    actual_snapshot_id  INTEGER REFERENCES config_snapshots(id),
+    status              TEXT    NOT NULL,           -- compliant | drifted | violated | no_baseline | no_actual | unreachable | partial
+    reason              TEXT,                       -- reason for no_baseline/no_actual/unreachable/partial
+    compliance_score    INTEGER,
+    severity            TEXT,                       -- low | medium | high | critical
+    drift_pct           REAL,
+    missing_lines_json  TEXT,
+    extra_lines_json    TEXT,
+    changed_lines_json  TEXT,
+    violated_policies_json TEXT,                    -- array of {policy_id,name,rule_id,severity,message,evidence}
+    checked_at          TEXT    DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_compliance_results_device_checked ON compliance_results(device_id, checked_at DESC);
+CREATE INDEX IF NOT EXISTS idx_compliance_results_status_checked ON compliance_results(status, checked_at DESC);
 
 -- -----------------------------------------------------------
 -- 10. Security Audits (M13a)

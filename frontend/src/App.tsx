@@ -11,6 +11,8 @@ import AnsibleStudioView from '../views/AnsibleStudioView';
 import TemplateStudioView from '../views/TemplateStudioView';
 import ConfigBackupView from '../views/ConfigBackupView';
 import DriftView from '../views/DriftView';
+import PolicyBuilder from '../views/PolicyBuilder';
+import ComplianceDeviceDetail from '../views/ComplianceDeviceDetail';
 import IncidentDashboard from '../views/IncidentDashboard';
 import OnboardingView from '../views/OnboardingView';
 import IntentHistoryView from '../views/IntentHistoryView';
@@ -43,6 +45,8 @@ const isViewId = (value: string | null): value is ViewId => {
     'topology',
     'netbox_devices',
     'drift',
+    'policy_builder',
+    'compliance_device_detail',
     'net_perf',
     'net_chat',
     'knowledge_base',
@@ -198,6 +202,10 @@ const App: React.FC = () => {
         return <NetBoxDevices />;
       case 'drift':
         return <DriftView />;
+      case 'policy_builder':
+        return <PolicyBuilder />;
+      case 'compliance_device_detail':
+        return <ComplianceDeviceDetail deviceId={selectedDeviceId} />;
       case 'device_detail':
         return <div className="p-6"><h2 className="text-xl font-bold">Device 360 — #{selectedDeviceId ?? '?'}</h2><p className="mt-2 opacity-60">Device detail view — Phase 2.</p></div>;
       case 'net_perf':

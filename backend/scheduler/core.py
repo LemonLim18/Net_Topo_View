@@ -15,6 +15,7 @@ from apscheduler.triggers.interval import IntervalTrigger
 from scheduler.jobs import (
     job_crawl,
     job_drift_check,
+    job_compliance_scan,
     job_security_audit,
     job_cve_rescan,
     job_anomaly_detect,
@@ -64,6 +65,7 @@ def start_scheduler(crawl_fn: Callable[..., Awaitable], orchestrator=None, broad
     # Read configurable intervals
     crawl_min   = _env_int("SCHED_CRAWL_MINUTES", 15)
     drift_min   = _env_int("SCHED_DRIFT_MINUTES", 30)
+    compliance_min = _env_int("SCHED_COMPLIANCE_MINUTES", 30)
     audit_hrs   = _env_int("SCHED_AUDIT_HOURS", 6)
     cve_hrs     = _env_int("SCHED_CVE_HOURS", 24)
     anomaly_min = _env_int("SCHED_ANOMALY_MINUTES", 5)
@@ -84,6 +86,14 @@ def start_scheduler(crawl_fn: Callable[..., Awaitable], orchestrator=None, broad
         trigger=IntervalTrigger(minutes=drift_min),
         id="drift_check",
         name="Drift Detection",
+        replace_existing=True,
+    )
+
+    _scheduler.add_job(
+        job_compliance_scan,
+        trigger=IntervalTrigger(minutes=compliance_min),
+        id="compliance_scan",
+        name="Policy Compliance Scan",
         replace_existing=True,
     )
 
@@ -113,8 +123,8 @@ def start_scheduler(crawl_fn: Callable[..., Awaitable], orchestrator=None, broad
 
     _scheduler.start()
     logger.info(
-        "Scheduler started with %d jobs — Crawl: %dm, Drift: %dm, Audit: %dh, CVE: %dh, Anomaly: %dm",
-        len(_scheduler.get_jobs()), crawl_min, drift_min, audit_hrs, cve_hrs, anomaly_min,
+        "Scheduler started with %d jobs — Crawl: %dm, Drift: %dm, Compliance: %dm, Audit: %dh, CVE: %dh, Anomaly: %dm",
+        len(_scheduler.get_jobs()), crawl_min, drift_min, compliance_min, audit_hrs, cve_hrs, anomaly_min,
     )
 
 

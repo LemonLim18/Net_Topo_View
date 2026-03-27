@@ -57,6 +57,48 @@ def test_resolve_backend_intent_request_parses_nl_and_infers_vendor(monkeypatch)
     assert policy["approved"] is True
 
 
+def test_resolve_backend_intent_request_recovers_qos_prioritize_voice_prompt(monkeypatch):
+    monkeypatch.setattr(ansible_api, "_db", _DbWithVendors({"Acc_Cisco_1": "cisco_ios"}))
+    monkeypatch.setattr(ansible_api, "_build_intent_parse_context", lambda *_: "")
+    monkeypatch.setattr(ansible_api, "_policy_validate_intent", lambda *args, **kwargs: {"approved": True})
+    monkeypatch.setattr(ansible_api, "_resolve_target_hosts", lambda hosts: list(hosts or []))
+
+    def _fake_parse(self, user_message, topology_context=""):
+        return json.dumps(
+            {
+                "intent_type": "query",
+                "action": "unknown",
+                "feature": "general",
+                "vendor": "",
+                "parameters": {},
+                "scope": {"device_role": None, "device_hostnames": []},
+                "resolved_devices": ["Acc_Cisco_1"],
+                "risk_level": "medium",
+                "justification": user_message,
+                "requires_disambiguation": False,
+                "disambiguation_message": "",
+            }
+        )
+
+    monkeypatch.setattr("llm.intent.IntentParser.parse", _fake_parse)
+
+    req = ansible_api.CreateAndPlanRequest(
+        intent_description="Configure QoS to prioritize voice traffic on GigabitEthernet1/0/1",
+    )
+
+    plan_req, parsed_intent, policy = ansible_api._resolve_backend_intent_request(
+        req,
+        user={"username": "tester", "role": "admin"},
+    )
+
+    assert plan_req.feature == "qos"
+    assert plan_req.action in {"configure_qos", "apply_qos_policy_to_interface"}
+    assert plan_req.target_hosts == ["Acc_Cisco_1"]
+    assert parsed_intent["feature"] == "qos"
+    assert parsed_intent["action"] in {"configure_qos", "apply_qos_policy_to_interface"}
+    assert policy["approved"] is True
+
+
 def test_ensure_planning_context_reconciles_then_retries(monkeypatch):
     monkeypatch.setattr(ansible_api, "_db", SimpleNamespace(get_all_devices=lambda: []))
 
@@ -268,5 +310,27 @@ def test_planning_context_readiness_allows_static_route_with_stale_inventory_whe
             ],
         }
     )
+    assert readiness["ready"] is True
+    assert not any("freshness is stale" in issue for issue in readiness["issues"])
+
+
+def test_planning_context_readiness_allows_qos_with_stale_inventory_when_device_fields_present():
+    readiness = planning_context_readiness(
+        {
+            "target_hosts": ["SW1"],
+            "feature": "qos",
+            "inventory": {"source": "netbox", "freshness": {"freshness_class": "stale"}},
+            "planned_topology": {"source": "netbox", "freshness": {"freshness_class": "stale"}},
+            "devices": [
+                {
+                    "hostname": "SW1",
+                    "management_ip": "10.0.0.10",
+                    "vendor": "cisco_ios",
+                    "interfaces": [],
+                }
+            ],
+        }
+    )
+
     assert readiness["ready"] is True
     assert not any("freshness is stale" in issue for issue in readiness["issues"])

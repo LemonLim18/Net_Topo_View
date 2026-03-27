@@ -176,11 +176,6 @@ Now, I would like to do for the prompt of category QoS, so it can be done in thi
 
 
 - [ ] Create policing policy for HTTP traffic on SW1  
-**Pipeline Trace**
-
-
-  **Parsed Intent**  
-
 
 - [ ] Configure QoS on devices *(generic / ambiguous test)*  
 

@@ -2695,14 +2695,14 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
           >
             <Plus style={{ width: 13, height: 13 }} />
           </button>
-          {activeJob && (
+          {/* {activeJob && (
             <span style={{
               fontSize: 10, padding: '1px 7px', borderRadius: 10,
               background: activeJob.status === 'success' ? '#1b3a1f' : activeJob.status === 'failed' ? '#3a1010' : activeJob.status === 'running' ? '#3a2e00' : '#2d2d2d',
               color:      activeJob.status === 'success' ? '#69f0ae' : activeJob.status === 'failed' ? '#ff8a80' : activeJob.status === 'running' ? '#ffd740' : '#858585',
               border:     `1px solid ${activeJob.status === 'success' ? '#2e7d32' : activeJob.status === 'failed' ? '#c62828' : activeJob.status === 'running' ? '#f9a825' : '#3c3c3c'}`,
             }}>#{activeJob.jobId} · {activeJob.status}</span>
-          )}
+          )} */}
           {/* <button
             onClick={handleRebuildRag}
             disabled={isRebuildingRag}

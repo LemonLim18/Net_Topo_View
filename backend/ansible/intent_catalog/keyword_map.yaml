@@ -30,7 +30,7 @@ categories:
   acl:
     aliases: ["acl", "access list", "access-list", "firewall rule"]
   qos:
-    aliases: ["qos", "quality of service", "traffic policy", "service policy"]
+    aliases: ["qos", "quality of service", "traffic policy", "service policy", "service-policy", "policy-map", "class-map", "dscp", "policing"]
   static_route:
     aliases: ["static route", "default route", "route to", "next hop"]
   ospf:
@@ -70,13 +70,28 @@ operation_hints:
     phrases: ["qos policy", "service policy", "police", "shape", "priority queue"]
     categories: [qos]
     prefer_operations: [configure_qos]
+
+  qos_apply_policy:
+    phrases: ["apply qos", "apply qos policy", "service-policy", "service policy"]
+    categories: [qos]
+    prefer_operations: [apply_qos_policy_to_interface]
+
+  qos_mark_dscp:
+    phrases: ["mark traffic", "mark dscp", "set dscp", "dscp 46", "dscp"]
+    categories: [qos]
+    prefer_operations: [mark_qos_dscp]
+
+  qos_policing:
+    phrases: ["policing policy", "create policing", "police http", "police traffic", "rate-limit"]
+    categories: [qos]
+    prefer_operations: [create_qos_policing_policy]
   ospf:
     phrases: ["ospf area", "router ospf", "ospf network"]
     categories: [ospf]
     prefer_operations: [configure_ospf]
 
   apply_acl_iface:
-    phrases: ["apply acl", "inbound on", "outbound on", "ip access-group"]
+    phrases: ["apply acl", "ip access-group", "traffic-filter acl"]
     categories: [acl]
     prefer_operations: [apply_acl_to_interface]
 

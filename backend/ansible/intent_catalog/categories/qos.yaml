@@ -8,38 +8,73 @@ operations:
   create_qos_policy:
     action: create_qos_policy
     feature: qos
-    required_parameters: [policy_name, target_devices]
+    required_parameters: [policy_name, qos_type, classification_rules, target_devices]
     implicit_requires_targets: true
     optional_parameters: [classes, actions, description]
     keyword_triggers:
       - "create qos"
       - "qos policy"
+      - "policy-map"
+      - "class-map"
     rules:
       - "Device-level QoS policy object (class-map / policy-map style)."
 
   apply_qos_policy_to_interface:
     action: apply_qos_policy_to_interface
     feature: qos
-    required_parameters: [policy_name, interfaces, target_devices]
+    required_parameters: [policy_name, interface_apply, target_devices]
     implicit_requires_targets: true
-    optional_parameters: [direction, service_policy]
+    optional_parameters: [direction, service_policy, apply_to, interfaces]
     keyword_triggers:
       - "apply qos"
       - "service policy"
-      - "inbound"
-      - "outbound"
+      - "service-policy"
+      - "attach policy"
     rules:
       - "Attach named policy to one or more interfaces."
+
+  mark_qos_dscp:
+    action: mark_qos_dscp
+    feature: qos
+    required_parameters: [marking_dscp, traffic_type, target_devices]
+    implicit_requires_targets: true
+    optional_parameters: [policy_name, interface_apply, direction, qos_class]
+    keyword_triggers:
+      - "mark traffic"
+      - "mark dscp"
+      - "set dscp"
+      - "dscp"
+    rules:
+      - "Set DSCP marking value for a specific traffic type/class."
+
+  create_qos_policing_policy:
+    action: create_qos_policing_policy
+    feature: qos
+    required_parameters: [policy_name, traffic_type, police_rate, target_devices]
+    implicit_requires_targets: true
+    optional_parameters: [conform_action, exceed_action, interface_apply, direction]
+    keyword_triggers:
+      - "police"
+      - "policing"
+      - "rate-limit"
+      - "traffic shaping"
+    rules:
+      - "Create a policing policy for a traffic class with an explicit rate."
 
   configure_qos:
     action: configure_qos
     feature: qos
     required_parameter_groups:
       any_of:
-        - [policy_name, target_devices]
-        - [interfaces, target_devices]
+        - [policy_name, qos_type, classification_rules, target_devices]
+        - [policy_name, interface_apply, target_devices]
+        - [marking_dscp, traffic_type, target_devices]
+        - [policy_name, traffic_type, police_rate, target_devices]
     implicit_requires_targets: true
     optional_parameters:
+      - interface_apply
+      - apply_to
+      - interfaces
       - marking_dscp
       - qos_class
       - traffic_type
@@ -47,15 +82,19 @@ operations:
       - direction
       - police_rate
       - shape_rate
+      - qos_type
+      - classification_rules
+      - policy_name
     keyword_triggers:
       - "qos"
       - "service policy"
       - "service-policy"
       - "police"
+      - "policing"
       - "shape"
       - "dscp"
       - "prioritize"
     dependencies:
       - "When using interfaces-only group, include marking/classifier hints (e.g. DSCP, voice) when possible."
     rules:
-      - "Device policy and/or per-interface QoS; prefer create_qos_policy / apply_qos_policy_to_interface when unambiguous."
+      - "Device policy and/or per-interface QoS; prefer create_qos_policy / apply_qos_policy_to_interface / mark_qos_dscp / create_qos_policing_policy when unambiguous."

@@ -186,6 +186,18 @@ def test_validate_interface_names_override_ignores_stale_llm_secondary():
     assert not r2.ok
 
 
+def test_explicit_interface_names_apply_to_is_authoritative_over_interfaces():
+    """When apply_to exists, stale interfaces[] must be ignored."""
+    params = {
+        "apply_to": ["Acc_Cisco_1:Ethernet0/1 in"],
+        "interfaces": [{"name": "GigabitEthernet1/0/1"}],  # stale / invalid
+    }
+    names = explicit_interface_names_from_request_params(params)
+    assert len(names) == 1
+    assert "Ethernet0/1" in names[0]
+    assert "GigabitEthernet1/0/1" not in names
+
+
 def test_validate_host_with_empty_interface_inventory_is_flagged():
     """Device present but no interface rows: names cannot be verified (not a silent pass)."""
     ctx = {

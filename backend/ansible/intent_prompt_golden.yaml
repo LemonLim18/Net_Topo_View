@@ -279,6 +279,11 @@ cases:
   qos_create_voice_policy_sw1:
     expected_preview:
       preview_status: 200
+      expected_categories_contains:
+        - "qos"
+      expected_action_in:
+        - "create_qos_policy"
+        - "configure_qos"
     stageB:
       enabled: true
       must_contain:
@@ -288,6 +293,12 @@ cases:
   qos_config_prioritize_voice_gi0_1_sw1:
     expected_preview:
       preview_status: 200
+      expected_categories_contains:
+        - "qos"
+      expected_action_in:
+        - "configure_qos"
+        - "apply_qos_policy_to_interface"
+        - "mark_qos_dscp"
     stageB:
       enabled: true
       must_contain:
@@ -297,6 +308,11 @@ cases:
   qos_apply_in_policy_inbound_gi0_2_sw1:
     expected_preview:
       preview_status: 200
+      expected_categories_contains:
+        - "qos"
+      expected_action_in:
+        - "apply_qos_policy_to_interface"
+        - "configure_qos"
       # Applying an existing policy should not require re-specifying classification rules.
       expected_params_disambiguation_fields_forbidden_contains:
         - "classification_rules"
@@ -309,6 +325,11 @@ cases:
   qos_mark_dscp_46_on_sw2:
     expected_preview:
       preview_status: 200
+      expected_categories_contains:
+        - "qos"
+      expected_action_in:
+        - "mark_qos_dscp"
+        - "configure_qos"
     stageB:
       enabled: true
       must_contain:
@@ -317,6 +338,11 @@ cases:
   qos_create_policing_policy_http_sw1:
     expected_preview:
       preview_status: 200
+      expected_categories_contains:
+        - "qos"
+      expected_action_in:
+        - "create_qos_policing_policy"
+        - "configure_qos"
     stageB:
       enabled: true
       must_contain:
@@ -327,6 +353,10 @@ cases:
   qos_config_generic_ambiguous:
     expected_preview:
       preview_status: 200
+      expected_categories_contains:
+        - "qos"
+      expected_action_in:
+        - "configure_qos"
       expected_any_disambiguation_kind: true
     stageB:
       enabled: false
@@ -493,6 +523,11 @@ cases:
   qos_create_missing_classification_rules_expect_question:
     expected_preview:
       preview_status: 200
+      expected_categories_contains:
+        - "qos"
+      expected_action_in:
+        - "create_qos_policy"
+        - "configure_qos"
       expected_params_disambiguation_fields_contains:
         - "classification_rules"
     stageB:

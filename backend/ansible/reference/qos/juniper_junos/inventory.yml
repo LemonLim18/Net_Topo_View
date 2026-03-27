@@ -1,0 +1,15 @@
+---
+all:
+  children:
+    vendor_juniper_junos:
+      vars:
+        ansible_network_os: junos
+        ansible_connection: netconf
+        ansible_user: "{{ vault_net_user }}"
+        ansible_password: "{{ vault_net_pass }}"
+      hosts:
+        sw4:
+          ansible_host: 192.168.1.40
+    access_switches:
+      children:
+        vendor_juniper_junos: {}

@@ -21,6 +21,7 @@ import {
   ChevronRight,
   FileCode2,
   HardDrive,
+  ClipboardList,
 } from 'lucide-react';
 import type { ViewId, User } from '../types';
 import { normalizeUserRole } from '../types';
@@ -60,7 +61,7 @@ const Sidebar: React.FC<SidebarProps> = ({ currentView, setView, user, onLogout,
           onClick={() => setView(id)}
           title={label}
         >
-          <Icon className={`h-4 w-4 flex-shrink-0 ${isActive ? 'text-primary' : (iconColor || '')}`} />
+          <Icon className={`h-4 w-4 shrink-0 ${isActive ? 'text-primary' : (iconColor || '')}`} />
           {!collapsed && <span className={`whitespace-nowrap overflow-hidden ${isActive ? '' : (textColor || '')}`}>{label}</span>}
         </a>
       </li>
@@ -105,7 +106,7 @@ const Sidebar: React.FC<SidebarProps> = ({ currentView, setView, user, onLogout,
 
   return (
     <aside
-      className={`bg-base-100 flex-shrink-0 shadow-lg z-10 flex flex-col h-full transition-all duration-300 ease-in-out
+      className={`bg-base-100 shrink-0 shadow-lg z-10 flex flex-col h-full transition-all duration-300 ease-in-out
         ${collapsed ? 'w-16' : 'w-64'}
       `}
     >
@@ -143,7 +144,8 @@ const Sidebar: React.FC<SidebarProps> = ({ currentView, setView, user, onLogout,
           open={networkOpen}
           onToggle={() => setNetworkOpen(!networkOpen)}
         >
-          <MenuItem id="drift" label="Compliance / Drift" icon={GitCompareArrows} iconColor="text-primary"/>
+          <MenuItem id="drift" label="Compliance & Drift" icon={GitCompareArrows} iconColor="text-primary"/>
+          <MenuItem id="policy_builder" label="Policy Builder" icon={ClipboardList} iconColor="text-primary"/>
           <MenuItem id="netbox_devices" label="Device Inventory" icon={Server} iconColor="text-primary"/>
           <MenuItem id="onboarding" label="Onboard Device" icon={PackagePlus} iconColor="text-primary"/>
           <MenuItem id="net_perf" label="Performance" icon={Activity} iconColor="text-primary"/>
