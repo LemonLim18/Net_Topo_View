@@ -40,7 +40,7 @@ const OperationEditor: React.FC<Props> = ({ operation }) => {
       <div className="form-control">
         <label className="label"><span className="label-text font-bold opacity-70">Optional Fields</span></label>
         <div className="flex flex-wrap gap-2 p-3 bg-base-200 border border-base-300 rounded-lg min-h-16">
-           {operation.optional_fields.map(f => (
+           {(operation.optional_fields || []).map(f => (
              <span key={f} className="badge gap-2">{f} <button className="hover:text-black">x</button></span>
            ))}
         </div>

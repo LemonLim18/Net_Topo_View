@@ -78,6 +78,7 @@ export type ViewId =
   | 'netbox_devices'
   | 'drift'
   | 'policy_builder'
+  | 'compliance_hub'
   | 'compliance_device_detail'
   | 'net_perf' 
   | 'net_chat'

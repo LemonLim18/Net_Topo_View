@@ -474,6 +474,45 @@ export const configApi = {
     }),
 };
 
+// --- Template Studio Git Terminal API ---
+export const templateGitApi = {
+  status: () =>
+    request<{
+      repo_root: string;
+      branch: string;
+      is_dirty: boolean;
+      origin: string;
+      github_remote: boolean;
+      github_cli_available: boolean;
+      github_authenticated: boolean;
+      github_username?: string | null;
+    }>('/template-git/status'),
+
+  exec: (command: string) =>
+    request<{
+      ok: boolean;
+      exit_code: number;
+      stdout: string;
+      stderr: string;
+      branch: string;
+      is_dirty: boolean;
+    }>('/template-git/exec', {
+      method: 'POST',
+      body: JSON.stringify({ command }),
+    }),
+
+  githubLogin: (payload: { username: string; token: string; git_name?: string; git_email?: string }) =>
+    request<{ status: string; username: string; branch: string; origin: string }>('/template-git/github/login', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
+  githubLogout: () =>
+    request<{ status: string }>('/template-git/github/logout', {
+      method: 'POST',
+    }),
+};
+
 // --- NetBox Device Inventory API ---
 export interface DeviceRecord {
   id: number;

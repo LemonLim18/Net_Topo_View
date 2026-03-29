@@ -3,17 +3,12 @@ import {
   Home,
   Network,
   BotMessageSquare, 
-  Activity, 
-  ShieldAlert, 
-  ShieldCheck, 
-  Siren,
+  Activity,
+  ShieldCheck,
   LogOut,
-  ScanSearch,
-  Gauge,
   Server,
   BookOpen,
   Workflow,
-  GitCompareArrows,
   PackagePlus,
   History,
   ListChecks,
@@ -21,7 +16,6 @@ import {
   ChevronRight,
   FileCode2,
   HardDrive,
-  ClipboardList,
 } from 'lucide-react';
 import type { ViewId, User } from '../types';
 import { normalizeUserRole } from '../types';
@@ -39,15 +33,31 @@ interface SidebarProps {
 
 const Sidebar: React.FC<SidebarProps> = ({ currentView, setView, user, onLogout, collapsed, onToggleCollapse }) => {
   const [networkOpen, setNetworkOpen] = useState(true);
-  const [securityOpen, setSecurityOpen] = useState(true);
   const [automationOpen, setAutomationOpen] = useState(true);
 
   if (!user) return null;
   const normalizedRole = normalizeUserRole(user.role);
 
   // ── Menu Item ──
-  const MenuItem = ({ id, label, icon: Icon, iconColor, textColor }: { id: ViewId, label: string, icon: any, iconColor?: string, textColor?: string }) => {
-    const isActive = currentView === id;
+  const MenuItem = ({
+    id,
+    label,
+    icon: Icon,
+    iconColor,
+    textColor,
+    matchViews,
+  }: {
+    id: ViewId;
+    label: string;
+    icon: any;
+    iconColor?: string;
+    textColor?: string;
+    /** Treat these views as active for this row (e.g. legacy drift / policy routes → hub). */
+    matchViews?: ViewId[];
+  }) => {
+    const isActive = matchViews?.length
+      ? matchViews.includes(currentView)
+      : currentView === id;
     return (
       <li>
         <a
@@ -144,8 +154,13 @@ const Sidebar: React.FC<SidebarProps> = ({ currentView, setView, user, onLogout,
           open={networkOpen}
           onToggle={() => setNetworkOpen(!networkOpen)}
         >
-          <MenuItem id="drift" label="Compliance & Drift" icon={GitCompareArrows} iconColor="text-primary"/>
-          <MenuItem id="policy_builder" label="Policy Builder" icon={ClipboardList} iconColor="text-primary"/>
+          <MenuItem
+            id="compliance_hub"
+            label="Compliance & governance"
+            icon={ShieldCheck}
+            iconColor="text-primary"
+            matchViews={['compliance_hub', 'drift', 'policy_builder']}
+          />
           <MenuItem id="netbox_devices" label="Device Inventory" icon={Server} iconColor="text-primary"/>
           <MenuItem id="onboarding" label="Onboard Device" icon={PackagePlus} iconColor="text-primary"/>
           <MenuItem id="net_perf" label="Performance" icon={Activity} iconColor="text-primary"/>

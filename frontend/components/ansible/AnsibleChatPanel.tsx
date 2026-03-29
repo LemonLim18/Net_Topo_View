@@ -1,4 +1,5 @@
 import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
+import { createPortal } from 'react-dom';
 import ReactMarkdown from 'react-markdown';
 import { DiffEditor } from '@monaco-editor/react';
 import { Send, Loader2, Bot, Sparkles, AlertCircle, FileCode, ChevronRight, Paperclip, X, TriangleAlert, ChevronDown, Check, Undo2, Square, History, Plus, Trash2, RefreshCw } from 'lucide-react';
@@ -17,6 +18,7 @@ import {
   DEFAULT_OLLAMA_BASE_URL,
   DEFAULT_OLLAMA_MODEL,
 } from '../../src/config';
+import { ANSIBLE_REMEDIATION_INTENT_KEY } from '../../utils/remediationPrompt';
 
 const ANSIBLE_MODEL_STORAGE_KEY = 'ansibleStudio.selectedModel';
 const OLLAMA_BASE_URL_STORAGE_KEY = 'llmRuntimeSelector.ollamaBaseUrl';
@@ -715,8 +717,11 @@ interface AnsibleModelSelection {
 }
 
 const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
-  onPlaybookReady, onOpenFile, activeJob,
+  onPlaybookReady,
+  onOpenFile,
+  activeJob: _activeJob,
 }) => {
+  void _activeJob;
   const initialStoredSessions = useMemo(() => loadStoredAnsibleSessions(), []);
   const initialStoredSessionId = useMemo(
     () => loadStoredCurrentAnsibleSessionId(initialStoredSessions),
@@ -732,6 +737,8 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
   const [sessionsHydrated, setSessionsHydrated] = useState(false);
   const [messages, setMessages] = useState<AnsibleMessage[]>(initialStoredMessages);
   const [input, setInput]               = useState('');
+  const [commandHistory, setCommandHistory] = useState<string[]>([]);
+  const [commandHistoryIndex, setCommandHistoryIndex] = useState(-1);
   const [isGenerating, setGenerating]   = useState(false);
   const [isDragOver, setIsDragOver]     = useState(false);
   const [attachedFiles, setAttachedFiles] = useState<{ name: string; content: string; lang: string; size: number; truncated: boolean }[]>([]);
@@ -748,16 +755,34 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
   const textareaRef    = useRef<HTMLTextAreaElement>(null);
   const fileInputRef   = useRef<HTMLInputElement>(null);
   const historyDropdownRef = useRef<HTMLDivElement>(null);
+  const historyPortalRef = useRef<HTMLDivElement>(null);
+  const [historyAnchorRect, setHistoryAnchorRect] = useState<DOMRect | null>(null);
   const sessionsHydratingRef = useRef(true);
   const sessionPersistTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const dragCounterRef = useRef(0);
   const modelDropdownRef = useRef<HTMLDivElement>(null);
+  const historyDraftBeforeNavigationRef = useRef('');
   const abortControllerRef = useRef<AbortController | null>(null);
   const loadingPhaseTimeoutRef = useRef<ReturnType<typeof setTimeout>[]>([]);
   /** Hydrated file paths for messages that only had playbookPath (e.g. from before multi-file links). */
   const [hydratedFilePaths, setHydratedFilePaths] = useState<Record<string, string[]>>({});
   const [studioOpen, setStudioOpen] = useState(false);
   const [studioIntent, setStudioIntent] = useState('');
+
+  useEffect(() => {
+    try {
+      const raw = sessionStorage.getItem(ANSIBLE_REMEDIATION_INTENT_KEY);
+      if (!raw) return;
+      sessionStorage.removeItem(ANSIBLE_REMEDIATION_INTENT_KEY);
+      const p = JSON.parse(raw) as { intent_description?: string };
+      if (p?.intent_description) {
+        setInput((prev) => (String(prev || '').trim() ? prev : p.intent_description!));
+        Toast.info('Remediation draft loaded', 'Review the prompt and send to Ansible AI when ready.');
+      }
+    } catch {
+      /* ignore */
+    }
+  }, []);
 
   // Auto-grow textarea height as user types
   useEffect(() => {
@@ -992,6 +1017,17 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
     setHistoryOpen(false);
   }, [currentSessionId, resetTransientChatState, sessions]);
 
+  const toggleHistory = useCallback(() => {
+    if (!historyOpen) {
+      const rect = historyDropdownRef.current?.getBoundingClientRect() ?? null;
+      setHistoryAnchorRect(rect);
+      setHistoryOpen(true);
+    } else {
+      setHistoryOpen(false);
+      setHistoryAnchorRect(null);
+    }
+  }, [historyOpen]);
+
   useEffect(() => {
     if (sessionsHydrated && sessions.length === 0) {
       startNewSession();
@@ -1215,13 +1251,28 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
 
   useEffect(() => {
     if (!historyOpen) return;
+    const updateRect = () => {
+      const anchor = historyDropdownRef.current;
+      setHistoryAnchorRect(anchor ? anchor.getBoundingClientRect() : null);
+    };
+    updateRect();
     const onOutside = (e: MouseEvent) => {
-      if (historyDropdownRef.current && !historyDropdownRef.current.contains(e.target as Node)) {
+      const target = e.target as Node;
+      const insideAnchor = historyDropdownRef.current && historyDropdownRef.current.contains(target);
+      const insidePortal = historyPortalRef.current && historyPortalRef.current.contains(target);
+      if (!insideAnchor && !insidePortal) {
         setHistoryOpen(false);
       }
     };
     document.addEventListener('mousedown', onOutside);
-    return () => document.removeEventListener('mousedown', onOutside);
+    window.addEventListener('resize', updateRect);
+    window.addEventListener('scroll', updateRect, true);
+    return () => {
+      document.removeEventListener('mousedown', onOutside);
+      window.removeEventListener('resize', updateRect);
+      window.removeEventListener('scroll', updateRect, true);
+      setHistoryAnchorRect(null);
+    };
   }, [historyOpen]);
 
   // Hydrate file list from job for messages that show "X generated files" but only had playbookPath (e.g. old responses)
@@ -2187,6 +2238,16 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
     if (!baseText && attachedFiles.length === 0) return;
     if (isGenerating) return;
 
+    if (baseText) {
+      setCommandHistory((prev) => {
+        if (prev[prev.length - 1] === baseText) return prev;
+        const next = [...prev, baseText];
+        return next.length > 100 ? next.slice(next.length - 100) : next;
+      });
+    }
+    setCommandHistoryIndex(-1);
+    historyDraftBeforeNavigationRef.current = '';
+
     // Build the full message: prepend attached file contents as fenced blocks
     const fileContext = attachedFiles.map(f =>
       `**File: \`${f.name}\`**\n\`\`\`${f.lang}\n${f.content.trimEnd()}\n\`\`\``
@@ -2491,8 +2552,48 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
     setGenerating(false);
   }, [addMsg]);
 
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); }
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      handleSend();
+      return;
+    }
+
+    if ((e.key !== 'ArrowUp' && e.key !== 'ArrowDown') || commandHistory.length === 0) return;
+
+    const el = e.currentTarget;
+    const cursor = el.selectionStart ?? 0;
+    const value = el.value ?? '';
+    const beforeCursor = value.slice(0, cursor);
+    const afterCursor = value.slice(cursor);
+    const isOnFirstLine = !beforeCursor.includes('\n');
+    const isOnLastLine = !afterCursor.includes('\n');
+
+    if (e.key === 'ArrowUp' && !isOnFirstLine) return;
+    if (e.key === 'ArrowDown' && !isOnLastLine) return;
+
+    e.preventDefault();
+
+    if (e.key === 'ArrowUp') {
+      setCommandHistoryIndex((prev) => {
+        const nextIndex = prev < 0 ? commandHistory.length - 1 : Math.max(0, prev - 1);
+        if (prev < 0) historyDraftBeforeNavigationRef.current = input;
+        setInput(commandHistory[nextIndex] ?? '');
+        return nextIndex;
+      });
+      return;
+    }
+
+    setCommandHistoryIndex((prev) => {
+      if (prev < 0) return -1;
+      const nextIndex = prev + 1;
+      if (nextIndex >= commandHistory.length) {
+        setInput(historyDraftBeforeNavigationRef.current || '');
+        return -1;
+      }
+      setInput(commandHistory[nextIndex] ?? '');
+      return nextIndex;
+    });
   };
 
   /* ── Proposed edits block (diff + Keep/Undo per file, Keep All/Undo All) ── */
@@ -2639,53 +2740,58 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
             {currentSession?.title || 'New Chat'}
           </span>
         </div>
-        <div className="flex items-center gap-1">
+        <div className="flex items-center gap-1 z-999">
           <div ref={historyDropdownRef} style={{ position: 'relative' }}>
             <button
               type="button"
-              onClick={() => setHistoryOpen((open) => !open)}
+              onClick={toggleHistory}
               title="Session history"
-              style={{ padding: '3px 4px', borderRadius: 3, background: 'transparent', border: 'none', color: historyOpen ? '#9cdcfe' : '#666', cursor: 'pointer' }}
-              className="hover:bg-[#2d2d2d] transition-colors"
+              className={`p-1 rounded transition-colors ${
+                historyOpen
+                  ? 'bg-primary/15 text-primary'
+                  : 'text-base-content/60 hover:text-base-content hover:bg-base-content/10'
+              }`}
             >
               <History style={{ width: 13, height: 13 }} />
             </button>
-            {historyOpen && (
+            {historyOpen && historyAnchorRect && createPortal(
               <div
+                ref={historyPortalRef}
                 style={{
-                  position: 'absolute', top: '100%', right: 0, marginTop: 4, zIndex: 100,
-                  width: 300, maxHeight: 360, overflow: 'hidden', display: 'flex', flexDirection: 'column',
-                  background: '#252526', border: '1px solid #3c3c3c', borderRadius: 6, boxShadow: '0 8px 18px rgba(0,0,0,0.45)',
+                  position: 'fixed',
+                  top: `${historyAnchorRect.bottom + 4}px`,
+                  left: `${Math.min(Math.max(8, historyAnchorRect.right - 300), window.innerWidth - 308)}px`,
+                  width: '300px',
                 }}
+                className="z-9999 max-h-[360px] overflow-hidden flex flex-col bg-base-200 border border-base-300 rounded-md shadow-xl"
               >
-                <div style={{ padding: '8px 10px', borderBottom: '1px solid #3c3c3c', fontSize: 11, color: '#cccccc', fontWeight: 600 }}>
+                <div className="px-2.5 py-2 border-b border-base-300 text-[11px] font-semibold text-base-content/80">
                   Session History
                 </div>
-                <div style={{ overflowY: 'auto', maxHeight: 320, padding: 6 }}>
+                <div className="overflow-y-auto max-h-80 p-1.5">
                   {sessions.length === 0 ? (
-                    <div style={{ padding: 10, fontSize: 11, color: '#858585' }}>No saved sessions</div>
+                    <div className="p-2.5 text-[11px] text-base-content/55">No saved sessions</div>
                   ) : (
                     sessions.map((session) => {
                       const selected = session.id === currentSessionId;
                       return (
                         <div
                           key={session.id}
-                          style={{
-                            display: 'flex', alignItems: 'center', gap: 8, padding: '7px 8px', borderRadius: 4,
-                            background: selected ? '#0e639c' : 'transparent', color: selected ? '#fff' : '#cccccc',
-                            marginBottom: 4,
-                          }}
-                          className={selected ? '' : 'hover:bg-[#2d2d2d]'}
+                          className={`flex items-center gap-2 px-2 py-1.5 rounded mb-1 transition-colors ${
+                            selected
+                              ? 'bg-primary text-primary-content'
+                              : 'text-base-content/80 hover:bg-base-300'
+                          }`}
                         >
                           <button
                             type="button"
                             onClick={() => handleSelectSession(session.id)}
-                            style={{ flex: 1, textAlign: 'left', background: 'transparent', border: 'none', color: 'inherit', cursor: 'pointer' }}
+                            className="flex-1 text-left bg-transparent border-0 text-inherit cursor-pointer"
                           >
-                            <div style={{ fontSize: 12, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                            <div className="text-xs whitespace-nowrap overflow-hidden text-ellipsis">
                               {session.title}
                             </div>
-                            <div style={{ fontSize: 10, opacity: 0.72 }}>
+                            <div className="text-[10px] opacity-75">
                               {new Date(session.updatedAt).toLocaleString()}
                             </div>
                           </button>
@@ -2693,7 +2799,11 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
                             type="button"
                             onClick={() => handleDeleteSession(session.id)}
                             title="Delete session"
-                            style={{ background: 'transparent', border: 'none', color: selected ? '#fff' : '#858585', cursor: 'pointer', padding: 2 }}
+                            className={`bg-transparent border-0 cursor-pointer p-0.5 transition-colors ${
+                              selected
+                                ? 'text-primary-content/85 hover:text-primary-content'
+                                : 'text-base-content/45 hover:text-error'
+                            }`}
                           >
                             <Trash2 style={{ width: 12, height: 12 }} />
                           </button>
@@ -2702,15 +2812,15 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
                     })
                   )}
                 </div>
-              </div>
+              </div>,
+              document.body,
             )}
           </div>
           <button
             type="button"
             onClick={startNewSession}
             title="New session"
-            style={{ padding: '3px 4px', borderRadius: 3, background: 'transparent', border: 'none', color: '#666', cursor: 'pointer' }}
-            className="hover:bg-[#2d2d2d] transition-colors"
+            className="p-1 rounded text-base-content/60 hover:text-base-content hover:bg-base-content/10 transition-colors"
           >
             <Plus style={{ width: 13, height: 13 }} />
           </button>
@@ -2726,8 +2836,7 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
             onClick={handleRebuildRag}
             disabled={isRebuildingRag}
             title="Rebuild RAG (re-ingest reference docs so the LLM uses the latest Ansible reference)"
-            style={{ padding: '3px 4px', borderRadius: 3, background: 'transparent', border: 'none', color: '#666', cursor: isRebuildingRag ? 'wait' : 'pointer' }}
-            className="hover:bg-[#2d2d2d] flex items-center gap-1 transition-colors disabled:opacity-50"
+            className="p-1 rounded text-base-content/60 hover:text-base-content hover:bg-base-content/10 flex items-center gap-1 transition-colors disabled:opacity-50 disabled:cursor-wait"
           >
             <RefreshCw style={{ width: 10, height: 10 }} className={isRebuildingRag ? 'animate-spin' : ''} />
           </button>
@@ -4173,7 +4282,13 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
               ref={textareaRef}
               placeholder={attachedFiles.length ? 'Add a message or send file as-is…' : 'Ask Ansible AI or drop a file…'}
               value={input}
-              onChange={e => setInput(e.target.value)}
+              onChange={e => {
+                setInput(e.target.value);
+                if (commandHistoryIndex >= 0) {
+                  setCommandHistoryIndex(-1);
+                  historyDraftBeforeNavigationRef.current = '';
+                }
+              }}
               onKeyDown={handleKeyDown}
               disabled={isGenerating}
               rows={1}
@@ -4296,7 +4411,7 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
           </div>
         </div>
 
-        <p className="text-[10px] text-base-content/40 text-center mt-1">Enter to send · Shift+Enter for newline · 📎 attach or drag from file tree</p>
+        <p className="text-[10px] text-base-content/40 text-center mt-1">Enter to send · Shift+Enter newline · Up/Down command history · 📎 attach or drag from file tree</p>
       </div>
     </div>
   );

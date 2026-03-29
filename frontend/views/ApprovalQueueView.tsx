@@ -52,6 +52,12 @@ const statusBadgeClass = (status: string) => {
   return 'badge-warning';
 };
 
+const statusDisplayLabel = (status: string) => {
+  const normalized = String(status || '').toLowerCase();
+  if (normalized === 'pending_approval' || normalized === 'pending approval') return 'pending';
+  return normalized.replace(/_/g, ' ') || 'pending';
+};
+
 const ANSIBLE_OPEN_FROM_QUEUE_KEY = 'ansible.openJobFromQueue';
 
 const ApprovalQueueView: React.FC<Props> = ({ setView }) => {
@@ -345,7 +351,7 @@ const ApprovalQueueView: React.FC<Props> = ({ setView }) => {
                   </td>
                   <td>
                     <span className={`badge badge-sm gap-1 ${statusBadgeClass(item.status)}`}>
-                      <Clock className="w-3 h-3" /> {item.status.replace(/_/g, ' ')}
+                      <Clock className="w-3 h-3" /> {statusDisplayLabel(item.status)}
                     </span>
                   </td>
                   <td className="text-xs">
@@ -362,7 +368,7 @@ const ApprovalQueueView: React.FC<Props> = ({ setView }) => {
                     {item.created_at ? new Date(item.created_at).toLocaleString() : '—'}
                   </td>
                   <td>
-                    <div className="flex flex-wrap gap-1">
+                    <div className={`flex items-center gap-1 ${activeTab === 'pending' ? 'flex-nowrap whitespace-nowrap' : 'flex-wrap'}`}>
                       <button
                         className="btn btn-xs btn-ghost gap-1"
                         onClick={() => openPreview(item)}
@@ -370,7 +376,7 @@ const ApprovalQueueView: React.FC<Props> = ({ setView }) => {
                       >
                         <Eye className="w-3 h-3" /> Preview
                       </button>
-                      {item.type === 'ansible_job' && (
+                      {item.type === 'ansible_job' && activeTab !== 'pending' && (
                         <>
                           <button
                             className="btn btn-xs btn-info btn-outline gap-1"
@@ -396,7 +402,7 @@ const ApprovalQueueView: React.FC<Props> = ({ setView }) => {
                             disabled={actionId === item.id}
                             onClick={() => handleAction(item, 'approve')}
                           >
-                            <CheckCircle className="w-3 h-3" /> Approve
+                            <CheckCircle className="w-3 h-3" /> Accept
                           </button>
                           <button
                             className="btn btn-xs btn-error btn-outline gap-1"

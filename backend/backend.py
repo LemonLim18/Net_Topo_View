@@ -37,6 +37,7 @@ from netbox.webhook import router as netbox_webhook_router
 from drift.api import router as drift_router
 from compliance.api import router as compliance_router
 from config_engine.api import router as config_router
+from config_engine.git_api import router as template_git_router
 from security.api import router as security_router
 from auth.api import router as auth_router
 from auth.auth import seed_default_admin
@@ -582,6 +583,7 @@ app.include_router(network_router, prefix="/api/v1", tags=["Network"])
 app.include_router(drift_router, prefix="/api/v1", tags=["Drift"])
 app.include_router(compliance_router, prefix="/api/v1", tags=["Compliance"])
 app.include_router(config_router, prefix="/api/v1", tags=["Config Engine"])
+app.include_router(template_git_router, prefix="/api/v1", tags=["Template Studio Git"])
 app.include_router(security_router, prefix="/api/v1", tags=["Security"])
 app.include_router(auth_router, prefix="/api/v1", tags=["Authentication"])
 app.include_router(ssh_router, prefix="/api/v1", tags=["SSH Terminal"])

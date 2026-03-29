@@ -15,14 +15,17 @@ import {
   ChevronDown,
   Play,
   X,
+  LogIn,
 } from 'lucide-react';
-import { configApi } from '../src/services/api';
+import { configApi, templateGitApi } from '../src/services/api';
 import { Toast, Confirm } from '../src/utils/swal';
 
 const TEMPLATE_TABS_KEY = 'templateStudio.tabs';
 const TEMPLATE_ACTIVE_TAB_KEY = 'templateStudio.activeTabId';
 const TEMPLATE_EXPANDED_VENDORS_KEY = 'templateStudio.expandedVendors';
 const TEMPLATE_VARIABLES_KEY = 'templateStudio.variables';
+const TEMPLATE_GIT_HEIGHT_KEY = 'templateStudio.gitTerminalHeight';
+const TEMPLATE_GIT_MIN_KEY = 'templateStudio.gitTerminalMinimized';
 const TEMPLATE_EDITOR_LANGUAGE = 'nettopo-jinja';
 
 const TEMPLATE_EXPR_KEYWORDS = new Set([
@@ -223,6 +226,17 @@ interface OpenTab {
   isDirty: boolean;
 }
 
+interface TemplateGitStatus {
+  repo_root: string;
+  branch: string;
+  is_dirty: boolean;
+  origin: string;
+  github_remote: boolean;
+  github_cli_available: boolean;
+  github_authenticated: boolean;
+  github_username?: string | null;
+}
+
 // ---------------------------------------------------------------------------
 //  Template Studio Component
 // ---------------------------------------------------------------------------
@@ -308,6 +322,21 @@ const TemplateStudioView: React.FC = () => {
   const [newContent, setNewContent] = useState('');
   const [newError, setNewError] = useState<string | null>(null);
 
+  const [, setGitStatus] = useState<TemplateGitStatus | null>(null);
+  const [, setGitOutputLines] = useState<string[]>([]);
+  const [, setGitLoadingStatus] = useState(false);
+  const [gitTerminalHeight] = useState(() => {
+    const raw = Number(localStorage.getItem(TEMPLATE_GIT_HEIGHT_KEY));
+    return Number.isFinite(raw) && raw >= 140 ? raw : 220;
+  });
+  const [gitTerminalMinimized] = useState(() => localStorage.getItem(TEMPLATE_GIT_MIN_KEY) === 'true');
+  const [showGitHubLoginModal, setShowGitHubLoginModal] = useState(false);
+  const [gitHubUsername, setGitHubUsername] = useState('');
+  const [gitHubToken, setGitHubToken] = useState('');
+  const [gitUserName, setGitUserName] = useState('');
+  const [gitUserEmail, setGitUserEmail] = useState('');
+  const [gitHubAuthBusy, setGitHubAuthBusy] = useState(false);
+
   const activeTab = tabs.find(t => t.id === activeTabId) ?? null;
   const schemaProperties = activeSchema?.properties || {};
   const promptFields = useMemo(() => {
@@ -360,6 +389,14 @@ const TemplateStudioView: React.FC = () => {
   }, [variables]);
 
   useEffect(() => {
+    localStorage.setItem(TEMPLATE_GIT_HEIGHT_KEY, String(gitTerminalHeight));
+  }, [gitTerminalHeight]);
+
+  useEffect(() => {
+    localStorage.setItem(TEMPLATE_GIT_MIN_KEY, String(gitTerminalMinimized));
+  }, [gitTerminalMinimized]);
+
+  useEffect(() => {
     if (!tabs.length) {
       if (activeTabId !== null) setActiveTabId(null);
       return;
@@ -372,6 +409,55 @@ const TemplateStudioView: React.FC = () => {
   // -----------------------------------------------------------------------
   //  Variable extraction
   // -----------------------------------------------------------------------
+
+  const appendGitOutput = useCallback((text: string) => {
+    if (!text) return;
+    const stamp = new Date().toLocaleTimeString();
+    const lines = text.replace(/\r/g, '').split('\n').filter((line) => line.length > 0);
+    if (!lines.length) return;
+    setGitOutputLines((prev) => [...prev, ...lines.map((line) => `[${stamp}] ${line}`)].slice(-800));
+  }, []);
+
+  const refreshGitStatus = useCallback(async () => {
+    setGitLoadingStatus(true);
+    try {
+      const status = await templateGitApi.status();
+      setGitStatus(status);
+    } catch (e: any) {
+      Toast.error('Git status failed', e.message || 'Could not load repository status');
+    } finally {
+      setGitLoadingStatus(false);
+    }
+  }, []);
+
+  const handleGitHubLogin = useCallback(async () => {
+    if (!gitHubUsername.trim() || !gitHubToken.trim()) {
+      Toast.warning('Missing credentials', 'GitHub username and token are required.');
+      return;
+    }
+    setGitHubAuthBusy(true);
+    try {
+      const res = await templateGitApi.githubLogin({
+        username: gitHubUsername.trim(),
+        token: gitHubToken.trim(),
+        git_name: gitUserName.trim() || undefined,
+        git_email: gitUserEmail.trim() || undefined,
+      });
+      appendGitOutput(`GitHub connected as ${res.username}`);
+      setShowGitHubLoginModal(false);
+      setGitHubToken('');
+      await refreshGitStatus();
+      Toast.success('GitHub connected', `Connected as ${res.username}`);
+    } catch (e: any) {
+      Toast.error('GitHub login failed', e.message || 'Unable to connect GitHub');
+    } finally {
+      setGitHubAuthBusy(false);
+    }
+  }, [appendGitOutput, gitHubToken, gitHubUsername, gitUserEmail, gitUserName, refreshGitStatus]);
+
+  useEffect(() => {
+    refreshGitStatus();
+  }, [refreshGitStatus]);
 
   // Update schema when active tab changes
   useEffect(() => {
@@ -711,7 +797,7 @@ const TemplateStudioView: React.FC = () => {
           </div>
         </div>
 
-        {/* ─── Center: Editor ─── */}
+        {/* ─── Center: Editor + Git CLI ─── */}
         <div className="flex flex-col grow min-w-0 overflow-hidden">
           {/* Tab bar */}
           <div className="flex items-center border-b border-base-300 bg-base-200/50 shrink-0 overflow-x-auto">
@@ -787,6 +873,90 @@ const TemplateStudioView: React.FC = () => {
               </div>
             )}
           </div>
+
+          {/* Middle-bottom Git CLI (center panel only) */}
+          {/* <div className="border-t border-base-300 bg-base-100 shrink-0" style={{ height: gitTerminalMinimized ? 40 : gitTerminalHeight }}>
+            <div
+              className="h-1 cursor-row-resize hover:bg-base-300/40"
+              onMouseDown={onGitResizeMouseDown}
+              title="Resize git CLI"
+            />
+            <div className="h-[calc(100%-0.25rem)] flex flex-col">
+              <div className="px-3 py-2 border-b border-base-300 flex items-center gap-2 text-xs">
+                <Terminal className="w-3.5 h-3.5 text-primary" />
+                <span className="font-semibold uppercase tracking-wide opacity-70">Git CLI</span>
+                <span className="badge badge-xs badge-outline gap-1">
+                  <GitBranch className="w-3 h-3" />
+                  {gitStatus?.branch || 'unknown'}
+                </span>
+                <span className={`badge badge-xs ${gitStatus?.is_dirty ? 'badge-warning' : 'badge-success'}`}>
+                  {gitStatus?.is_dirty ? 'dirty' : 'clean'}
+                </span>
+                <span className={`badge badge-xs ${gitStatus?.github_authenticated ? 'badge-success' : 'badge-ghost'}`}>
+                  {gitStatus?.github_authenticated ? `GitHub ${gitStatus.github_username || 'connected'}` : 'GitHub disconnected'}
+                </span>
+                <div className="ml-auto flex items-center gap-1">
+                  <button className="btn btn-ghost btn-xs" onClick={refreshGitStatus} disabled={gitLoadingStatus} title="Refresh git status">
+                    <RefreshCw className={`w-3.5 h-3.5 ${gitLoadingStatus ? 'animate-spin' : ''}`} />
+                  </button>
+                  <button className="btn btn-ghost btn-xs gap-1" onClick={() => setShowGitHubLoginModal(true)} disabled={gitHubAuthBusy}>
+                    <LogIn className="w-3.5 h-3.5" /> Login
+                  </button>
+                  <button className="btn btn-ghost btn-xs gap-1" onClick={handleGitHubLogout} disabled={gitHubAuthBusy}>
+                    <LogOut className="w-3.5 h-3.5" /> Logout
+                  </button>
+                  <button className="btn btn-ghost btn-xs" onClick={() => setGitOutputLines([])} title="Clear CLI output">
+                    <Eraser className="w-3.5 h-3.5" />
+                  </button>
+                  <button className="btn btn-ghost btn-xs" onClick={() => setGitTerminalMinimized((v) => !v)}>
+                    {gitTerminalMinimized ? <Maximize2 className="w-3.5 h-3.5" /> : <Minimize2 className="w-3.5 h-3.5" />}
+                  </button>
+                </div>
+              </div>
+
+              {!gitTerminalMinimized && (
+                <>
+                  <div className="grow min-h-0 overflow-y-auto p-2 bg-neutral/10 font-mono text-xs">
+                    {gitOutputLines.length === 0 ? (
+                      <p className="opacity-60">Type git commands directly. Examples: git init, git add, git commit, git checkout, git branch, git push, git pull, git merge, git stash.</p>
+                    ) : (
+                      <div className="space-y-0.5">
+                        {gitOutputLines.map((line, idx) => (
+                          <div key={`${idx}-${line.slice(0, 20)}`} className="whitespace-pre-wrap wrap-break-word">{line}</div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="p-2 border-t border-base-300 bg-neutral/5">
+                    <div
+                      className="w-full font-mono text-xs flex items-center gap-2"
+                      onClick={() => gitCommandInputRef.current?.focus()}
+                    >
+                      <span className="opacity-70">$</span>
+                      <input
+                        ref={gitCommandInputRef}
+                        className="flex-1 bg-transparent border-0 outline-none focus:outline-none focus:ring-0 p-0 m-0 text-xs"
+                        placeholder=""
+                        spellCheck={false}
+                        autoCorrect="off"
+                        autoCapitalize="none"
+                        value={gitCommand}
+                        onChange={(e) => setGitCommand(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') {
+                            e.preventDefault();
+                            runGitCommand();
+                          }
+                        }}
+                      />
+                      {gitRunning ? <Loader2 className="w-3.5 h-3.5 animate-spin opacity-70" /> : null}
+                    </div>
+                  </div>
+                </> */}
+              {/* )} */}
+            {/* </div> */}
+          {/* </div> */}
         </div>
 
         {/* ─── Right: Variables + Preview ─── */}
@@ -996,6 +1166,62 @@ const TemplateStudioView: React.FC = () => {
             </div>
           </div>
           <div className="modal-backdrop" onClick={() => setShowNewModal(false)} />
+        </div>
+      )}
+
+      {showGitHubLoginModal && (
+        <div className="modal modal-open">
+          <div className="modal-box max-w-lg">
+            <h3 className="font-bold text-lg mb-2">Connect GitHub</h3>
+            <p className="text-xs opacity-60 mb-4">
+              Use a GitHub Personal Access Token with repository permissions. Credentials are stored via git credential manager.
+            </p>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <label className="form-control w-full">
+                <div className="label"><span className="label-text">GitHub Username</span></div>
+                <input
+                  type="text"
+                  className="input input-bordered"
+                  value={gitHubUsername}
+                  onChange={(e) => setGitHubUsername(e.target.value)}
+                />
+              </label>
+              <label className="form-control w-full md:col-span-1">
+                <div className="label"><span className="label-text">Git Commit Name (optional)</span></div>
+                <input
+                  type="text"
+                  className="input input-bordered"
+                  value={gitUserName}
+                  onChange={(e) => setGitUserName(e.target.value)}
+                />
+              </label>
+              <label className="form-control w-full md:col-span-2">
+                <div className="label"><span className="label-text">Personal Access Token</span></div>
+                <input
+                  type="password"
+                  className="input input-bordered"
+                  value={gitHubToken}
+                  onChange={(e) => setGitHubToken(e.target.value)}
+                />
+              </label>
+              <label className="form-control w-full md:col-span-2">
+                <div className="label"><span className="label-text">Git Commit Email (optional)</span></div>
+                <input
+                  type="email"
+                  className="input input-bordered"
+                  value={gitUserEmail}
+                  onChange={(e) => setGitUserEmail(e.target.value)}
+                />
+              </label>
+            </div>
+            <div className="modal-action">
+              <button className="btn btn-ghost" onClick={() => setShowGitHubLoginModal(false)} disabled={gitHubAuthBusy}>Cancel</button>
+              <button className="btn btn-primary gap-1" onClick={handleGitHubLogin} disabled={gitHubAuthBusy}>
+                {gitHubAuthBusy ? <Loader2 className="w-4 h-4 animate-spin" /> : <LogIn className="w-4 h-4" />} Connect
+              </button>
+            </div>
+          </div>
+          <div className="modal-backdrop" onClick={() => !gitHubAuthBusy && setShowGitHubLoginModal(false)} />
         </div>
       )}
     </div>

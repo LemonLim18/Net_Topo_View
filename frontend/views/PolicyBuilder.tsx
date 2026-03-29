@@ -7,8 +7,10 @@ import {
 import PolicyRuleEditor from '../components/compliance/PolicyRuleEditor';
 import PolicyScopeSelector from '../components/compliance/PolicyScopeSelector';
 import PolicyVersionHistory from '../components/compliance/PolicyVersionHistory';
-import { policyApi, type PolicyRecord } from '../src/services/api';
-import { Toast } from '../src/utils/swal';
+import { complianceApi, policyApi, type PolicyRecord } from '../src/services/api';
+import { Toast, Confirm } from '../src/utils/swal';
+import type { ViewId } from '../types';
+import { COMPLIANCE_HUB_TAB_KEY, POLICY_FOCUS_IDS_KEY } from '../utils/complianceNavigationKeys';
 
 const CATEGORIES = ['interface', 'vlan', 'ospf', 'static_route', 'acl', 'snmp', 'logging', 'ntp'];
 
@@ -24,7 +26,19 @@ const blankPolicy = (): PolicyRecord => ({
   thresholds: { auto_alert: true, alert_severity_min: 'medium' },
 });
 
-const PolicyBuilder: React.FC = () => {
+export interface PolicyBuilderProps {
+  setView?: (v: ViewId) => void;
+  variant?: 'page' | 'embedded';
+  onRequestScan?: () => void;
+  onOpenResults?: () => void;
+}
+
+const PolicyBuilder: React.FC<PolicyBuilderProps> = ({
+  setView,
+  variant = 'page',
+  onRequestScan,
+  onOpenResults,
+}) => {
   const [items, setItems] = useState<PolicyRecord[]>([]);
   const [selected, setSelected] = useState<PolicyRecord>(blankPolicy());
   const [loading, setLoading] = useState(false);
@@ -33,6 +47,7 @@ const PolicyBuilder: React.FC = () => {
   const [searchTerm, setSearchTerm] = useState('');
   const [sidebarWidth, setSidebarWidth] = useState(320);
   const [isResizing, setIsResizing] = useState(false);
+  const [focusPolicyIds, setFocusPolicyIds] = useState<string[]>([]);
 
   const selectedId = selected.policy_id || null;
 
@@ -50,6 +65,25 @@ const PolicyBuilder: React.FC = () => {
 
   useEffect(() => { reload(); }, [reload]);
 
+  useEffect(() => {
+    try {
+      const raw = sessionStorage.getItem(POLICY_FOCUS_IDS_KEY);
+      if (!raw) return;
+      const parsed = JSON.parse(raw) as unknown;
+      if (!Array.isArray(parsed) || !parsed.every((x) => typeof x === 'string')) return;
+      sessionStorage.removeItem(POLICY_FOCUS_IDS_KEY);
+      setFocusPolicyIds(parsed);
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!focusPolicyIds.length || loading) return;
+    const hit = items.find((p) => focusPolicyIds.includes(p.policy_id));
+    if (hit) setSelected(hit);
+  }, [items, loading, focusPolicyIds]);
+
   const filteredItems = useMemo(() => {
     return items.filter(p => 
       p.name.toLowerCase().includes(searchTerm.toLowerCase()) || 
@@ -64,13 +98,26 @@ const PolicyBuilder: React.FC = () => {
       if (!selected.policy_id) {
         const created = await policyApi.create(selected);
         setSelected(created.policy);
-        Toast.success('Policy created');
+        Toast.success(
+          'Policy created',
+          onRequestScan ? undefined : 'Open Compliance → Overview to run a global scan when ready.',
+        );
       } else {
         const updated = await policyApi.update(selected.policy_id, selected);
         setSelected(updated.policy);
-        Toast.success('Policy updated');
+        Toast.success(
+          'Policy updated',
+          onRequestScan ? undefined : 'Open Compliance → Overview to run a global scan when ready.',
+        );
       }
       await reload();
+      if (onRequestScan) {
+        const run = await Confirm.ask(
+          'Run global compliance scan now?',
+          'Refreshes drift results against the updated policy.',
+        );
+        if (run) onRequestScan();
+      }
     } catch (e: any) {
       Toast.error('Save failed', e.message);
     }
@@ -161,6 +208,32 @@ const PolicyBuilder: React.FC = () => {
     };
   }, [isResizing, resize, stopResizing]);
 
+  const openResults = () => {
+    if (onOpenResults) {
+      onOpenResults();
+      return;
+    }
+    try {
+      sessionStorage.setItem(COMPLIANCE_HUB_TAB_KEY, 'results');
+    } catch {
+      /* ignore */
+    }
+    setView?.('compliance_hub');
+  };
+
+  const runScanFromHeader = async () => {
+    if (onRequestScan) {
+      onRequestScan();
+      return;
+    }
+    try {
+      const res = await complianceApi.scanAll();
+      Toast.success('Compliance scan started', `job_id=${res.job_id}`);
+    } catch (e: any) {
+      Toast.error('Scan failed', e.message);
+    }
+  };
+
   return (
     <div className={`h-full flex overflow-hidden bg-base-200 ${isResizing ? 'cursor-col-resize select-none' : ''}`}>
       {/* Sidebar Navigation */}
@@ -209,7 +282,7 @@ const PolicyBuilder: React.FC = () => {
                   selected.policy_id === p.policy_id 
                     ? 'bg-primary/10 border border-primary/20 text-primary active:scale-95' 
                     : 'bg-transparent border border-transparent hover:bg-base-200/50 hover:border-base-300 opacity-70 hover:opacity-100'
-                }`}
+                } ${focusPolicyIds.includes(p.policy_id) ? 'ring-2 ring-accent/50 ring-offset-2 ring-offset-base-200' : ''}`}
                 onClick={() => setSelected(p)}
               >
                 <div className="flex items-start justify-between w-full">
@@ -236,7 +309,11 @@ const PolicyBuilder: React.FC = () => {
       </aside>
 
       {/* Main Form Area */}
-      <main className="grow overflow-y-auto custom-scrollbar p-5 space-y-4 overflow-x-auto">
+      <main
+        className={`grow overflow-y-auto custom-scrollbar space-y-4 overflow-x-auto ${
+          variant === 'embedded' ? 'p-3' : 'p-5'
+        }`}
+      >
         {/* View Header */}
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 mb-1">
           <div className="flex items-center gap-4">
@@ -251,7 +328,15 @@ const PolicyBuilder: React.FC = () => {
               </div>
           </div>
           
-          <div className="flex items-center gap-2 shrink-0">
+          <div className="flex flex-wrap items-center gap-2 shrink-0">
+             <button type="button" className="btn btn-sm btn-outline gap-2" onClick={openResults}>
+                <Activity className="w-4 h-4" />
+                View drift results
+              </button>
+              <button type="button" className="btn btn-sm btn-outline gap-2" onClick={runScanFromHeader}>
+                <Play className="w-4 h-4" />
+                Run scan
+              </button>
              <button 
                 className="btn btn-sm btn-outline gap-2" 
                 onClick={onClone} 

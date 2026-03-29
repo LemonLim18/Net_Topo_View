@@ -1,4 +1,4 @@
-﻿import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import {
   RefreshCw, Activity, Server, Cpu,
   AlertTriangle, CheckCircle, BarChart3, Clock,
@@ -356,35 +356,6 @@ function buildDerivedInterfaceMetrics(
   });
 
   return metrics;
-}
-
-function detectTrafficBasis(points: MetricPoint[], snapshots: InterfaceSnapshot[], focusDevice: string, selectedInterface: string): string | null {
-  const packetBasedPoint = points.find((point) => {
-    if (focusDevice && point.device !== focusDevice) return false;
-    if (selectedInterface && point.interface !== selectedInterface) return false;
-    return point.basis === 'packet_counters';
-  });
-  if (packetBasedPoint) return 'packet_counters';
-
-  const counterPoint = points.find((point) => {
-    if (focusDevice && point.device !== focusDevice) return false;
-    if (selectedInterface && point.interface !== selectedInterface) return false;
-    return point.basis === 'octet_counters' || point.basis === 'counter_rate';
-  });
-  if (counterPoint) return counterPoint.basis || 'octet_counters';
-
-  const scopedSnapshots = snapshots.filter((snapshot) => {
-    if (focusDevice && snapshot.device !== focusDevice) return false;
-    if (selectedInterface && snapshot.interface !== selectedInterface) return false;
-    return true;
-  });
-  if (scopedSnapshots.some((snapshot) => snapshot.in_octets_source === 'packet_counters' || snapshot.out_octets_source === 'packet_counters')) {
-    return 'packet_counters';
-  }
-  if (scopedSnapshots.some((snapshot) => snapshot.in_octets_source === 'octet_counters' || snapshot.out_octets_source === 'octet_counters')) {
-    return 'octet_counters';
-  }
-  return null;
 }
 
 function buildErrorDiscardSeries(errPts: MetricPoint[], discPts: MetricPoint[], nameMap: Record<string, string>) {
@@ -816,28 +787,6 @@ const NetworkPerformance: React.FC = () => {
     return () => clearInterval(timer);
   }, [fetchAll, fetchHistory]);
 
-  const handleRegenerateConfig = async () => {
-    setIsLoading(true);
-    try {
-      const res = await monitorApi.updateConfig();
-      Toast.success('Config Updated', (res as any).message);
-    } catch (e: any) {
-      Toast.error('Failed', e.message);
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  const handleEvaluate = async () => {
-    try {
-      const res = await thresholdApi.evaluate();
-      Toast.success('Evaluation Complete', `${res.evaluated} rules checked, ${res.alerts_created} alerts created`);
-      fetchAll();
-    } catch (e: any) {
-      Toast.error('Evaluation Failed', e.message);
-    }
-  };
-
   const upDevices = devices.filter((d) => (d.status || '').toLowerCase() === 'up').length;
   const activeAlerts = alerts.filter((a) => a.status === 'active').length;
   const cpuDevices = devices.filter((d) => d.cpu !== null);
@@ -858,7 +807,6 @@ const NetworkPerformance: React.FC = () => {
     }
     return trafficHistoryChart;
   }, [trafficHistoryChart, trafficSnapshotChart, focusDevice]);
-  const trafficBasis = useMemo(() => detectTrafficBasis([...trafficInPoints, ...trafficOutPoints], interfaceSnapshots, focusDevice, selectedInterface), [trafficInPoints, trafficOutPoints, interfaceSnapshots, focusDevice, selectedInterface]);
   const ifHealthChart = useMemo(() => buildErrorDiscardSeries(errorPoints, discardPoints, hostnameMap), [errorPoints, discardPoints, hostnameMap]);
   const pktChart = useMemo(() => buildPacketSeries(inUcastPts, outUcastPts, inMcastPts, outMcastPts, inBcastPts, outBcastPts, hostnameMap), [inUcastPts, outUcastPts, inMcastPts, outMcastPts, inBcastPts, outBcastPts, hostnameMap]);
   const derivedInterfaceMetrics = useMemo(() => buildDerivedInterfaceMetrics(trafficInPoints, trafficOutPoints, inUcastPts, outUcastPts, inMcastPts, outMcastPts, inBcastPts, outBcastPts, speedPoints), [trafficInPoints, trafficOutPoints, inUcastPts, outUcastPts, inMcastPts, outMcastPts, inBcastPts, outBcastPts, speedPoints]);

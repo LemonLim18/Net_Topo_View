@@ -1,21 +1,37 @@
 import React, { useEffect, useState } from 'react';
-import { 
-  Shield, History, Camera, Info, Calendar, Smartphone, 
-  Activity, GitCompareArrows, CheckCircle2,
-  AlertCircle
+import {
+  Shield,
+  History,
+  Camera,
+  Info,
+  Calendar,
+  Smartphone,
+  Activity,
+  GitCompareArrows,
+  CheckCircle2,
+  AlertCircle,
+  ArrowLeft,
+  Wrench,
+  ClipboardList,
 } from 'lucide-react';
-import { complianceApi, type ComplianceResultRecord } from '../src/services/api';
+import { complianceApi, netboxApi, type ComplianceResultRecord, type DeviceRecord } from '../src/services/api';
 import { Toast } from '../src/utils/swal';
+import type { ViewId } from '../types';
+import { COMPLIANCE_HUB_TAB_KEY } from '../utils/complianceNavigationKeys';
+import { buildRemediationIntentPayload, storeRemediationIntentAndGoStudio } from '../utils/remediationPrompt';
 
 interface Props {
   deviceId: number | null;
+  setView?: (v: ViewId) => void;
+  setSelectedDeviceId?: (id: number | null) => void;
 }
 
-const ComplianceDeviceDetail: React.FC<Props> = ({ deviceId }) => {
+const ComplianceDeviceDetail: React.FC<Props> = ({ deviceId, setView, setSelectedDeviceId }) => {
   const [baseline, setBaseline] = useState<any>(null);
   const [snapshots, setSnapshots] = useState<any[]>([]);
   const [history, setHistory] = useState<ComplianceResultRecord[]>([]);
   const [loading, setLoading] = useState(false);
+  const [deviceMeta, setDeviceMeta] = useState<DeviceRecord | null>(null);
 
   const load = async () => {
     if (!deviceId) return;
@@ -37,6 +53,25 @@ const ComplianceDeviceDetail: React.FC<Props> = ({ deviceId }) => {
   };
 
   useEffect(() => { load(); }, [deviceId]);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!deviceId) {
+      setDeviceMeta(null);
+      return;
+    }
+    (async () => {
+      try {
+        const d = await netboxApi.getDevice(deviceId);
+        if (!cancelled) setDeviceMeta(d);
+      } catch {
+        if (!cancelled) setDeviceMeta(null);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [deviceId]);
 
   const onCollect = async () => {
     if (!deviceId) return;
@@ -62,34 +97,88 @@ const ComplianceDeviceDetail: React.FC<Props> = ({ deviceId }) => {
 
   const latest = history[0];
 
+  const goHub = (tab: 'results' | 'policies' | 'overview') => {
+    if (!setView) return;
+    try {
+      sessionStorage.setItem(COMPLIANCE_HUB_TAB_KEY, tab);
+    } catch {
+      /* ignore */
+    }
+    setView('compliance_hub');
+  };
+
+  const onRemediate = () => {
+    if (!setView || !latest) return;
+    const payload = buildRemediationIntentPayload(latest, {
+      vendor: deviceMeta?.vendor,
+      role: deviceMeta?.role,
+      hostname: deviceMeta?.hostname || (latest as { hostname?: string }).hostname,
+    });
+    storeRemediationIntentAndGoStudio(payload, setView);
+  };
+
   return (
     <div className="h-full flex flex-col overflow-hidden bg-base-200">
       {/* Header */}
-      <div className="px-6 py-4 flex items-center justify-between bg-base-100/40 backdrop-blur-md border-b border-base-300 shrink-0">
-        <div className="flex items-center gap-4">
-          <div className="w-10 h-10 rounded-xl bg-primary/10 flex items-center justify-center text-primary shadow-sm border border-primary/20">
+      <div className="px-6 py-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between bg-base-100/40 backdrop-blur-md border-b border-base-300 shrink-0">
+        <div className="flex items-center gap-4 min-w-0">
+          <div className="w-10 h-10 rounded-xl bg-primary/10 flex items-center justify-center text-primary shadow-sm border border-primary/20 shrink-0">
             <Smartphone className="w-5 h-5" />
           </div>
-          <div>
-            <h1 className="text-xl font-black tracking-tight flex items-center gap-2">
+          <div className="min-w-0">
+            <h1 className="text-xl font-black tracking-tight flex items-center gap-2 flex-wrap">
               Device 360 {deviceId ? `#${deviceId}` : ''}
-              {(latest as any)?.hostname && (
+              {(deviceMeta?.hostname || (latest as { hostname?: string })?.hostname) && (
                 <span className="text-xs font-bold uppercase tracking-widest opacity-40 ml-2">
-                   · {String((latest as any).hostname)}
+                  · {String(deviceMeta?.hostname || (latest as { hostname?: string }).hostname)}
                 </span>
               )}
             </h1>
-            <p className="text-[10px] font-bold uppercase tracking-widest opacity-40 mt-0.5">Deep Compliance & Drift Analysis</p>
+            <p className="text-[10px] font-bold uppercase tracking-widest opacity-40 mt-0.5">
+              Deep Compliance & Drift Analysis
+            </p>
           </div>
         </div>
-        <button 
-          className="btn btn-sm btn-primary gap-2 shadow-lg shadow-primary/20" 
-          onClick={onCollect} 
-          disabled={!deviceId || loading}
-        >
-          <Camera className="w-4 h-4" />
-          Capture New Snapshot
-        </button>
+        <div className="flex flex-wrap items-center gap-2 justify-end">
+          {setView && (
+            <>
+              <button type="button" className="btn btn-sm btn-ghost gap-1" onClick={() => goHub('results')}>
+                <ArrowLeft className="w-4 h-4" />
+                Drift results
+              </button>
+              <button type="button" className="btn btn-sm btn-ghost gap-1" onClick={() => goHub('policies')}>
+                <ClipboardList className="w-4 h-4" />
+                Policies
+              </button>
+            </>
+          )}
+          {setView && setSelectedDeviceId && (
+            <button
+              type="button"
+              className="btn btn-sm btn-outline gap-1"
+              onClick={() => {
+                if (deviceId != null) setSelectedDeviceId(deviceId);
+                setView('netbox_devices');
+              }}
+            >
+              Inventory
+            </button>
+          )}
+          {setView && latest && String(latest.status || '').toLowerCase() !== 'compliant' && (
+            <button type="button" className="btn btn-sm btn-accent gap-1" onClick={onRemediate}>
+              <Wrench className="w-4 h-4" />
+              Ansible Studio
+            </button>
+          )}
+          <button
+            className="btn btn-sm btn-primary gap-2 shadow-lg shadow-primary/20"
+            onClick={onCollect}
+            disabled={!deviceId || loading}
+          >
+            <Camera className="w-4 h-4" />
+            Capture New Snapshot
+          </button>
+        </div>
       </div>
 
       <div className="grow overflow-y-auto p-6 space-y-6 custom-scrollbar">

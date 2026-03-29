@@ -10,9 +10,9 @@ import KnowledgeBase from '../views/KnowledgeBase';
 import AnsibleStudioView from '../views/AnsibleStudioView';
 import TemplateStudioView from '../views/TemplateStudioView';
 import ConfigBackupView from '../views/ConfigBackupView';
-import DriftView from '../views/DriftView';
-import PolicyBuilder from '../views/PolicyBuilder';
+import ComplianceHubView from '../views/ComplianceHubView';
 import ComplianceDeviceDetail from '../views/ComplianceDeviceDetail';
+import { COMPLIANCE_HUB_TAB_KEY } from '../utils/complianceNavigationKeys';
 import IncidentDashboard from '../views/IncidentDashboard';
 import OnboardingView from '../views/OnboardingView';
 import IntentHistoryView from '../views/IntentHistoryView';
@@ -47,6 +47,7 @@ const isViewId = (value: string | null): value is ViewId => {
     'netbox_devices',
     'drift',
     'policy_builder',
+    'compliance_hub',
     'compliance_device_detail',
     'net_perf',
     'net_chat',
@@ -195,12 +196,44 @@ const App: React.FC = () => {
         return <Dashboard />;
       case 'netbox_devices':
         return <NetBoxDevices />;
-      case 'drift':
-        return <DriftView />;
-      case 'policy_builder':
-        return <PolicyBuilder />;
+      case 'drift': {
+        try {
+          sessionStorage.setItem(COMPLIANCE_HUB_TAB_KEY, 'results');
+        } catch {
+          /* ignore */
+        }
+        return (
+          <ComplianceHubView
+            key="compliance-hub-drift"
+            setView={setView}
+            setSelectedDeviceId={setSelectedDeviceId}
+          />
+        );
+      }
+      case 'policy_builder': {
+        try {
+          sessionStorage.setItem(COMPLIANCE_HUB_TAB_KEY, 'policies');
+        } catch {
+          /* ignore */
+        }
+        return (
+          <ComplianceHubView
+            key="compliance-hub-policies"
+            setView={setView}
+            setSelectedDeviceId={setSelectedDeviceId}
+          />
+        );
+      }
+      case 'compliance_hub':
+        return <ComplianceHubView setView={setView} setSelectedDeviceId={setSelectedDeviceId} />;
       case 'compliance_device_detail':
-        return <ComplianceDeviceDetail deviceId={selectedDeviceId} />;
+        return (
+          <ComplianceDeviceDetail
+            deviceId={selectedDeviceId}
+            setView={setView}
+            setSelectedDeviceId={setSelectedDeviceId}
+          />
+        );
       case 'device_detail':
         return <div className="p-6"><h2 className="text-xl font-bold">Device 360 — #{selectedDeviceId ?? '?'}</h2><p className="mt-2 opacity-60">Device detail view — Phase 2.</p></div>;
       case 'net_perf':

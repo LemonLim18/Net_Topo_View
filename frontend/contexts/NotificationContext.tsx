@@ -20,8 +20,30 @@ export const NotificationProvider: React.FC<{ children: ReactNode }> = ({ childr
     const [notifications, setNotifications] = useState<AppNotification[]>([]);
     const [openIncidentCount, setOpenIncidentCount] = useState(0);
     const wsRef = useRef<WebSocket | null>(null);
+    const recentNotificationRef = useRef<Map<string, number>>(new Map());
 
     const addNotification = useCallback((title: string, message: string, type: NotificationType) => {
+        const key = `${type}|${title}|${message}`;
+        const now = Date.now();
+        const DUPLICATE_WINDOW_MS = 15000;
+        const lastAt = recentNotificationRef.current.get(key);
+
+        // Drop repeated telemetry toasts that arrive in short bursts.
+        if (typeof lastAt === 'number' && now - lastAt < DUPLICATE_WINDOW_MS) {
+            return;
+        }
+
+        recentNotificationRef.current.set(key, now);
+
+        // Lightweight cleanup to keep the in-memory dedupe table bounded.
+        if (recentNotificationRef.current.size > 200) {
+            for (const [k, ts] of recentNotificationRef.current.entries()) {
+                if (now - ts > DUPLICATE_WINDOW_MS * 4) {
+                    recentNotificationRef.current.delete(k);
+                }
+            }
+        }
+
         const newNotif: AppNotification = {
             id: Math.random().toString(36).substring(2, 9),
             title,

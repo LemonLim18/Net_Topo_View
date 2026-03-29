@@ -17,6 +17,7 @@ import { dashboardApi, netboxApi, incidentApi, deployApi, proposalApi } from '..
 import type { DashboardSummary, DeviceRecord } from '../src/services/api';
 import type { ViewId } from '../types';
 import { Toast } from '../src/utils/swal';
+import { COMPLIANCE_HUB_TAB_KEY } from '../utils/complianceNavigationKeys';
 
 /* ────────── helpers ────────── */
 const pct = (n: number) => `${n.toFixed(1)}%`;
@@ -159,7 +160,14 @@ const OverviewDashboard: React.FC<Props> = ({ setView, setSelectedDeviceId }) =>
 
         {/* Drift / Compliance */}
         <div className="card bg-base-100 shadow cursor-pointer hover:shadow-lg transition-shadow"
-             onClick={() => setView('drift')}>
+             onClick={() => {
+               try {
+                 sessionStorage.setItem(COMPLIANCE_HUB_TAB_KEY, 'results');
+               } catch {
+                 /* ignore */
+               }
+               setView('compliance_hub');
+             }}>
           <div className="card-body p-4">
             <div className="flex items-center justify-between">
               <div>

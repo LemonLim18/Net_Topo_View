@@ -71,7 +71,7 @@ const isWildcardInterfaceToken = (v: string): boolean => {
 
 const expandWildcardInterfacesFromPlannedPreview = (
   current: string[],
-  planned: { devices?: { hostname: string; interfaces: { name: string }[] }[] } | null,
+  planned: { devices?: { hostname?: string; interfaces?: { name?: string }[] }[] } | null,
 ): string[] => {
   if (!Array.isArray(current) || current.length === 0) return current;
   if (!current.some((x) => isWildcardInterfaceToken(x))) return current;
