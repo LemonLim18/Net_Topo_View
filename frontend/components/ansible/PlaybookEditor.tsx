@@ -13,6 +13,7 @@ interface PlaybookEditorProps {
   job:             AnsibleJob | null;
   checkResult?:    AnsibleCheckResult | null;
   isChecking?:     boolean;
+  approvalReady?:  boolean;
   userRole:        string;
   onTabSelect:     (id: string) => void;
   onTabClose:      (id: string) => void;
@@ -39,6 +40,7 @@ const getDisplayName = (tab: AnsibleTab) => {
 
 const PlaybookEditor: React.FC<PlaybookEditorProps> = ({
   tabs, activeTabId, job, checkResult: _checkResult = null, isChecking = false,
+  approvalReady = false,
   userRole,   onTabSelect, onTabClose, onChange, onSave,
   onCheck, onApprove, onDeploy, onRegenerate,
 }) => {
@@ -88,19 +90,34 @@ const PlaybookEditor: React.FC<PlaybookEditorProps> = ({
 
   // Derive action states
   const hasPlaybook = !!activeTab?.jobId;
-  const isApproved  = job?.status === 'approved';
-  const isRejected  = job?.status === 'rejected';
-  const isDeploying = job?.status === 'running';
-  const isDone      = job?.status === 'success' || job?.status === 'failed';
-  const hasExecutedBefore = job?.status === 'success' || job?.status === 'failed';
+  const normalizedStatus = String(job?.status || '').trim().toLowerCase();
+  const normalizedStage = String(job?.stage || '').trim().toLowerCase();
+  const isApproved  = normalizedStatus === 'approved';
+  const isPendingApproval =
+    (normalizedStatus === 'pending' && normalizedStage === 'approve') ||
+    normalizedStatus === 'pending_approval' ||
+    normalizedStatus === 'submitted';
+  const isRejected  = normalizedStatus === 'rejected';
+  const isDeploying = normalizedStatus === 'running';
+  const isDone      = normalizedStatus === 'success' || normalizedStatus === 'failed';
+  const hasExecutedBefore = isDone;
+  // Terminal states for the primary "Send" flow (but pending queue still allows Resend).
   const approveDone = isApproved || isDeploying || isDone;
   // Allow re-deploy when a job was already approved at least once.
   // Backend enforces "must be approved" for execution, but historically jobs may
   // move to success/failed status after the first run; we still want Deploy to stay available.
-  const canDeploy = isApproved || job?.status === 'success' || job?.status === 'failed';
-  const approveTitle = !isAdmin
-    ? 'Admin approval is required before deployment'
-    : 'Approve playbook for device deployment';
+  const canDeploy = isApproved || isDone;
+  const canSubmitToQueue =
+    canEdit &&
+    hasPlaybook &&
+    approvalReady &&
+    !isApproved &&
+    !isDeploying;
+  const approveTitle = isPendingApproval
+    ? (approvalReady
+        ? 'Submit again to refresh the queue entry and audit trail (same playbook must still pass Check)'
+        : 'Run Check (rc=0) before resending to the Approval Queue')
+    : (!approvalReady ? 'Run Check (rc=0) to enable Send for Approval' : 'Send this playbook to Approval Queue');
   const deployTitle = !canDeploy
     ? 'Job must be approved by an admin first'
     : 'Deploy to all target devices';
@@ -193,13 +210,35 @@ const PlaybookEditor: React.FC<PlaybookEditorProps> = ({
         </button>
 
         <button
-          className={`btn btn-xs gap-1 ${approveDone ? 'btn-success' : 'btn-warning'}`}
+          className={`btn btn-xs gap-1 ${
+            isPendingApproval
+              ? approvalReady
+                ? 'btn-outline btn-warning'
+                : 'btn-success'
+              : approveDone
+                ? 'btn-success'
+                : approvalReady
+                  ? 'btn-warning'
+                  : 'btn-ghost opacity-60'
+          }`}
           onClick={onApprove}
-          disabled={!isAdmin || !hasPlaybook || approveDone}
+          disabled={!canSubmitToQueue}
           title={approveTitle}
         >
-          {approveDone ? <Check className="h-3 w-3" /> : <ShieldCheck className="h-3 w-3" />}
-          {approveDone ? 'Approved' : 'Approve'}
+          {isPendingApproval ? (
+            approvalReady ? <RefreshCw className="h-3 w-3" /> : <Check className="h-3 w-3" />
+          ) : approveDone ? (
+            <Check className="h-3 w-3" />
+          ) : (
+            <ShieldCheck className="h-3 w-3" />
+          )}
+          {isPendingApproval
+            ? approvalReady
+              ? 'Resend to Queue'
+              : 'Sent for Approval'
+            : approveDone
+              ? 'Approved'
+              : 'Send for Approval'}
         </button>
 
         <button
@@ -213,7 +252,7 @@ const PlaybookEditor: React.FC<PlaybookEditorProps> = ({
         </button>
 
         {!isAdmin && hasPlaybook && !isApproved && !isRejected && (
-          <span className="badge badge-warning badge-sm">Awaiting Admin Approval</span>
+          <span className="badge badge-warning badge-sm">Awaiting Queue Review</span>
         )}
         {isRejected && (
           <span className="badge badge-error badge-sm" title="Rejected by admin review">

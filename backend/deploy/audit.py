@@ -52,6 +52,20 @@ class AuditLogger:
     def _ensure_table(self) -> None:
         with self.db._connect() as conn:
             conn.executescript(_DDL)
+            cols = {
+                str(r["name"]).lower()
+                for r in conn.execute("PRAGMA table_info(audit_log)").fetchall()
+            }
+            migrations = [
+                ("actor", "ALTER TABLE audit_log ADD COLUMN actor TEXT NOT NULL DEFAULT 'system'"),
+                ("request_id", "ALTER TABLE audit_log ADD COLUMN request_id INTEGER"),
+                ("job_id", "ALTER TABLE audit_log ADD COLUMN job_id INTEGER"),
+                ("comment", "ALTER TABLE audit_log ADD COLUMN comment TEXT"),
+                ("metadata", "ALTER TABLE audit_log ADD COLUMN metadata TEXT"),
+            ]
+            for name, ddl in migrations:
+                if name not in cols:
+                    conn.execute(ddl)
 
     # ------------------------------------------------------------------
     # Write

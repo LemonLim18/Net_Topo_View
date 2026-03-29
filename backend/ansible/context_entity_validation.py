@@ -331,6 +331,55 @@ def normalize_interface_name(s: str) -> str:
     return t.casefold()
 
 
+_PLACEHOLDER_ETHERNET0 = re.compile(r"^Ethernet0/\d+$", re.I)
+
+
+def _shutdown_entry_interface_name(x: Any) -> str:
+    if isinstance(x, dict):
+        s = str(x.get("name") or x.get("interface") or "").strip()
+    else:
+        s = str(x or "").strip()
+    if not s:
+        return ""
+    if ":" in s:
+        _left, right = s.split(":", 1)
+        rs = right.strip()
+        if rs:
+            return rs
+    return s
+
+
+def shutdown_list_is_placeholder_ethernet0_not_in_inventory(
+    names: Any,
+    inventory_normalized_names: Set[str],
+) -> bool:
+    """
+    True when ``names`` is a list of ``Ethernet0/n`` tokens that appear on **no**
+    resolved host in ``inventory_normalized_names``.
+
+    LLMs often emit a 24-port ``Ethernet0/1`` … ``Ethernet0/24`` guess; Huawei and
+    many platforms use ``GigabitEthernet…`` instead. Cross-check against DB inventory
+    so "all interfaces" flows can fall back to nettopo expansion instead of
+    validating fantasy ports.
+    """
+    if not isinstance(names, list) or len(names) < 2:
+        return False
+    if not inventory_normalized_names:
+        return False
+    iface_parts: List[str] = []
+    for x in names:
+        part = _shutdown_entry_interface_name(x)
+        if not part:
+            return False
+        iface_parts.append(part)
+    if not all(_PLACEHOLDER_ETHERNET0.match(p) for p in iface_parts):
+        return False
+    for p in iface_parts:
+        if normalize_interface_name(p) in inventory_normalized_names:
+            return False
+    return True
+
+
 def collect_user_interface_names_from_params(
     params: Optional[Dict[str, Any]],
     *,

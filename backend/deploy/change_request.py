@@ -27,7 +27,7 @@ class ChangeRequestService:
         RequestStatus.DRAFT:            [RequestStatus.PENDING_APPROVAL],
         RequestStatus.PENDING_APPROVAL: [RequestStatus.APPROVED, RequestStatus.REJECTED, RequestStatus.DRAFT],
         RequestStatus.APPROVED:         [RequestStatus.RUNNING, RequestStatus.REJECTED, RequestStatus.DRAFT],
-        RequestStatus.REJECTED:         [],
+        RequestStatus.REJECTED:         [RequestStatus.DRAFT, RequestStatus.PENDING_APPROVAL],
         RequestStatus.RUNNING:          [RequestStatus.COMPLETED, RequestStatus.FAILED, RequestStatus.ROLLED_BACK],
         RequestStatus.COMPLETED:        [],
         RequestStatus.FAILED:           [RequestStatus.DRAFT],

@@ -10,6 +10,7 @@ from ansible.context_entity_validation import (
     intersection_interfaces_from_disambiguation_devices,
     normalize_interface_name,
     should_validate_interface_names_against_inventory,
+    shutdown_list_is_placeholder_ethernet0_not_in_inventory,
     split_qualified_interface_token,
     validate_interface_params_against_context,
 )
@@ -18,6 +19,31 @@ from ansible.context_entity_validation import (
 def test_normalize_interface_name_casefold_whitespace():
     assert normalize_interface_name("  Ethernet0/1  ") == normalize_interface_name("ethernet0/1")
     assert normalize_interface_name("Gi  0/1") == "gi 0/1".casefold()
+
+
+def test_shutdown_placeholder_ethernet0_not_on_huawei_inventory():
+    inv = {
+        normalize_interface_name("GigabitEthernet1/0/1"),
+        normalize_interface_name("GigabitEthernet1/0/2"),
+    }
+    llm_guess = [f"Ethernet0/{i}" for i in range(1, 25)]
+    assert shutdown_list_is_placeholder_ethernet0_not_in_inventory(llm_guess, inv) is True
+
+
+def test_shutdown_placeholder_not_triggered_when_ethernet0_in_inventory():
+    inv = {normalize_interface_name("Ethernet0/1"), normalize_interface_name("Ethernet0/2")}
+    assert shutdown_list_is_placeholder_ethernet0_not_in_inventory(["Ethernet0/1", "Ethernet0/2"], inv) is False
+
+
+def test_shutdown_placeholder_not_triggered_for_mixed_or_short_lists():
+    inv = {normalize_interface_name("GigabitEthernet1/0/1")}
+    assert shutdown_list_is_placeholder_ethernet0_not_in_inventory(["Ethernet0/1"], inv) is False
+    assert (
+        shutdown_list_is_placeholder_ethernet0_not_in_inventory(
+            ["Ethernet0/1", "GigabitEthernet1/0/1"], inv
+        )
+        is False
+    )
 
 
 def test_collect_user_interface_names_order_unique():

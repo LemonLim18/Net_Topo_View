@@ -305,7 +305,7 @@ const PolicyBuilder: React.FC = () => {
                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <label className="form-control w-full">
                     <div className="label">
-                      <span className="label-text font-bold">Policy ID</span>
+                      <span className="label-text text-xs font-bold uppercase tracking-wider opacity-60 flex items-center gap-1.5">Policy ID</span>
                     </div>
                     <input 
                       className="input input-bordered font-mono" 
@@ -316,7 +316,7 @@ const PolicyBuilder: React.FC = () => {
                   </label>
                   <label className="form-control w-full">
                     <div className="label">
-                      <span className="label-text font-bold">Display Name</span>
+                      <span className="label-text text-xs font-bold uppercase tracking-wider opacity-60 flex items-center gap-1.5">Policy Label</span>
                     </div>
                     <input 
                       className="input input-bordered" 
@@ -329,7 +329,7 @@ const PolicyBuilder: React.FC = () => {
 
                 <div className="form-control w-full">
                   <div className="label">
-                    <span className="label-text font-bold">Description & Intent</span>
+                    <span className="label-text text-xs font-bold uppercase tracking-wider opacity-60 flex items-center gap-1.5">Description & Intent</span>
                   </div>
                   <textarea 
                     className="textarea textarea-bordered min-h-24 w-full" 
@@ -342,7 +342,7 @@ const PolicyBuilder: React.FC = () => {
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <label className="form-control w-full">
                     <div className="label">
-                      <span className="label-text font-bold">Operational Category</span>
+                      <span className="label-text text-xs font-bold uppercase tracking-wider opacity-60 flex items-center gap-1.5">Operational Category</span>
                     </div>
                     <select 
                       className="select select-bordered" 
@@ -355,7 +355,7 @@ const PolicyBuilder: React.FC = () => {
                   
                   <div className="form-control w-full">
                     <div className="label">
-                      <span className="label-text font-bold">Active Status</span>
+                      <span className="label-text text-xs font-bold uppercase tracking-wider opacity-60 flex items-center gap-1.5">Active Status</span>
                     </div>
                     <div className="flex items-center gap-3 bg-base-200/50 p-3 rounded-lg border border-base-300">
                         <input 

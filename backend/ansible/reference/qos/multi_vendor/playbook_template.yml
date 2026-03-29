@@ -13,12 +13,25 @@
 {% for rule in classification_rules | default([]) %}
 {% if rule is string %}
           - " {{ rule }}"
+{% else %}
+{% set _rtype = (rule.type | default(rule.get('type')) | default(rule.match | default(rule.get('match'))) | default('') | string | trim | lower) %}
+{% set _rval = (rule.value | default(rule.get('value')) | default(rule.dscp | default(rule.get('dscp'))) | default('') | string | trim | lower) %}
+{% if _rtype and _rval %}
+          - " match {{ _rtype }} {{ _rval }}"
+{% elif _rtype %}
+          - " match {{ _rtype }}"
+{% endif %}
 {% endif %}
 {% endfor %}
           - "policy-map {{ policy_name | default('QOS_POLICY', true) }}"
           - " class {{ policy_name | default('QOS_POLICY', true) }}_CLASS"
 {% if (marking_dscp | default('', true) | string | trim) != '' %}
           - "  set dscp {{ marking_dscp }}"
+{% endif %}
+{% if priority_percent | default('', true) | string | trim %}
+          - "  priority percent {{ priority_percent }}"
+{% elif priority_enabled | default(false) %}
+          - "  priority"
 {% endif %}
 {% if police_rate | default('', true) | string | trim %}
           - "  police {{ police_rate }}"
@@ -70,7 +83,7 @@
 {% set _iface_tok = (' '.join(_parts[:-1]) if _last in ['in','out','inbound','outbound'] else _tok) %}
 {% set _iface = (_iface_tok.split(':', 1)[1] if ':' in _iface_tok else _iface_tok) %}
 {% else %}
-{% set _iface = (ap.interface | default(ap.get('interface')) | default(ap.get('name')) | string) %}
+{% set _iface = (ap.interface | default(ap.get('interface')) | default(ap.interface_name | default(ap.get('interface_name'))) | default(ap.get('name')) | string) %}
 {% set _dir = (ap.direction | default(ap.get('direction')) | default(direction | default('out')) | string) %}
 {% endif %}
 {% if _iface | trim %}

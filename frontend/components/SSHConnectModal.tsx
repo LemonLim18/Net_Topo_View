@@ -1,6 +1,6 @@
 import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { Terminal, Loader2, Save, ArrowLeft, Server, Globe, ChevronDown } from 'lucide-react';
-import { netboxApi, authApi, type DeviceRecord } from '../src/services/api';
+import { netboxApi, authApi, networkConfigBackupApi, type DeviceRecord } from '../src/services/api';
 
 export type SSHConnectInitialTarget = { hostname: string; host: string };
 
@@ -27,6 +27,7 @@ const SSHConnectModal: React.FC<SSHConnectModalProps> = ({
   const [pendingDeviceId, setPendingDeviceId] = useState<number | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
   const [showDropdown, setShowDropdown] = useState(false);
+  const [liveByHostname, setLiveByHostname] = useState<Record<string, boolean>>({});
   const [formHostname, setFormHostname] = useState('');
   const [formHost, setFormHost] = useState('');
   const [username, setUsername] = useState('');
@@ -38,6 +39,18 @@ const SSHConnectModal: React.FC<SSHConnectModalProps> = ({
   const usernameRef = useRef<HTMLInputElement>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
 
+  const normalizeHostname = useCallback((value: string | null | undefined): string => {
+    return String(value || '').trim().toLowerCase();
+  }, []);
+
+  const isDeviceAlive = useCallback((device: DeviceRecord): boolean => {
+    const key = normalizeHostname(device.hostname);
+    if (key && Object.prototype.hasOwnProperty.call(liveByHostname, key)) {
+      return liveByHostname[key] === true;
+    }
+    const status = String(device.status || '').trim().toLowerCase();
+    return status === 'active' || status === 'registered' || status === 'provisioning';
+  }, [liveByHostname, normalizeHostname]);
 
   useEffect(() => {
     if (isOpen) {
@@ -53,11 +66,42 @@ const SSHConnectModal: React.FC<SSHConnectModalProps> = ({
       setSaveToVault(false);
       setError('');
       setLoading(false);
+      setLiveByHostname({});
       netboxApi.listDevices()
         .then((res) => setDevices(res.devices || []))
         .catch(() => setDevices([]));
     }
   }, [isOpen, initialHostname, initialHost]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    let disposed = false;
+    let timerId: number | null = null;
+
+    const refreshLiveStatus = async () => {
+      try {
+        const rows = await networkConfigBackupApi.listDevices();
+        if (disposed) return;
+        const next: Record<string, boolean> = {};
+        for (const row of rows || []) {
+          const key = normalizeHostname(row.hostname);
+          if (!key) continue;
+          next[key] = row.live_in_topology === true;
+        }
+        setLiveByHostname(next);
+      } catch {
+        // keep previous status snapshot if polling fails
+      }
+    };
+
+    refreshLiveStatus();
+    timerId = window.setInterval(refreshLiveStatus, 7000);
+
+    return () => {
+      disposed = true;
+      if (timerId !== null) window.clearInterval(timerId);
+    };
+  }, [isOpen, normalizeHostname]);
 
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
@@ -179,6 +223,18 @@ const SSHConnectModal: React.FC<SSHConnectModalProps> = ({
         className="modal-box max-w-md p-0 bg-base-100 border border-base-300 shadow-2xl flex flex-col rounded-2xl overflow-visible" 
         onClick={(e) => e.stopPropagation()}
       >
+        <style>{`
+          @keyframes ssh-status-breath-green {
+            0%, 100% { transform: scale(1); opacity: 0.8; box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.35); }
+            50% { transform: scale(1.2); opacity: 1; box-shadow: 0 0 8px 2px rgba(34, 197, 94, 0.55); }
+          }
+          @keyframes ssh-status-breath-red {
+            0%, 100% { transform: scale(1); opacity: 0.75; box-shadow: 0 0 0 0 rgba(248, 113, 113, 0.3); }
+            50% { transform: scale(1.2); opacity: 1; box-shadow: 0 0 8px 2px rgba(248, 113, 113, 0.5); }
+          }
+          .ssh-live-dot--up { animation: ssh-status-breath-green 2.8s ease-in-out infinite; }
+          .ssh-live-dot--down { animation: ssh-status-breath-red 2.8s ease-in-out infinite; }
+        `}</style>
         {/* Header */}
         <div className="p-4 border-b border-base-300 flex items-center justify-between bg-base-200/50">
           <div className="flex items-center gap-2.5">
@@ -267,7 +323,18 @@ const SSHConnectModal: React.FC<SSHConnectModalProps> = ({
                       className="flex items-center justify-between w-full h-8 px-3 text-sm transition-all border rounded-lg bg-base-100 border-base-300 text-base-content hover:border-primary/50 focus:outline-none focus:ring-1 focus:ring-primary/50"
                       onClick={() => setShowDropdown(!showDropdown)}
                     >
-                      <span className={searchTerm ? "text-base-content" : "text-base-content/40"}>
+                      <span className={`inline-flex items-center gap-2 ${searchTerm ? "text-base-content" : "text-base-content/40"}`}>
+                        {searchTerm && pendingDeviceId ? (() => {
+                          const selected = devices.find(d => d.id === pendingDeviceId);
+                          if (!selected) return null;
+                          const alive = isDeviceAlive(selected);
+                          return (
+                            <span
+                              className={`inline-block w-2 h-2 rounded-full shrink-0 ${alive ? 'bg-success ssh-live-dot--up' : 'bg-error ssh-live-dot--down'}`}
+                              title={alive ? 'Live / reachable' : 'Down / unavailable'}
+                            />
+                          );
+                        })() : null}
                         {searchTerm || '— Search inventory —'}
                       </span>
                       <ChevronDown size={14} className={`opacity-50 transition-transform duration-200 ${showDropdown ? 'rotate-180' : ''}`} />
@@ -284,7 +351,13 @@ const SSHConnectModal: React.FC<SSHConnectModalProps> = ({
                                   className="w-full px-4 py-2 text-left text-sm hover:bg-base-300 hover:text-base-content transition-colors flex items-center justify-between group/item"
                                   onClick={() => handleSelectInventoryDevice(d.id, d.hostname)}
                                 >
-                                  <span className="font-medium">{d.hostname}</span>
+                                  <span className="inline-flex items-center gap-2 min-w-0">
+                                    <span
+                                      className={`inline-block w-2 h-2 rounded-full shrink-0 ${isDeviceAlive(d) ? 'bg-success ssh-live-dot--up' : 'bg-error ssh-live-dot--down'}`}
+                                      title={isDeviceAlive(d) ? 'Live / reachable' : 'Down / unavailable'}
+                                    />
+                                    <span className="font-medium truncate">{d.hostname}</span>
+                                  </span>
                                   {d.management_ip && (
                                     <span className="text-[10px] opacity-50 group-hover/item:opacity-80">({d.management_ip})</span>
                                   )}

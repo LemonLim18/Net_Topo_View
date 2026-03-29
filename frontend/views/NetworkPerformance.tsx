@@ -945,12 +945,12 @@ const NetworkPerformance: React.FC = () => {
           <button className="btn btn-sm btn-outline gap-1" onClick={() => { fetchAll(); fetchHistory(); }} disabled={isLoading}>
             <RefreshCw className={`w-4 h-4 ${isLoading ? 'animate-spin' : ''}`} /> Refresh
           </button>
-          <button className="btn btn-sm btn-outline gap-1" onClick={handleEvaluate}>
+          {/* <button className="btn btn-sm btn-outline gap-1" onClick={handleEvaluate}>
             <AlertTriangle className="w-4 h-4 text-warning" /> Evaluate
           </button>
           <button className="btn btn-sm btn-primary gap-1" onClick={handleRegenerateConfig} disabled={isLoading}>
             <Server className="w-4 h-4" /> Telegraf
-          </button>
+          </button> */}
         </div>
       </div>
 
@@ -980,8 +980,8 @@ const NetworkPerformance: React.FC = () => {
       {focusDevice && focusedDevice ? (
         <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
           <KPICard icon={<CheckCircle className="h-4 w-4 text-success" />} label="Device Status" value={toTitleCase(focusedDevice.status)} color={(focusedDevice.status || '').toLowerCase() === 'up' ? 'text-success' : 'text-warning'} subtext={`${focusedDevice.vendor || 'Unknown vendor'} ${focusedDevice.model || ''}`.trim()} />
-          <KPICard icon={<Cpu className="h-4 w-4 text-info" />} label="CPU" value={focusedDevice.cpu != null ? `${focusedDevice.cpu.toFixed(1)}%` : 'N/A'} color={focusedDevice.cpu && focusedDevice.cpu > 80 ? 'text-error' : focusedDevice.cpu && focusedDevice.cpu > 60 ? 'text-warning' : 'text-info'} subtext={focusedDevice.cpu_source === 'reported' ? 'Reported device CPU' : `Synthesised from ${focusedDevice.cpu_source || 'activity'}`} />
-          <KPICard icon={<BarChart3 className="h-4 w-4 text-success" />} label="Memory" value={focusedDevice.memory_pct != null || focusedDevice.memory != null ? `${(focusedDevice.memory_pct ?? focusedDevice.memory ?? 0).toFixed(1)}%` : 'N/A'} color="text-success" subtext={focusedDevice.memory_source && focusedDevice.memory_source !== 'reported' ? `Synthesised from ${focusedDevice.memory_source}${focusedDevice.memory_activity_pps ? ` (${formatPerSecond(focusedDevice.memory_activity_pps)})` : ''}` : focusedDevice.mem_used != null ? `${formatBytes(focusedDevice.mem_used)} used` : 'No memory counters'} />
+          <KPICard icon={<Cpu className="h-4 w-4 text-info" />} label="CPU" value={focusedDevice.cpu != null ? `${focusedDevice.cpu.toFixed(1)}%` : 'N/A'} color={focusedDevice.cpu && focusedDevice.cpu > 80 ? 'text-error' : focusedDevice.cpu && focusedDevice.cpu > 60 ? 'text-warning' : 'text-info'} subtext="Current device CPU" />
+          <KPICard icon={<BarChart3 className="h-4 w-4 text-success" />} label="Memory" value={focusedDevice.memory_pct != null || focusedDevice.memory != null ? `${(focusedDevice.memory_pct ?? focusedDevice.memory ?? 0).toFixed(1)}%` : 'N/A'} color="text-success" subtext={focusedDevice.mem_used != null ? `${formatBytes(focusedDevice.mem_used)} used` : 'No memory counters'} />
           <KPICard icon={<TimerReset className="h-4 w-4 text-warning" />} label="System Uptime" value={focusedDevice.sysuptime ? formatUptime(focusedDevice.sysuptime) : 'N/A'} color="text-warning" subtext={focusedDevice.last_polled ? `Last polled ${formatDateTime(focusedDevice.last_polled)}` : 'No poll timestamp'} />
           <KPICard icon={<Network className="h-4 w-4 text-primary" />} label="Oper / Admin" value={`${focusedDevice.interfaces_oper_up ?? focusedDevice.interfaces_up ?? 0}/${focusedDevice.interfaces_total ?? 0}`} color="text-primary" subtext={`${focusedDevice.interfaces_admin_up ?? 0} admin-up, ${focusedDevice.interfaces_oper_down ?? focusedDevice.interfaces_down ?? 0} oper-down`} />
         </div>
@@ -999,7 +999,7 @@ const NetworkPerformance: React.FC = () => {
         <MultiLineChartCard title="Memory Usage (%)" chart={memChart} yUnit="%" loading={showInitialGraphSkeleton} />
       </div>
       <div className="grid gap-3 lg:grid-cols-2">
-        <MultiLineChartCard title={focusDevice ? `Interface Traffic for Selected Scope (bps)${trafficBasis === 'packet_counters' ? ' · inferred from packet_counters' : ''}` : 'Interface Traffic Across Devices (bps)'} chart={trafficChart} yUnit="bps" loading={showInitialGraphSkeleton} />
+        <MultiLineChartCard title={focusDevice ? 'Interface Traffic for Selected Scope (bps)' : 'Interface Traffic Across Devices (bps)'} chart={trafficChart} yUnit="bps" loading={showInitialGraphSkeleton} />
         <MultiLineChartCard title="Errors & Discards (/s)" chart={ifHealthChart} yUnit="/s" loading={showInitialGraphSkeleton} />
       </div>
       <MultiLineChartCard title="Packet Activity (pps)" chart={pktChart} yUnit="pps" loading={showInitialGraphSkeleton} />

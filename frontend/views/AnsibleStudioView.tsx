@@ -5,6 +5,7 @@ import JobStatusBar                                 from '../components/ansible/
 import AnsibleChatPanel                             from '../components/ansible/AnsibleChatPanel';
 import SSHTerminalDrawer, { type SSHTab }           from '../components/ansible/SSHTerminalDrawer';
 import { ansibleApi, configApi }                    from '../src/services/api';
+import { Toast }                                    from '../src/utils/swal';
 import type {
   AnsibleTab, AnsibleJob, AnsibleCheckResult, AnsibleGeneratedArtifactFile, AnsibleOutputSession,
 } from '../typesLLM';
@@ -18,6 +19,9 @@ const ANSIBLE_TERMINAL_MIN_KEY = 'ansible.terminalMinimized';
 const ANSIBLE_FILE_TREE_WIDTH_KEY = 'ansible.fileTreeWidth';
 const ANSIBLE_CHAT_PANEL_WIDTH_KEY = 'ansible.chatPanelWidth';
 const ANSIBLE_STATUS_BAR_HEIGHT_KEY = 'ansible.statusBarHeight';
+/** Set by Approval Queue "Studio" to open this job after navigation. */
+const ANSIBLE_OPEN_FROM_QUEUE_KEY = 'ansible.openJobFromQueue';
+const ANSIBLE_CHECK_PASSED_BY_JOB_KEY = 'ansible.checkPassedByJobId';
 const FILE_TREE_MIN = 160;
 const FILE_TREE_MAX = 480;
 const FILE_TREE_DEFAULT = 200;
@@ -120,13 +124,34 @@ const AnsibleStudioView: React.FC<AnsibleStudioViewProps> = ({ user }) => {
     }
   };
 
+  const getStoredCheckPassedByJob = (): Record<number, boolean> => {
+    try {
+      const raw = localStorage.getItem(ANSIBLE_CHECK_PASSED_BY_JOB_KEY);
+      if (!raw) return {};
+      const parsed = JSON.parse(raw) as Record<string, unknown>;
+      if (!parsed || typeof parsed !== 'object') return {};
+      const normalized: Record<number, boolean> = {};
+      Object.entries(parsed).forEach(([key, value]) => {
+        const jobId = Number(key);
+        if (Number.isFinite(jobId) && typeof value === 'boolean') {
+          normalized[jobId] = value;
+        }
+      });
+      return normalized;
+    } catch {
+      return {};
+    }
+  };
+
   // ── Playbook / editor state ──────────────────────────────────────────────
   const [tabs, setTabs]               = useState<AnsibleTab[]>(() => getStoredTabs());
   const [activeTabId, setActiveTabId] = useState<string | null>(() => localStorage.getItem(ANSIBLE_ACTIVE_TAB_KEY));
   const [activeJobId, setActiveJobId] = useState<number | null>(null);
   const [job, setJob]                 = useState<AnsibleJob | null>(null);
   const [checkResult, setCheckResult] = useState<AnsibleCheckResult | null>(null);
+  const [checkResultJobId, setCheckResultJobId] = useState<number | null>(null);
   const [isChecking, setIsChecking]   = useState(false);
+  const [checkPassedByJobId, setCheckPassedByJobId] = useState<Record<number, boolean>>(() => getStoredCheckPassedByJob());
 
   // ── SSE state ────────────────────────────────────────────────────────────
   const [sseLines, setSseLines]       = useState<string[]>([]);
@@ -220,6 +245,10 @@ const AnsibleStudioView: React.FC<AnsibleStudioViewProps> = ({ user }) => {
   }, [statusBarHeight]);
 
   useEffect(() => {
+    localStorage.setItem(ANSIBLE_CHECK_PASSED_BY_JOB_KEY, JSON.stringify(checkPassedByJobId));
+  }, [checkPassedByJobId]);
+
+  useEffect(() => {
     if (!tabs.length) {
       if (activeTabId !== null) setActiveTabId(null);
       return;
@@ -260,6 +289,46 @@ const AnsibleStudioView: React.FC<AnsibleStudioViewProps> = ({ user }) => {
     setActiveJobId(jobId ?? null);
   }, []);
 
+  const consumedQueueJobRef = useRef(false);
+  useEffect(() => {
+    if (consumedQueueJobRef.current) return;
+    let raw: string | null = null;
+    try {
+      raw = sessionStorage.getItem(ANSIBLE_OPEN_FROM_QUEUE_KEY);
+    } catch {
+      return;
+    }
+    if (!raw) return;
+    consumedQueueJobRef.current = true;
+    try {
+      sessionStorage.removeItem(ANSIBLE_OPEN_FROM_QUEUE_KEY);
+    } catch {
+      /* ignore */
+    }
+    const jobId = parseInt(raw, 10);
+    if (!Number.isFinite(jobId)) return;
+    void (async () => {
+      try {
+        const r = await ansibleApi.getResult(jobId);
+        const path = (r.entrypoint_path || '').trim();
+        if (path) {
+          const file = await ansibleApi.readFile(path);
+          const name = path.replace(/\\/g, '/').split('/').pop() || `Job ${jobId}`;
+          openTab(path, name, file.content || '', false, true, jobId);
+          setFileTreeRefresh((n) => n + 1);
+        } else {
+          setActiveJobId(jobId);
+          Toast.warning(
+            'Job selected',
+            'This job has no on-disk entrypoint path yet. Use the file tree or regenerate the playbook in Studio.'
+          );
+        }
+      } catch (e: any) {
+        Toast.error('Could not open job from approval queue', e?.message || String(e));
+      }
+    })();
+  }, [openTab]);
+
   const handleTabSelect = useCallback((id: string) => {
     setActiveTabId(id);
     const tab = tabs.find(t => t.id === id);
@@ -297,6 +366,7 @@ const AnsibleStudioView: React.FC<AnsibleStudioViewProps> = ({ user }) => {
   }) => {
     setActiveJobId(payload.jobId);
     setCheckResult(null);
+    setCheckResultJobId(null);
     setSseLines([]);
     if (payload.entrypointPath) {
       openTab(payload.entrypointPath, payload.name, payload.content, false, false, payload.jobId);
@@ -369,6 +439,7 @@ const AnsibleStudioView: React.FC<AnsibleStudioViewProps> = ({ user }) => {
     if (!activeJobId) return;
     setIsChecking(true);
     setCheckResult(null);
+    setCheckResultJobId(activeJobId);
     try {
       const r = await ansibleApi.checkPlaybook(activeJobId);
       setCheckResult({
@@ -378,6 +449,7 @@ const AnsibleStudioView: React.FC<AnsibleStudioViewProps> = ({ user }) => {
         summary: r.summary ?? '',
         stderr: r.stderr,
       });
+      setCheckPassedByJobId((prev) => ({ ...prev, [activeJobId]: r.rc === 0 }));
       const lines: string[] = [
         `[check] job=${activeJobId} rc=${r.rc} changed=${r.changed ? '1' : '0'}`,
         r.summary ? `summary: ${r.summary}` : '',
@@ -406,9 +478,32 @@ const AnsibleStudioView: React.FC<AnsibleStudioViewProps> = ({ user }) => {
   // ── Approve ──────────────────────────────────────────────────────────────
   const handleApprove = useCallback(async () => {
     if (!activeJobId) return;
-    await ansibleApi.approveJob(activeJobId);
+    const hasPassingCheck =
+      checkPassedByJobId[activeJobId] || (checkResultJobId === activeJobId && checkResult?.rc === 0);
+    if (!hasPassingCheck) {
+      Toast.warning('Run Check first', 'Please run Check successfully (rc=0) before sending for approval.');
+      return;
+    }
+    const st = String(job?.status || '').trim().toLowerCase();
+    const stg = String(job?.stage || '').trim().toLowerCase();
+    const isResend =
+      job?.jobId === activeJobId &&
+      (st === 'pending_approval' ||
+        st === 'submitted' ||
+        (st === 'pending' && stg === 'approve'));
+    await ansibleApi.submitForApproval(activeJobId);
+    setJob((prev) => {
+      if (!prev || prev.jobId !== activeJobId) return prev;
+      return { ...prev, status: 'pending_approval', stage: 'approve' };
+    });
+    Toast.success(
+      isResend ? 'Resent to queue' : 'Submitted',
+      isResend
+        ? `Job #${activeJobId} was submitted again (audit trail updated).`
+        : `Job #${activeJobId} sent to Approval Queue.`,
+    );
     await refreshJob(activeJobId);
-  }, [activeJobId, refreshJob]);
+  }, [activeJobId, job, checkPassedByJobId, checkResultJobId, checkResult, refreshJob]);
 
   // ── Deploy (SSE) ─────────────────────────────────────────────────────────
   const handleDeploy = useCallback(async () => {
@@ -496,9 +591,14 @@ const AnsibleStudioView: React.FC<AnsibleStudioViewProps> = ({ user }) => {
     setActiveJobId(null);
     setJob(null);
     setCheckResult(null);
+    setCheckResultJobId(null);
     setSseLines([]);
     setStreamingSessionId(null);
   }, [activeTab, closeTab]);
+
+  const approvalReady = Boolean(
+    activeJobId && (checkPassedByJobId[activeJobId] || (checkResultJobId === activeJobId && checkResult?.rc === 0))
+  );
 
   // ── SSH helpers ──────────────────────────────────────────────────────────
   const openSSHTerminal = useCallback((hostname: string, host: string) => {
@@ -547,6 +647,7 @@ const AnsibleStudioView: React.FC<AnsibleStudioViewProps> = ({ user }) => {
               job={job}
               checkResult={checkResult}
               isChecking={isChecking}
+              approvalReady={approvalReady}
               userRole={userRole}
             />
           </div>

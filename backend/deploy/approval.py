@@ -1,7 +1,7 @@
 """
 M4 Deployment Pipeline - Approval Gate API.
 
-Admin-only approval queue and request lifecycle endpoints.
+Approval queue and request lifecycle endpoints.
 """
 
 import logging
@@ -10,7 +10,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, status as http_status
 from pydantic import BaseModel
 
-from auth.rbac import require_admin
+from auth.rbac import require_any, require_engineer
 from db.manager import DatabaseManager
 from deploy.audit import AuditLogger
 from deploy.change_request import ChangeRequestService
@@ -30,6 +30,12 @@ _db_manager: Optional[DatabaseManager] = None
 def set_db_manager(db: DatabaseManager) -> None:
     global _db_manager
     _db_manager = db
+    try:
+        # Ensure audit_log has modern columns before queue endpoints read review metadata.
+        from deploy.audit import AuditLogger
+        AuditLogger(db)
+    except Exception as exc:
+        logger.debug("Audit schema warm-up skipped: %s", exc)
 
 
 def _get_db() -> DatabaseManager:
@@ -56,22 +62,47 @@ def _latest_audit(
         return {}
 
     with db._connect() as conn:
-        row = conn.execute(
-            "SELECT action, actor, comment, created_at "
-            f"FROM audit_log WHERE {' AND '.join(clauses)} AND action IN ('approve', 'reject') "
-            "ORDER BY id DESC LIMIT 1",
-            tuple(params),
-        ).fetchone()
+        try:
+            row = conn.execute(
+                "SELECT action, actor, comment, created_at "
+                f"FROM audit_log WHERE {' AND '.join(clauses)} AND action IN ('approve', 'reject') "
+                "ORDER BY id DESC LIMIT 1",
+                tuple(params),
+            ).fetchone()
+        except Exception:
+            # Legacy databases may not yet include actor/request_id/job_id columns.
+            return {}
     return dict(row) if row else {}
 
 
 def _queue_status_where(status_filter: str) -> tuple[str, str]:
     normalized = (status_filter or "pending").strip().lower()
     if normalized == "approved":
-        return "status = 'approved'", "status = 'approved'"
+        return "status = 'approved'", "j.status = 'approved'"
     if normalized == "rejected":
-        return "status = 'rejected'", "status = 'rejected'"
-    return "status = 'pending_approval'", "stage = 'plan' AND status = 'pending'"
+        return "status = 'rejected'", "j.status = 'rejected'"
+    return "status = 'pending_approval'", "j.stage = 'approve' AND j.status IN ('pending', 'pending_approval')"
+
+
+def _change_request_hide_if_ansible_job_exists_sql(status_filter: str) -> str:
+    """
+    Ansible Studio creates both a change_request and a jobs row. Listing both produced
+    duplicate queue lines; the job row carries ansible_entrypoint_path for preview/check.
+    Hide the parent change_request when a matching job is already shown for the tab.
+    """
+    normalized = (status_filter or "pending").strip().lower()
+    if normalized == "pending":
+        sub = (
+            "SELECT request_id FROM jobs WHERE request_id IS NOT NULL "
+            "AND stage = 'approve' AND status IN ('pending', 'pending_approval')"
+        )
+    elif normalized == "approved":
+        sub = "SELECT request_id FROM jobs WHERE request_id IS NOT NULL AND status = 'approved'"
+    elif normalized == "rejected":
+        sub = "SELECT request_id FROM jobs WHERE request_id IS NOT NULL AND status = 'rejected'"
+    else:
+        return ""
+    return f" AND id NOT IN ({sub})"
 
 
 def _serialize_queue_item(item_type: str, row, db: DatabaseManager) -> dict:
@@ -98,7 +129,7 @@ async def approve_request(
     request_id: int,
     body: ApprovalBody,
     db: DatabaseManager = Depends(_get_db),
-    user: dict = Depends(require_admin),
+    user: dict = Depends(require_engineer),
 ):
     """Approve a change request that is in PENDING_APPROVAL state."""
     svc = ChangeRequestService(db)
@@ -132,7 +163,7 @@ async def reject_request(
     request_id: int,
     body: ApprovalBody,
     db: DatabaseManager = Depends(_get_db),
-    user: dict = Depends(require_admin),
+    user: dict = Depends(require_engineer),
 ):
     """Reject a pending change request."""
     svc = ChangeRequestService(db)
@@ -165,7 +196,7 @@ async def reject_request(
 async def get_request_status(
     request_id: int,
     db: DatabaseManager = Depends(_get_db),
-    user: dict = Depends(require_admin),
+    user: dict = Depends(require_any),
 ):
     """Return the current status of a change request."""
     svc = ChangeRequestService(db)
@@ -185,17 +216,18 @@ async def list_approval_queue(
     status_filter: str = "pending",
     limit: int = 50,
     db: DatabaseManager = Depends(_get_db),
-    user: dict = Depends(require_admin),
+    user: dict = Depends(require_any),
 ):
-    """Admin-only approval queue with Pending, Approved, and Rejected tabs."""
+    """Approval queue with Pending, Approved, and Rejected tabs."""
     request_where, job_where = _queue_status_where(status_filter)
     items = []
 
     try:
+        cr_extra = _change_request_hide_if_ansible_job_exists_sql(status_filter)
         with db._connect() as conn:
             rows = conn.execute(
                 "SELECT id, title, requester, status, created_at "
-                f"FROM change_requests WHERE {request_where} "
+                f"FROM change_requests WHERE {request_where}{cr_extra} "
                 "ORDER BY created_at DESC LIMIT ?",
                 (limit,),
             ).fetchall()
@@ -231,7 +263,7 @@ async def list_approval_queue(
 async def list_pending_approvals(
     limit: int = 50,
     db: DatabaseManager = Depends(_get_db),
-    user: dict = Depends(require_admin),
+    user: dict = Depends(require_any),
 ):
     """Backward-compatible alias for the Pending queue."""
     return await list_approval_queue("pending", limit, db, user)

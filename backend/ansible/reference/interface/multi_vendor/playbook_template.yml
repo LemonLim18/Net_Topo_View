@@ -12,12 +12,16 @@
     interfaces_admin_enabled: "{{ ((interfaces_admin_enabled | default(false) | string | trim | lower) in ['1', 'true', 'yes', 'on']) | string | lower }}"
 {% if interfaces_config_use_nettopo | default(false) %}
     # Per-host expanded config from nettopo_interfaces (mgmt excluded by name + mgmt IP match).
-    interfaces_config: "{{ '{{ [ ((interfaces_config_defaults | default([]) | first | default({})) | combine({''name'': n})) for n in (nettopo_interfaces | default([]) | rejectattr(''ip_address'', ''equalto'', (hostvars[inventory_hostname].ansible_host | default(''''))) | map(attribute=''name'') | map(''trim'') | reject(''equalto'', '''') | reject(''match'', ''(?i).*(management|mgmt|meth|vty|console).*'') | list) ] }}' }}"
+{% raw %}
+    interfaces_config: "{{ [ ((interfaces_config_defaults | default([]) | first | default({})) | combine({'name': n})) for n in (nettopo_interfaces | default([]) | rejectattr('ip_address', 'equalto', (hostvars[inventory_hostname].ansible_host | default(''))) | map(attribute='name') | map('trim') | reject('equalto', '') | reject('match', '(?i).*(management|mgmt|meth|vty|console).*') | list) ] }}"
+{% endraw %}
 {% endif %}
 {% if interfaces_to_shutdown_override is defined and interfaces_to_shutdown_override is not none and interfaces_to_shutdown_override | length > 0 %}
     interfaces_to_shutdown: {{ interfaces_to_shutdown_override | tojson }}
 {% else %}
-    interfaces_to_shutdown: "{{ '{{ nettopo_interfaces | default([]) | rejectattr(''ip_address'', ''equalto'', (hostvars[inventory_hostname].ansible_host | default(''''))) | map(attribute=''name'') | map(''trim'') | reject(''equalto'', '''') | reject(''match'', ''(?i).*(management|mgmt|meth|vty|console).*'') | list }}' }}"
+{% raw %}
+    interfaces_to_shutdown: "{{ nettopo_interfaces | default([]) | rejectattr('ip_address', 'equalto', (hostvars[inventory_hostname].ansible_host | default(''))) | map(attribute='name') | map('trim') | reject('equalto', '') | reject('match', '(?i).*(management|mgmt|meth|vty|console).*') | list }}"
+{% endraw %}
 {% endif %}
   tasks:
 {% raw %}
@@ -77,7 +81,7 @@
 {% raw %}
     - name: Configure interface (Huawei VRP) [all interfaces]
       community.network.ce_config:
-        parents: "interface {{ (item.name | string | replace('TenGigabitEthernet', '10GE') | replace('GigabitEthernet', 'GE')) }}"
+        parents: "interface {{ (item.name | string).split(':') | last | trim | replace('TenGigabitEthernet', '10GE') | replace('GigabitEthernet', 'GE') }}"
         lines: "{{ [
           (('description ' ~ item.description) if (item.description is defined and item.description) else none),
           ('shutdown' if (item.enabled is defined and item.enabled == false) else 'undo shutdown'),
@@ -89,7 +93,7 @@
         ] | reject('equalto', none) | list }}"
       loop: "{{ interfaces_config | default([]) }}"
       loop_control:
-        label: "{{ item.name }}"
+        label: "{{ (item.name | string).split(':') | last | trim | replace('TenGigabitEthernet', '10GE') | replace('GigabitEthernet', 'GE') }}"
       when:
         - inventory_hostname in groups.get('vendor_huawei_vrp', [])
         - item.enabled is defined
@@ -101,9 +105,9 @@
 {% if item.enabled is defined and item.enabled == false %}{% set _ = ns.lines.append('shutdown') %}{% elif item.enabled is defined and item.enabled != false %}{% set _ = ns.lines.append('undo shutdown') %}{% endif %}
 {% if item.mode is defined and item.mode == 'access' and item.access is defined %}{% set _ = ns.lines.append('port link-type access') %}{% set _ = ns.lines.append('port default vlan ' + (item.access.vlan | string)) %}{% elif item.mode is defined and item.mode == 'trunk' and item.trunk is defined %}{% set _ = ns.lines.append('port link-type trunk') %}{% set _ = ns.lines.append('port trunk allow-pass vlan ' + (item.trunk.allowed_vlans | default(item.trunk.allow_pass_vlans) | default([]) | map('string') | join(' '))) %}{% endif %}
 {% if item.ip is defined and item.ip and item.ip.address is defined %}{% set _ = ns.lines.append('ip address ' + (item.ip.address | string) + ' ' + (item.ip.mask | default(item.ip.netmask) | default('255.255.255.0') | string)) %}{% endif %}
-    - name: Configure interface {{ item.name }} (Huawei VRP)
+    - name: Configure interface {{ (item.name | string).split(':') | last | trim | replace('TenGigabitEthernet', '10GE') | replace('GigabitEthernet', 'GE') }} (Huawei VRP)
       community.network.ce_config:
-        parents: "interface {{ (item.name | string | replace('TenGigabitEthernet', '10GE') | replace('GigabitEthernet', 'GE')) }}"
+        parents: "interface {{ (item.name | string).split(':') | last | trim | replace('TenGigabitEthernet', '10GE') | replace('GigabitEthernet', 'GE') }}"
         lines: {{ ns.lines | tojson }}
       when:
         - inventory_hostname in groups.get('vendor_huawei_vrp', [])
@@ -111,15 +115,15 @@
 {% endfor %}
 {% endif %}
 {% raw %}
+    # Same truthy normalization as play vars — avoid (false == "false") missing shutdown after JSON merge.
     - name: Shutdown interface (Huawei VRP)
       community.network.ce_config:
         lines:
-          - "{{ 'shutdown' if (interfaces_admin_enabled | default(false)) == false else 'undo shutdown' }}"
-        parents: "interface {{ (item | string | replace('TenGigabitEthernet', '10GE') | replace('GigabitEthernet', 'GE')) }}"
-        state: merged
+          - "{{ 'shutdown' if not ((interfaces_admin_enabled | default(false) | string | trim | lower) in ['1', 'true', 'yes', 'on']) else 'undo shutdown' }}"
+        parents: "interface {{ (item | string).split(':') | last | trim | replace('TenGigabitEthernet', '10GE') | replace('GigabitEthernet', 'GE') }}"
       loop: "{{ interfaces_to_shutdown | default([]) }}"
       loop_control:
-        label: "{{ item }}"
+        label: "{{ (item | string).split(':') | last | trim | replace('TenGigabitEthernet', '10GE') | replace('GigabitEthernet', 'GE') }}"
       when:
         - inventory_hostname in groups.get('vendor_huawei_vrp', [])
         - (interfaces_config | default([])) | length == 0

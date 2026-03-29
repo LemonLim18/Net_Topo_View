@@ -220,19 +220,6 @@ const IntentGraphCanvas: React.FC<Props> = ({ schema, onNavigateCategory, onNavi
                                 </div>
                             )}
                             
-                            {op.optional_fields && op.optional_fields.length > 0 && (
-                                <div className="flex flex-col gap-1.5">
-                                  <span className="text-[11px] uppercase tracking-wider font-extrabold text-warning/80">Optional</span>
-                                  <div className="flex flex-wrap gap-1.5">
-                                    {op.optional_fields.map(f => (
-                                      <span key={f} className="badge badge-outline badge-warning font-mono text-xs py-2 shadow-sm border-dashed">
-                                        {f}
-                                      </span>
-                                    ))}
-                                  </div>
-                                </div>
-                            )}
-
                             {op.dependencies && op.dependencies.length > 0 && (
                                 <div className="mt-2 p-3 bg-info/5 text-info rounded-lg text-sm border border-info/20 shadow-inner">
                                   <div className="font-extrabold flex gap-2 items-center mb-1.5 text-xs uppercase tracking-wider opacity-80">
@@ -257,7 +244,7 @@ const IntentGraphCanvas: React.FC<Props> = ({ schema, onNavigateCategory, onNavi
       {/* Context Menu Overlay rendering */}
       {contextMenu && (
         <ul 
-          className="menu bg-base-100 w-56 rounded-box shadow-xl border border-secondary/50 fixed z-[100]"
+          className="menu bg-base-100 w-56 rounded-box shadow-xl border border-secondary/50 fixed z-100"
           style={{ top: contextMenu.y, left: contextMenu.x }}
         >
           <li className="menu-title text-[10px] opacity-70 px-4 py-2 uppercase tracking-widest border-b border-base-200 mb-1">

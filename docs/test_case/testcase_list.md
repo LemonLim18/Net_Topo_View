@@ -164,11 +164,53 @@ Now, I would like to do for the prompt of category QoS, so it can be done in thi
 
 ## 6️⃣ QoS
 
-- [ ] Create QoS policy VOICE_POLICY on SW1  
+- [/] Create QoS policy VOICE_POLICY on SW1  
 
 
-- [ ] Configure QoS to prioritize voice traffic on GigabitEthernet1/0/1  
+- [*] Configure QoS to prioritize voice traffic on GigabitEthernet1/0/1  
+Reminder: fIX this tommorrow, the dry run works but the actual playbook contains wrong commands, as it accespots 1. ❌ Invalid match statement
+match DSCP
 
+👉 This is wrong syntax
+
+✅ Correct:
+
+match dscp ef
+
+or
+
+match dscp 46
+2. ❌ No prioritization action
+
+Your policy-map:
+
+policy-map VOICE_POLICY
+ class VOICE_POLICY_CLASS
+
+👉 This does nothing. You didn’t tell it to prioritize.
+
+✅ You MUST include:
+
+priority
+3. ❌ Interface mismatch
+
+Prompt says:
+
+GigabitEthernet1/0/1
+
+Your config:
+
+interface Ethernet0/1
+
+👉 This will fail in real deployment.
+
+4. ❌ Weak class-map logic
+class-map match-any VOICE_POLICY_CLASS
+ match dscp ef
+
+👉 This is OK, but your version:
+
+match DSCP
 
 - [ ] Apply QoS policy IN_POLICY inbound on GigabitEthernet1/0/2 on SW1  
 

@@ -1,4 +1,6 @@
-# Intent schema: shutdown / admin-down interfaces
+# Intent schema: administrative interface state (up or down).
+# Playbooks use the same operation for both directions; ``interfaces_admin_enabled`` selects
+# bring-up (no shutdown / undo shutdown / enabled) vs shut-down.
 # Required: target_devices, interfaces. Resolution: intent -> inventory -> topology -> ask_user
 action: shutdown_interface
 feature: interface
@@ -18,4 +20,4 @@ resolution_order:
     - ask_user
 questions:
   target_devices: "Which devices?"
-  interfaces: "Which interfaces do you want to shutdown?"
+  interfaces: "Which interfaces should this apply to?"

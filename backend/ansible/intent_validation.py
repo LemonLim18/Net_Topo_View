@@ -137,11 +137,16 @@ def _normalize_intent_for_type_schema(intent: Dict[str, Any], schema_key: str) -
     elif schema_key == "shutdown_interface":
         out["target_hosts"] = flat.get("target_devices") or []
         ifaces = flat.get("interfaces") or []
-        out["interfaces_to_shutdown"] = (
-            [str(x) for x in ifaces]
-            if all(isinstance(x, str) for x in ifaces)
-            else [str(x.get("name", x)) for x in ifaces]
-        )
+        params_shutdown = dict(intent.get("parameters") or intent.get("params") or {})
+        if (not ifaces) and params_shutdown.get("interfaces_shutdown_use_nettopo") is True:
+            # JSON-Schema requires minItems:1; execution still expands from nettopo at template time.
+            out["interfaces_to_shutdown"] = ["ALL"]
+        else:
+            out["interfaces_to_shutdown"] = (
+                [str(x) for x in ifaces]
+                if all(isinstance(x, str) for x in ifaces)
+                else [str(x.get("name", x)) for x in ifaces]
+            )
     elif schema_key == "configure_interface":
         out["target_hosts"] = flat.get("target_devices") or []
         params_raw = dict(intent.get("parameters") or intent.get("params") or {})
@@ -374,9 +379,25 @@ def _intent_to_flat_fields(intent: Dict[str, Any], schema: Dict[str, Any]) -> Di
         flat["target_devices"] = []
 
     # interfaces / interfaces_to_shutdown
-    ifaces = params.get("interfaces_to_shutdown") or params.get("interfaces")
-    if ifaces is not None:
-        flat["interfaces"] = ifaces if isinstance(ifaces, list) else [ifaces] if ifaces else []
+    # Keep both keys in flat map and allow root-level fallbacks for older payload shapes.
+    ifaces_shutdown = (
+        params.get("interfaces_to_shutdown")
+        or intent.get("interfaces_to_shutdown")
+        or intent.get("target_interfaces")
+    )
+    ifaces_config = params.get("interfaces") or intent.get("interfaces")
+    if ifaces_shutdown is not None:
+        flat["interfaces_to_shutdown"] = (
+            ifaces_shutdown if isinstance(ifaces_shutdown, list) else [ifaces_shutdown] if ifaces_shutdown else []
+        )
+    else:
+        flat["interfaces_to_shutdown"] = None
+
+    if ifaces_config is not None:
+        flat["interfaces"] = ifaces_config if isinstance(ifaces_config, list) else [ifaces_config] if ifaces_config else []
+    elif flat["interfaces_to_shutdown"] is not None:
+        # For shutdown schema, 'interfaces' and 'interfaces_to_shutdown' are semantic aliases.
+        flat["interfaces"] = flat["interfaces_to_shutdown"]
     else:
         flat["interfaces"] = None
 
@@ -556,10 +577,31 @@ def validate_completeness(
     missing: List[str] = []
     errors: List[str] = []
 
+    schema_action = str(schema.get("action") or "").strip().lower().replace("-", "_")
+    alias_map: Dict[str, List[str]] = {
+        "target_devices": ["target_hosts"],
+    }
+    if schema_action == "shutdown_interface":
+        alias_map.setdefault("interfaces", []).append("interfaces_to_shutdown")
+
     for field in required:
         value = flat.get(field)
         if _is_empty(value):
-            missing.append(field)
+            for alias in alias_map.get(field, []):
+                alias_value = flat.get(alias)
+                if not _is_empty(alias_value):
+                    value = alias_value
+                    break
+        if _is_empty(value):
+            if (
+                field == "interfaces"
+                and schema_action == "shutdown_interface"
+                and isinstance((intent.get("parameters") or {}), dict)
+                and (intent.get("parameters") or {}).get("interfaces_shutdown_use_nettopo") is True
+            ):
+                pass
+            else:
+                missing.append(field)
 
     if action_or_feature:
         ok, type_errors = validate_types(intent, action_or_feature)
@@ -2833,8 +2875,10 @@ def _expand_all_interfaces_preview_tokens_for_inspector(
     planned_preview: Optional[Dict[str, Any]],
 ) -> Dict[str, Any]:
     """
-    Inspector-only expansion for shutdown_interface `interfaces_to_shutdown=["ALL"]`.
-    Keeps execution params unchanged, but renders explicit planned interfaces for admin visibility.
+    Inspector-only expansion for shutdown_interface all-interface scope: wildcards such as
+    ``["ALL"]``, or ``interfaces_shutdown_use_nettopo`` with no explicit shutdown list
+    (names are filled at playbook/template time). Renders planned interface names for the
+    schema inspector without mutating the API's primary ``parsed_intent``.
     """
     out = {
         "action": intent_for_slice.get("action"),
@@ -2846,11 +2890,21 @@ def _expand_all_interfaces_preview_tokens_for_inspector(
     action = str(out.get("action") or "").strip().lower().replace("-", "_")
     if action != "shutdown_interface":
         return out
+    use_nettopo = params.get("interfaces_shutdown_use_nettopo") is True
     raw = params.get("interfaces_to_shutdown")
-    if not isinstance(raw, list):
-        return out
-    has_all = any(str(x).strip().lower() in ("all", "*", "any", "every") for x in raw)
-    if not has_all:
+
+    should_expand = False
+    if isinstance(raw, list):
+        if not raw and use_nettopo:
+            should_expand = True
+        elif raw and any(str(x).strip().lower() in ("all", "*", "any", "every") for x in raw):
+            should_expand = True
+    elif (raw is None or raw == "") and use_nettopo:
+        should_expand = True
+    elif isinstance(raw, str) and raw.strip().lower() in ("all", "*", "any", "every"):
+        should_expand = True
+
+    if not should_expand:
         return out
     devices = list((planned_preview or {}).get("devices") or [])
     expanded: List[str] = []
@@ -3179,6 +3233,21 @@ def get_editable_fields_for_schema(schema: Dict[str, Any]) -> List[Dict[str, Any
     return out
 
 
+def _interfaces_admin_enabled_from_params(params: Any) -> Optional[bool]:
+    """
+    None if unset; True = bring up / no shutdown; False = admin down.
+    Matches Jinja truthy checks on ``interfaces_admin_enabled`` in interface playbooks.
+    """
+    if not isinstance(params, dict) or "interfaces_admin_enabled" not in params:
+        return None
+    v = params.get("interfaces_admin_enabled")
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, str):
+        return v.strip().lower() in ("1", "true", "yes", "on")
+    return bool(v)
+
+
 def _format_inspector_value_preview(value: Any) -> str:
     """Short string for preview modal / API (lists of scalars → comma-separated)."""
     if value is None:
@@ -3248,6 +3317,10 @@ def _build_one_schema_inspector_slice(
     for sf in ordered_fields:
         param_key = schema_field_to_param_key(schema, sf)
         raw_val = flat.get(sf)
+        if param_key and param_key != sf:
+            mapped_val = flat.get(param_key)
+            if not _is_empty(mapped_val):
+                raw_val = mapped_val
         empty = _is_empty(raw_val)
         if sf in required_set:
             status = "missing" if empty else "filled"
@@ -3256,6 +3329,17 @@ def _build_one_schema_inspector_slice(
         label = str(questions.get(sf) or param_key.replace("_", " ")).strip()
         if label.endswith("?"):
             label = label[:-1]
+        q_out = questions.get(sf)
+        schema_action_norm = str(schema_action or "").strip().lower().replace("-", "_")
+        if sf == "interfaces" and schema_action_norm == "shutdown_interface":
+            p_ins = dict(slice_intent.get("parameters") or slice_intent.get("params") or {})
+            direction = _interfaces_admin_enabled_from_params(p_ins)
+            if direction is True:
+                label = "Interfaces to bring up (no shutdown)"
+                q_out = "Which interfaces should be brought up (administratively enabled)?"
+            elif direction is False:
+                label = "Interfaces to shut down"
+                q_out = "Which interfaces should be shut down (administratively disabled)?"
         fields_out.append({
             "schema_field": sf,
             "param_key": param_key,
@@ -3263,8 +3347,23 @@ def _build_one_schema_inspector_slice(
             "required": sf in required_set,
             "status": status,
             "value_preview": _format_inspector_value_preview(raw_val) if not empty else "",
-            "question": questions.get(sf),
+            "question": q_out,
         })
+
+    slice_note: Optional[str] = None
+    if str(schema.get("action") or "").strip().lower().replace("-", "_") == "shutdown_interface":
+        p_note = dict(slice_intent.get("parameters") or slice_intent.get("params") or {})
+        d_note = _interfaces_admin_enabled_from_params(p_note)
+        if d_note is True:
+            slice_note = (
+                "Internal operation name is still `shutdown_interface`; the playbook will "
+                "**bring interfaces up** (no shutdown / enabled) because `interfaces_admin_enabled` is true."
+            )
+        elif d_note is False:
+            slice_note = (
+                "Playbook will **shut interfaces down** (administratively disable); "
+                "`interfaces_admin_enabled` is false."
+            )
 
     return {
         "role": role,
@@ -3277,7 +3376,7 @@ def _build_one_schema_inspector_slice(
         "missing_required": list(missing),
         "validation_errors": list(errors or []),
         "fields": fields_out,
-        "note": None,
+        "note": slice_note,
     }
 
 

@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
-  CheckCircle, Clock, Eye, GitPullRequestArrow, ListChecks,
-  MessageSquare, RefreshCw, User, Workflow, XCircle,
+  CheckCircle, Clock, Eye, ExternalLink, GitPullRequestArrow, ListChecks,
+  RefreshCw, User, Workflow, XCircle,
 } from 'lucide-react';
 
 import { ansibleApi, deployApi } from '../src/services/api';
@@ -52,7 +52,9 @@ const statusBadgeClass = (status: string) => {
   return 'badge-warning';
 };
 
-const ApprovalQueueView: React.FC<Props> = () => {
+const ANSIBLE_OPEN_FROM_QUEUE_KEY = 'ansible.openJobFromQueue';
+
+const ApprovalQueueView: React.FC<Props> = ({ setView }) => {
   const [activeTab, setActiveTab] = useState<QueueTab>('pending');
   const [items, setItems] = useState<Record<QueueTab, QueueItem[]>>({
     pending: [],
@@ -73,13 +75,16 @@ const ApprovalQueueView: React.FC<Props> = () => {
   const [commentModal, setCommentModal] = useState<{
     id: number;
     type: string;
-    action: 'approve' | 'reject';
   } | null>(null);
   const [comment, setComment] = useState('');
   const [previewOpen, setPreviewOpen] = useState(false);
   const [previewTitle, setPreviewTitle] = useState('');
   const [previewContent, setPreviewContent] = useState('Loading playbook preview...');
   const [previewLoading, setPreviewLoading] = useState(false);
+  const [checkOpen, setCheckOpen] = useState(false);
+  const [checkTitle, setCheckTitle] = useState('');
+  const [checkContent, setCheckContent] = useState('Running dry-run check...');
+  const [checkLoading, setCheckLoading] = useState(false);
 
   const loadTab = useCallback(async (tab: QueueTab) => {
     setLoading((prev) => ({ ...prev, [tab]: true }));
@@ -118,13 +123,24 @@ const ApprovalQueueView: React.FC<Props> = () => {
     rejected: items.rejected.length,
   }), [items]);
 
-  const handleAction = useCallback(async (item: QueueItem, action: 'approve' | 'reject', actionComment?: string) => {
+  const handleAction = useCallback(
+    async (
+      item: QueueItem,
+      action: 'approve' | 'reject',
+      actionComment?: string,
+      opts?: { skipConfirm?: boolean }
+    ) => {
     const label = action === 'approve' ? 'Approve' : 'Reject';
-    const confirmMessage = action === 'approve'
-      ? 'This playbook will move to the Approved tab and can then be deployed.'
-      : 'This playbook will move to the Rejected tab with your review note.';
-    const ok = await Confirm.ask(`${label} #${item.id}?`, confirmMessage);
-    if (!ok) return;
+    const confirmMessage =
+      action === 'approve'
+        ? item.type === 'ansible_job'
+          ? 'This approves the Ansible job and the linked change request. You can run Execute from Ansible Studio after approval.'
+          : 'This approves the change request. If a playbook job exists, prefer approving from the Playbook row so job state stays in sync.'
+        : 'This will move the item to Rejected with your review note.';
+    if (!opts?.skipConfirm) {
+      const ok = await Confirm.ask(`${label} #${item.id}?`, confirmMessage);
+      if (!ok) return;
+    }
 
     setActionId(item.id);
     try {
@@ -148,31 +164,88 @@ const ApprovalQueueView: React.FC<Props> = () => {
     }
   }, [activeTab, refreshAllTabs]);
 
-  const openPreview = useCallback(async (item: QueueItem) => {
-    setPreviewOpen(true);
-    setPreviewTitle(item.title);
-    setPreviewContent('Loading playbook preview...');
-    setPreviewLoading(true);
+  const loadPlaybookPreviewForJob = useCallback(async (jobId: number, entryHint?: string | null) => {
+    let path = (entryHint || '').trim();
+    if (!path) {
+      const result = await ansibleApi.getResult(jobId);
+      path = (result.entrypoint_path || '').trim();
+    }
+    if (!path) {
+      setPreviewContent(
+        'This job has no entrypoint path recorded yet. Open **Ansible Studio** from the queue to inspect generated files.'
+      );
+      return;
+    }
+    const file = await ansibleApi.readFile(path);
+    setPreviewContent(file.content || '# Empty playbook');
+  }, []);
+
+  const openPreview = useCallback(
+    async (item: QueueItem) => {
+      setPreviewOpen(true);
+      setPreviewTitle(item.title);
+      setPreviewContent('Loading playbook preview...');
+      setPreviewLoading(true);
+      try {
+        if (item.type === 'ansible_job') {
+          await loadPlaybookPreviewForJob(item.id, item.entrypoint_path);
+          return;
+        }
+        try {
+          const link = await ansibleApi.getJobForRequest(item.request_id);
+          await loadPlaybookPreviewForJob(link.job_id, link.entrypoint_path);
+        } catch {
+          setPreviewContent(
+            'No Ansible playbook job is linked to this change request, so there is nothing to preview. ' +
+              'If this was submitted from Ansible Studio, open the **Playbook** queue row (or use Ansible Studio).'
+          );
+        }
+      } catch (err: any) {
+        setPreviewContent(`Unable to load preview.\n\n${err.message || 'Unknown error'}`);
+      } finally {
+        setPreviewLoading(false);
+      }
+    },
+    [loadPlaybookPreviewForJob]
+  );
+
+  const openInAnsibleStudio = useCallback(
+    (item: QueueItem) => {
+      let jobId: number | null = null;
+      if (item.type === 'ansible_job') jobId = item.id;
+      if (jobId == null) return;
+      try {
+        sessionStorage.setItem(ANSIBLE_OPEN_FROM_QUEUE_KEY, String(jobId));
+      } catch {
+        /* ignore quota */
+      }
+      setView?.('ansible_studio');
+    },
+    [setView]
+  );
+
+  const runDryCheck = useCallback(async (item: QueueItem) => {
+    setCheckOpen(true);
+    setCheckTitle(item.title);
+    setCheckContent('Running dry-run check...');
+    setCheckLoading(true);
     try {
       if (item.type !== 'ansible_job') {
-        setPreviewContent('No playbook artifact is attached to this queue item.');
+        setCheckContent('Dry-run check is available for playbook jobs only.');
         return;
       }
-      let path = item.entrypoint_path || '';
-      if (!path) {
-        const result = await ansibleApi.getResult(item.id);
-        path = result.entrypoint_path || '';
-      }
-      if (!path) {
-        setPreviewContent('This playbook has no entrypoint path recorded yet.');
-        return;
-      }
-      const file = await ansibleApi.readFile(path);
-      setPreviewContent(file.content || '# Empty playbook');
+      const result = await ansibleApi.checkPlaybook(item.id);
+      const lines: string[] = [
+        `[check] job=${item.id} rc=${result.rc} changed=${result.changed ? '1' : '0'}`,
+        result.summary ? `summary: ${result.summary}` : '',
+        result.stderr ? `\n[stderr]\n${result.stderr}` : '',
+        result.diff ? `\n[diff]\n${result.diff}` : '',
+      ].filter(Boolean);
+      setCheckContent(lines.join('\n') || 'No dry-run output returned.');
     } catch (err: any) {
-      setPreviewContent(`Unable to load preview.\n\n${err.message || 'Unknown error'}`);
+      setCheckContent(`Dry-run check failed.\n\n${err.message || 'Unknown error'}`);
     } finally {
-      setPreviewLoading(false);
+      setCheckLoading(false);
     }
   }, []);
 
@@ -186,8 +259,9 @@ const ApprovalQueueView: React.FC<Props> = () => {
           <ListChecks className="w-6 h-6 text-primary" />
           <div>
             <h1 className="text-2xl font-bold">Approval Queue</h1>
-            <p className="text-sm opacity-60">
-              Admin-only review queue for engineer-submitted playbooks and deployment requests
+            <p className="text-sm opacity-60 max-w-xl">
+              Ansible Studio submissions appear as a single <strong>Playbook</strong> row (with Preview, Dry Run, and
+              Approve). Other deployment flows may appear as <strong>Request</strong> only.
             </p>
           </div>
         </div>
@@ -214,7 +288,7 @@ const ApprovalQueueView: React.FC<Props> = () => {
               {counts[tab]}
             </div>
             <div className="stat-desc">
-              {tab === 'pending' ? 'Awaiting admin review' : tab === 'approved' ? 'Ready for deploy' : 'Sent back with review'}
+              {tab === 'pending' ? 'Awaiting reviewer decision' : tab === 'approved' ? 'Ready for deploy' : 'Sent back with review'}
             </div>
           </button>
         ))}
@@ -276,8 +350,8 @@ const ApprovalQueueView: React.FC<Props> = () => {
                   </td>
                   <td className="text-xs">
                     {item.review_comment ? (
-                      <div className="max-w-xs">
-                        <div className="font-medium">{item.review_actor || 'Admin'}</div>
+                        <div className="max-w-xs">
+                        <div className="font-medium">{item.review_actor || 'Reviewer'}</div>
                         <div className="opacity-70 truncate" title={item.review_comment}>{item.review_comment}</div>
                       </div>
                     ) : (
@@ -296,6 +370,25 @@ const ApprovalQueueView: React.FC<Props> = () => {
                       >
                         <Eye className="w-3 h-3" /> Preview
                       </button>
+                      {item.type === 'ansible_job' && (
+                        <>
+                          <button
+                            className="btn btn-xs btn-info btn-outline gap-1"
+                            onClick={() => runDryCheck(item)}
+                            title="Run dry-run check before approval"
+                          >
+                            <RefreshCw className="w-3 h-3" /> Dry Run
+                          </button>
+                          <button
+                            type="button"
+                            className="btn btn-xs btn-ghost gap-1"
+                            onClick={() => openInAnsibleStudio(item)}
+                            title="Open this job in Ansible Studio (full editor, Check, Execute)"
+                          >
+                            <ExternalLink className="w-3 h-3" /> Studio
+                          </button>
+                        </>
+                      )}
                       {activeTab === 'pending' && (
                         <>
                           <button
@@ -309,21 +402,11 @@ const ApprovalQueueView: React.FC<Props> = () => {
                             className="btn btn-xs btn-error btn-outline gap-1"
                             disabled={actionId === item.id}
                             onClick={() => {
-                              setCommentModal({ id: item.id, type: item.type, action: 'reject' });
+                              setCommentModal({ id: item.id, type: item.type });
                               setComment('');
                             }}
                           >
                             <XCircle className="w-3 h-3" /> Reject
-                          </button>
-                          <button
-                            className="btn btn-xs btn-ghost gap-1"
-                            onClick={() => {
-                              setCommentModal({ id: item.id, type: item.type, action: 'approve' });
-                              setComment('');
-                            }}
-                            title="Approve or reject with comment"
-                          >
-                            <MessageSquare className="w-3 h-3" />
                           </button>
                         </>
                       )}
@@ -339,29 +422,27 @@ const ApprovalQueueView: React.FC<Props> = () => {
       {commentModal && (
         <dialog className="modal modal-open">
           <div className="modal-box">
-            <h3 className="font-bold text-lg">
-              {commentModal.action === 'approve' ? 'Approve' : 'Reject'} #{commentModal.id}
-            </h3>
+            <h3 className="font-bold text-lg">Reject #{commentModal.id}</h3>
             <p className="text-sm opacity-60 mt-1">
-              This note will be shown in the queue history and audit trail.
+              Optional note for the engineer and audit trail.
             </p>
             <textarea
               className="textarea textarea-bordered h-28 w-full mt-4"
-              placeholder={commentModal.action === 'approve' ? 'Optional approval note...' : 'Explain why this was rejected...'}
+              placeholder="Explain why this was rejected..."
               value={comment}
               onChange={(e) => setComment(e.target.value)}
             />
             <div className="modal-action">
               <button
-                className={`btn gap-2 ${commentModal.action === 'approve' ? 'btn-success' : 'btn-error'}`}
+                className="btn btn-error gap-2"
                 onClick={() => {
                   const item = items.pending.find((entry) => entry.id === commentModal.id && entry.type === commentModal.type);
-                  if (item) handleAction(item, commentModal.action, comment || undefined);
+                  if (item) handleAction(item, 'reject', comment || undefined, { skipConfirm: true });
                 }}
                 disabled={actionId !== null}
               >
-                {commentModal.action === 'approve' ? <CheckCircle className="w-4 h-4" /> : <XCircle className="w-4 h-4" />}
-                {commentModal.action === 'approve' ? 'Submit Approval' : 'Submit Rejection'}
+                <XCircle className="w-4 h-4" />
+                Submit rejection
               </button>
               <button className="btn btn-ghost" onClick={() => setCommentModal(null)}>
                 Cancel
@@ -377,7 +458,7 @@ const ApprovalQueueView: React.FC<Props> = () => {
           <div className="modal-box max-w-5xl">
             <h3 className="font-bold text-lg">Preview: {previewTitle}</h3>
             <p className="text-sm opacity-60 mt-1">
-              Read-only preview. Admin review cannot modify the engineer's stored playbook from here.
+              Read-only YAML preview. Use <strong>Studio</strong> on a Playbook row to open the full Ansible Studio editor (Check / Execute).
             </p>
             <div className="mt-4 rounded-lg border border-base-300 bg-base-300/60 overflow-hidden">
               {previewLoading ? (
@@ -393,6 +474,30 @@ const ApprovalQueueView: React.FC<Props> = () => {
             </div>
           </div>
           <div className="modal-backdrop" onClick={() => setPreviewOpen(false)} />
+        </dialog>
+      )}
+
+      {checkOpen && (
+        <dialog className="modal modal-open">
+          <div className="modal-box max-w-5xl">
+            <h3 className="font-bold text-lg">Dry Run: {checkTitle}</h3>
+            <p className="text-sm opacity-60 mt-1">
+              Queue-side dry-run check output (`--check --diff`) for reviewer validation.
+            </p>
+            <div className="mt-4 rounded-lg border border-base-300 bg-base-300/60 overflow-hidden">
+              {checkLoading ? (
+                <div className="flex items-center justify-center py-12">
+                  <span className="loading loading-spinner loading-md" />
+                </div>
+              ) : (
+                <pre className="p-4 text-xs overflow-auto max-h-[70vh] whitespace-pre-wrap">{checkContent}</pre>
+              )}
+            </div>
+            <div className="modal-action">
+              <button className="btn" onClick={() => setCheckOpen(false)}>Close</button>
+            </div>
+          </div>
+          <div className="modal-backdrop" onClick={() => setCheckOpen(false)} />
         </dialog>
       )}
     </div>

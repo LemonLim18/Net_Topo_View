@@ -14,3 +14,7 @@ export const DEFAULT_OLLAMA_MODEL =
 export const DEFAULT_OLLAMA_BASE_URL =
   (import.meta.env.VITE_OLLAMA_BASE_URL as string | undefined)?.trim() || 'http://127.0.0.1:11434';
 
+/** Temporary feature flag for SDN controller UI surfaces. */
+export const SHOW_SDN_CONTROLLER =
+  ((import.meta.env.VITE_SHOW_SDN_CONTROLLER as string | undefined)?.trim().toLowerCase() || "false") === "true";
+

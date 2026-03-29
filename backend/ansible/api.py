@@ -41,7 +41,9 @@ from ansible.context_entity_validation import (
     intent_requests_all_interfaces,
     intersection_interfaces_from_disambiguation_devices,
     is_spurious_device_hint_token,
+    normalize_interface_name,
     should_validate_interface_names_against_inventory,
+    shutdown_list_is_placeholder_ethernet0_not_in_inventory,
     validate_static_route_next_hop_ip_against_context,
     validate_interface_params_against_context,
 )
@@ -214,6 +216,54 @@ def _coerce_params_for_validation(params: Dict[str, Any]) -> None:
         params["target_hosts"] = [params["target_hosts"]]
     if params.get("target_devices") is not None and isinstance(params["target_devices"], str):
         params["target_devices"] = [params["target_devices"]]
+
+    # Shutdown interfaces: always normalize to list[str] (never list[object]).
+    shutdown_raw = params.get("interfaces_to_shutdown")
+    if shutdown_raw is not None:
+        normalized_shutdown: List[str] = []
+        if isinstance(shutdown_raw, str):
+            s = shutdown_raw.strip()
+            if s:
+                if s.startswith("["):
+                    try:
+                        parsed = json.loads(s)
+                        shutdown_raw = parsed
+                    except Exception:
+                        shutdown_raw = [x.strip() for x in re.split(r"[,;]+", s) if x.strip()]
+                else:
+                    shutdown_raw = [x.strip() for x in re.split(r"[,;]+", s) if x.strip()]
+        if isinstance(shutdown_raw, list):
+            for item in shutdown_raw:
+                if isinstance(item, str) and item.strip():
+                    normalized_shutdown.append(item.strip())
+                elif isinstance(item, dict):
+                    name = str(item.get("name") or item.get("interface") or "").strip()
+                    if name:
+                        normalized_shutdown.append(name)
+                elif item is not None:
+                    t = str(item).strip()
+                    if t:
+                        normalized_shutdown.append(t)
+        elif isinstance(shutdown_raw, dict):
+            name = str(shutdown_raw.get("name") or shutdown_raw.get("interface") or "").strip()
+            if name:
+                normalized_shutdown.append(name)
+        if normalized_shutdown:
+            params["interfaces_to_shutdown"] = normalized_shutdown
+
+    # Some clients send shutdown rows under `interfaces` with shape {name, shutdown}.
+    # Promote those names into `interfaces_to_shutdown` when explicit shutdown list is absent.
+    if not params.get("interfaces_to_shutdown") and isinstance(params.get("interfaces"), list):
+        iface_rows = params.get("interfaces") or []
+        if iface_rows and all(isinstance(x, dict) and ("shutdown" in x) for x in iface_rows):
+            promoted = [
+                str((x or {}).get("name") or (x or {}).get("interface") or "").strip()
+                for x in iface_rows
+                if isinstance(x, dict)
+            ]
+            promoted = [x for x in promoted if x]
+            if promoted:
+                params["interfaces_to_shutdown"] = promoted
 
     def _ospf_wildcard_from_prefix(prefix: int) -> str:
         netmask = ipaddress.IPv4Network(f"0.0.0.0/{prefix}").netmask
@@ -474,6 +524,22 @@ def _make_inventory_lookup_fn():
             return names, f"Resolved {len(names)} interface(s) from inventory for {len(hosts)} device(s)"
         return None, None
     return lookup
+
+
+def _inventory_normalized_iface_names_for_hosts(hosts: List[str]) -> Set[str]:
+    """Normalized interface names from DB for the given hostnames (preview/plan cross-check)."""
+    out: Set[str] = set()
+    if _db is None or not hosts:
+        return out
+    for h in hosts:
+        dev = _db.get_device_by_hostname(str(h).strip())
+        if not dev or not getattr(dev, "id", None):
+            continue
+        for iface in _db.get_interfaces_for_device(dev.id):
+            nm = getattr(iface, "name", None) or ""
+            if nm:
+                out.add(normalize_interface_name(nm))
+    return out
 
 
 def setup_ansible(builder, agent, pipeline, db_manager) -> None:
@@ -3012,9 +3078,44 @@ async def plan_ansible(
         and isinstance(intent.get("params"), dict)
     ):
         p = intent["params"]
-        if not p.get("interfaces_to_shutdown"):
+        _inv_plan = _inventory_normalized_iface_names_for_hosts(list(resolved_hosts or []))
+        _sd_plan = p.get("interfaces_to_shutdown")
+        if (
+            not _sd_plan
+            or (
+                isinstance(_sd_plan, list)
+                and shutdown_list_is_placeholder_ethernet0_not_in_inventory(_sd_plan, _inv_plan)
+            )
+        ):
             p["interfaces_to_shutdown"] = ["ALL"]
-            intent["params"] = p
+        prompt_l = str(req.intent_description or "").lower()
+        admin_up = any(
+            x in prompt_l
+            for x in (
+                "turn on",
+                "enable",
+                "bring up",
+                "administratively up",
+                "admin-up",
+                "admin up",
+                "no shutdown",
+            )
+        )
+        admin_down = any(
+            x in prompt_l
+            for x in (
+                "turn off",
+                "disable",
+                "shut down",
+                "shutdown",
+                "bring down",
+                "administratively down",
+                "admin-down",
+                "admin down",
+            )
+        )
+        p["interfaces_admin_enabled"] = bool(admin_up and not admin_down)
+        intent["params"] = p
     if schema:
         # Conditional interface leaves for configure_interface (shared VLANs + ip/subnet).
         # Raise 422 with "questions" so the UI can prompt users instead of surfacing
@@ -3760,14 +3861,78 @@ class ReviewJobRequest(BaseModel):
     comment: str = ""
 
 
-@router.post("/jobs/{job_id}/approve", summary="Admin approves job for execution")
+@router.post("/jobs/{job_id}/submit-for-approval", summary="Submit job to Approval Queue")
+async def submit_job_for_approval(
+    job_id: int,
+    user: dict = Depends(require_role("engineer", "admin")),
+):
+    """
+    Mark a planned job as pending approval review.
+    This is the queue hand-off step from Ansible Studio.
+    """
+    if _db is None:
+        raise HTTPException(503, "Database not initialized")
+
+    request_id = None
+    current_status = ""
+    with _db._connect() as conn:
+        row = conn.execute(
+            "SELECT request_id, status FROM jobs WHERE id = ?",
+            (job_id,),
+        ).fetchone()
+        if not row:
+            raise HTTPException(404, f"Job {job_id} not found")
+        request_id = row["request_id"]
+        current_status = str(row["status"] or "").strip().lower()
+        if current_status in ("running", "approved"):
+            raise HTTPException(
+                409,
+                f"Job {job_id} cannot be sent for approval from status '{current_status}'",
+            )
+        conn.execute(
+            "UPDATE jobs SET status = 'pending', stage = 'approve' WHERE id = ?",
+            (job_id,),
+        )
+
+    if request_id is not None:
+        try:
+            from deploy.change_request import ChangeRequestService
+            from deploy.audit import AuditLogger
+
+            svc = ChangeRequestService(_db)
+            req = svc.get(request_id)
+            if req and str(req.status.value) != "pending_approval":
+                transitioned = svc.submit_for_approval(request_id, actor=user.get("username", "engineer"))
+                if not transitioned:
+                    logger.warning(
+                        "Job %d request #%d could not transition from %s to pending_approval",
+                        job_id,
+                        request_id,
+                        req.status.value,
+                    )
+
+            AuditLogger(_db).log(
+                action="submit",
+                request_id=request_id,
+                job_id=job_id,
+                actor=user.get("username", "engineer"),
+                comment="Playbook submitted for approval queue review",
+            )
+        except Exception as exc:
+            logger.warning("Job %d submit-for-approval did not fully sync request state: %s", job_id, exc)
+
+    logger.info("Job %d submitted for approval by %s", job_id, user.get("username"))
+    return {"job_id": job_id, "status": "pending", "submitted_by": user.get("username")}
+
+
+@router.post("/jobs/{job_id}/approve", summary="Reviewer approves job for execution")
 async def approve_job(
     job_id: int,
-    user:   dict = Depends(require_role("admin")),
+    user:   dict = Depends(require_role("engineer", "admin")),
 ):
     """
     Set job status to 'approved'.  Required before /execute will run.
-    Only admins may approve.
+    Engineers/Admins may approve from the queue workflow.
     """
     if _db is None:
         raise HTTPException(503, "Database not initialized")
@@ -3806,11 +3971,11 @@ async def approve_job(
     return {"job_id": job_id, "status": "approved", "approved_by": user.get("username")}
 
 
-@router.post("/jobs/{job_id}/reject", summary="Admin rejects job and returns review feedback")
+@router.post("/jobs/{job_id}/reject", summary="Reviewer rejects job and returns review feedback")
 async def reject_job(
     job_id: int,
     body: ReviewJobRequest,
-    user: dict = Depends(require_role("admin")),
+    user: dict = Depends(require_role("engineer", "admin")),
 ):
     if _db is None:
         raise HTTPException(503, "Database not initialized")
@@ -4048,6 +4213,30 @@ async def get_result(
     else:
         out["files"] = []
     return out
+
+
+@router.get(
+    "/jobs/by-request/{request_id}",
+    summary="Resolve Ansible job linked to a change request (approval queue preview)",
+)
+async def get_job_id_for_request(
+    request_id: int,
+    user: dict = Depends(get_current_user),
+):
+    """Used when the queue shows a change_request without a playbook path but a job exists."""
+    if _db is None:
+        raise HTTPException(503, "Database not initialized")
+    with _db._connect() as conn:
+        row = conn.execute(
+            "SELECT id, ansible_entrypoint_path FROM jobs WHERE request_id = ? ORDER BY id DESC LIMIT 1",
+            (request_id,),
+        ).fetchone()
+    if not row:
+        raise HTTPException(404, f"No Ansible job linked to request {request_id}")
+    return {
+        "job_id": int(row["id"]),
+        "entrypoint_path": row["ansible_entrypoint_path"],
+    }
 
 
 @router.get("/jobs/{job_id}/inventory", summary="Get effective inventory for a job (hosts, IPs, credential source)")
@@ -6542,15 +6731,27 @@ async def preview_intent(
 
         # Align "all interfaces" execution flags with shutdown_interface templates.
         # This prevents configure_interface-specific leaves (like access_vlan) from being required.
-        if intent_requests_all_interfaces(req.intent_description or "") and resolved_hosts:
+        if intent_requests_all_interfaces(req.intent_description or ""):
             p = dict(parsed_intent.get("parameters") or {})
             # Remove configure-all flags if present (configure_interface path).
             p.pop("interfaces_config_use_nettopo", None)
             p.pop("interfaces_config", None)
+            p.pop("interfaces", None)
+            p.pop("interface_binding", None)
             # Enable shutdown-all nettopo expansion.
             p["interfaces_shutdown_use_nettopo"] = True
             # Minimal placeholder so shutdown_interface.schema.json type validation passes.
-            if not p.get("interfaces_to_shutdown"):
+            # LLMs often fill Ethernet0/1..24; if those names are absent from DB inventory,
+            # replace with ALL so nettopo expansion applies (e.g. Huawei GigabitEthernet…).
+            _inv_prev = _inventory_normalized_iface_names_for_hosts(list(resolved_hosts or []))
+            _sd_prev = p.get("interfaces_to_shutdown")
+            if (
+                not _sd_prev
+                or (
+                    isinstance(_sd_prev, list)
+                    and shutdown_list_is_placeholder_ethernet0_not_in_inventory(_sd_prev, _inv_prev)
+                )
+            ):
                 p["interfaces_to_shutdown"] = ["ALL"]
 
             # Admin intent: for "turn on/enable/bring up" interfaces, set enabled=true.
@@ -6589,6 +6790,7 @@ async def preview_intent(
     try:
         prompt_l = str(req.intent_description or "").lower()
         wants_all_ifaces = intent_requests_all_interfaces(req.intent_description or "")
+        _inv_all_iface = _inventory_normalized_iface_names_for_hosts(list(resolved_hosts or []))
 
         admin_down_markers = (
             "admin-down",
@@ -6615,6 +6817,10 @@ async def preview_intent(
         # Also respect explicit wildcard/all tokens if they were already present.
         p_all = dict(parsed_intent.get("parameters") or {})
         shutdown_val = p_all.get("interfaces_to_shutdown")
+        bogus_ethernet0_shutdown = (
+            isinstance(shutdown_val, list)
+            and shutdown_list_is_placeholder_ethernet0_not_in_inventory(shutdown_val, _inv_all_iface)
+        )
         has_all_token = False
         if isinstance(shutdown_val, list):
             for x in shutdown_val:
@@ -6627,12 +6833,22 @@ async def preview_intent(
         elif isinstance(shutdown_val, str):
             has_all_token = shutdown_val.strip().lower() in ("all", "*", "any", "every")
 
-        if clearly_admin_down or (wants_all_ifaces and has_all_token) or (wants_all_ifaces and not shutdown_val):
+        if (
+            clearly_admin_down
+            or (wants_all_ifaces and has_all_token)
+            or (wants_all_ifaces and not shutdown_val)
+            or (wants_all_ifaces and bogus_ethernet0_shutdown)
+        ):
             # Force the correct action/schema so required-field checks won't ask for manual input.
             parsed_intent["action"] = "shutdown_interface"
+            p_all.pop("interfaces", None)
+            p_all.pop("interfaces_config", None)
+            p_all.pop("interface_binding", None)
+            p_all.pop("interfaces_config_use_nettopo", None)
             p_all["interfaces_shutdown_use_nettopo"] = True
-            if not p_all.get("interfaces_to_shutdown"):
+            if not p_all.get("interfaces_to_shutdown") or bogus_ethernet0_shutdown:
                 p_all["interfaces_to_shutdown"] = ["ALL"]
+            p_all["interfaces_admin_enabled"] = bool(any(m in prompt_l for m in admin_up_markers) and not any(m in prompt_l for m in admin_down_markers))
             parsed_intent["parameters"] = p_all
     except Exception as _all_ifaces_exc:
         logger.debug("all-interfaces shutdown pre-coercion failed: %s", _all_ifaces_exc)
@@ -6923,16 +7139,84 @@ async def preview_intent(
     ):
         try:
             p_ai = dict(parsed_intent.get("parameters") or {})
+            keep_explicit_shutdown = False
             if schema_action_iface == "shutdown_interface":
-                # Shutdown-all: force per-host shutdown-only names from `nettopo_interfaces` (mgmt excluded).
-                p_ai.pop("interfaces_to_shutdown", None)
-                if isinstance(p_ai.get("interfaces"), list):
-                    p_ai.pop("interfaces", None)
-                if isinstance(p_ai.get("interfaces_config"), list):
-                    p_ai.pop("interfaces_config", None)
-                p_ai.pop("interfaces_config_use_nettopo", None)
-                p_ai.pop("interfaces_shutdown_use_nettopo", None)
-                p_ai["interfaces_shutdown_use_nettopo"] = True
+                # Playbook Studio / chat may send an explicit interfaces_to_shutdown list (chips).
+                # Do not strip it for nettopo-all expansion — that made the schema inspector show
+                # "missing" while the UI still listed Target interfaces.
+                def _shutdown_value_is_only_wildcards(val: Any) -> bool:
+                    if val is None:
+                        return True
+                    if isinstance(val, str):
+                        return val.strip().lower() in ("all", "*", "any", "every")
+                    if isinstance(val, list):
+                        if not val:
+                            return True
+                        return all(
+                            isinstance(x, str) and x.strip().lower() in ("all", "*", "any", "every")
+                            for x in val
+                        )
+                    return False
+
+                raw_sd = p_ai.get("interfaces_to_shutdown")
+                _inv_preview_ai = _inventory_normalized_iface_names_for_hosts(list(resolved_hosts or []))
+                if isinstance(raw_sd, list) and raw_sd and not _shutdown_value_is_only_wildcards(raw_sd):
+                    keep_explicit_shutdown = True
+                elif isinstance(raw_sd, str) and raw_sd.strip() and not _shutdown_value_is_only_wildcards(raw_sd):
+                    keep_explicit_shutdown = True
+
+                # If explicit shutdown names are not present in planned inventory for this
+                # all-interfaces flow, treat them as stale and fall back to nettopo expansion.
+                if keep_explicit_shutdown:
+                    explicit_names: List[str] = []
+                    if isinstance(raw_sd, str):
+                        explicit_names = [raw_sd.strip()] if raw_sd.strip() else []
+                    elif isinstance(raw_sd, list):
+                        for x in raw_sd:
+                            if isinstance(x, str) and x.strip():
+                                explicit_names.append(x.strip())
+                            elif isinstance(x, dict):
+                                n = str(x.get("name") or x.get("interface") or "").strip()
+                                if n:
+                                    explicit_names.append(n)
+
+                    planned_names = {
+                        str(i.get("name") or "").strip()
+                        for d in ((parsed_intent.get("planned_all_interfaces_preview") or {}).get("devices") or [])
+                        if isinstance(d, dict)
+                        for i in (d.get("interfaces") or [])
+                        if isinstance(i, dict) and str(i.get("name") or "").strip()
+                    }
+                    if planned_names and explicit_names and any(n not in planned_names for n in explicit_names):
+                        keep_explicit_shutdown = False
+                    elif (not planned_names) and explicit_names and _inv_preview_ai:
+                        # ``planned_all_interfaces_preview`` is built later in this handler; use DB
+                        # inventory so LLM guesses (e.g. Ethernet0/1..24 on Huawei) are not kept.
+                        def _explicit_iface_norm(n: str) -> str:
+                            x = n.strip()
+                            if ":" in x:
+                                x = x.split(":", 1)[1].strip()
+                            return normalize_interface_name(x)
+
+                        if any(_explicit_iface_norm(n) not in _inv_preview_ai for n in explicit_names):
+                            keep_explicit_shutdown = False
+
+                if keep_explicit_shutdown:
+                    p_ai.pop("interfaces_shutdown_use_nettopo", None)
+                    parsed_intent["parameters"] = p_ai
+                    params = p_ai
+                    if interface_intent_params_satisfied(p_ai):
+                        parsed_intent["requires_resolution"] = False
+                else:
+                    # Shutdown-all: force per-host shutdown-only names from `nettopo_interfaces` (mgmt excluded).
+                    p_ai.pop("interfaces_to_shutdown", None)
+                    if isinstance(p_ai.get("interfaces"), list):
+                        p_ai.pop("interfaces", None)
+                    if isinstance(p_ai.get("interfaces_config"), list):
+                        p_ai.pop("interfaces_config", None)
+                    p_ai.pop("interfaces_config_use_nettopo", None)
+                    p_ai.pop("interfaces_shutdown_use_nettopo", None)
+                    p_ai["interfaces_shutdown_use_nettopo"] = True
             else:
                 # Configure-all: keep one LLM/config default object (mode/VLAN/IP) so schema validation passes,
                 # but replace interface *names* via per-host nettopo interfaces at template runtime.
@@ -6959,12 +7243,14 @@ async def preview_intent(
                 p_ai["interfaces_config_use_nettopo"] = True
                 p_ai["interfaces"] = [default_obj]
 
-            parsed_intent["parameters"] = p_ai
-            params = p_ai
-            has_iface_list = interface_intent_params_satisfied(p_ai)
-            all_if_shutdown_expanded_preview = True
-            if has_iface_list:
-                parsed_intent["requires_resolution"] = False
+            # Only flag nettopo-all expansion when we actually rewrote params for inventory-driven shutdown/configure-all.
+            if not (schema_action_iface == "shutdown_interface" and keep_explicit_shutdown):
+                parsed_intent["parameters"] = p_ai
+                params = p_ai
+                has_iface_list = interface_intent_params_satisfied(p_ai)
+                all_if_shutdown_expanded_preview = True
+                if has_iface_list:
+                    parsed_intent["requires_resolution"] = False
         except Exception as exc:
             logger.debug("Preview all-interfaces expansion failed: %s", exc)
 

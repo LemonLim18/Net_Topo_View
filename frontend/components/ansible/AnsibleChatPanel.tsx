@@ -1,8 +1,8 @@
 import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import ReactMarkdown from 'react-markdown';
 import { DiffEditor } from '@monaco-editor/react';
-import { Send, Loader2, Bot, Sparkles, AlertCircle, FileCode, ChevronRight, Paperclip, X, TriangleAlert, ChevronDown, Check, Undo2, Square, History, Plus, Trash2 } from 'lucide-react';
-import { ansibleApi, llmApi, netboxApi } from '../../src/services/api';
+import { Send, Loader2, Bot, Sparkles, AlertCircle, FileCode, ChevronRight, Paperclip, X, TriangleAlert, ChevronDown, Check, Undo2, Square, History, Plus, Trash2, RefreshCw } from 'lucide-react';
+import { ansibleApi, llmApi, netboxApi, ragApi } from '../../src/services/api';
 import { Toast } from '../../src/utils/swal';
 import {
   buildPlannedInventoryPreselectChips,
@@ -743,6 +743,7 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
   );
   const [modelSearch, setModelSearch]   = useState('');
   const [modelDropdownOpen, setModelDropdownOpen] = useState(false);
+  const [isRebuildingRag, setIsRebuildingRag] = useState(false);
   const bottomRef      = useRef<HTMLDivElement>(null);
   const textareaRef    = useRef<HTMLTextAreaElement>(null);
   const fileInputRef   = useRef<HTMLInputElement>(null);
@@ -1169,6 +1170,24 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
       localStorage.setItem(ANSIBLE_MODEL_STORAGE_KEY, JSON.stringify(sel));
     } catch (_) { /* ignore */ }
   }, []);
+
+  const handleRebuildRag = useCallback(async () => {
+    if (isRebuildingRag) return;
+    setIsRebuildingRag(true);
+    try {
+      const res = await ragApi.rebuild();
+      const errs = Array.isArray(res.errors) ? res.errors.length : 0;
+      if (errs > 0) {
+        Toast.warning('RAG rebuilt with warnings', `Processed ${res.files_processed} files, ${res.total_chunks} chunks, ${errs} warnings.`);
+      } else {
+        Toast.success('RAG rebuilt', `Processed ${res.files_processed} files and ${res.total_chunks} chunks.`);
+      }
+    } catch (err) {
+      Toast.error('RAG rebuild failed', describeError(err, 'Could not rebuild RAG.'));
+    } finally {
+      setIsRebuildingRag(false);
+    }
+  }, [isRebuildingRag]);
 
   const handleSelectModel = useCallback((providerName: string, modelName: string) => {
     const ollamaDesc = runtime?.providers.find((p) => p.name === 'ollama');
@@ -2698,21 +2717,20 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
           {/* {activeJob && (
             <span style={{
               fontSize: 10, padding: '1px 7px', borderRadius: 10,
-              background: activeJob.status === 'success' ? '#1b3a1f' : activeJob.status === 'failed' ? '#3a1010' : activeJob.status === 'running' ? '#3a2e00' : '#2d2d2d',
-              color:      activeJob.status === 'success' ? '#69f0ae' : activeJob.status === 'failed' ? '#ff8a80' : activeJob.status === 'running' ? '#ffd740' : '#858585',
-              border:     `1px solid ${activeJob.status === 'success' ? '#2e7d32' : activeJob.status === 'failed' ? '#c62828' : activeJob.status === 'running' ? '#f9a825' : '#3c3c3c'}`,
+              background: activeJob.status === 'success' ? '#1b3a1f' : activeJob.status === 'failed' ? '#3a1010' : activeJob.status === 'running' ? '#3a2e00' : activeJob.status === 'pending' ? '#2f2a12' : '#2d2d2d',
+              color:      activeJob.status === 'success' ? '#69f0ae' : activeJob.status === 'failed' ? '#ff8a80' : activeJob.status === 'running' ? '#ffd740' : activeJob.status === 'pending' ? '#ffe082' : '#858585',
+              border:     `1px solid ${activeJob.status === 'success' ? '#2e7d32' : activeJob.status === 'failed' ? '#c62828' : activeJob.status === 'running' ? '#f9a825' : activeJob.status === 'pending' ? '#8d6e00' : '#3c3c3c'}`,
             }}>#{activeJob.jobId} · {activeJob.status}</span>
           )} */}
-          {/* <button
+          <button
             onClick={handleRebuildRag}
             disabled={isRebuildingRag}
             title="Rebuild RAG (re-ingest reference docs so the LLM uses the latest Ansible reference)"
             style={{ padding: '3px 4px', borderRadius: 3, background: 'transparent', border: 'none', color: '#666', cursor: isRebuildingRag ? 'wait' : 'pointer' }}
             className="hover:bg-[#2d2d2d] flex items-center gap-1 transition-colors disabled:opacity-50"
           >
-            <RefreshCw style={{ width: 13, height: 13 }} className={isRebuildingRag ? 'animate-spin' : ''} />
-            <p className="text-[10px]">RAG</p>
-          </button> */}
+            <RefreshCw style={{ width: 10, height: 10 }} className={isRebuildingRag ? 'animate-spin' : ''} />
+          </button>
           {/* <button onClick={clearMessages} title="Clear"
             style={{ padding: '3px 4px', borderRadius: 3, background: 'transparent', border: 'none', color: '#666', cursor: 'pointer' }}
             className="hover:bg-[#2d2d2d] transition-colors">

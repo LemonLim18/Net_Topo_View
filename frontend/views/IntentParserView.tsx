@@ -1,12 +1,15 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { FolderTree, FileJson2, Activity, Plus, Save, Layers, Trash2 } from 'lucide-react';
+import { FolderTree, FileJson2, Activity, Plus, Save, Layers, Trash2, Download, Upload, RotateCcw } from 'lucide-react';
 
 import type { IntentSchema, IntentSchemaOperation, IntentSchemaField } from '../types/intentSchema';
 import IntentTreePanel from '../components/intent_parser/IntentTreePanel';
 import IntentGraphCanvas from '../components/intent_parser/IntentGraphCanvas';
 import { Link as LinkIcon } from 'lucide-react';
+import { Toast } from '../src/utils/swal';
 
 type ParserTab = 'tree' | 'category' | 'operation';
+type ParserNodeSelection = { type: string; category?: string; operation?: string; parameter?: string } | null;
+const STORAGE_KEY = 'intent-parser-required-only-schema-v1';
 
 const initialMockSchema: IntentSchema = {
   target_devices: { required: true },
@@ -212,21 +215,150 @@ const initialMockSchema: IntentSchema = {
   ]
 };
 
+function sanitizeSchema(raw: IntentSchema): IntentSchema {
+  const categories = (raw.categories || []).map((category) => {
+    const fields = (category.fields || [])
+      .map((field) => ({
+        ...field,
+        name: String(field.name || '').trim(),
+        type: String(field.type || 'string').trim() || 'string',
+        required: !!field.required,
+      }))
+      .filter((field) => !!field.name);
+
+    const knownFields = new Set(fields.map((field) => field.name));
+    const operations = (category.operations || []).map((operation) => {
+      const required = Array.from(
+        new Set((operation.required_fields || [])
+          .map((f) => String(f || '').trim())
+          .filter((f) => !!f && (f === 'target_devices' || knownFields.has(f)))),
+      );
+      const dependencies = (operation.dependencies || [])
+        .map((dep) => ({
+          condition: String(dep.condition || '').trim(),
+          action: String(dep.action || 'enforce').trim() || 'enforce',
+        }))
+        .filter((dep) => !!dep.condition);
+
+      return {
+        name: String(operation.name || '').trim() || `operation_${Date.now()}`,
+        description: operation.description,
+        required_fields: required,
+        dependencies,
+      } as IntentSchemaOperation;
+    });
+
+    return {
+      ...category,
+      name: String(category.name || '').trim() || 'CATEGORY',
+      description: String(category.description || '').trim(),
+      fields,
+      operations,
+    };
+  });
+
+  return {
+    target_devices: { required: true },
+    categories,
+  };
+}
+
 const IntentParserView: React.FC = () => {
   const [activeTab, setActiveTab] = useState<ParserTab>('tree');
-  const [schema, setSchema] = useState<IntentSchema>(initialMockSchema);
+  const [schema, setSchema] = useState<IntentSchema>(() => {
+    try {
+      const saved = localStorage.getItem(STORAGE_KEY);
+      if (saved) {
+        return sanitizeSchema(JSON.parse(saved) as IntentSchema);
+      }
+    } catch {
+      // Fall back to defaults when local data is invalid.
+    }
+    return sanitizeSchema(initialMockSchema);
+  });
+  const [selectedNode, setSelectedNode] = useState<ParserNodeSelection>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   
   // State for Category Tab
-  const [selectedCategoryName, setSelectedCategoryName] = useState<string>(schema.categories[0].name);
+  const [selectedCategoryName, setSelectedCategoryName] = useState<string>(schema.categories[0]?.name || '');
   
   // State for Operation Tab
-  const [selectedOperationCat, setSelectedOperationCat] = useState<string>(schema.categories[0].name);
-  const [selectedOperationName, setSelectedOperationName] = useState<string>(schema.categories[0].operations[0].name);
+  const [selectedOperationCat, setSelectedOperationCat] = useState<string>(schema.categories[0]?.name || '');
+  const [selectedOperationName, setSelectedOperationName] = useState<string>(schema.categories[0]?.operations[0]?.name || '');
 
   // Computed Context
   const selectedCategory = schema.categories.find(c => c.name === selectedCategoryName);
   const selectedOperationCategory = schema.categories.find(c => c.name === selectedOperationCat);
   const selectedOperation = selectedOperationCategory?.operations.find(o => o.name === selectedOperationName);
+
+  useEffect(() => {
+    if (!schema.categories.length) return;
+    if (!schema.categories.some((c) => c.name === selectedCategoryName)) {
+      setSelectedCategoryName(schema.categories[0].name);
+    }
+  }, [schema, selectedCategoryName]);
+
+  useEffect(() => {
+    if (!schema.categories.length) return;
+    const opCat = schema.categories.find((c) => c.name === selectedOperationCat) || schema.categories[0];
+    if (opCat.name !== selectedOperationCat) {
+      setSelectedOperationCat(opCat.name);
+      setSelectedOperationName(opCat.operations[0]?.name || '');
+      return;
+    }
+    if (!opCat.operations.some((o) => o.name === selectedOperationName)) {
+      setSelectedOperationName(opCat.operations[0]?.name || '');
+    }
+  }, [schema, selectedOperationCat, selectedOperationName]);
+
+  const persistSchema = (nextSchema: IntentSchema, toastText: string) => {
+    const cleaned = sanitizeSchema(nextSchema);
+    setSchema(cleaned);
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(cleaned));
+    Toast.success('Intent Parser', toastText);
+  };
+
+  const handleSaveAll = () => {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(schema));
+    Toast.success('Intent Parser', 'Schema saved locally.');
+  };
+
+  const handleResetSchema = () => {
+    const reset = sanitizeSchema(initialMockSchema);
+    persistSchema(reset, 'Schema reset to local defaults.');
+    setSelectedNode(null);
+    setSelectedCategoryName(reset.categories[0]?.name || '');
+    setSelectedOperationCat(reset.categories[0]?.name || '');
+    setSelectedOperationName(reset.categories[0]?.operations[0]?.name || '');
+  };
+
+  const handleExportSchema = () => {
+    const blob = new Blob([JSON.stringify(schema, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'intent_schema_required_only.json';
+    a.click();
+    URL.revokeObjectURL(url);
+    Toast.success('Intent Parser', 'Schema exported to JSON.');
+  };
+
+  const handleImportSchema = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const parsed = JSON.parse(String(reader.result || '{}')) as IntentSchema;
+        const imported = sanitizeSchema(parsed);
+        persistSchema(imported, 'Schema imported and sanitized to required-only mode.');
+      } catch {
+        Toast.error('Import failed', 'Invalid JSON file.');
+      }
+    };
+    reader.readAsText(file);
+    event.target.value = '';
+  };
 
   // -- Mutations -- //
   const handleUpdateCategoryDescription = (desc: string) => {
@@ -238,6 +370,91 @@ const IntentParserView: React.FC = () => {
        }
        return newSchema;
     });
+  };
+
+  const handleUpdateCategoryName = (newNameRaw: string) => {
+    const newName = newNameRaw.trim().toUpperCase();
+    if (!newName || !selectedCategoryName) return;
+    setSchema((prev) => {
+      const newSchema = { ...prev, categories: [...prev.categories] };
+      const catIndex = newSchema.categories.findIndex((c) => c.name === selectedCategoryName);
+      if (catIndex < 0) return prev;
+      const duplicate = newSchema.categories.some((c, i) => i !== catIndex && c.name === newName);
+      if (duplicate) {
+        Toast.error('Category exists', `Category ${newName} already exists.`);
+        return prev;
+      }
+      newSchema.categories[catIndex] = { ...newSchema.categories[catIndex], name: newName };
+      return newSchema;
+    });
+
+    if (newName !== selectedCategoryName) {
+      const oldName = selectedCategoryName;
+      setSelectedCategoryName(newName);
+      if (selectedOperationCat === oldName) {
+        setSelectedOperationCat(newName);
+      }
+      setSelectedNode((prev) => {
+        if (!prev) return prev;
+        if (prev.category !== oldName) return prev;
+        return { ...prev, category: newName };
+      });
+    }
+  };
+
+  const handleCreateCategory = () => {
+    const suffix = Date.now().toString().slice(-4);
+    const categoryName = `NEW_CATEGORY_${suffix}`;
+    const operationName = `new_operation_${suffix}`;
+    setSchema((prev) => {
+      const newSchema = { ...prev, categories: [...prev.categories] };
+      newSchema.categories.push({
+        name: categoryName,
+        description: '',
+        fields: [
+          { name: 'name', type: 'string', required: true },
+        ],
+        operations: [
+          {
+            name: operationName,
+            required_fields: ['target_devices', 'name'],
+            dependencies: [],
+          },
+        ],
+      });
+      return newSchema;
+    });
+    setSelectedCategoryName(categoryName);
+    setSelectedOperationCat(categoryName);
+    setSelectedOperationName(operationName);
+    setActiveTab('category');
+    Toast.success('Intent Parser', `Created ${categoryName}.`);
+  };
+
+  const handleDeleteCategory = () => {
+    if (!selectedCategoryName) return;
+    if (schema.categories.length <= 1) {
+      Toast.warning('Cannot delete', 'At least one category is required.');
+      return;
+    }
+    const ok = window.confirm(`Delete category ${selectedCategoryName}?`);
+    if (!ok) return;
+
+    setSchema((prev) => {
+      const newSchema = { ...prev, categories: [...prev.categories] };
+      const idx = newSchema.categories.findIndex((c) => c.name === selectedCategoryName);
+      if (idx < 0) return prev;
+      newSchema.categories.splice(idx, 1);
+      return newSchema;
+    });
+
+    const fallback = schema.categories.find((c) => c.name !== selectedCategoryName)?.name || '';
+    setSelectedCategoryName(fallback);
+    setSelectedOperationCat(fallback);
+    const fallbackCat = schema.categories.find((c) => c.name === fallback);
+    setSelectedOperationName(fallbackCat?.operations[0]?.name || '');
+    setSelectedNode(null);
+    Toast.success('Intent Parser', 'Category deleted.');
   };
 
   const handleCreateField = () => {
@@ -260,8 +477,19 @@ const IntentParserView: React.FC = () => {
        const newSchema = { ...prev, categories: [...prev.categories] };
        const catIndex = newSchema.categories.findIndex(c => c.name === selectedCategoryName);
        if (catIndex >= 0) {
+         const currentField = newSchema.categories[catIndex].fields[fieldIndex];
+         const previousName = currentField?.name;
          const updatedFields = [...newSchema.categories[catIndex].fields];
          updatedFields[fieldIndex] = { ...updatedFields[fieldIndex], ...fieldData };
+         const nextName = String(updatedFields[fieldIndex].name || '').trim();
+         if (previousName && nextName && previousName !== nextName) {
+           const updatedOps = newSchema.categories[catIndex].operations.map((op) => ({
+             ...op,
+             required_fields: (op.required_fields || []).map((f) => (f === previousName ? nextName : f)),
+           }));
+           newSchema.categories[catIndex] = { ...newSchema.categories[catIndex], fields: updatedFields, operations: updatedOps };
+           return newSchema;
+         }
          newSchema.categories[catIndex] = { ...newSchema.categories[catIndex], fields: updatedFields };
        }
        return newSchema;
@@ -274,9 +502,13 @@ const IntentParserView: React.FC = () => {
        const catIndex = newSchema.categories.findIndex(c => c.name === selectedCategoryName);
        if (catIndex >= 0) {
          const updatedFields = [...newSchema.categories[catIndex].fields];
-         // Don't allow removal of target_devices as it's globally required implicitly but good practice
+         const removedField = updatedFields[fieldIndex]?.name;
          updatedFields.splice(fieldIndex, 1);
-         newSchema.categories[catIndex] = { ...newSchema.categories[catIndex], fields: updatedFields };
+         const updatedOps = (newSchema.categories[catIndex].operations || []).map((op) => ({
+           ...op,
+           required_fields: (op.required_fields || []).filter((f) => f !== removedField),
+         }));
+         newSchema.categories[catIndex] = { ...newSchema.categories[catIndex], fields: updatedFields, operations: updatedOps };
        }
        return newSchema;
     });
@@ -291,7 +523,6 @@ const IntentParserView: React.FC = () => {
          const newOp: IntentSchemaOperation = {
            name: opName,
            required_fields: [],
-           optional_fields: [],
            dependencies: []
          };
          newSchema.categories[catIndex] = {
@@ -305,12 +536,29 @@ const IntentParserView: React.FC = () => {
     setSelectedOperationName(opName);
   };
 
+  const handleDeleteOperation = () => {
+    setSchema((prev) => {
+      const newSchema = { ...prev, categories: [...prev.categories] };
+      const catIndex = newSchema.categories.findIndex((c) => c.name === selectedOperationCat);
+      if (catIndex < 0) return prev;
+      const ops = [...newSchema.categories[catIndex].operations];
+      const opIndex = ops.findIndex((o) => o.name === selectedOperationName);
+      if (opIndex < 0) return prev;
+      ops.splice(opIndex, 1);
+      newSchema.categories[catIndex] = { ...newSchema.categories[catIndex], operations: ops };
+      setSelectedOperationName(ops[0]?.name || '');
+      return newSchema;
+    });
+  };
+
   const handleUpdateOperationName = (newName: string) => {
     if (!newName.trim()) return;
     setSchema(prev => {
        const newSchema = { ...prev, categories: [...prev.categories] };
        const catIndex = newSchema.categories.findIndex(c => c.name === selectedOperationCat);
        if (catIndex >= 0) {
+         const duplicate = newSchema.categories[catIndex].operations.find((o) => o.name === newName && o.name !== selectedOperationName);
+         if (duplicate) return prev;
          const opIndex = newSchema.categories[catIndex].operations.findIndex(o => o.name === selectedOperationName);
          if (opIndex >= 0) {
             const updatedOps = [...newSchema.categories[catIndex].operations];
@@ -338,11 +586,72 @@ const IntentParserView: React.FC = () => {
              } else {
                 reqs.push(fieldName);
              }
-             newSchema.categories[catIndex].operations[opIndex] = { ...op, required_fields: reqs };
+             newSchema.categories[catIndex].operations[opIndex] = { ...op, required_fields: reqs.sort((a, b) => a.localeCompare(b)) };
          }
        }
        return newSchema;
     });
+  };
+
+  const handleAddDependency = () => {
+    if (!selectedOperation) return;
+    setSchema((prev) => {
+      const newSchema = { ...prev, categories: [...prev.categories] };
+      const catIndex = newSchema.categories.findIndex((c) => c.name === selectedOperationCat);
+      if (catIndex < 0) return prev;
+      const opIndex = newSchema.categories[catIndex].operations.findIndex((o) => o.name === selectedOperationName);
+      if (opIndex < 0) return prev;
+      const op = newSchema.categories[catIndex].operations[opIndex];
+      const dependencies = [...(op.dependencies || []), { condition: '', action: 'enforce' }];
+      newSchema.categories[catIndex].operations[opIndex] = { ...op, dependencies };
+      return newSchema;
+    });
+  };
+
+  const handleUpdateDependency = (depIndex: number, patch: { condition?: string; action?: string }) => {
+    if (!selectedOperation) return;
+    setSchema((prev) => {
+      const newSchema = { ...prev, categories: [...prev.categories] };
+      const catIndex = newSchema.categories.findIndex((c) => c.name === selectedOperationCat);
+      if (catIndex < 0) return prev;
+      const opIndex = newSchema.categories[catIndex].operations.findIndex((o) => o.name === selectedOperationName);
+      if (opIndex < 0) return prev;
+      const op = newSchema.categories[catIndex].operations[opIndex];
+      const dependencies = [...(op.dependencies || [])];
+      dependencies[depIndex] = { ...dependencies[depIndex], ...patch };
+      newSchema.categories[catIndex].operations[opIndex] = { ...op, dependencies };
+      return newSchema;
+    });
+  };
+
+  const handleRemoveDependency = (depIndex: number) => {
+    if (!selectedOperation) return;
+    setSchema((prev) => {
+      const newSchema = { ...prev, categories: [...prev.categories] };
+      const catIndex = newSchema.categories.findIndex((c) => c.name === selectedOperationCat);
+      if (catIndex < 0) return prev;
+      const opIndex = newSchema.categories[catIndex].operations.findIndex((o) => o.name === selectedOperationName);
+      if (opIndex < 0) return prev;
+      const op = newSchema.categories[catIndex].operations[opIndex];
+      const dependencies = [...(op.dependencies || [])];
+      dependencies.splice(depIndex, 1);
+      newSchema.categories[catIndex].operations[opIndex] = { ...op, dependencies };
+      return newSchema;
+    });
+  };
+
+  const handleSelectNode = (node: { type: string; category?: string; operation?: string; parameter?: string }) => {
+    setSelectedNode(node);
+    if (node.category) {
+      setSelectedCategoryName(node.category);
+      setSelectedOperationCat(node.category);
+    }
+    if (node.operation) {
+      setSelectedOperationName(node.operation);
+      setActiveTab('operation');
+    } else if (node.category) {
+      setActiveTab('category');
+    }
   };
 
   // Sidebar Resizing State
@@ -379,28 +688,35 @@ const IntentParserView: React.FC = () => {
           </div>
           Intent Schema Parser
         </h1>
-        <div className="tabs tabs-boxed bg-base-200/50 p-1">
-          <button 
-            className={`tab tab-sm gap-2 transition-all ${activeTab === 'tree' ? 'tab-active bg-base-100 shadow-sm' : ''}`}
-            onClick={() => setActiveTab('tree')}
-          >
-            <FolderTree className="w-3.5 h-3.5" />
-            Overall Parse Tree
-          </button>
-          <button 
-            className={`tab tab-sm gap-2 transition-all ${activeTab === 'category' ? 'tab-active bg-base-100 shadow-sm' : ''}`}
-            onClick={() => setActiveTab('category')}
-          >
-            <Layers className="w-3.5 h-3.5" />
-            Category Schema
-          </button>
-          <button 
-            className={`tab tab-sm gap-2 transition-all ${activeTab === 'operation' ? 'tab-active bg-base-100 shadow-sm' : ''}`}
-            onClick={() => setActiveTab('operation')}
-          >
-            <Activity className="w-3.5 h-3.5" />
-            Operation Schema
-          </button>
+        <div className="flex items-center gap-2">
+          <div className="tabs tabs-boxed bg-base-200/50 p-1">
+            <button 
+              className={`tab tab-sm gap-2 transition-all ${activeTab === 'tree' ? 'tab-active bg-base-100 shadow-sm' : ''}`}
+              onClick={() => setActiveTab('tree')}
+            >
+              <FolderTree className="w-3.5 h-3.5" />
+              Overall Parse Tree
+            </button>
+            <button 
+              className={`tab tab-sm gap-2 transition-all ${activeTab === 'category' ? 'tab-active bg-base-100 shadow-sm' : ''}`}
+              onClick={() => setActiveTab('category')}
+            >
+              <Layers className="w-3.5 h-3.5" />
+              Category Schema
+            </button>
+            <button 
+              className={`tab tab-sm gap-2 transition-all ${activeTab === 'operation' ? 'tab-active bg-base-100 shadow-sm' : ''}`}
+              onClick={() => setActiveTab('operation')}
+            >
+              <Activity className="w-3.5 h-3.5" />
+              Operation Schema
+            </button>
+          </div>
+          <button className="btn btn-sm btn-outline" onClick={handleSaveAll}><Save className="w-4 h-4" /> Save</button>
+          <button className="btn btn-sm btn-outline" onClick={handleExportSchema}><Download className="w-4 h-4" /> Export</button>
+          <button className="btn btn-sm btn-outline" onClick={() => fileInputRef.current?.click()}><Upload className="w-4 h-4" /> Import</button>
+          <button className="btn btn-sm btn-outline" onClick={handleResetSchema}><RotateCcw className="w-4 h-4" /> Reset</button>
+          <input ref={fileInputRef} type="file" accept="application/json" className="hidden" onChange={handleImportSchema} />
         </div>
       </div>
 
@@ -418,8 +734,8 @@ const IntentParserView: React.FC = () => {
                  <h3 className="text-xs font-bold uppercase tracking-wider mb-3 opacity-70">Schema Hierarchy</h3>
                  <IntentTreePanel 
                     schema={schema} 
-                    selectedNode={null} 
-                    onSelectNode={() => {}} 
+                    selectedNode={selectedNode} 
+                    onSelectNode={handleSelectNode} 
                     onNavigateCategory={(cat) => {
                        setActiveTab('category');
                        setSelectedCategoryName(cat);
@@ -472,13 +788,27 @@ const IntentParserView: React.FC = () => {
                    <h2 className="text-lg font-bold">Category Specific Intent Schema</h2>
                    <p className="opacity-70 text-xs">Define shared category fields and their generic data types.</p>
                  </div>
-                 <select 
-                    className="select select-bordered select-sm w-48 text-sm font-semibold"
-                    value={selectedCategoryName}
-                    onChange={(e) => setSelectedCategoryName(e.target.value)}
-                 >
+                 <div className="flex items-center gap-2">
+                   <select 
+                      className="select select-bordered select-sm w-48 text-sm font-semibold"
+                      value={selectedCategoryName}
+                      onChange={(e) => {
+                        const next = e.target.value;
+                        setSelectedCategoryName(next);
+                        setSelectedOperationCat(next);
+                        const cat = schema.categories.find((c) => c.name === next);
+                        setSelectedOperationName(cat?.operations[0]?.name || '');
+                      }}
+                   >
                     {schema.categories.map(c => <option key={c.name} value={c.name}>{c.name}</option>)}
-                 </select>
+                   </select>
+                   <button className="btn btn-sm btn-outline btn-secondary" onClick={handleCreateCategory} title="Create Category">
+                     <Plus className="w-4 h-4" />
+                   </button>
+                   <button className="btn btn-sm btn-outline btn-error" onClick={handleDeleteCategory} title="Delete Category">
+                     <Trash2 className="w-4 h-4" />
+                   </button>
+                 </div>
               </div>
 
               {selectedCategory && (
@@ -486,7 +816,12 @@ const IntentParserView: React.FC = () => {
                   <div className="grid grid-cols-2 gap-4">
                     <div className="form-control">
                       <label className="label py-1"><span className="label-text font-bold text-xs uppercase tracking-wide opacity-80">Category Name</span></label>
-                      <input type="text" className="input input-sm input-bordered font-semibold bg-base-200" value={selectedCategory.name} disabled />
+                      <input
+                        type="text"
+                        className="input input-sm input-bordered font-semibold"
+                        value={selectedCategory.name}
+                        onChange={(e) => handleUpdateCategoryName(e.target.value)}
+                      />
                     </div>
                     <div className="form-control">
                       <label className="label py-1"><span className="label-text font-bold text-xs uppercase tracking-wide opacity-80">Category Description</span></label>
@@ -569,7 +904,7 @@ const IntentParserView: React.FC = () => {
                   </div>
                   
                   <div className="flex justify-end pt-2 border-t border-base-200">
-                     <button className="btn btn-primary btn-sm"><Save className="w-4 h-4"/> Commit Changes</button>
+                    <button className="btn btn-primary btn-sm" onClick={handleSaveAll}><Save className="w-4 h-4"/> Commit Changes</button>
                   </div>
                 </div>
               )}
@@ -616,6 +951,9 @@ const IntentParserView: React.FC = () => {
                      <button className="btn btn-square btn-outline btn-secondary btn-sm tooltip" data-tip="Create New Operation" onClick={handleCreateOperation}>
                         <Plus className="w-4 h-4" />
                      </button>
+              <button className="btn btn-square btn-outline btn-error btn-sm tooltip" data-tip="Delete Operation" onClick={handleDeleteOperation} disabled={!selectedOperation}>
+                <Trash2 className="w-4 h-4" />
+              </button>
                  </div>
               </div>
 
@@ -635,10 +973,10 @@ const IntentParserView: React.FC = () => {
                   </div>
 
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                     <div className="form-control">
+                    <div className="form-control md:col-span-2">
                        <label className="label py-1"><span className="label-text font-bold text-error text-xs uppercase tracking-wide">Required Fields</span></label>
                        <p className="text-[10px] opacity-60 mb-2 leading-tight">Click fields below to toggle their required status for this specific operation.</p>
-                       <div className="bg-error/5 p-3 rounded-md flex flex-wrap gap-2 border border-error/20 min-h-[80px] content-start">
+                       <div className="bg-error/5 p-3 rounded-md flex flex-wrap gap-2 border border-error/20 min-h-20 content-start">
                           {selectedOperation.required_fields.map(f => (
                             <button 
                                key={f} 
@@ -653,7 +991,11 @@ const IntentParserView: React.FC = () => {
                        <select 
                           className="select select-bordered select-xs w-full mt-2"
                           value="default"
-                          onChange={(e) => handleToggleRequiredField(e.target.value)}
+                          onChange={(e) => {
+                            if (e.target.value !== 'default') {
+                              handleToggleRequiredField(e.target.value);
+                            }
+                          }}
                        >
                           <option value="default" disabled>+ Assign existing category field</option>
                           {selectedOperationCategory?.fields.filter(f => !selectedOperation.required_fields.includes(f.name)).map(f => (
@@ -661,53 +1003,46 @@ const IntentParserView: React.FC = () => {
                           ))}
                        </select>
                      </div>
-
-                     <div className="flex flex-col gap-4">
-                        <div className="form-control">
-                           <label className="label py-1"><span className="label-text font-bold text-warning text-xs uppercase tracking-wide">Optional Parameters</span></label>
-                           <div className="bg-warning/5 p-2 rounded-md flex flex-wrap gap-1 border border-warning/20 min-h-[40px] content-start">
-                              {selectedOperation.optional_fields?.map(f => (
-                                <div key={f} className="badge badge-warning text-[10px] font-mono p-1.5 opacity-80">
-                                  {f}
-                                </div>
-                              ))}
-                              {(!selectedOperation.optional_fields || selectedOperation.optional_fields.length === 0) && <span className="text-[10px] opacity-50 italic">Inherited implicitly.</span>}
-                           </div>
-                        </div>
-
-                        {selectedOperation.forbidden_fields && selectedOperation.forbidden_fields.length > 0 && (
-                           <div className="form-control">
-                              <label className="label py-1"><span className="label-text font-bold text-base-content/60 text-xs uppercase tracking-wide">Forbidden Fields</span></label>
-                              <div className="bg-base-200/50 p-2 rounded-md flex flex-wrap gap-1 border border-base-300 min-h-[40px] content-start">
-                                 {selectedOperation.forbidden_fields.map(f => (
-                                   <div key={f} className="badge badge-outline text-[10px] font-mono p-1.5 opacity-60">
-                                     <span className="line-through">{f}</span>
-                                   </div>
-                                 ))}
-                              </div>
-                           </div>
-                        )}
-                     </div>
                   </div>
 
                   <div className="form-control mt-2 pt-4 border-t border-base-200">
-                    <label className="label py-1"><span className="label-text font-bold text-info flex gap-2 items-center text-xs uppercase tracking-wide">Cross-Check & Dependencies</span></label>
+                    <label className="label py-1"><span className="label-text font-bold text-info flex gap-2 items-center text-xs uppercase tracking-wide">Dependencies</span></label>
                     <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 mt-2">
                        {selectedOperation.dependencies?.map((d, i) => (
-                         <div key={i} className="flex gap-3 items-center bg-info/5 p-2 rounded border border-info/20 text-xs shadow-sm">
+                         <div key={i} className="flex gap-2 items-center bg-info/5 p-2 rounded border border-info/20 text-xs shadow-sm">
                             <LinkIcon className="w-3.5 h-3.5 text-info shrink-0" />
-                            <span className="font-mono flex-1 font-semibold opacity-80">{d.condition}</span>
-                            <span className="badge badge-info badge-sm rounded-[4px] font-bold">{d.action}</span>
+                            <input
+                              className="input input-xs input-bordered flex-1 font-mono"
+                              value={d.condition}
+                              placeholder="condition"
+                              onChange={(e) => handleUpdateDependency(i, { condition: e.target.value })}
+                            />
+                            <select
+                              className="select select-xs select-bordered"
+                              value={d.action}
+                              onChange={(e) => handleUpdateDependency(i, { action: e.target.value })}
+                            >
+                              <option value="enforce">enforce</option>
+                              <option value="warn">warn</option>
+                              <option value="derive">derive</option>
+                            </select>
+                            <button className="btn btn-ghost btn-xs text-error" onClick={() => handleRemoveDependency(i)}>
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
                          </div>
                        ))}
-                       <button className="btn btn-outline btn-info btn-sm border-dashed h-full min-h-12 w-full justify-center">
+                       <button className="btn btn-outline btn-info btn-sm border-dashed h-full min-h-12 w-full justify-center" onClick={handleAddDependency}>
                          <Plus className="w-3.5 h-3.5" /> Append Dependency Rule
                        </button>
                     </div>
                   </div>
 
+                  <div className="rounded-md border border-base-300 bg-base-200/40 p-2 text-xs opacity-70">
+                    Required-only mode is enabled. Optional and restricted fields are intentionally hidden and not edited here.
+                  </div>
+
                   <div className="flex justify-end pt-2 border-t border-base-200">
-                     <button className="btn btn-secondary btn-sm"><Save className="w-4 h-4"/> Commit Operation</button>
+                     <button className="btn btn-secondary btn-sm" onClick={handleSaveAll}><Save className="w-4 h-4"/> Commit Operation</button>
                   </div>
                 </div>
               )}

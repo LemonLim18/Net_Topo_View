@@ -422,7 +422,7 @@ class PlaybookBuilder:
         """Run ansible-lint and return structured issues."""
         try:
             with tempfile.NamedTemporaryFile(
-                suffix=".yml", mode="w", delete=False
+                suffix=".yml", mode="w", delete=False, encoding="utf-8"
             ) as f:
                 f.write(yaml_text)
                 fpath = f.name

@@ -30,6 +30,7 @@ import SecurityDashboard from '../views/SecurityDashboard';
 import { NotificationProvider } from '../contexts/NotificationContext';
 import { DeviceProvider } from '../contexts/DeviceContext';
 import { Bot } from 'lucide-react';
+import { SHOW_SDN_CONTROLLER } from './config';
 
 import type { ViewId, User } from '../types';
 import { normalizeUserRole } from '../types';
@@ -60,7 +61,7 @@ const isViewId = (value: string | null): value is ViewId => {
     'onboarding',
     'intent_history',
     'intent_parser',
-    'sdn_dashboard',
+    ...(SHOW_SDN_CONTROLLER ? ['sdn_dashboard'] : []),
     'playbook_comparison',
     'approval_queue',
     'template_studio',
@@ -144,12 +145,6 @@ const App: React.FC = () => {
   useEffect(() => {
     localStorage.setItem('sidebarCollapsed', String(sidebarCollapsed));
   }, [sidebarCollapsed]);
-
-  useEffect(() => {
-    if (view === 'approval_queue' && normalizeUserRole(user?.role) !== 'admin') {
-      setView('overview');
-    }
-  }, [view, user]);
 
   // --- Button Dragging Logic ---
   const handleButtonMouseDown = (e: React.MouseEvent) => {
@@ -243,6 +238,7 @@ const App: React.FC = () => {
 
       // Phase 3 — SDN Controller Dashboard
       case 'sdn_dashboard':
+        if (!SHOW_SDN_CONTROLLER) return <OverviewDashboard setView={setView} setSelectedDeviceId={setSelectedDeviceId} />;
         return <SDNDashboardView setView={setView} />;
 
       // Phase 12 — Playbook Candidate Comparison (UC14)
@@ -251,9 +247,7 @@ const App: React.FC = () => {
 
       // Phase 16 — Approval Queue Dashboard
       case 'approval_queue':
-        return normalizeUserRole(user?.role) === 'admin'
-          ? <ApprovalQueueView setView={setView} />
-          : <OverviewDashboard setView={setView} setSelectedDeviceId={setSelectedDeviceId} />;
+        return <ApprovalQueueView setView={setView} />;
 
       // Template Studio — Jinja2 template editor
       case 'template_studio':

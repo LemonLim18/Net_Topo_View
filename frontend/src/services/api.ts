@@ -1206,6 +1206,13 @@ export const ansibleApi = {
     ),
 
   /** Approve the job for execution (admin only). */
+  submitForApproval: (jobId: number) =>
+    request<{ job_id: number; status: string; submitted_by: string }>(
+      `/ansible/jobs/${jobId}/submit-for-approval`,
+      { method: 'POST' }
+    ),
+
+  /** Approve the job for execution (queue reviewer). */
   approveJob: (jobId: number) =>
     request<{ job_id: number; status: string; approved_by: string }>(
       `/ansible/jobs/${jobId}/approve`,
@@ -1238,6 +1245,12 @@ export const ansibleApi = {
       files?: { path: string }[];
       steps: { stage: string; status: string; details: string; created_at: string }[];
     }>(`/ansible/jobs/${jobId}/result`),
+
+  /** Latest Ansible job id for a deploy change request (if any). */
+  getJobForRequest: (requestId: number) =>
+    request<{ job_id: number; entrypoint_path: string | null }>(
+      `/ansible/jobs/by-request/${requestId}`
+    ),
 
   /** Get effective inventory for a job (hosts, IPs, credential source). Admin only: includes ssh_user, ssh_password from vault. */
   getJobInventory: (jobId: number) =>

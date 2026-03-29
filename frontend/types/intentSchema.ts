@@ -16,7 +16,7 @@ export interface IntentSchemaOperation {
   name: string;
   description?: string;
   required_fields: string[];
-  optional_fields: string[];
+  optional_fields?: string[];
   forbidden_fields?: string[];
   dependencies?: IntentSchemaDependency[];
   cross_check_rules?: string[];

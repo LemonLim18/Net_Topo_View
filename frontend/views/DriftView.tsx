@@ -244,9 +244,9 @@ const DriftView: React.FC = () => {
               <GitCompareArrows className="w-6 h-6" />
             </div>
             <div>
-              <h1 className="text-2xl font-black tracking-tight leading-none">Compliance &amp; Drift</h1>
+              <h1 className="text-2xl font-bold tracking-tight leading-none">Compliance &amp; Drift</h1>
               <div className="flex items-center gap-2 mt-1.5">
-                   <span className="text-[10px] font-bold uppercase tracking-widest opacity-40">System-wide Guardrail Monitoring</span>
+                   <span className="label-text text-xs font-bold tracking-wider opacity-60 flex items-center gap-1.5">System-wide Guardrail Monitoring</span>
                    <span className="w-1 h-1 rounded-full bg-current opacity-20" />
                    <div className="flex items-center gap-1.5">
                       <div className={`w-2 h-2 rounded-full ${scanning ? 'bg-warning animate-pulse' : 'bg-success shadow-[0_0_8px_rgba(34,197,94,0.4)]'}`} />

@@ -1009,26 +1009,142 @@ def get_template_vars(
         if marking_dscp in (None, "", []):
             marking_dscp = params_x.get("dscp_value")
 
+        def _normalize_dscp_token(value: Any) -> str:
+            s = str(value or "").strip().lower()
+            if not s:
+                return ""
+            aliases = {
+                "46": "ef",
+                "expedited-forwarding": "ef",
+            }
+            return aliases.get(s, s)
+
+        def _default_dscp_for_traffic(label: str) -> str:
+            t = str(label or "").strip().lower()
+            if t in ("voice", "voip", "rtp", "sip"):
+                return "ef"
+            if t in ("video", "streaming"):
+                return "af41"
+            if t in ("signaling", "control"):
+                return "cs3"
+            return ""
+
+        raw_desc = _string_or_empty(
+            intent.get("raw_user_input")
+            or intent.get("intent_description")
+            or params_x.get("raw_user_input")
+        ).lower()
+
         classification_rules_raw = params_x.get("classification_rules") or params_x.get("classifier") or []
+        rules_in: List[Any]
         if isinstance(classification_rules_raw, str) and classification_rules_raw.strip():
-            classification_rules = [classification_rules_raw.strip()]
+            rules_in = [classification_rules_raw.strip()]
         elif isinstance(classification_rules_raw, list):
-            classification_rules = classification_rules_raw
+            rules_in = classification_rules_raw
         else:
-            classification_rules = []
+            rules_in = []
+
+        effective_marking_dscp = _normalize_dscp_token(marking_dscp)
+        if not effective_marking_dscp:
+            effective_marking_dscp = _default_dscp_for_traffic(traffic_type)
+
+        def _normalize_rule(rule: Any, fallback_dscp: str) -> Optional[str]:
+            if isinstance(rule, dict):
+                rule_type = str(rule.get("type") or rule.get("match") or "").strip().lower()
+                rule_value = str(rule.get("value") or rule.get("dscp") or "").strip().lower()
+                if rule_type in ("dscp", "ip dscp", "match dscp"):
+                    value = _normalize_dscp_token(rule_value or fallback_dscp)
+                    return f"match dscp {value}" if value else "match dscp"
+                if rule_type:
+                    return f"match {rule_type} {rule_value}".strip()
+                return None
+            text = str(rule or "").strip()
+            if not text:
+                return None
+            low = text.lower()
+            body = text[6:].strip() if low.startswith("match ") else text
+            body_low = body.lower()
+
+            if body_low in ("dscp", "ip dscp"):
+                value = _normalize_dscp_token(fallback_dscp)
+                return f"match dscp {value}" if value else "match dscp"
+            if body_low.startswith("dscp "):
+                value = _normalize_dscp_token(body.split(None, 1)[1])
+                return f"match dscp {value}" if value else "match dscp"
+            if body_low.startswith("ip dscp "):
+                parts = body.split(None, 2)
+                value = _normalize_dscp_token(parts[2] if len(parts) > 2 else "")
+                return f"match dscp {value}" if value else "match dscp"
+
+            return f"match {body}" if not low.startswith("match ") else f"match {body}"
+
+        classification_rules: List[str] = []
+        for r in rules_in:
+            nr = _normalize_rule(r, effective_marking_dscp)
+            if nr and nr not in classification_rules:
+                classification_rules.append(nr)
+
+        # Ensure voice-priority QoS has at least one useful classifier.
+        if not classification_rules and effective_marking_dscp:
+            classification_rules = [f"match dscp {effective_marking_dscp}"]
 
         interface_apply_raw = (
             params_x.get("interface_apply")
             or params_x.get("apply_to")
             or params_x.get("interfaces")
+            or params_x.get("interface")
+            or params_x.get("interface_name")
             or []
         )
-        if isinstance(interface_apply_raw, str) and interface_apply_raw.strip():
-            interface_apply = [interface_apply_raw.strip()]
-        elif isinstance(interface_apply_raw, list):
-            interface_apply = interface_apply_raw
-        else:
-            interface_apply = []
+
+        interface_apply: List[Any] = []
+        raw_list = interface_apply_raw if isinstance(interface_apply_raw, list) else [interface_apply_raw]
+        for ap in raw_list:
+            if isinstance(ap, str):
+                token = ap.strip()
+                if not token:
+                    continue
+                # keep optional trailing direction token while normalizing iface prefix
+                parts = token.split()
+                maybe_dir = parts[-1].lower() if parts else ""
+                if maybe_dir in ("in", "out", "inbound", "outbound"):
+                    iface_part = " ".join(parts[:-1]).strip()
+                    iface_norm = _strip_device_prefix_from_iface_name(iface_part, target_hosts)
+                    if iface_norm:
+                        interface_apply.append(f"{iface_norm} {maybe_dir}")
+                else:
+                    iface_norm = _strip_device_prefix_from_iface_name(token, target_hosts)
+                    if iface_norm:
+                        interface_apply.append(iface_norm)
+            elif isinstance(ap, dict):
+                iface_name = _string_or_empty(
+                    ap.get("interface")
+                    or ap.get("interface_name")
+                    or ap.get("name")
+                )
+                if not iface_name:
+                    continue
+                iface_name = _strip_device_prefix_from_iface_name(iface_name, target_hosts)
+                direction_item = _string_or_empty(ap.get("direction")).lower()
+                normalized_item: Dict[str, str] = {"interface": iface_name}
+                if direction_item in ("in", "out", "inbound", "outbound"):
+                    normalized_item["direction"] = direction_item
+                interface_apply.append(normalized_item)
+
+        priority_percent_raw = params_x.get("priority_percent")
+        priority_percent: Any = ""
+        if priority_percent_raw not in (None, "", []):
+            try:
+                priority_percent = int(priority_percent_raw)
+            except Exception:
+                priority_percent = ""
+
+        priority_hint = _string_or_empty(params_x.get("priority") or params_x.get("qos_priority")).lower()
+        priority_enabled = bool(
+            priority_hint in ("high", "strict", "priority", "yes", "true", "1")
+            or (str(traffic_type or "").strip().lower() in ("voice", "voip"))
+            or ("prioritize" in raw_desc and "voice" in raw_desc)
+        )
 
         return {
             "target_hosts": ",".join(str(h).strip() for h in target_hosts if str(h).strip()) or "all",
@@ -1037,9 +1153,11 @@ def get_template_vars(
             "classification_rules": classification_rules,
             "interface_apply": interface_apply,
             "direction": direction,
-            "marking_dscp": marking_dscp,
+            "marking_dscp": effective_marking_dscp or marking_dscp,
             "traffic_type": traffic_type,
             "police_rate": police_rate,
+            "priority_percent": priority_percent,
+            "priority_enabled": priority_enabled,
             "conform_action": _string_or_empty(params_x.get("conform_action")),
             "exceed_action": _string_or_empty(params_x.get("exceed_action")),
         }

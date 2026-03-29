@@ -89,6 +89,39 @@ const expandWildcardInterfacesFromPlannedPreview = (
   return expanded.length > 0 ? expanded : current;
 };
 
+function resolveInitialTargetInterfaces(params: {
+  authoritative: Record<string, unknown> | null | undefined;
+  parsedIntent: Record<string, unknown> | null | undefined;
+  planned: { devices?: { hostname?: string; interfaces?: { name?: string }[] }[] } | null;
+}): string[] {
+  const fromAuth = extractTargetInterfaceNamesFromAuthoritativeParams(params.authoritative);
+  const fromParsed = extractTargetInterfaceNamesFromParsedIntent(params.parsedIntent);
+  const plannedNames = new Set(
+    (params.planned?.devices || []).flatMap((d) =>
+      (d.interfaces || [])
+        .map((i) => String(i.name || '').trim())
+        .filter(Boolean),
+    ),
+  );
+
+  // No planned context yet: keep existing precedence but still expand wildcard tokens.
+  if (plannedNames.size === 0) {
+    const base = fromAuth.length > 0 ? fromAuth : fromParsed;
+    return expandWildcardInterfacesFromPlannedPreview(base, params.planned);
+  }
+
+  const onlyPlannedNames = (arr: string[]) => arr.filter((n) => plannedNames.has(n));
+  const authInPlanned = onlyPlannedNames(fromAuth);
+  if (authInPlanned.length > 0) return authInPlanned;
+
+  const parsedInPlanned = onlyPlannedNames(fromParsed);
+  if (parsedInPlanned.length > 0) return parsedInPlanned;
+
+  // If input interfaces don't exist in planned inventory, return empty so the
+  // planned-all preview effect can prefill vendor-correct interface chips.
+  return [];
+}
+
 /** All L2 interface objects from primary + secondary (order: primary first, then secondaries). */
 function collectAllInterfaceObjectsFromParsedIntent(
   parsed: Record<string, unknown> | null | undefined,
@@ -486,18 +519,11 @@ export function PlaybookStudioOverlay({
         setTargetHosts(Array.isArray(rd) && rd.length > 0 ? rd : fromPreview);
       }
       setTargetInterfaces(
-        expandWildcardInterfacesFromPlannedPreview(
-          (() => {
-            const fromAuth = extractTargetInterfaceNamesFromAuthoritativeParams(
-              authoritativeMergedParams as Record<string, unknown> | null | undefined,
-            );
-            if (fromAuth.length > 0) return fromAuth;
-            return extractTargetInterfaceNamesFromParsedIntent(
-              (res.parsed_intent as Record<string, unknown>) ?? null,
-            );
-          })(),
-          ((res.parsed_intent as any)?.planned_all_interfaces_preview as any) ?? null,
-        ),
+        resolveInitialTargetInterfaces({
+          authoritative: authoritativeMergedParams as Record<string, unknown> | null | undefined,
+          parsedIntent: (res.parsed_intent as Record<string, unknown>) ?? null,
+          planned: ((res.parsed_intent as any)?.planned_all_interfaces_preview as any) ?? null,
+        }),
       );
       setPlannedAllInterfacesPreview(
         ((res.parsed_intent as any)?.planned_all_interfaces_preview as any) ?? null
@@ -573,18 +599,11 @@ export function PlaybookStudioOverlay({
         );
       }
       setTargetInterfaces(
-        expandWildcardInterfacesFromPlannedPreview(
-          (() => {
-            const fromAuth = extractTargetInterfaceNamesFromAuthoritativeParams(
-              authoritativeMergedParams as Record<string, unknown> | null | undefined,
-            );
-            if (fromAuth.length > 0) return fromAuth;
-            return extractTargetInterfaceNamesFromParsedIntent(
-              (initialPreviewResult.parsed_intent as Record<string, unknown>) ?? null,
-            );
-          })(),
-          ((initialPreviewResult.parsed_intent as any)?.planned_all_interfaces_preview as any) ?? null,
-        ),
+        resolveInitialTargetInterfaces({
+          authoritative: authoritativeMergedParams as Record<string, unknown> | null | undefined,
+          parsedIntent: (initialPreviewResult.parsed_intent as Record<string, unknown>) ?? null,
+          planned: ((initialPreviewResult.parsed_intent as any)?.planned_all_interfaces_preview as any) ?? null,
+        }),
       );
       setPlannedAllInterfacesPreview(
         ((initialPreviewResult.parsed_intent as any)?.planned_all_interfaces_preview as any) ?? null
@@ -736,9 +755,16 @@ export function PlaybookStudioOverlay({
     const parsedActionRaw = String((pip?.action as string) || '')
       .toLowerCase()
       .replace(/-/g, '_');
+    const inspectorPrimaryAction = String(
+      (intentSchemaInspector?.slices || []).find((s) => s.role === 'primary')?.schema_action || '',
+    )
+      .toLowerCase()
+      .replace(/-/g, '_');
     // Normalize common ACL-apply alias so downstream params logic matches backend schema.
     const parsedAction =
-      parsedActionRaw === 'apply_acl' ? 'apply_acl_to_interface' : parsedActionRaw;
+      (inspectorPrimaryAction || parsedActionRaw) === 'apply_acl'
+        ? 'apply_acl_to_interface'
+        : (inspectorPrimaryAction || parsedActionRaw);
     const secondariesFromPreview = Array.isArray(
       (pip as { secondary_intents?: unknown } | null)?.secondary_intents,
     )

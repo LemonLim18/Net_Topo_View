@@ -16,6 +16,7 @@
   vars:
     interfaces_config_defaults: {{ interfaces_config_override | default([]) | tojson }}
     interfaces_config: {{ interfaces_config_override | default([]) | tojson }}
+    interfaces_admin_enabled: "{{ ((interfaces_admin_enabled | default(false) | string | trim | lower) in ['1', 'true', 'yes', 'on']) | string | lower }}"
 {% if interfaces_config_use_nettopo | default(false) %}
     # Per-host expanded config from nettopo_interfaces (mgmt excluded by name + mgmt IP match).
     {% raw %}
@@ -35,7 +36,8 @@
 {% raw %}
     - name: Configure interface (Huawei VRP) [all interfaces]
       community.network.ce_config:
-        parents: "interface {{ (item.name | string | replace('TenGigabitEthernet', '10GE') | replace('GigabitEthernet', 'GE')) }}"
+        # Normalize common long names to VRP short names (GE/10GE) accepted by CLI.
+        parents: "interface {{ (item.name | string).split(':') | last | trim | replace('TenGigabitEthernet', '10GE') | replace('GigabitEthernet', 'GE') }}"
         lines: "{{ [
           (('description ' ~ item.description) if (item.description is defined and item.description) else none),
           ('shutdown' if (item.enabled is defined and item.enabled == false) else 'undo shutdown'),
@@ -48,7 +50,8 @@
         ] | reject('equalto', none) | list }}"
       loop: "{{ interfaces_config | default([]) }}"
       loop_control:
-        label: "{{ item.name }}"
+        # Log/output also uses Huawei-style abbreviations (GE/10GE).
+        label: "{{ (item.name | string).split(':') | last | trim | replace('TenGigabitEthernet', '10GE') | replace('GigabitEthernet', 'GE') }}"
       when:
         - inventory_hostname in groups.get('vendor_huawei_vrp', [])
         - item.enabled is defined
@@ -57,7 +60,8 @@
 {% raw %}
     - name: Configure interface (Huawei VRP)
       community.network.ce_config:
-        parents: "interface {{ (item.name | string | replace('TenGigabitEthernet', '10GE') | replace('GigabitEthernet', 'GE')) }}"
+        # Normalize common long names to VRP short names (GE/10GE) accepted by CLI.
+        parents: "interface {{ (item.name | string).split(':') | last | trim | replace('TenGigabitEthernet', '10GE') | replace('GigabitEthernet', 'GE') }}"
         lines: "{{ [
           (('description ' ~ item.description) if (item.description is defined and item.description) else none),
           ('shutdown' if (item.enabled is defined and item.enabled == false) else 'undo shutdown'),
@@ -70,7 +74,7 @@
         ] | reject('equalto', none) | list }}"
       loop: "{{ interfaces_config | default([]) }}"
       loop_control:
-        label: "{{ item.name }}"
+        label: "{{ (item.name | string).split(':') | last | trim | replace('TenGigabitEthernet', '10GE') | replace('GigabitEthernet', 'GE') }}"
       when:
         - inventory_hostname in groups.get('vendor_huawei_vrp', [])
         - (interfaces_config | default([])) | length > 0
@@ -79,15 +83,16 @@
 {% endif %}
 # Shutdown-only fallback (interfaces_to_shutdown = list of names)
 {% raw %}
+    # interfaces_admin_enabled may arrive as bool or string from the API/JSON merge.
+    # Jinja (false == "false") is false — use normalized truthy test so shutdown vs undo shutdown is correct.
     - name: Shutdown interface (Huawei VRP)
       community.network.ce_config:
         lines:
-          - "{{ 'shutdown' if (interfaces_admin_enabled | default(false)) == false else 'undo shutdown' }}"
-        parents: "interface {{ (item | string | replace('TenGigabitEthernet', '10GE') | replace('GigabitEthernet', 'GE')) }}"
-        state: merged
+          - "{{ 'shutdown' if not ((interfaces_admin_enabled | default(false) | string | trim | lower) in ['1', 'true', 'yes', 'on']) else 'undo shutdown' }}"
+        parents: "interface {{ (item | string).split(':') | last | trim | replace('TenGigabitEthernet', '10GE') | replace('GigabitEthernet', 'GE') }}"
       loop: "{{ interfaces_to_shutdown | default([]) }}"
       loop_control:
-        label: "{{ item }}"
+        label: "{{ (item | string).split(':') | last | trim | replace('TenGigabitEthernet', '10GE') | replace('GigabitEthernet', 'GE') }}"
       when:
         - inventory_hostname in groups.get('vendor_huawei_vrp', [])
         - (interfaces_config | default([])) | length == 0

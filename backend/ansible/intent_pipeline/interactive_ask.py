@@ -140,7 +140,7 @@ def _default_question_for_field(field: str) -> str:
         "vlan_name": "What name should this VLAN have?",
         "target_devices": "Which device(s) from the planned network should this apply to? (Select from inventory — do not guess names.)",
         "interfaces": "Which interfaces (per device) should be configured?",
-        "interfaces_to_shutdown": "Which interfaces should be shut down?",
+        "interfaces_to_shutdown": "Which interfaces should this apply to (admin up or down follows your prompt)?",
         "next_hop": "What is the next-hop IP address?",
         "destination": "What is the destination prefix (e.g. 0.0.0.0/0)?",
         "acl_name": "What ACL name or number should be used?",

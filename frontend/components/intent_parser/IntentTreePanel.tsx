@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Folder, Activity, Hash, Type } from 'lucide-react';
+import { Folder, Activity, Hash } from 'lucide-react';
 import type { IntentSchema } from '../../types/intentSchema';
 
 interface Props {
@@ -84,16 +84,6 @@ const IntentTreePanel: React.FC<Props> = ({ schema, selectedNode, onSelectNode, 
                              </a>
                            </li>
                         ))}
-                        {op.optional_fields.map(f => (
-                           <li key={f}>
-                             <a 
-                               className={`text-base-content/60 text-xs ${selectedNode?.parameter === f && selectedNode.operation === op.name ? 'bg-primary/10 font-bold' : ''}`}
-                               onClick={() => onSelectNode({ type: 'parameter', category: cat.name, operation: op.name, parameter: f })}
-                             >
-                               <Type className="w-3 h-3" /> {f}
-                             </a>
-                           </li>
-                        ))}
                       </ul>
                     </details>
                   </li>
@@ -107,7 +97,7 @@ const IntentTreePanel: React.FC<Props> = ({ schema, selectedNode, onSelectNode, 
       {/* Context Menu Overlay rendering */}
       {contextMenu && (
         <ul 
-          className="menu bg-base-100 w-56 rounded-box shadow-xl border border-secondary/50 fixed z-[100]"
+          className="menu bg-base-100 w-56 rounded-box shadow-xl border border-secondary/50 fixed z-100"
           style={{ top: contextMenu.y, left: contextMenu.x }}
         >
           <li className="menu-title text-[10px] opacity-70 px-4 py-2 uppercase tracking-widest border-b border-base-200 mb-1">

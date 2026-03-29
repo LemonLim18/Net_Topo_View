@@ -1,0 +1,25 @@
+{
+  "case_id": "qos_config_prioritize_voice_gi0_1_sw1",
+  "started_at": "2026-03-28T15:19:17.504090",
+  "intent_description": "Configure QoS to prioritize voice traffic on GigabitEthernet1/0/1",
+  "preview_initial": {
+    "status_code": 200,
+    "text": "{\"categories\":[\"qos\"],\"references\":[{\"doc_name\":\"playbook_template.yml\",\"feature\":\"qos\",\"vendor\":\"multi_vendor\",\"path\":\"reference/qos/multi_vendor/playbook_template.yml\"}],\"parsed_intent\":{\"id\":\"ba5e8b4b\",\"intent_type\":\"query\",\"action\":\"configure_qos\",\"feature\":\"qos\",\"vendor\":\"\",\"parameters\":{\"device_deduction\":{\"deduced\":[],\"mapping\":[],\"why\":\"No target devices resolved from the prompt (exact inventory / alias only).\"}},\"scope\":{\"device_hostnames\":[],\"device_role\":null,\"building\":null,\"vendor_filter\":null,\"all_devices\":false},\"risk_level\":\"medium\",\"justification\":\"\",\"raw_user_input\":\"Configure QoS to prioritize voice traffic on GigabitEthernet1/0/1\",\"requires_disambiguation\":false,\"disambiguation_message\":\"\",\"requires_resolution\":false,\"resolved_devices\":[],\"created_at\":\"2026-03-28T15:19:31.732005+00:00\",\"secondary_intents\":[],\"inventory_unknown_device_tokens\":[],\"device_deduction\":{\"deduced\":[],\"why\":\"No target devices could be resolved from the prompt or inventory.\",\"clues\":[],\"mapping\":[]},\"intent_pipeline\":{\"segments\":[\"Configure QoS to prioritize voice traffic on GigabitEthernet1/0/1\"],\"segment_summary\":\"1 segment(s): Configure QoS to prioritize voice traffic on GigabitEthernet…\",\"categories_by_segment\":[[\"interface\",\"qos\"]],\"catalog_validation_ok\":false,\"catalog_missing_fields\":[\"policy_name\",\"interface_apply\",\"target_devices\"],\"catalog_forbidden_violations\":[],\"catalog_dependency_notes\":[\"When using interfaces-only group, include marking/classifier hints (e.g. DSCP, voice) when possible.\"],\"catalog_schema_source\":\"catalog\",\"catalog_operation_key\":\"configure_qos\",\"cross_check\":{\"invalid_devices\":[],\"invalid_interfaces\":[]},\"interactive_asks\":[{\"kind\":\"missing_required\",\"field\":\"policy_name\",\"question\":\"What QoS policy name should be used?\",\"source\":\"catalog_validation\"},{\"kind\":\"missing_required\",\"field\":\"interface_apply\",\"question\":\"Please provide a value for `interface_apply`.\",\"source\":\"catalog_validation\"},{\"kind\":\"missing_required\",\"field\":\"target_device"
+  },
+  "preview_initial_assert": {
+    "ok": true,
+    "notes": []
+  },
+  "create_and_plan": {
+    "status_code": 422,
+    "text": "{\"detail\":\"Intent parser did not resolve any target devices.\"}"
+  },
+  "stageB_assert": {
+    "ok": false,
+    "notes": [
+      "create-and-plan HTTP status mismatch: 422"
+    ]
+  },
+  "finished_at": "2026-03-28T15:19:45.792386",
+  "result_ok": false
+}

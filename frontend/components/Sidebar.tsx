@@ -26,6 +26,7 @@ import {
 import type { ViewId, User } from '../types';
 import { normalizeUserRole } from '../types';
 import { Confirm } from '../src/utils/swal';
+import { SHOW_SDN_CONTROLLER } from '../src/config';
 
 interface SidebarProps {
   currentView: ViewId;
@@ -43,7 +44,6 @@ const Sidebar: React.FC<SidebarProps> = ({ currentView, setView, user, onLogout,
 
   if (!user) return null;
   const normalizedRole = normalizeUserRole(user.role);
-  const isAdmin = normalizedRole === 'admin';
 
   // ── Menu Item ──
   const MenuItem = ({ id, label, icon: Icon, iconColor, textColor }: { id: ViewId, label: string, icon: any, iconColor?: string, textColor?: string }) => {
@@ -166,11 +166,13 @@ const Sidebar: React.FC<SidebarProps> = ({ currentView, setView, user, onLogout,
           <MenuItem id="intent_parser" label="Intent Parser" icon={BotMessageSquare} iconColor="text-accent"/>
           <MenuItem id="intent_history" label="Intent History" icon={History} iconColor="text-accent"/>
           {/* <MenuItem id="playbook_comparison" label="Playbook Compare" icon={Columns} /> */}
-          {isAdmin && <MenuItem id="approval_queue" label="Approval Queue" icon={ListChecks} iconColor="text-accent"/>}
-          <MenuItem id="sdn_dashboard" label="SDN Controllers" icon={Network} iconColor="text-accent"/>
+          <MenuItem id="approval_queue" label="Approval Queue" icon={ListChecks} iconColor="text-accent"/>
+          {SHOW_SDN_CONTROLLER && (
+            <MenuItem id="sdn_dashboard" label="SDN Controllers" icon={Network} iconColor="text-accent"/>
+          )}
           <MenuItem id="knowledge_base" label="Knowledge Base" icon={BookOpen} iconColor="text-accent"/>
         </SectionHeader>
-        <SectionHeader
+        {/* <SectionHeader
           label="Security"
           icon={ShieldCheck}
           iconColor="text-secondary"
@@ -182,7 +184,7 @@ const Sidebar: React.FC<SidebarProps> = ({ currentView, setView, user, onLogout,
           <MenuItem id="sec_analysis" label="Threat Analysis" icon={ScanSearch} iconColor="text-secondary"/>
           <MenuItem id="sec_chat" label="Security Copilot" icon={BotMessageSquare} iconColor="text-secondary"/>
           <MenuItem id="incidents" label="Incident Response" icon={Siren} iconColor="text-secondary"/>
-        </SectionHeader>
+        </SectionHeader> */}
       </ul>
 
       {/* Bottom Section: Collapse Toggle + Logout */}

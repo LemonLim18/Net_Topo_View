@@ -11,7 +11,7 @@ import SSHTerminalPanel from '../components/SSHTerminalPanel';
 import type { SSHTab } from '../components/SSHTerminalPanel';
 import type { SSHConnectionState } from '../components/SSHTerminal';
 import SSHConnectModal from '../components/SSHConnectModal';
-import { CONTROLLER_NODE_ID, CONTROLLER_NODE_DATA } from '../constants';
+import { CONTROLLER_NODE_ID } from '../constants';
 import { useWebSocket } from '../src/hooks/useWebSocket';
 import { API_CONFIG } from '../src/config';
 import { topologyApi, netboxApi, type DeviceRecord, type InterfaceRecord, type LinkRecord } from '../src/services/api';
@@ -260,48 +260,6 @@ const processTopologyData = (data: TopologyData | null, deviceLinks: LinkRecord[
         }
     });
     
-        // Add Controller Node and Link using seed IP and its interface from the
-        // backend topology. We locate which interface on the entry node matches
-        // the seed IP (from `data.seeds`) and use that interface name + IP for
-        // the controller link instead of hard-coding 'WAN'.
-        const seedIp = data.seeds?.[0] ?? null;
-        let seedInterfaceName: string | null = null;
-        const entryNode = seedIp
-            ? nodes.find(node => {
-                    // find the interface object that contains the seed IP
-                    const match = node.interfaceList.find(ifaceObj => Object.values(ifaceObj).includes(seedIp));
-                                        if (match) {
-                                                // find the exact interface key whose value equals the seedIp
-                                                const key = Object.keys(match).find(k => (match as any)[k] === seedIp) || null;
-                                                // Collapse full name ('Ethernet0/1') to abbreviated form ('Et0/1')
-                                                if (key) {
-                                                    if (key.startsWith('Ethernet')) seedInterfaceName = 'Et' + key.replace('Ethernet', '');
-                                                    else if (key.startsWith('Loopback')) seedInterfaceName = 'Lo' + key.replace('Loopback', '');
-                                                    else seedInterfaceName = key;
-                                                } else {
-                                                    seedInterfaceName = null;
-                                                }
-                                                return true;
-                                        }
-                    return false;
-                })
-            : null;
-
-        if (entryNode) {
-                nodes.push({ ...CONTROLLER_NODE_DATA });
-                links.push({
-                        source: CONTROLLER_NODE_ID,
-                        target: entryNode.id,
-                        sourceInterface: 'Ens18',
-                        // use the exact interface name from the node's interfaceList when available
-                        targetInterface: seedInterfaceName ?? 'WAN',
-                        sourceIp: CONTROLLER_NODE_DATA.mgmt_ip,
-                        // prefer the seed IP (the interface IP) as the target IP
-                        targetIp: seedIp ?? entryNode.mgmt_ip,
-                        info: { remote_node: entryNode.id, remote_interface: seedInterfaceName ?? 'WAN', remote_ip: seedIp ?? entryNode.mgmt_ip },
-                });
-        }
-
     return { nodes, links };
 };
 
