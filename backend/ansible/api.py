@@ -8269,6 +8269,15 @@ class IntentCatalogCategoryUIPutBody(BaseModel):
     operations: List[IntentCatalogOperationUIModel] = Field(default_factory=list)
 
 
+class IntentCatalogCategoryCreateBody(BaseModel):
+    """Create a new category YAML under ``intent_catalog/categories`` (admin only)."""
+
+    category_key: str = Field(min_length=1, max_length=64)
+    display_name: str = Field(min_length=1, max_length=200)
+    category_description: str = ""
+    legacy_feature: str = ""
+
+
 def _intent_catalog_payload() -> Dict[str, Any]:
     """Serialize ``intent_catalog/`` + operation adapter for the workbench tree UI."""
     from ansible.intent_pipeline.operation_adapter import list_canonical_operations
@@ -8456,6 +8465,113 @@ async def put_intent_category_ui_model(
 
     logger.info("Intent category ui-model saved by %s: %s", user.get("username"), category_key)
     return {"category_key": category_key, "status": "saved"}
+
+
+@router.post(
+    "/intent-catalog/category",
+    summary="Create a new intent catalog category YAML (admin only)",
+)
+async def create_intent_category(
+    body: IntentCatalogCategoryCreateBody,
+    user: dict = Depends(require_role("admin")),
+):
+    import yaml
+
+    from ansible.intent_catalog_serde import (
+        build_category_yaml_document,
+        category_yaml_path,
+        dump_category_yaml,
+    )
+    from ansible.intent_pipeline.schema_loader import reload_catalog
+
+    category_key = str(body.category_key or "").strip().lower()
+    if not _CATEGORY_KEY_RE.match(category_key):
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            "Invalid category key (letters, numbers, underscore, hyphen).",
+        )
+
+    path = category_yaml_path(category_key)
+    if path.exists():
+        raise HTTPException(status.HTTP_409_CONFLICT, f"Category '{category_key}' already exists")
+
+    ui_dict: Dict[str, Any] = {
+        "category_key": category_key,
+        "display_name": body.display_name.strip(),
+        "category_description": body.category_description or "",
+        "legacy_feature": (body.legacy_feature or "").strip() or category_key,
+        "shared_fields": [],
+        "operations": [],
+    }
+    doc = build_category_yaml_document(ui_dict)
+    text = dump_category_yaml(doc)
+    try:
+        yaml.safe_load(text)
+    except Exception as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, f"Invalid YAML after build: {exc}") from exc
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        path.write_text(text, encoding="utf-8")
+        reload_catalog()
+    except Exception as exc:
+        try:
+            if path.exists():
+                path.unlink()
+            reload_catalog()
+        except Exception as restore_exc:
+            logger.error("Intent category create rollback failed: %s", restore_exc)
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            f"Catalog reload failed after create (file removed): {exc}",
+        ) from exc
+
+    logger.info("Intent category created by %s: %s", user.get("username"), category_key)
+    return {"category_key": category_key, "status": "created"}
+
+
+@router.delete(
+    "/intent-catalog/category/{category_key}",
+    summary="Delete an intent catalog category YAML (admin only)",
+)
+async def delete_intent_category(
+    category_key: str,
+    user: dict = Depends(require_role("admin")),
+):
+    from ansible.intent_catalog_serde import category_yaml_path
+    from ansible.intent_pipeline.schema_loader import CATEGORIES_DIR, reload_catalog
+
+    if not _CATEGORY_KEY_RE.match(category_key):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Invalid category key")
+
+    path = category_yaml_path(category_key)
+    if not path.is_file():
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Category file not found")
+
+    categories = sorted(CATEGORIES_DIR.glob("*.yaml"))
+    if len(categories) <= 1:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "Cannot delete the last remaining category.",
+        )
+
+    backup = path.read_text(encoding="utf-8")
+    try:
+        path.unlink()
+        reload_catalog()
+    except Exception as exc:
+        try:
+            path.write_text(backup, encoding="utf-8")
+            reload_catalog()
+        except Exception as restore_exc:
+            logger.error("Intent category delete rollback failed: %s", restore_exc)
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            f"Catalog reload failed after delete (file restored): {exc}",
+        ) from exc
+
+    logger.info("Intent category deleted by %s: %s", user.get("username"), category_key)
+    return {"category_key": category_key, "status": "deleted"}
 
 
 @router.get(

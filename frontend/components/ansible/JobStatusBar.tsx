@@ -113,6 +113,15 @@ const JobStatusBar: React.FC<JobStatusBarProps> = ({
   };
 
   const activeSession = outputSessions.find(s => s.id === activeOutputId) ?? outputSessions[0];
+
+  const prevActiveSshTabRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (activeSshTabId && activeSshTabId !== prevActiveSshTabRef.current) {
+      setTab('ssh');
+    }
+    prevActiveSshTabRef.current = activeSshTabId;
+  }, [activeSshTabId]);
+
   useEffect(() => {
     if (logRef.current) {
       logRef.current.scrollTop = logRef.current.scrollHeight;
@@ -537,7 +546,7 @@ const JobStatusBar: React.FC<JobStatusBarProps> = ({
               </div>
               <button
                 type="button"
-                className="btn btn-xs btn-primary"
+                className="btn btn-xs btn-ghost outline-1 hover:btn-primary rounded-full"
                 onClick={() => onOpenSshModal?.('', '')}
               >
                 <Plus className="h-3.5 w-3.5" /> New terminal

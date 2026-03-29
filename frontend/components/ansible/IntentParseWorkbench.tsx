@@ -7,6 +7,7 @@ import {
   Minus,
   Play,
   Plus,
+  RefreshCw,
   RotateCcw,
   Save,
   Trash2,
@@ -109,6 +110,7 @@ const IntentParseWorkbench: React.FC<{ userRole?: string }> = ({ userRole = 'vie
     canonical_adapter?: { mappings: string[] };
     global_fields?: Record<string, unknown>;
   } | null>(null);
+  const [catalogRefreshing, setCatalogRefreshing] = useState(false);
   const [loadErr, setLoadErr] = useState<string | null>(null);
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
   const [selectedOperation, setSelectedOperation] = useState<string | null>(null);
@@ -129,17 +131,35 @@ const IntentParseWorkbench: React.FC<{ userRole?: string }> = ({ userRole = 'vie
   const [result, setResult] = useState<Record<string, unknown> | null>(null);
   const [parseErr, setParseErr] = useState<string | null>(null);
 
-  const reloadCatalog = useCallback(async () => {
+  const reloadCatalog = useCallback(async (opts?: { selectCategory?: string | null; forceDraftReload?: boolean }) => {
+    setCatalogRefreshing(true);
     try {
       const c = await ansibleApi.getIntentCatalog();
+      const categories = (c.categories || []) as CatalogCategory[];
       setCatalog({
-        categories: c.categories as CatalogCategory[],
+        categories,
         canonical_adapter: c.canonical_adapter,
         global_fields: c.global_fields,
       });
+      setLoadErr(null);
+      setSelectedCategory((prev) => {
+        const preferred = opts?.selectCategory ?? prev ?? null;
+        if (preferred && categories.some((cat) => String(cat.key) === String(preferred))) {
+          return String(preferred);
+        }
+        return categories.length ? String(categories[0].key) : null;
+      });
+      if (opts?.forceDraftReload) {
+        setDraftCategoryKey(null);
+        setDraft(null);
+        snapshotRef.current = '';
+      }
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
+      setLoadErr(msg);
       Toast.error('Reload catalog failed', msg);
+    } finally {
+      setCatalogRefreshing(false);
     }
   }, []);
 
@@ -148,13 +168,15 @@ const IntentParseWorkbench: React.FC<{ userRole?: string }> = ({ userRole = 'vie
     (async () => {
       try {
         const c = await ansibleApi.getIntentCatalog();
+        const categories = (c.categories || []) as CatalogCategory[];
         if (cancelled) return;
         setCatalog({
-          categories: c.categories as CatalogCategory[],
+          categories,
           canonical_adapter: c.canonical_adapter,
           global_fields: c.global_fields,
         });
-        if (c.categories?.length) setSelectedCategory(String(c.categories[0].key));
+        setLoadErr(null);
+        if (categories.length) setSelectedCategory(String(categories[0].key));
       } catch (e: unknown) {
         if (!cancelled) setLoadErr(e instanceof Error ? e.message : 'Failed to load intent catalog');
       }
@@ -262,6 +284,66 @@ const IntentParseWorkbench: React.FC<{ userRole?: string }> = ({ userRole = 'vie
     setSelectedOperation(draft.operations[0].name);
   }, [draft, selectedOperation]);
 
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      if (isDirty || saving || uiLoading) return;
+      void reloadCatalog({ forceDraftReload: view === 'category' || view === 'operation' });
+    }, 8000);
+    return () => window.clearInterval(timer);
+  }, [isDirty, saving, uiLoading, view, reloadCatalog]);
+
+  const createCategory = useCallback(async () => {
+    if (!isAdmin) return;
+    if (isDirty) {
+      const ok = window.confirm('Discard unsaved schema changes before creating a new category?');
+      if (!ok) return;
+    }
+    const keyInput = window.prompt('New category key (letters, numbers, _ or -)', '');
+    if (!keyInput) return;
+    const categoryKey = keyInput.trim().toLowerCase();
+    if (!/^[a-z0-9_-]+$/.test(categoryKey)) {
+      Toast.error('Invalid category key', 'Use letters, numbers, underscore, or hyphen.');
+      return;
+    }
+    const displayInput = window.prompt('Display name', categoryKey.toUpperCase());
+    if (!displayInput || !displayInput.trim()) {
+      Toast.error('Missing display name', 'Display name is required.');
+      return;
+    }
+
+    try {
+      await ansibleApi.createIntentCategory({
+        category_key: categoryKey,
+        display_name: displayInput.trim(),
+      });
+      setSelectedOperation(null);
+      setView('category');
+      await reloadCatalog({ selectCategory: categoryKey, forceDraftReload: true });
+      Toast.success('Category created', `categories/${categoryKey}.yaml`);
+    } catch (e: unknown) {
+      Toast.error('Create category failed', e instanceof Error ? e.message : String(e));
+    }
+  }, [isAdmin, isDirty, reloadCatalog]);
+
+  const deleteCategory = useCallback(async () => {
+    if (!isAdmin || !selectedCategory) return;
+    if (isDirty) {
+      const ok = window.confirm('Discard unsaved schema changes before deleting this category?');
+      if (!ok) return;
+    }
+    const ok = window.confirm(`Delete category "${selectedCategory}"? This removes its YAML file.`);
+    if (!ok) return;
+    try {
+      await ansibleApi.deleteIntentCategory(selectedCategory);
+      setSelectedOperation(null);
+      setView('tree');
+      await reloadCatalog({ forceDraftReload: true });
+      Toast.success('Category deleted', selectedCategory);
+    } catch (e: unknown) {
+      Toast.error('Delete category failed', e instanceof Error ? e.message : String(e));
+    }
+  }, [isAdmin, isDirty, selectedCategory, reloadCatalog]);
+
   const runPreview = useCallback(async () => {
     setRunning(true);
     setParseErr(null);
@@ -351,10 +433,21 @@ const IntentParseWorkbench: React.FC<{ userRole?: string }> = ({ userRole = 'vie
             {t.label}
           </button>
         ))}
+        <button
+          type="button"
+          className="btn btn-xs btn-ghost gap-1 ml-auto"
+          onClick={() =>
+            void reloadCatalog({ forceDraftReload: view === 'category' || view === 'operation' })
+          }
+          title="Reload catalog and refresh category view"
+        >
+          <RefreshCw className={`h-3 w-3 ${catalogRefreshing ? 'animate-spin' : ''}`} />
+          Refresh
+        </button>
         {isAdmin && (view === 'category' || view === 'operation') && (
           <button
             type="button"
-            className="btn btn-xs btn-success gap-1 ml-auto"
+            className="btn btn-xs btn-success gap-1"
             disabled={!draft || !isDirty || saving || uiLoading}
             onClick={() => void saveDraft()}
           >
@@ -415,6 +508,23 @@ const IntentParseWorkbench: React.FC<{ userRole?: string }> = ({ userRole = 'vie
               Schemas live in <code className="text-[9px]">intent_catalog/categories/*.yaml</code> on the
               server. Non-required parameters are optional by default.
             </p>
+            {isAdmin && (
+              <div className="mt-2 flex flex-wrap gap-1">
+                <button type="button" className="btn btn-xs btn-primary gap-1" onClick={() => void createCategory()}>
+                  <Plus className="h-3 w-3" />
+                  New category
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-xs btn-outline btn-error gap-1"
+                  onClick={() => void deleteCategory()}
+                  disabled={!selectedCategory}
+                >
+                  <Trash2 className="h-3 w-3" />
+                  Delete category
+                </button>
+              </div>
+            )}
           </div>
           <button
             type="button"

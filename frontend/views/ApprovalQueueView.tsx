@@ -1,7 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
-  CheckCircle, Clock, Eye, ExternalLink, GitPullRequestArrow, ListChecks,
-  RefreshCw, User, Workflow, XCircle,
+  CheckCircle, Clock, Eye, ListChecks, RefreshCw, User, XCircle,
 } from 'lucide-react';
 
 import { ansibleApi, deployApi } from '../src/services/api';
@@ -34,17 +33,47 @@ const TAB_LABELS: Record<QueueTab, string> = {
   rejected: 'Rejected',
 };
 
-const TypeBadge: React.FC<{ type: string }> = ({ type }) => (
-  type === 'ansible_job' ? (
-    <span className="badge badge-sm badge-accent gap-1">
-      <Workflow className="w-3 h-3" /> Playbook
-    </span>
-  ) : (
-    <span className="badge badge-sm badge-info gap-1">
-      <GitPullRequestArrow className="w-3 h-3" /> Request
-    </span>
-  )
-);
+const APPROVAL_QUEUE_CACHE_KEY = 'approvalQueue.items.v1';
+
+const EMPTY_QUEUE_ITEMS: Record<QueueTab, QueueItem[]> = {
+  pending: [],
+  approved: [],
+  rejected: [],
+};
+
+function readCachedQueueItems(): Record<QueueTab, QueueItem[]> {
+  try {
+    const raw = sessionStorage.getItem(APPROVAL_QUEUE_CACHE_KEY);
+    if (!raw) return EMPTY_QUEUE_ITEMS;
+    const parsed = JSON.parse(raw) as Partial<Record<QueueTab, QueueItem[]>>;
+    return {
+      pending: Array.isArray(parsed.pending) ? parsed.pending : [],
+      approved: Array.isArray(parsed.approved) ? parsed.approved : [],
+      rejected: Array.isArray(parsed.rejected) ? parsed.rejected : [],
+    };
+  } catch {
+    return EMPTY_QUEUE_ITEMS;
+  }
+}
+
+function normalizeQueueItems(raw: QueueItem[]): QueueItem[] {
+  const ordered = [...(raw || [])].sort((a, b) => {
+    const aPlaybook = String(a.type || '').toLowerCase() === 'ansible_job';
+    const bPlaybook = String(b.type || '').toLowerCase() === 'ansible_job';
+    return Number(aPlaybook) - Number(bPlaybook);
+  });
+  const byRequest = new Map<number, QueueItem>();
+  for (const item of ordered) {
+    const key = Number(item.request_id || item.id);
+    if (!Number.isFinite(key)) continue;
+    if (byRequest.has(key)) continue;
+    byRequest.set(key, {
+      ...item,
+      type: 'request',
+    });
+  }
+  return Array.from(byRequest.values());
+}
 
 const statusBadgeClass = (status: string) => {
   if (status === 'approved') return 'badge-success';
@@ -58,46 +87,28 @@ const statusDisplayLabel = (status: string) => {
   return normalized.replace(/_/g, ' ') || 'pending';
 };
 
-const ANSIBLE_OPEN_FROM_QUEUE_KEY = 'ansible.openJobFromQueue';
-
-const ApprovalQueueView: React.FC<Props> = ({ setView }) => {
+const ApprovalQueueView: React.FC<Props> = ({ setView: _setView }) => {
+  void _setView;
   const [activeTab, setActiveTab] = useState<QueueTab>('pending');
-  const [items, setItems] = useState<Record<QueueTab, QueueItem[]>>({
-    pending: [],
-    approved: [],
-    rejected: [],
-  });
+  const [items, setItems] = useState<Record<QueueTab, QueueItem[]>>(readCachedQueueItems);
   const [loading, setLoading] = useState<Record<QueueTab, boolean>>({
-    pending: true,
-    approved: false,
-    rejected: false,
-  });
-  const [loaded, setLoaded] = useState<Record<QueueTab, boolean>>({
     pending: false,
     approved: false,
     rejected: false,
   });
   const [actionId, setActionId] = useState<number | null>(null);
-  const [commentModal, setCommentModal] = useState<{
-    id: number;
-    type: string;
-  } | null>(null);
+  const [commentModal, setCommentModal] = useState<{ id: number } | null>(null);
   const [comment, setComment] = useState('');
   const [previewOpen, setPreviewOpen] = useState(false);
   const [previewTitle, setPreviewTitle] = useState('');
   const [previewContent, setPreviewContent] = useState('Loading playbook preview...');
   const [previewLoading, setPreviewLoading] = useState(false);
-  const [checkOpen, setCheckOpen] = useState(false);
-  const [checkTitle, setCheckTitle] = useState('');
-  const [checkContent, setCheckContent] = useState('Running dry-run check...');
-  const [checkLoading, setCheckLoading] = useState(false);
 
   const loadTab = useCallback(async (tab: QueueTab) => {
     setLoading((prev) => ({ ...prev, [tab]: true }));
     try {
       const res = await deployApi.listApprovalQueue(tab, 100);
-      setItems((prev) => ({ ...prev, [tab]: res.items }));
-      setLoaded((prev) => ({ ...prev, [tab]: true }));
+      setItems((prev) => ({ ...prev, [tab]: normalizeQueueItems(res.items || []) }));
     } catch (err: any) {
       Toast.error(`Failed to load ${TAB_LABELS[tab]}`, err.message);
     } finally {
@@ -106,14 +117,12 @@ const ApprovalQueueView: React.FC<Props> = ({ setView }) => {
   }, []);
 
   useEffect(() => {
-    loadTab('pending');
-  }, [loadTab]);
-
-  useEffect(() => {
-    if (!loaded[activeTab] && !loading[activeTab]) {
-      loadTab(activeTab);
+    try {
+      sessionStorage.setItem(APPROVAL_QUEUE_CACHE_KEY, JSON.stringify(items));
+    } catch {
+      // ignore storage failures
     }
-  }, [activeTab, loaded, loading, loadTab]);
+  }, [items]);
 
   const refreshAllTabs = useCallback(async () => {
     await Promise.all([
@@ -122,6 +131,10 @@ const ApprovalQueueView: React.FC<Props> = ({ setView }) => {
       loadTab('rejected'),
     ]);
   }, [loadTab]);
+
+  useEffect(() => {
+    refreshAllTabs();
+  }, [refreshAllTabs]);
 
   const counts = useMemo(() => ({
     pending: items.pending.length,
@@ -139,9 +152,7 @@ const ApprovalQueueView: React.FC<Props> = ({ setView }) => {
     const label = action === 'approve' ? 'Approve' : 'Reject';
     const confirmMessage =
       action === 'approve'
-        ? item.type === 'ansible_job'
-          ? 'This approves the Ansible job and the linked change request. You can run Execute from Ansible Studio after approval.'
-          : 'This approves the change request. If a playbook job exists, prefer approving from the Playbook row so job state stays in sync.'
+        ? 'This approves the change request and marks it ready for deployment.'
         : 'This will move the item to Rejected with your review note.';
     if (!opts?.skipConfirm) {
       const ok = await Confirm.ask(`${label} #${item.id}?`, confirmMessage);
@@ -150,10 +161,7 @@ const ApprovalQueueView: React.FC<Props> = ({ setView }) => {
 
     setActionId(item.id);
     try {
-      if (item.type === 'ansible_job') {
-        if (action === 'approve') await ansibleApi.approveJob(item.id);
-        else await ansibleApi.rejectJob(item.id, actionComment);
-      } else if (action === 'approve') {
+      if (action === 'approve') {
         await deployApi.approveRequest(item.request_id, 'admin', actionComment);
       } else {
         await deployApi.rejectRequest(item.request_id, 'admin', actionComment);
@@ -193,17 +201,13 @@ const ApprovalQueueView: React.FC<Props> = ({ setView }) => {
       setPreviewContent('Loading playbook preview...');
       setPreviewLoading(true);
       try {
-        if (item.type === 'ansible_job') {
-          await loadPlaybookPreviewForJob(item.id, item.entrypoint_path);
-          return;
-        }
         try {
           const link = await ansibleApi.getJobForRequest(item.request_id);
           await loadPlaybookPreviewForJob(link.job_id, link.entrypoint_path);
         } catch {
           setPreviewContent(
             'No Ansible playbook job is linked to this change request, so there is nothing to preview. ' +
-              'If this was submitted from Ansible Studio, open the **Playbook** queue row (or use Ansible Studio).'
+              'If this was submitted outside Ansible Studio, YAML preview may not be available.'
           );
         }
       } catch (err: any) {
@@ -215,48 +219,8 @@ const ApprovalQueueView: React.FC<Props> = ({ setView }) => {
     [loadPlaybookPreviewForJob]
   );
 
-  const openInAnsibleStudio = useCallback(
-    (item: QueueItem) => {
-      let jobId: number | null = null;
-      if (item.type === 'ansible_job') jobId = item.id;
-      if (jobId == null) return;
-      try {
-        sessionStorage.setItem(ANSIBLE_OPEN_FROM_QUEUE_KEY, String(jobId));
-      } catch {
-        /* ignore quota */
-      }
-      setView?.('ansible_studio');
-    },
-    [setView]
-  );
-
-  const runDryCheck = useCallback(async (item: QueueItem) => {
-    setCheckOpen(true);
-    setCheckTitle(item.title);
-    setCheckContent('Running dry-run check...');
-    setCheckLoading(true);
-    try {
-      if (item.type !== 'ansible_job') {
-        setCheckContent('Dry-run check is available for playbook jobs only.');
-        return;
-      }
-      const result = await ansibleApi.checkPlaybook(item.id);
-      const lines: string[] = [
-        `[check] job=${item.id} rc=${result.rc} changed=${result.changed ? '1' : '0'}`,
-        result.summary ? `summary: ${result.summary}` : '',
-        result.stderr ? `\n[stderr]\n${result.stderr}` : '',
-        result.diff ? `\n[diff]\n${result.diff}` : '',
-      ].filter(Boolean);
-      setCheckContent(lines.join('\n') || 'No dry-run output returned.');
-    } catch (err: any) {
-      setCheckContent(`Dry-run check failed.\n\n${err.message || 'Unknown error'}`);
-    } finally {
-      setCheckLoading(false);
-    }
-  }, []);
-
   const tabItems = items[activeTab];
-  const tabLoading = loading[activeTab];
+  const tabLoading = loading[activeTab] && tabItems.length === 0;
 
   return (
     <div className="h-full overflow-auto bg-base-200 p-4 md:p-6 space-y-5">
@@ -266,8 +230,7 @@ const ApprovalQueueView: React.FC<Props> = ({ setView }) => {
           <div>
             <h1 className="text-2xl font-bold">Approval Queue</h1>
             <p className="text-sm opacity-60 max-w-xl">
-              Ansible Studio submissions appear as a single <strong>Playbook</strong> row (with Preview, Dry Run, and
-              Approve). Other deployment flows may appear as <strong>Request</strong> only.
+              Unified request review list with live counts across Pending, Approved, and Rejected tabs.
             </p>
           </div>
         </div>
@@ -329,7 +292,6 @@ const ApprovalQueueView: React.FC<Props> = ({ setView }) => {
             <thead className="bg-base-200">
               <tr>
                 <th>ID</th>
-                <th>Type</th>
                 <th>Title</th>
                 <th>Requester</th>
                 <th>Status</th>
@@ -342,7 +304,6 @@ const ApprovalQueueView: React.FC<Props> = ({ setView }) => {
               {tabItems.map((item) => (
                 <tr key={`${item.type}-${item.id}`} className="hover">
                   <td className="font-mono text-xs">#{item.id}</td>
-                  <td><TypeBadge type={item.type} /></td>
                   <td className="max-w-xs truncate font-medium" title={item.title}>{item.title}</td>
                   <td>
                     <span className="flex items-center gap-1 text-xs">
@@ -376,25 +337,6 @@ const ApprovalQueueView: React.FC<Props> = ({ setView }) => {
                       >
                         <Eye className="w-3 h-3" /> Preview
                       </button>
-                      {item.type === 'ansible_job' && activeTab !== 'pending' && (
-                        <>
-                          <button
-                            className="btn btn-xs btn-info btn-outline gap-1"
-                            onClick={() => runDryCheck(item)}
-                            title="Run dry-run check before approval"
-                          >
-                            <RefreshCw className="w-3 h-3" /> Dry Run
-                          </button>
-                          <button
-                            type="button"
-                            className="btn btn-xs btn-ghost gap-1"
-                            onClick={() => openInAnsibleStudio(item)}
-                            title="Open this job in Ansible Studio (full editor, Check, Execute)"
-                          >
-                            <ExternalLink className="w-3 h-3" /> Studio
-                          </button>
-                        </>
-                      )}
                       {activeTab === 'pending' && (
                         <>
                           <button
@@ -408,7 +350,7 @@ const ApprovalQueueView: React.FC<Props> = ({ setView }) => {
                             className="btn btn-xs btn-error btn-outline gap-1"
                             disabled={actionId === item.id}
                             onClick={() => {
-                              setCommentModal({ id: item.id, type: item.type });
+                              setCommentModal({ id: item.id });
                               setComment('');
                             }}
                           >
@@ -442,7 +384,7 @@ const ApprovalQueueView: React.FC<Props> = ({ setView }) => {
               <button
                 className="btn btn-error gap-2"
                 onClick={() => {
-                  const item = items.pending.find((entry) => entry.id === commentModal.id && entry.type === commentModal.type);
+                  const item = items.pending.find((entry) => entry.id === commentModal.id);
                   if (item) handleAction(item, 'reject', comment || undefined, { skipConfirm: true });
                 }}
                 disabled={actionId !== null}
@@ -464,7 +406,7 @@ const ApprovalQueueView: React.FC<Props> = ({ setView }) => {
           <div className="modal-box max-w-5xl">
             <h3 className="font-bold text-lg">Preview: {previewTitle}</h3>
             <p className="text-sm opacity-60 mt-1">
-              Read-only YAML preview. Use <strong>Studio</strong> on a Playbook row to open the full Ansible Studio editor (Check / Execute).
+              Read-only YAML preview for this request.
             </p>
             <div className="mt-4 rounded-lg border border-base-300 bg-base-300/60 overflow-hidden">
               {previewLoading ? (
@@ -480,30 +422,6 @@ const ApprovalQueueView: React.FC<Props> = ({ setView }) => {
             </div>
           </div>
           <div className="modal-backdrop" onClick={() => setPreviewOpen(false)} />
-        </dialog>
-      )}
-
-      {checkOpen && (
-        <dialog className="modal modal-open">
-          <div className="modal-box max-w-5xl">
-            <h3 className="font-bold text-lg">Dry Run: {checkTitle}</h3>
-            <p className="text-sm opacity-60 mt-1">
-              Queue-side dry-run check output (`--check --diff`) for reviewer validation.
-            </p>
-            <div className="mt-4 rounded-lg border border-base-300 bg-base-300/60 overflow-hidden">
-              {checkLoading ? (
-                <div className="flex items-center justify-center py-12">
-                  <span className="loading loading-spinner loading-md" />
-                </div>
-              ) : (
-                <pre className="p-4 text-xs overflow-auto max-h-[70vh] whitespace-pre-wrap">{checkContent}</pre>
-              )}
-            </div>
-            <div className="modal-action">
-              <button className="btn" onClick={() => setCheckOpen(false)}>Close</button>
-            </div>
-          </div>
-          <div className="modal-backdrop" onClick={() => setCheckOpen(false)} />
         </dialog>
       )}
     </div>

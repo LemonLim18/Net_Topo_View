@@ -148,25 +148,35 @@ const Sidebar: React.FC<SidebarProps> = ({ currentView, setView, user, onLogout,
         <MenuItem id="overview" label="Dashboard" icon={Home} iconColor="text-warning" textColor="text-warning" />
 
         <SectionHeader
-          label="Network"
+          label="Network Onboarding"
           icon={Activity}
           iconColor="text-primary"
           open={networkOpen}
           onToggle={() => setNetworkOpen(!networkOpen)}
         >
+          
+          <MenuItem id="netbox_devices" label="Device Inventory" icon={Server} iconColor="text-primary"/>
+          <MenuItem id="template_studio" label="Template Studio" icon={FileCode2} iconColor="text-primary"/>
+          <MenuItem id="onboarding" label="Onboard Device" icon={PackagePlus} iconColor="text-primary"/>
+        </SectionHeader>
+
+        <SectionHeader
+          label="Safety/Monitoring/Policy"
+          icon={ShieldCheck}
+          iconColor="text-secondary"
+          open={automationOpen}
+          onToggle={() => setAutomationOpen(!automationOpen)}
+        >
+          <MenuItem id="topology" label="Topology Map" icon={Network} iconColor="text-secondary"/>
+          <MenuItem id="net_perf" label="Performance" icon={Activity} iconColor="text-secondary"/>
           <MenuItem
             id="compliance_hub"
             label="Compliance & governance"
             icon={ShieldCheck}
-            iconColor="text-primary"
+            iconColor="text-secondary"
             matchViews={['compliance_hub', 'drift', 'policy_builder']}
           />
-          <MenuItem id="netbox_devices" label="Device Inventory" icon={Server} iconColor="text-primary"/>
-          <MenuItem id="onboarding" label="Onboard Device" icon={PackagePlus} iconColor="text-primary"/>
-          <MenuItem id="net_perf" label="Performance" icon={Activity} iconColor="text-primary"/>
-          <MenuItem id="template_studio" label="Template Studio" icon={FileCode2} iconColor="text-primary"/>
-          <MenuItem id="config_backup" label="Config Backup" icon={HardDrive} iconColor="text-primary"/>
-          <MenuItem id="topology" label="Topology Map" icon={Network} iconColor="text-primary"/>
+          <MenuItem id="config_backup" label="Config Backup" icon={HardDrive} iconColor="text-secondary"/>          
         </SectionHeader>
 
         <SectionHeader
@@ -178,8 +188,8 @@ const Sidebar: React.FC<SidebarProps> = ({ currentView, setView, user, onLogout,
         >
           {/* <MenuItem id="net_chat" label="Network Copilot" icon={BotMessageSquare} /> */}
           <MenuItem id="ansible_studio" label="Ansible Studio" icon={Workflow} iconColor="text-accent"/>
-          <MenuItem id="intent_parser" label="Intent Parser" icon={BotMessageSquare} iconColor="text-accent"/>
-          <MenuItem id="intent_history" label="Intent History" icon={History} iconColor="text-accent"/>
+          {/* <MenuItem id="intent_parser" label="Intent Parser" icon={BotMessageSquare} iconColor="text-accent"/> */}
+          {/* <MenuItem id="intent_history" label="Intent History" icon={History} iconColor="text-accent"/> */}
           {/* <MenuItem id="playbook_comparison" label="Playbook Compare" icon={Columns} /> */}
           <MenuItem id="approval_queue" label="Approval Queue" icon={ListChecks} iconColor="text-accent"/>
           {SHOW_SDN_CONTROLLER && (

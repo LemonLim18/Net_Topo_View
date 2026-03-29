@@ -18,3 +18,7 @@ export const DEFAULT_OLLAMA_BASE_URL =
 export const SHOW_SDN_CONTROLLER =
   ((import.meta.env.VITE_SHOW_SDN_CONTROLLER as string | undefined)?.trim().toLowerCase() || "false") === "true";
 
+/** Phase gate: keep drift/compliance push toasts disabled until that module is finalized. */
+export const ENABLE_DRIFT_NOTIFICATIONS =
+  ((import.meta.env.VITE_ENABLE_DRIFT_NOTIFICATIONS as string | undefined)?.trim().toLowerCase() || 'false') === 'true';
+

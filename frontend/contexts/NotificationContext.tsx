@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useState, useCallback, useEffect, useRef } from 'react';
 import type { ReactNode } from 'react';
 import type { AppNotification, NotificationType } from '../types';
+import { ENABLE_DRIFT_NOTIFICATIONS } from '../src/config';
 
 /* ── Telemetry WS listener (incident push events) ───────────── */
 const TELEMETRY_WS = `ws://${window.location.hostname}:8000/api/telemetry`;
@@ -103,7 +104,7 @@ export const NotificationProvider: React.FC<{ children: ReactNode }> = ({ childr
                     }
 
                     // Phase 13 — Drift detection push events
-                    if (msg.event === 'drift_check_complete') {
+                    if (ENABLE_DRIFT_NOTIFICATIONS && msg.event === 'drift_check_complete') {
                         const dCount = msg.data?.drift_detected ?? 0;
                         if (dCount > 0) {
                             addNotification(

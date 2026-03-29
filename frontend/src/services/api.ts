@@ -1182,6 +1182,25 @@ export const ansibleApi = {
       { method: 'PUT', body: JSON.stringify(body) }
     ),
 
+  /** Admin only — create categories/{key}.yaml skeleton and reload catalog. */
+  createIntentCategory: (body: {
+    category_key: string;
+    display_name: string;
+    category_description?: string;
+    legacy_feature?: string;
+  }) =>
+    request<{ category_key: string; status: string }>(
+      '/ansible/intent-catalog/category',
+      { method: 'POST', body: JSON.stringify(body) }
+    ),
+
+  /** Admin only — delete categories/{key}.yaml and reload catalog. */
+  deleteIntentCategory: (categoryKey: string) =>
+    request<{ category_key: string; status: string }>(
+      `/ansible/intent-catalog/category/${encodeURIComponent(categoryKey)}`,
+      { method: 'DELETE' }
+    ),
+
   /** List all reference playbook paths (for add-reference in Playbook Studio). */
   listReferencePaths: () =>
     request<{ paths: { path: string; feature: string; vendor: string }[] }>('/ansible/reference-paths'),

@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { Lock, User as UserIcon, UserPlus } from 'lucide-react';
+import { Lock, User as UserIcon, UserPlus, ShieldCheck, Sparkles } from 'lucide-react';
 
 import type { User } from '../types';
 import { normalizeUserRole } from '../types';
@@ -53,55 +53,88 @@ const Login: React.FC<LoginProps> = ({ onLogin }) => {
   };
 
   return (
-    <div className="flex items-center justify-center h-full w-full bg-base-300 relative overflow-hidden">
-      <div className="absolute top-0 left-0 w-full h-full opacity-10 pointer-events-none">
-        <div className="absolute top-[-10%] left-[-10%] w-[50%] h-[50%] bg-primary rounded-full blur-[120px]" />
-        <div className="absolute bottom-[-10%] right-[-10%] w-[50%] h-[50%] bg-secondary rounded-full blur-[120px]" />
+    <div className="relative h-full w-full overflow-hidden bg-base-300">
+      <div className="absolute inset-0 pointer-events-none">
+        <div className="absolute -top-32 -left-24 h-80 w-80 rounded-full bg-primary/20 blur-3xl" />
+        <div className="absolute bottom-0 right-0 h-96 w-96 rounded-full bg-secondary/20 blur-3xl" />
+        <div className="absolute top-1/3 left-1/2 h-72 w-72 -translate-x-1/2 rounded-full bg-accent/15 blur-3xl" />
       </div>
 
-      <div className="card w-[28rem] bg-base-100/90 backdrop-blur shadow-2xl z-10">
-        <div className="card-body">
-          <div className="flex justify-center mb-2">
-            <div className="p-2 bg-white rounded-3xl shadow-lg flex items-center justify-center">
-              <img src="/logo.png" alt="CogniShield" className="w-16 h-16 object-contain" />
+      <div className="relative z-10 mx-auto grid h-full w-full max-w-6xl grid-cols-1 items-center gap-8 px-4 py-8 md:px-8 lg:grid-cols-[1.1fr,0.9fr]">
+        {/* <section className="hidden rounded-3xl border border-base-content/10 bg-base-100/30 p-8 backdrop-blur lg:block">
+          <div className="mb-5 inline-flex items-center gap-2 rounded-full border border-primary/40 bg-primary/10 px-3 py-1 text-xs font-semibold uppercase tracking-[0.14em] text-primary">
+            <Sparkles className="h-3.5 w-3.5" />
+            Network Automation Platform
+          </div>
+          <h1 className="text-4xl font-black leading-tight text-base-content">
+            Secure Access to CogniShield Ops
+          </h1>
+          <p className="mt-4 max-w-xl text-sm leading-6 text-base-content/75">
+            Unified control for intent-driven automation, compliance workflows, and deployment approvals across your network.
+          </p>
+          <div className="mt-8 space-y-3">
+            <div className="flex items-start gap-3 rounded-xl border border-base-content/10 bg-base-100/60 p-3">
+              <ShieldCheck className="mt-0.5 h-4 w-4 text-success" />
+              <div>
+                <p className="text-sm font-semibold">Role-based workspace isolation</p>
+                <p className="text-xs text-base-content/65">Separate operator and engineer actions with approval-safe workflows.</p>
+              </div>
+            </div>
+            <div className="flex items-start gap-3 rounded-xl border border-base-content/10 bg-base-100/60 p-3">
+              <ShieldCheck className="mt-0.5 h-4 w-4 text-success" />
+              <div>
+                <p className="text-sm font-semibold">Intent to execution traceability</p>
+                <p className="text-xs text-base-content/65">Track each request from prompt, preview, dry-run, and final deployment.</p>
+              </div>
             </div>
           </div>
-          <h2 className="card-title justify-center text-2xl font-bold mb-1">CogniShield</h2>
-          <p className="text-center text-xs text-base-content/60 mb-2 uppercase tracking-wider">
-            LLM-Powered Campus Network Automation
-          </p>
-          <p className="text-center text-sm text-base-content/70 mb-6">{subtitle}</p>
+        </section> */}
 
-          <div className="tabs tabs-boxed self-center mb-4">
-            <button
-              type="button"
-              className={`tab ${mode === 'signin' ? 'tab-active' : ''}`}
-              onClick={() => {
-                setMode('signin');
-                setConfirmPassword('');
-              }}
-            >
-              Sign In
-            </button>
-            <button
-              type="button"
-              className={`tab ${mode === 'signup' ? 'tab-active' : ''}`}
-              onClick={() => {
-                setMode('signup');
-                if (!username || username === 'admin') setUsername('');
-              }}
-            >
-              Engineer Sign Up
-            </button>
+        <section className="mx-auto w-full max-w-md rounded-3xl border border-base-content/10 bg-base-100/90 p-6 shadow-2xl backdrop-blur md:p-7">
+          <div className="mb-5 flex items-center gap-3">
+            <div className="rounded-2xl border border-base-content/10 bg-base-100 p-2 shadow">
+              <img src="/logo.png" alt="CogniShield" className="h-12 w-12 object-contain" />
+            </div>
+            <div>
+              <h2 className="text-2xl font-extrabold leading-tight">CogniShield</h2>
+              <p className="text-[11px] uppercase tracking-[0.12em] text-base-content/55">Campus Network Automation</p>
+            </div>
           </div>
+
+          <div className="mb-5 rounded-2xl border border-base-content/10 bg-base-200/70 p-1">
+            <div className="grid grid-cols-2 gap-1">
+              <button
+                type="button"
+                className={`btn btn-sm rounded-xl border-0 ${mode === 'signin' ? 'btn-primary' : 'btn-ghost'}`}
+                onClick={() => {
+                  setMode('signin');
+                  setConfirmPassword('');
+                }}
+              >
+                Sign In
+              </button>
+              <button
+                type="button"
+                className={`btn btn-sm rounded-xl border-0 ${mode === 'signup' ? 'btn-primary' : 'btn-ghost'}`}
+                onClick={() => {
+                  setMode('signup');
+                  if (!username || username === 'admin') setUsername('');
+                }}
+              >
+                Sign Up
+              </button>
+            </div>
+          </div>
+
+          <p className="mb-5 text-sm text-base-content/70">{subtitle}</p>
 
           <form onSubmit={handleSubmit} className="space-y-4">
             <div className="form-control">
-              <label className="label">
-                <span className="label-text font-medium">Username</span>
+              <label className="label py-1">
+                <span className="label-text text-xs font-semibold uppercase tracking-[0.08em] text-base-content/60">Username</span>
               </label>
-              <label className="input input-bordered flex items-center gap-2">
-                <UserIcon className="w-4 h-4 opacity-70" />
+              <label className="input input-bordered flex h-11 w-full items-center gap-2 rounded-xl bg-base-100">
+                <UserIcon className="h-4 w-4 opacity-70" />
                 <input
                   type="text"
                   className="grow"
@@ -113,11 +146,11 @@ const Login: React.FC<LoginProps> = ({ onLogin }) => {
             </div>
 
             <div className="form-control">
-              <label className="label">
-                <span className="label-text font-medium">Password</span>
+              <label className="label py-1">
+                <span className="label-text text-xs font-semibold uppercase tracking-[0.08em] text-base-content/60">Password</span>
               </label>
-              <label className="input input-bordered flex items-center gap-2">
-                <Lock className="w-4 h-4 opacity-70" />
+              <label className="input input-bordered flex h-11 w-full items-center gap-2 rounded-xl bg-base-100">
+                <Lock className="h-4 w-4 opacity-70" />
                 <input
                   type="password"
                   className="grow"
@@ -130,11 +163,11 @@ const Login: React.FC<LoginProps> = ({ onLogin }) => {
 
             {mode === 'signup' && (
               <div className="form-control">
-                <label className="label">
-                  <span className="label-text font-medium">Confirm Password</span>
+                <label className="label py-1">
+                  <span className="label-text text-xs font-semibold uppercase tracking-[0.08em] text-base-content/60">Confirm Password</span>
                 </label>
-                <label className="input input-bordered flex items-center gap-2">
-                  <UserPlus className="w-4 h-4 opacity-70" />
+                <label className="input input-bordered flex h-11 w-full items-center gap-2 rounded-xl bg-base-100">
+                  <UserPlus className="h-4 w-4 opacity-70" />
                   <input
                     type="password"
                     className="grow"
@@ -146,25 +179,25 @@ const Login: React.FC<LoginProps> = ({ onLogin }) => {
               </div>
             )}
 
-            <div className="form-control mt-6">
-              <button type="submit" className="btn btn-primary" disabled={loading}>
-                {loading ? (
-                  <span className="loading loading-spinner" />
-                ) : mode === 'signin' ? (
-                  'Sign In'
-                ) : (
-                  'Create Engineer Account'
-                )}
+            <div className="pt-2">
+              <button type="submit" className="btn btn-primary h-11 w-full rounded-xl" disabled={loading}>
+                {loading ? <span className="loading loading-spinner" /> : mode === 'signin' ? 'Sign In' : 'Create Engineer Account'}
               </button>
             </div>
           </form>
 
-          <div className="divider text-xs opacity-50">Default Accounts</div>
-          <div className="text-xs text-center text-base-content/60 bg-base-200 p-3 rounded space-y-1">
-            <span className="block font-mono">admin / admin</span>
-            <span className="block font-mono">engineer / engineer</span>
+          <div className="divider my-5 text-[11px] uppercase tracking-[0.12em] text-base-content/45">Default Accounts</div>
+          <div className="grid gap-2 rounded-xl border border-base-content/10 bg-base-200/70 p-3 text-xs text-base-content/75">
+            <div className="flex items-center justify-between rounded-lg bg-base-100 px-3 py-2">
+              <span className="font-medium">Administrator</span>
+              <span className="font-mono">admin / admin</span>
+            </div>
+            <div className="flex items-center justify-between rounded-lg bg-base-100 px-3 py-2">
+              <span className="font-medium">Engineer</span>
+              <span className="font-mono">engineer / engineer</span>
+            </div>
           </div>
-        </div>
+        </section>
       </div>
     </div>
   );
