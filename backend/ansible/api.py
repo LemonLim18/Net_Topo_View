@@ -67,6 +67,7 @@ from ansible.intent_validation import (
     strip_llm_ospf_advertisement_guesses_if_not_explicit_in_prompt,
     strip_llm_ospf_process_id_if_not_explicit_in_prompt,
     extract_create_vlan_params_from_natural_language,
+    extract_vlan_ids_for_trunk_allowed_from_prompt,
     get_editable_fields_for_schema,
     get_schema_for_parsed_intent,
     interface_intent_params_satisfied,
@@ -3126,17 +3127,9 @@ async def plan_ansible(
             interfaces = p.get("interfaces") or []
             conditional_missing: List[Dict[str, str]] = []
             if isinstance(interfaces, list) and interfaces:
-                prompt_vlan_ids: List[int] = []
-                _desc = str(req.intent_description or "").lower()
-                for _m in re.finditer(r"\bvlans?\b([^.;\n]*)", _desc):
-                    _seg = _m.group(1) or ""
-                    for _tok in re.findall(r"\b\d{1,4}\b", _seg):
-                        try:
-                            _v = int(_tok)
-                        except ValueError:
-                            continue
-                        if 1 <= _v <= 4094 and _v not in prompt_vlan_ids:
-                            prompt_vlan_ids.append(_v)
+                prompt_vlan_ids = extract_vlan_ids_for_trunk_allowed_from_prompt(
+                    req.intent_description or ""
+                )
                 default_mode = str(p.get("default_mode") or "").strip().lower() or None
                 modes: set[str] = set()
                 missing_trunk_vlans = False
@@ -7035,6 +7028,33 @@ async def preview_intent(
         list(resolved_hosts or []),
         params_disambiguation,
     )
+    # Secondary append runs the same conditional hooks again (e.g. trunk_vlans) without the
+    # prompt-aware filter. Re-apply merge so VLAN IDs already stated in the user message still
+    # suppress redundant trunk allowed-VLAN questions (primary + each secondary schema).
+    params_disambiguation = merge_prompt_aware_disambiguation_for_schema(
+        req.intent_description or "",
+        schema,
+        params_disambiguation,
+        parameters=_params_merged,
+        trusted_param_keys=_trusted_param_keys,
+    )
+    for sec in parsed_intent.get("secondary_intents") or []:
+        if not isinstance(sec, dict):
+            continue
+        sec_schema = get_schema_for_parsed_intent(
+            {
+                "action": sec.get("action"),
+                "feature": sec.get("feature"),
+                "parameters": dict(sec.get("parameters") or {}),
+            }
+        )
+        params_disambiguation = merge_prompt_aware_disambiguation_for_schema(
+            req.intent_description or "",
+            sec_schema,
+            params_disambiguation,
+            parameters=_params_merged,
+            trusted_param_keys=_trusted_param_keys,
+        )
 
     # Rebuild pipeline trace after merges so cross-check / asks match authoritative targets + params.
     if parsed_intent and _db is not None:

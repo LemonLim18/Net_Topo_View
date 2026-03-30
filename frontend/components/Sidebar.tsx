@@ -45,6 +45,7 @@ const Sidebar: React.FC<SidebarProps> = ({ currentView, setView, user, onLogout,
     icon: Icon,
     iconColor,
     textColor,
+    labelClassName,
     matchViews,
   }: {
     id: ViewId;
@@ -52,6 +53,7 @@ const Sidebar: React.FC<SidebarProps> = ({ currentView, setView, user, onLogout,
     icon: any;
     iconColor?: string;
     textColor?: string;
+    labelClassName?: string;
     /** Treat these views as active for this row (e.g. legacy drift / policy routes → hub). */
     matchViews?: ViewId[];
   }) => {
@@ -72,7 +74,7 @@ const Sidebar: React.FC<SidebarProps> = ({ currentView, setView, user, onLogout,
           title={label}
         >
           <Icon className={`h-4 w-4 shrink-0 ${isActive ? 'text-primary' : (iconColor || '')}`} />
-          {!collapsed && <span className={`whitespace-nowrap overflow-hidden ${isActive ? '' : (textColor || '')}`}>{label}</span>}
+          {!collapsed && <span className={`whitespace-nowrap overflow-hidden ${isActive ? '' : (textColor || '')} ${labelClassName || ''}`}>{label}</span>}
         </a>
       </li>
     );
@@ -106,7 +108,7 @@ const Sidebar: React.FC<SidebarProps> = ({ currentView, setView, user, onLogout,
             onClick={(e) => { e.preventDefault(); onToggle(); }}
           >
             <Icon className={`h-4 w-4 ${iconColor}`} />
-            <div className={`${iconColor}`}>{label}</div>
+            <div className={`font-medium ${iconColor}`}>{label}</div>
           </summary>
           <ul>{children}</ul>
         </details>
@@ -145,7 +147,7 @@ const Sidebar: React.FC<SidebarProps> = ({ currentView, setView, user, onLogout,
 
       {/* Navigation Menu */}
       <ul className={`menu ${collapsed ? 'p-1' : 'p-2'} w-full grow overflow-y-auto min-h-0 flex-col flex-nowrap`}>
-        <MenuItem id="overview" label="Dashboard" icon={Home} iconColor="text-warning" textColor="text-warning" />
+        <MenuItem id="overview" label="Dashboard" icon={Home} iconColor="text-warning" textColor="text-warning" labelClassName="font-medium" />
 
         <SectionHeader
           label="Network Onboarding"

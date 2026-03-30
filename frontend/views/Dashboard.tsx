@@ -37,6 +37,90 @@ const expandInterfaceName = (abbr: string): string => {
   return abbr;
 };
 
+/** Map hostname → device id (exact + lowercase) for inventory / NetBox rows. */
+const buildHostnameToDeviceId = (devices: DeviceRecord[]): Map<string, number> => {
+  const m = new Map<string, number>();
+  for (const d of devices) {
+    const h = (d.hostname || '').trim();
+    if (!h) continue;
+    m.set(h, d.id);
+    m.set(h.toLowerCase(), d.id);
+  }
+  return m;
+};
+
+const resolveDeviceId = (hostnameToId: Map<string, number>, hostname: string): number | undefined => {
+  const h = (hostname || '').trim();
+  if (!h) return undefined;
+  return hostnameToId.get(h) ?? hostnameToId.get(h.toLowerCase());
+};
+
+const undirectedPairKey = (a: string, b: string): string => [a, b].sort().join('\0');
+
+/**
+ * Attach netbox link id when strict interface matching fails (LLDP vs DB naming).
+ * Add rows for links that exist in inventory but are missing from topology edgeLink.
+ */
+const mergeInventoryLinksIntoTopologyLinks = (
+  links: D3Link[],
+  nodes: D3Node[],
+  deviceLinks: LinkRecord[],
+  hostnameToId: Map<string, number>
+): void => {
+  const canonicalByLower = new Map<string, string>();
+  for (const n of nodes) {
+    canonicalByLower.set(n.id.toLowerCase(), n.id);
+  }
+  const hasNode = (name: string) =>
+    nodes.some((n) => n.id === name) || canonicalByLower.has(name.trim().toLowerCase());
+  const canonical = (name: string) =>
+    nodes.find((n) => n.id === name)?.id ?? canonicalByLower.get(name.trim().toLowerCase()) ?? name;
+
+  const seenPairs = new Set<string>();
+  for (const l of links) {
+    const s = typeof l.source === 'string' ? l.source : (l.source as D3Node).id;
+    const t = typeof l.target === 'string' ? l.target : (l.target as D3Node).id;
+    seenPairs.add(undirectedPairKey(s, t));
+  }
+
+  for (const l of links) {
+    if (l.netboxLinkId != null) continue;
+    const s = typeof l.source === 'string' ? l.source : (l.source as D3Node).id;
+    const t = typeof l.target === 'string' ? l.target : (l.target as D3Node).id;
+    const sid = resolveDeviceId(hostnameToId, s);
+    const tid = resolveDeviceId(hostnameToId, t);
+    if (sid == null || tid == null) continue;
+    const match = deviceLinks.find(
+      (dl) =>
+        (dl.src_device_id === sid && dl.dst_device_id === tid) ||
+        (dl.src_device_id === tid && dl.dst_device_id === sid)
+    );
+    if (match) {
+      l.netboxLinkId = match.id;
+    }
+  }
+
+  for (const dl of deviceLinks) {
+    const a = (dl.src_hostname || '').trim();
+    const b = (dl.dst_hostname || '').trim();
+    if (!a || !b || !hasNode(a) || !hasNode(b)) continue;
+    const ca = canonical(a);
+    const cb = canonical(b);
+    const pk = undirectedPairKey(ca, cb);
+    if (seenPairs.has(pk)) continue;
+    seenPairs.add(pk);
+    links.push({
+      source: ca,
+      target: cb,
+      sourceInterface: dl.src_interface_name || '—',
+      targetInterface: dl.dst_interface_name || '—',
+      sourceIp: 'N/A',
+      targetIp: 'N/A',
+      netboxLinkId: dl.id,
+    });
+  }
+};
+
 // --- Custom Interface Dropdown to support Badges ---
 const InterfaceSelect: React.FC<{
   interfaces: InterfaceRecord[];
@@ -202,9 +286,7 @@ const processTopologyData = (data: TopologyData | null, deviceLinks: LinkRecord[
     const nodeKeys = Object.keys(data.nodes);
     console.debug(`[Topo] processTopologyData: ${nodeKeys.length} nodes:`, nodeKeys);
 
-    // Create a hostname to device ID map for matching links
-    const hostnameToId = new Map<string, number>();
-    devices.forEach(d => hostnameToId.set(d.hostname, d.id));
+    const hostnameToId = buildHostnameToDeviceId(devices);
 
     const nodes: D3Node[] = Object.keys(data.nodes).map(nodeId => ({
         id: nodeId,
@@ -234,15 +316,27 @@ const processTopologyData = (data: TopologyData | null, deviceLinks: LinkRecord[
                     const targetEntry = targetDetails.interfaceList.find(iface => Object.prototype.hasOwnProperty.call(iface, remoteIfaceFull));
                     const targetIp = targetEntry ? targetEntry[remoteIfaceFull] : 'N/A';
 
-                    // Try to find matching NetBox Link Record for deletion support
-                    const srcDevId = hostnameToId.get(sourceId);
-                    const dstDevId = hostnameToId.get(targetId);
-                    const netboxLink = deviceLinks.find(l => 
-                        (l.src_device_id === srcDevId && l.dst_device_id === dstDevId && 
-                         (l.src_interface_name === localIfaceAbbr || l.src_interface_name === localIfaceFull)) ||
-                        (l.src_device_id === dstDevId && l.dst_device_id === srcDevId &&
-                         (l.src_interface_name === linkInfo.remote_interface || l.src_interface_name === remoteIfaceFull))
+                    // Match inventory link for delete: prefer exact iface names, then any link between the pair.
+                    const srcDevId = resolveDeviceId(hostnameToId, sourceId);
+                    const dstDevId = resolveDeviceId(hostnameToId, targetId);
+                    let netboxLink = deviceLinks.find(
+                        (l) =>
+                            (l.src_device_id === srcDevId &&
+                                l.dst_device_id === dstDevId &&
+                                (l.src_interface_name === localIfaceAbbr ||
+                                    l.src_interface_name === localIfaceFull)) ||
+                            (l.src_device_id === dstDevId &&
+                                l.dst_device_id === srcDevId &&
+                                (l.src_interface_name === linkInfo.remote_interface ||
+                                    l.src_interface_name === remoteIfaceFull))
                     );
+                    if (!netboxLink && srcDevId != null && dstDevId != null) {
+                        netboxLink = deviceLinks.find(
+                            (l) =>
+                                (l.src_device_id === srcDevId && l.dst_device_id === dstDevId) ||
+                                (l.src_device_id === dstDevId && l.dst_device_id === srcDevId)
+                        );
+                    }
 
                     links.push({
                         source: sourceId,
@@ -259,7 +353,9 @@ const processTopologyData = (data: TopologyData | null, deviceLinks: LinkRecord[
             });
         }
     });
-    
+
+    mergeInventoryLinksIntoTopologyLinks(links, nodes, deviceLinks, hostnameToId);
+
     return { nodes, links };
 };
 
@@ -500,9 +596,9 @@ const Dashboard: React.FC = () => {
         if (topologyView === 'planned') return planned;
         if (topologyView === 'actual') return actual;
 
-        // Diff view logic
-        if (!realTimeTopology) return { nodes: [], links: [] };
-
+        // Diff view: planned vs real-time (crawl/WebSocket). If live topology is not loaded
+        // yet, `actual` is already empty — still merge so planned nodes/links show instead of
+        // a blank Connection List.
         const nodeMap = new Map<string, D3Node>();
         planned.nodes.forEach(n => nodeMap.set(n.id, { ...n, diffStatus: 'removed' }));
         actual.nodes.forEach(n => {
@@ -629,7 +725,12 @@ const Dashboard: React.FC = () => {
             
             const data = await netboxApi.getLocalPlannedTopology();
             setPlannedTopology(data as any as TopologyData);
-            
+            try {
+                localStorage.setItem(DASHBOARD_PLANNED_CACHE_KEY, JSON.stringify(data));
+            } catch {
+                /* ignore quota / private mode */
+            }
+
             // Refresh interfaces for both sides to show "Connected" status immediately
             await Promise.all([
                 loadIfacesForLink(linkForm.src_device_id, 'src'),
@@ -637,7 +738,15 @@ const Dashboard: React.FC = () => {
                 refreshConnectData()
             ]);
 
-            Toast.success('Link created', 'Connection synchronized to NetBox.');
+            // Connection List reads `graphData.links`. Real-Time view uses WebSocket/crawl data
+            // only, which is not pushed when a link is saved locally — switch to Planned so the
+            // new edge appears immediately (Diff also uses planned; user may stay on Diff).
+            setTopologyView((v) => (v === 'actual' ? 'planned' : v));
+
+            Toast.success(
+                'Link created',
+                'Connection synchronized. The list shows Planned/Diff data; use Real-Time after Refresh/scan for live discovery.'
+            );
             setShowLinkModal(false);
         } catch (e: any) {
             setLinkFormError(e.message || 'Failed to create link');

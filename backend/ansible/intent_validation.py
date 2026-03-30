@@ -1309,6 +1309,57 @@ def configure_interface_conditional_disambiguation_fields(
     return shared_fields
 
 
+def extract_vlan_ids_for_trunk_allowed_from_prompt(text: str) -> List[int]:
+    """
+    VLAN IDs the user stated for trunk allowed-VLAN style wording.
+
+    Used to pre-fill ``trunk_vlans`` and to suppress redundant wizard asks when the LLM
+    omitted structured ``trunk_vlans`` but the natural-language prompt lists IDs.
+    """
+    t = str(text or "").strip().lower()
+    if not t:
+        return []
+    ids: List[int] = []
+    seen: Set[int] = set()
+    for m in re.finditer(r"\bvlans?\b([^.;\n]*)", t):
+        seg = m.group(1) or ""
+        for tok in re.findall(r"\b\d{1,4}\b", seg):
+            try:
+                v = int(tok)
+            except ValueError:
+                continue
+            if 1 <= v <= 4094 and v not in seen:
+                seen.add(v)
+                ids.append(v)
+    if not ids:
+        for m in re.finditer(r"\bvlans?\b\s*[.:]+\s*([^\n;]*)", t):
+            seg = m.group(1) or ""
+            for tok in re.findall(r"\b\d{1,4}\b", seg):
+                try:
+                    v = int(tok)
+                except ValueError:
+                    continue
+                if 1 <= v <= 4094 and v not in seen:
+                    seen.add(v)
+                    ids.append(v)
+    if not ids and re.search(r"\btrunk\b", t) and re.search(r"\ballow\b|\bpermit\b", t):
+        for m in re.finditer(r"\ballow\b|\bpermit\b", t):
+            start = m.end()
+            seg = t[start : start + 120]
+            seg = seg.split(".", 1)[0].split(";", 1)[0]
+            for tok in re.findall(r"\b\d{1,4}\b", seg):
+                try:
+                    v = int(tok)
+                except ValueError:
+                    continue
+                if 1 <= v <= 4094 and v not in seen:
+                    seen.add(v)
+                    ids.append(v)
+            if ids:
+                break
+    return ids
+
+
 def configure_ospf_conditional_disambiguation_fields(
     parameters: Dict[str, Any],
 ) -> List[Dict[str, Any]]:
@@ -1464,24 +1515,6 @@ def merge_prompt_aware_disambiguation_for_schema(
     if not schema:
         return params_disambiguation
     sa = (schema.get("action") or "").strip().lower().replace("-", "_")
-    def _extract_vlan_ids_from_prompt(text: str) -> List[int]:
-        t = str(text or "").strip().lower()
-        if not t:
-            return []
-        ids: List[int] = []
-        seen: Set[int] = set()
-        # VLAN 10, VLANs 10,20,67, allow vlan 10 20 67
-        for m in re.finditer(r"\bvlans?\b([^.;\n]*)", t):
-            seg = m.group(1) or ""
-            for tok in re.findall(r"\b\d{1,4}\b", seg):
-                try:
-                    v = int(tok)
-                except ValueError:
-                    continue
-                if 1 <= v <= 4094 and v not in seen:
-                    seen.add(v)
-                    ids.append(v)
-        return ids
     if sa == "create_vlan":
         force_field_names = vlan_schema_fields_missing_from_user_prompt_respecting_params(
             intent_description or "", parameters, trusted_param_keys=trusted_param_keys
@@ -1619,7 +1652,7 @@ def merge_prompt_aware_disambiguation_for_schema(
         }
     if sa == "configure_interface":
         # If user already stated allowed VLAN IDs in prompt, do not re-ask trunk_vlans.
-        vlan_ids_from_prompt = _extract_vlan_ids_from_prompt(intent_description or "")
+        vlan_ids_from_prompt = extract_vlan_ids_for_trunk_allowed_from_prompt(intent_description or "")
         if vlan_ids_from_prompt and params_disambiguation:
             fields_list = list((params_disambiguation or {}).get("fields") or [])
             fields_list = [
@@ -2765,6 +2798,8 @@ def _effective_vlan_id_for_port_binding(parameters: Dict[str, Any], intent_descr
 def _coerce_one_interface_dict_to_trunk_allowed(
     item: Dict[str, Any],
     vlan_id: Optional[int],
+    *,
+    prompt_vlan_ids: Optional[List[int]] = None,
 ) -> Dict[str, Any]:
     out = dict(item)
     mode = str(out.get("mode") or "").strip().lower()
@@ -2812,8 +2847,19 @@ def _coerce_one_interface_dict_to_trunk_allowed(
     # access, missing mode, or trunk missing allowed list — normalize to trunk + VLAN list
     out["mode"] = "trunk"
     out.pop("access_vlan", None)
+    prompt_ids: List[int] = []
+    for x in (prompt_vlan_ids or []):
+        try:
+            xi = int(x)
+        except (TypeError, ValueError):
+            continue
+        if 1 <= xi <= 4094:
+            prompt_ids.append(xi)
     chosen = vlan_id or av_int
-    if chosen is not None:
+    if prompt_ids:
+        merged = sorted(set(tv_existing + prompt_ids))
+        out["trunk_vlans"] = merged
+    elif chosen is not None:
         merged = sorted(set(tv_existing + [chosen]))
         out["trunk_vlans"] = merged
     elif tv_existing:
@@ -2827,6 +2873,7 @@ def _coerce_parameters_interfaces_for_trunk_prompt(
 ) -> None:
     if not user_prompt_indicates_trunk_l2_binding(intent_description):
         return
+    prompt_vlan_ids = extract_vlan_ids_for_trunk_allowed_from_prompt(intent_description)
     vlan_id = _effective_vlan_id_for_port_binding(parameters, intent_description)
     for key in ("interfaces", "interface_binding", "interfaces_config"):
         raw_list = parameters.get(key)
@@ -2835,11 +2882,19 @@ def _coerce_parameters_interfaces_for_trunk_prompt(
         new_list: List[Any] = []
         for item in raw_list:
             if isinstance(item, dict):
-                new_list.append(_coerce_one_interface_dict_to_trunk_allowed(item, vlan_id))
+                new_list.append(
+                    _coerce_one_interface_dict_to_trunk_allowed(
+                        item,
+                        vlan_id,
+                        prompt_vlan_ids=prompt_vlan_ids,
+                    )
+                )
             elif isinstance(item, str) and item.strip():
                 name = item.strip()
                 row: Dict[str, Any] = {"name": name, "mode": "trunk"}
-                if vlan_id is not None:
+                if prompt_vlan_ids:
+                    row["trunk_vlans"] = sorted(set(prompt_vlan_ids))
+                elif vlan_id is not None:
                     row["trunk_vlans"] = [vlan_id]
                 new_list.append(row)
             else:

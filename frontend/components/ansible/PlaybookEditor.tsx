@@ -256,9 +256,9 @@ const PlaybookEditor: React.FC<PlaybookEditorProps> = ({
           {isDeploying ? 'Deploying…' : hasExecutedBefore ? 'Re-Deploy' : 'Deploy'}
         </button>
 
-        {!isAdmin && hasPlaybook && !isApproved && !isRejected && (
+        {/* {!isAdmin && hasPlaybook && !isApproved && !isRejected && (
           <span className="badge badge-warning badge-sm">Awaiting Queue Review</span>
-        )}
+        )} */}
         {isRejected && (
           <span className="badge badge-error badge-sm" title="Rejected by admin review">
             Rejected

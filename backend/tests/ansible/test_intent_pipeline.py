@@ -57,7 +57,10 @@ from ansible.intent_validation import (
     strip_llm_ospf_process_id_if_not_explicit_in_prompt,
     validate_completeness,
 )
-from ansible.intent_validation import merge_prompt_aware_disambiguation_for_schema
+from ansible.intent_validation import (
+    extract_vlan_ids_for_trunk_allowed_from_prompt,
+    merge_prompt_aware_disambiguation_for_schema,
+)
 from ansible.reference_resolver import fill_playbook_from_reference
 
 
@@ -1275,3 +1278,46 @@ def test_prompt_aware_disambiguation_skips_trunk_vlan_question_when_prompt_has_v
     )
     fields = list((out or {}).get("fields") or [])
     assert all(str(f.get("field") or "") != "trunk_vlans" for f in fields if isinstance(f, dict))
+
+
+def test_extract_vlan_ids_for_trunk_allowed_from_prompt_variants():
+    assert extract_vlan_ids_for_trunk_allowed_from_prompt(
+        "Configure GigabitEthernet1/0/5 as trunk and allow VLANs 10, 20, 67 on SW1"
+    ) == [10, 20, 67]
+    assert extract_vlan_ids_for_trunk_allowed_from_prompt(
+        "Configure Gi1/0/5 as trunk and allow VLANs. 10, 20, 67 on SW1"
+    ) == [10, 20, 67]
+    assert extract_vlan_ids_for_trunk_allowed_from_prompt(
+        "Set port as trunk and allow 10, 20, and 67"
+    ) == [10, 20, 67]
+
+
+def test_prompt_aware_disambiguation_strips_trunk_vlan_after_reappend_simulating_secondary():
+    """Mirrors preview flow: merge strips trunk_vlans, then _append_secondary re-adds it."""
+    schema = {"action": "configure_interface"}
+    prompt = "Configure Gi1/0/5 as trunk and allow VLANs 10, 20, 67 on SW1"
+    params = {"interfaces": [{"name": "Gi1/0/5", "mode": "trunk"}]}
+    out1 = merge_prompt_aware_disambiguation_for_schema(
+        prompt,
+        schema,
+        {
+            "question": "Please provide the following.",
+            "fields": [{"field": "trunk_vlans", "question": "Which VLAN IDs should be allowed on this trunk?"}],
+        },
+        parameters=params,
+    )
+    fields2 = list((out1 or {}).get("fields") or [])
+    fields2.append(
+        {
+            "field": "trunk_vlans",
+            "question": "Which VLAN IDs should be allowed on this trunk?",
+            "secondary_intent_index": 0,
+        }
+    )
+    out2 = merge_prompt_aware_disambiguation_for_schema(
+        prompt,
+        schema,
+        {"question": "Please provide the following.", "fields": fields2},
+        parameters=params,
+    )
+    assert all(str(f.get("field") or "") != "trunk_vlans" for f in (out2 or {}).get("fields") or [] if isinstance(f, dict))
