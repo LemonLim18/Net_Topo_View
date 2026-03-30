@@ -4816,23 +4816,40 @@ def _build_generated_tree() -> list:
     result = []
     for jid in sorted(job_ids, key=lambda x: (len(x), x)):
         children = []
+        child_paths = set()
         pb_dir = playbooks_root / jid
         if pb_dir.exists():
             for entry in sorted(pb_dir.iterdir(), key=lambda p: (p.is_file(), p.name.lower())):
                 if entry.is_file() and not entry.name.startswith("."):
                     st = entry.stat()
+                    child_path = f"generated/{jid}/{entry.name}"
                     children.append({
                         "type": "file",
                         "name": entry.name,
-                        "path": f"generated/{jid}/{entry.name}",
+                        "path": child_path,
                         "size": st.st_size,
                         "modified_at": datetime.fromtimestamp(st.st_mtime).isoformat(),
                     })
+                    child_paths.add(child_path)
         role_dir = roles_root / jid
         if role_dir.exists():
             for entry in sorted(role_dir.iterdir(), key=lambda p: (p.is_file(), p.name.lower())):
                 if entry.is_dir() and not entry.name.startswith("."):
                     children.append(_build_tree_with_path_prefix(entry, f"generated/{jid}/{entry.name}"))
+                elif entry.is_file() and not entry.name.startswith("."):
+                    # Backward-compat: show root files that may have been written under roles/generated/job_x.
+                    st = entry.stat()
+                    child_path = f"generated/{jid}/{entry.name}"
+                    if child_path in child_paths:
+                        continue
+                    children.append({
+                        "type": "file",
+                        "name": entry.name,
+                        "path": child_path,
+                        "size": st.st_size,
+                        "modified_at": datetime.fromtimestamp(st.st_mtime).isoformat(),
+                    })
+                    child_paths.add(child_path)
         result.append({
             "type": "dir",
             "name": jid,
@@ -4860,11 +4877,13 @@ def _generated_virtual_to_real(virtual_path: str) -> str | None:
         return None
     if rest and "/" not in rest and (pb_dir / rest).exists() and (pb_dir / rest).is_file():
         return f"playbooks/generated/{jid}/{rest}"
+    # Backward-compat: older writes could incorrectly place flat files under roles/generated/job_x.
+    if rest and "/" not in rest and (roles_dir / rest).exists() and (roles_dir / rest).is_file():
+        return f"roles/generated/{jid}/{rest}"
     if rest and "/" in rest:
         return f"roles/generated/{jid}/{rest}"
-    if rest and (roles_dir / rest).exists():
-        return f"roles/generated/{jid}/{rest}"
-    return f"roles/generated/{jid}/{rest}"
+    # Default flat generated artifacts (e.g. preview_modal_dialog.md) to playbooks/generated/job_x/.
+    return f"playbooks/generated/{jid}/{rest}"
 
 
 def _generated_job_real_paths(virtual_path: str) -> list[str]:

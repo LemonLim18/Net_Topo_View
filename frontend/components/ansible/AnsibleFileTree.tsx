@@ -210,7 +210,8 @@ const TreeNode: React.FC<TreeNodeProps> = ({
         onDragStart={e => {
           e.dataTransfer.effectAllowed = 'copy';
           e.dataTransfer.setData('application/ansible-path', node.path);
-          e.dataTransfer.setData('text/plain', node.name);
+          // Fallback payload for environments that do not preserve custom drag MIME types.
+          e.dataTransfer.setData('text/plain', node.path);
         }}
         className={`flex items-center gap-1.5 w-full text-left px-2 py-0.5 rounded text-sm transition-colors cursor-grab active:cursor-grabbing ${
           isSel ? 'bg-primary text-primary-content' : 'hover:bg-base-300'

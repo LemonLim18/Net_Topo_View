@@ -46,6 +46,7 @@ const PlaybookEditor: React.FC<PlaybookEditorProps> = ({
 }) => {
   const activeTabRef = useRef<HTMLDivElement>(null);
   const activeTab = tabs.find(t => t.id === activeTabId) ?? null;
+  const isMarkdownActiveTab = Boolean(activeTab?.name.toLowerCase().endsWith('.md'));
   const isAdmin   = userRole === 'admin';
   const canEdit   = userRole === 'admin' || userRole === 'engineer';
   
@@ -101,6 +102,10 @@ const PlaybookEditor: React.FC<PlaybookEditorProps> = ({
   const isDeploying = normalizedStatus === 'running';
   const isDone      = normalizedStatus === 'success' || normalizedStatus === 'failed';
   const hasExecutedBefore = isDone;
+  const canRunCheck = hasPlaybook && !isChecking && !isDeploying && !isMarkdownActiveTab;
+  const checkTitle = isMarkdownActiveTab
+    ? 'Check is only available for playbook YAML files'
+    : 'Dry-run (--check --diff) — results appear in Output tab';
   // Terminal states for the primary "Send" flow (but pending queue still allows Resend).
   const approveDone = isApproved || isDeploying || isDone;
   // Allow re-deploy when a job was already approved at least once.
@@ -202,8 +207,8 @@ const PlaybookEditor: React.FC<PlaybookEditorProps> = ({
         <button
           className="btn btn-xs btn-info gap-1"
           onClick={onCheck}
-          disabled={!hasPlaybook || isChecking || isDeploying}
-          title="Dry-run (--check --diff) — results appear in Output tab"
+          disabled={!canRunCheck}
+          title={checkTitle}
         >
           <FlaskConical className="h-3 w-3" />
           {isChecking ? 'Checking…' : 'Check'}

@@ -141,6 +141,80 @@ function describeError(err: unknown, fallback = 'Unexpected error'): string {
   return fallback;
 }
 
+function resolveCompanionPreviewPath(input: {
+  entrypointPath?: string | null;
+  files?: AnsibleGeneratedArtifactFile[];
+  name?: string;
+}): string {
+  const candidate =
+    String(input.entrypointPath || '').trim() ||
+    String(
+      input.files?.find((f) => /\.ya?ml$/i.test(String(f.path || '')))?.path ||
+      input.files?.[0]?.path ||
+      input.name ||
+      'playbook.yml',
+    ).trim();
+  const normalized = candidate.replace(/\\/g, '/');
+  const slash = normalized.lastIndexOf('/');
+  const dir = slash >= 0 ? normalized.slice(0, slash) : '';
+  return dir ? `${dir}/preview_modal_dialog.md` : 'preview_modal_dialog.md';
+}
+
+function buildPreviewDialogContent(args: {
+  intentDescription: string;
+  jobId: number;
+  preview: {
+    categories?: string[];
+    target_hosts?: string[];
+    reasoning?: string[];
+    references?: { doc_name: string; feature: string; vendor: string; path: string }[];
+    policy_approved?: boolean;
+    parsed_intent?: Record<string, unknown>;
+  } | null;
+}): string {
+  const categories = args.preview?.categories || [];
+  const targets = args.preview?.target_hosts || [];
+  const reasoning = args.preview?.reasoning || [];
+  const refs = args.preview?.references || [];
+  const parsedIntent = args.preview?.parsed_intent || {};
+  const generatedAt = new Date().toISOString();
+
+  const refsBlock = refs.length
+    ? refs.map((r) => `- ${r.doc_name} (${r.vendor}/${r.feature}) -> ${r.path}`).join('\n')
+    : '- None';
+
+  const reasoningBlock = reasoning.length
+    ? reasoning.map((line) => `- ${line}`).join('\n')
+    : '- None';
+
+  return [
+    '# Preview Modal Dialog',
+    '',
+    `Generated at: ${generatedAt}`,
+    `Job ID: ${args.jobId}`,
+    '',
+    '## Intent Summary',
+    args.intentDescription || '(not provided)',
+    '',
+    '## Parsed Highlights',
+    `- Categories: ${categories.length ? categories.join(', ') : 'N/A'}`,
+    `- Target hosts: ${targets.length ? targets.join(', ') : 'N/A'}`,
+    `- Policy approved: ${args.preview?.policy_approved === true ? 'yes' : 'no'}`,
+    '',
+    '## Reasoning Trace',
+    reasoningBlock,
+    '',
+    '## Selected References',
+    refsBlock,
+    '',
+    '## Parsed Intent JSON',
+    '```json',
+    JSON.stringify(parsedIntent, null, 2),
+    '```',
+    '',
+  ].join('\n');
+}
+
 function prettifyModelLabel(providerName: string, modelName: string): string {
   if (providerName === 'gemini') {
     if (modelName === 'gemini-2.5-flash') return 'Gemini 2.5 Flash';
@@ -1352,7 +1426,10 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
     }
 
     // Files dragged from the Ansible file tree (path token set by AnsibleFileTree)
-    const ansiblePath = e.dataTransfer.getData('application/ansible-path');
+    const ansiblePathRaw =
+      e.dataTransfer.getData('application/ansible-path') ||
+      e.dataTransfer.getData('text/plain');
+    const ansiblePath = String(ansiblePathRaw || '').trim();
     if (ansiblePath) {
       try {
         const res = await ansibleApi.readFile(ansiblePath);
@@ -1367,7 +1444,7 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
           size: res.size ?? raw.length,
           truncated,
         }]);
-      } catch (_) { /* ignore — file may not be readable */ }
+      } catch (_) { /* ignore — dropped text may not be a valid file path */ }
     }
   }, [attachFiles]);
 
@@ -2233,6 +2310,67 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
     void submitInterfaceDisambiguation();
   }, [interfaceDisambiguation, submitInterfaceDisambiguation]);
 
+  const createPreviewDialogArtifact = useCallback(async (input: {
+    jobId: number;
+    intentDescription: string;
+    entrypointPath?: string | null;
+    files?: AnsibleGeneratedArtifactFile[];
+    name?: string;
+    preview?: {
+      categories?: string[];
+      target_hosts?: string[];
+      reasoning?: string[];
+      references?: { doc_name: string; feature: string; vendor: string; path: string }[];
+      policy_approved?: boolean;
+      parsed_intent?: Record<string, unknown>;
+    } | null;
+  }): Promise<AnsibleGeneratedArtifactFile | null> => {
+    let previewPath = resolveCompanionPreviewPath({
+      entrypointPath: input.entrypointPath,
+      files: input.files,
+      name: input.name,
+    });
+
+    // If caller only had a filename (no folder context), resolve canonical job paths from backend.
+    if (!previewPath.includes('/') && input.jobId) {
+      try {
+        const latest = await ansibleApi.getResult(input.jobId);
+        const latestFiles: AnsibleGeneratedArtifactFile[] = (latest.files || []).map((f) => ({
+          path: f.path,
+          content: '',
+        }));
+        const resolved = resolveCompanionPreviewPath({
+          entrypointPath: latest.entrypoint_path,
+          files: latestFiles,
+          name: input.name,
+        });
+        if (resolved.includes('/')) {
+          previewPath = resolved;
+        }
+      } catch {
+        // Keep best-effort local path when result lookup fails.
+      }
+    }
+
+    const content = buildPreviewDialogContent({
+      intentDescription: input.intentDescription,
+      jobId: input.jobId,
+      preview: input.preview || null,
+    });
+
+    try {
+      await ansibleApi.createFile(previewPath, content);
+      return { path: previewPath, content, writable: true, kind: 'preview_dialog' };
+    } catch {
+      try {
+        await ansibleApi.writeFile(previewPath, content);
+        return { path: previewPath, content, writable: true, kind: 'preview_dialog' };
+      } catch {
+        return null;
+      }
+    }
+  }, []);
+
   const handleSend = useCallback(async () => {
     const baseText = input.trim();
     if (!baseText && attachedFiles.length === 0) return;
@@ -2286,19 +2424,49 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
         abortControllerRef.current = null;
 
         const playbookName = result.entrypoint_path || `playbook_${result.job_id}.yml`;
+        const templatePreviewArtifact = await createPreviewDialogArtifact({
+          jobId: result.job_id,
+          intentDescription: baseText,
+          entrypointPath: result.entrypoint_path,
+          files: result.files,
+          name: playbookName.split('/').pop() ?? playbookName,
+          preview: {
+            categories: [tplFeature],
+            target_hosts: ['all'],
+            reasoning: [
+              'Used deterministic Config Engine template generation.',
+              `Applied vendor=${tplVendor} feature=${tplFeature}.`,
+            ],
+            references: [],
+            policy_approved: true,
+            parsed_intent: {
+              vendor: tplVendor,
+              feature: tplFeature,
+              params: tplParams,
+              source: 'template_command',
+            },
+          },
+        });
+        const generatedFiles = templatePreviewArtifact
+          ? [...(result.files || []), templatePreviewArtifact]
+          : result.files || [];
+
         setMessages(prev => prev.map(m =>
           m.id === loadingId ? {
             ...m,
             isLoading: false,
             content:
-              `✅ **Template playbook generated** → \`${playbookName}\`\n\n` +
+              `✅ **Template playbook package generated**\n\n` +
+              `I rendered your request using the Config Engine template, wrote the playbook artifact, and generated a companion preview dialog file for audit/review context.\n\n` +
+              `- **Playbook:** \`${playbookName}\`\n` +
+              `- **Preview dialog file:** ${templatePreviewArtifact ? `\`${templatePreviewArtifact.path}\`` : '_not created (write permission/path issue)_'}\n` +
               `- **Job ID:** ${result.job_id}\n` +
               `- **Vendor:** \`${tplVendor}\`  **Feature:** \`${tplFeature}\`\n` +
               `- **Source:** Config Engine template\n\n` +
               `Recommend running **Check** to see the dry-run diff before deploying.`,
             jobId: result.job_id,
             playbookPath: playbookName,
-            generatedPaths: result.files?.map((file) => file.path) || [playbookName],
+            generatedPaths: generatedFiles.map((file) => file.path) || [playbookName],
           } : m
         ));
 
@@ -2307,7 +2475,7 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
           content: result.playbook,
           name: playbookName.split('/').pop() ?? playbookName,
           entrypointPath: result.entrypoint_path,
-          files: result.files,
+          files: generatedFiles,
         });
       } catch (err: any) {
         abortControllerRef.current = null;
@@ -2462,7 +2630,7 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
         setStudioOpen(true);
       }
     }
-  }, [input, isGenerating, addMsg, onPlaybookReady, attachedFiles, ansibleModel, parseIntent, applyPreviewFollowUps]);
+  }, [input, isGenerating, addMsg, onPlaybookReady, attachedFiles, ansibleModel, parseIntent, applyPreviewFollowUps, createPreviewDialogArtifact]);
 
   const submitDisambiguation = useCallback(async () => {
     if (!disambiguation) return;
@@ -2702,19 +2870,36 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
         initialPreviewResult={studioInitialPreview ?? undefined}
         authoritativeMergedParams={previewAccumulatedParams}
         onPlaybookReady={(payload) => {
-          onPlaybookReady(payload);
-          addMsg({
-            role: 'assistant',
-            content:
-              `✅ **Playbook generated** → \`${payload.name}\`\n\n` +
-              `- **Job ID:** ${payload.jobId}\n` +
-              (payload.files?.length ? `- **Files:** ${payload.files.length} generated\n\n` : '\n') +
-              `Recommend running **Check** to see the dry-run diff before deploying.`,
-            jobId: payload.jobId,
-            playbookPath: payload.name,
-            generatedPaths: payload.files?.map((f) => f.path) ?? [payload.name],
-          });
-          setStudioOpen(false);
+          void (async () => {
+            const previewArtifact = await createPreviewDialogArtifact({
+              jobId: payload.jobId,
+              intentDescription: studioIntent,
+              entrypointPath: payload.entrypointPath,
+              files: payload.files,
+              name: payload.name,
+              preview: studioInitialPreview,
+            });
+            const generatedFiles = previewArtifact
+              ? [...(payload.files || []), previewArtifact]
+              : payload.files || [];
+
+            onPlaybookReady({ ...payload, files: generatedFiles });
+            addMsg({
+              role: 'assistant',
+              content:
+                `✅ **Playbook package generated successfully**\n\n` +
+                `I parsed your intent, selected applicable references, and produced both deployment and review artifacts in the same job folder.\n\n` +
+                `- **Playbook:** \`${payload.name}\`\n` +
+                `- **Preview dialog file:** ${previewArtifact ? `\`${previewArtifact.path}\`` : '_not created (write permission/path issue)_'}\n` +
+                `- **Job ID:** ${payload.jobId}\n` +
+                (generatedFiles.length ? `- **Files generated:** ${generatedFiles.length}\n\n` : '\n') +
+                `Recommend running **Check** to see the dry-run diff before deploying.`,
+              jobId: payload.jobId,
+              playbookPath: payload.name,
+              generatedPaths: generatedFiles.map((f) => f.path) ?? [payload.name],
+            });
+            setStudioOpen(false);
+          })();
         }}
         ansibleModel={ansibleModel}
         parseIntent={parseIntent}
