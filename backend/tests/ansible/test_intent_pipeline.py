@@ -766,7 +766,7 @@ def test_strip_llm_ospf_process_id_surfaces_wizard_when_prompt_implicit():
     assert "process_id" in names
 
 
-def test_configure_interface_conditional_asks_native_vlan_for_trunk_ports():
+def test_configure_interface_conditional_does_not_require_native_vlan_for_trunk_ports():
     fields = configure_interface_conditional_disambiguation_fields(
         {
             "interfaces": [
@@ -774,9 +774,8 @@ def test_configure_interface_conditional_asks_native_vlan_for_trunk_ports():
             ]
         }
     )
-    native = next((f for f in fields if str(f.get("field") or "") == "native_vlan"), None)
-    assert native is not None
-    assert "optional" not in native
+    asked = {str(f.get("field") or "") for f in fields}
+    assert "native_vlan" not in asked
 
 
 def test_is_management_interface_matches_nested_ip_dict_and_cidr():

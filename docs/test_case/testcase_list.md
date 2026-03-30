@@ -18,7 +18,7 @@ Could Use: [Interface **`GigabitEthernet1/0/2`** is not present on **Acc_Cisco_1
 
 
 
-- [/] Create VLAN 10 and allow it on trunk port GigabitEthernet1/0/2 on SW1  
+- [/] Create VLAN 10 and allow it on trunk port GigabitEthernet1/0/2 on SW1    
 
 - [/] Create VLAN 200 named Guest and set native VLAN 200 on GigabitEthernet1/0/3  
 **Comment** It asks which VLAN should be allowed in this case, which the only option is VLAN 200. Should I include all or how?
@@ -41,13 +41,13 @@ After selecting the devices from the UI picker, it asks me which access vlan sho
 
 never include the management interface or the interface with the management ip address inside the UI picker, they should not be exposed for user to select in any case.
 
-- [/] Configure GigabitEthernet1/0/5 as trunk and allow VLANs 10, 20, 67 on SW1  
+- [/] Configure GigabitEthernet1/0/5 as trunk and allow VLANs 10, 20, 67 on SW1  [USEDTHIS]
 
 - [/] Set GigabitEthernet1/0/3 with IP address 192.168.10.1/24 on SW1  
 
 - [/] Set GigabitEthernet1/0/3 as routed interface with IP address 192.168.10.1/24 on SW1  
 
-- [/] Set GigabitEthernet1/0/3 with IP address 192.168.10.1  
+- [/] Set GigabitEthernet1/0/3 with IP address 192.168.10.1  [USEDTHIS]
 
 - [/] Configure interfaces on devices *(generic / ambiguous test)*  
 **Comment:** It's good but it takes some time, stucking on this part, identify the reason behind it, and make it faster.
@@ -103,7 +103,7 @@ Do this for other operations, to ensure a one-go question asking.
 
 **Preview Modal:**
 
-- [/] Add a default route on router 2  
+- [/] Add a default route on router 2  [USEDTHIS] 
 
 - [/] Add a static route to 172.16.0.0/16 via GigabitEthernet0/1 on router 2  
 

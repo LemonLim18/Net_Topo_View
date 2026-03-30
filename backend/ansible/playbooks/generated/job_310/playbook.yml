@@ -13,6 +13,8 @@
           - "network 192.168.1.0 0.0.0.255 area 0"
 
 
+          - "passive-interface Ethernet0/0"
+
 
       when:
         - inventory_hostname in groups.get('vendor_cisco_ios', [])

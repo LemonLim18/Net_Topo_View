@@ -7,7 +7,7 @@
   gather_facts: no
   ignore_unreachable: true
   vars:
-    interfaces_config: [{"name": "Ethernet0/2", "enabled": true, "mode": "routed", "ip": {"address": "192.168.1.69", "mask": "255.255.255.0"}}]
+    interfaces_config: [{"name": "Ethernet0/3", "enabled": true, "mode": "routed", "ip": {"address": "192.168.10.1", "mask": "255.255.255.0"}}]
     interfaces_admin_enabled: "false"
 
     interfaces_to_shutdown: []

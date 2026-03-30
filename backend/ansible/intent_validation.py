@@ -1227,7 +1227,6 @@ def configure_interface_conditional_disambiguation_fields(
     missing_trunk_vlans = False
     missing_routed_ip = False
     missing_access_vlan = False
-    missing_native_vlan = False
     ip_addrs: set[str] = set()
     missing_subnet_mask = False
 
@@ -1248,9 +1247,6 @@ def configure_interface_conditional_disambiguation_fields(
                 tv = iface.get("allowed_vlans")
             if tv in (None, "", []):
                 missing_trunk_vlans = True
-            nv = iface.get("native_vlan")
-            if nv in (None, "", []):
-                missing_native_vlan = True
         ip_address = iface.get("ip_address")
         if ip_address not in (None, ""):
             ip_addrs.add(str(ip_address))
@@ -1286,15 +1282,6 @@ def configure_interface_conditional_disambiguation_fields(
                     "question": (
                         "Which VLAN IDs should be **allowed** on this trunk? "
                         "(Pick from the list — options come from your intent and planned network context.)"
-                    ),
-                }
-            )
-        if only_mode == "trunk" and missing_native_vlan:
-            shared_fields.append(
-                {
-                    "field": "native_vlan",
-                    "question": (
-                        "Which **native / PVID** VLAN ID (1-4094) should be set on this trunk?"
                     ),
                 }
             )

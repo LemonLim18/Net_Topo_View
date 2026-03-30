@@ -266,10 +266,17 @@ const JobStatusBar: React.FC<JobStatusBarProps> = ({
           {/* Output content: single pane or split (left + right) */}
           <div className={`flex flex-1 min-w-0 ${splitOutputId ? 'flex gap-0 border-r border-base-300' : 'flex flex-col'}`}>
             {outputSessions.length === 0 ? (
-              <div className="flex items-center gap-2 px-4 py-4 text-xs opacity-50">
-                <Terminal className="h-4 w-4 shrink-0" />
-                <span>No output yet. Run <strong>Check</strong> or <strong>Deploy</strong> to see logs here.</span>
-              </div>
+              isStreaming ? (
+                <div className="flex items-center gap-2 px-4 py-4 text-xs opacity-70">
+                  <Loader2 className="h-4 w-4 shrink-0 animate-spin" />
+                  <span>Starting terminal output stream. Logs will appear here shortly…</span>
+                </div>
+              ) : (
+                <div className="flex items-center gap-2 px-4 py-4 text-xs opacity-50">
+                  <Terminal className="h-4 w-4 shrink-0" />
+                  <span>No output yet. Run <strong>Check</strong> or <strong>Deploy</strong> to see logs here.</span>
+                </div>
+              )
             ) : (
               <>
                 {/* Left pane (primary) */}
@@ -282,12 +289,23 @@ const JobStatusBar: React.FC<JobStatusBarProps> = ({
                     {(() => {
                       const session = outputSessions.find(s => s.id === activeOutputId) ?? outputSessions[0];
                       if (!session) return null;
+                      const isSessionStreaming = streamingSessionId === session.id && isStreaming;
+                      const hasLines = session.lines.length > 0;
                       return (
                         <>
+                          {!hasLines && isSessionStreaming && (
+                            <div className="flex items-center gap-2 opacity-70 mb-2">
+                              <Loader2 className="h-3 w-3 animate-spin shrink-0" />
+                              <span>Loading terminal output…</span>
+                            </div>
+                          )}
+                          {!hasLines && !isSessionStreaming && (
+                            <div className="text-xs opacity-50 italic">No output captured for this run.</div>
+                          )}
                           {session.lines.map((line, i) => (
                             <div key={i} className="whitespace-pre-wrap break-all opacity-90">{line || '\u00A0'}</div>
                           ))}
-                          {streamingSessionId === session.id && isStreaming && (
+                          {isSessionStreaming && hasLines && (
                             <div className="flex items-center gap-1 opacity-60 mt-1">
                               <Loader2 className="h-3 w-3 animate-spin shrink-0" />
                               <span>Running…</span>
@@ -320,10 +338,19 @@ const JobStatusBar: React.FC<JobStatusBarProps> = ({
                         className="flex-1 overflow-y-auto overflow-x-auto px-4 py-2 font-mono text-xs leading-5 min-h-0 select-text"
                         style={{ userSelect: 'text' }}
                       >
+                        {splitSession.lines.length === 0 && streamingSessionId === splitSession.id && isStreaming && (
+                          <div className="flex items-center gap-2 opacity-70 mb-2">
+                            <Loader2 className="h-3 w-3 animate-spin shrink-0" />
+                            <span>Loading terminal output…</span>
+                          </div>
+                        )}
+                        {splitSession.lines.length === 0 && !(streamingSessionId === splitSession.id && isStreaming) && (
+                          <div className="text-xs opacity-50 italic">No output captured for this run.</div>
+                        )}
                         {splitSession.lines.map((line, i) => (
                           <div key={i} className="whitespace-pre-wrap break-all opacity-90">{line || '\u00A0'}</div>
                         ))}
-                        {streamingSessionId === splitSession.id && isStreaming && (
+                        {streamingSessionId === splitSession.id && isStreaming && splitSession.lines.length > 0 && (
                           <div className="flex items-center gap-1 opacity-60 mt-1">
                             <Loader2 className="h-3 w-3 animate-spin shrink-0" />
                             <span>Running…</span>
