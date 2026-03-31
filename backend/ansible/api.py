@@ -62,7 +62,9 @@ from ansible.intent_validation import (
     ospf_passive_interfaces_non_empty,
     ospf_redistribution_non_empty,
     client_supplied_ospf_advertisement_params,
+    client_supplied_ospf_passive_interfaces_param,
     client_supplied_ospf_router_id_param,
+    strip_llm_ospf_passive_guesses_if_not_explicit_in_prompt,
     strip_llm_static_route_next_hop_if_not_explicit_in_prompt,
     strip_llm_ospf_advertisement_guesses_if_not_explicit_in_prompt,
     strip_llm_ospf_process_id_if_not_explicit_in_prompt,
@@ -138,6 +140,11 @@ def _apply_ospf_nl_strips(
         parsed_intent,
         client_supplied_advertisement=client_supplied_ospf_advertisement_params(rp),
         client_supplied_router_id=client_supplied_ospf_router_id_param(rp),
+    )
+    strip_llm_ospf_passive_guesses_if_not_explicit_in_prompt(
+        intent_description or "",
+        parsed_intent,
+        client_supplied_passive_interfaces=client_supplied_ospf_passive_interfaces_param(rp),
     )
 
 
@@ -7608,7 +7615,7 @@ async def preview_intent(
                         )
                     )
                     or (
-                        schema_action_iface in ("configure_ospf", "configure_ospf_passive_interface")
+                        schema_action_iface == "configure_ospf_passive_interface"
                         and (
                             ("passive_interfaces" in set(missing_final or []))
                             or (

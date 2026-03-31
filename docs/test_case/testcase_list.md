@@ -64,10 +64,10 @@ Applying device selection and refreshing the preview…
 
 ## 3️⃣ OSPF
 
-- [/] Configure OSPF process 1 on router 2 Configure OSPF process 1 on router 2  
+- [/] Configure OSPF process 1 on router 2 
 
 
-- [/] Add network 192.168.1.0/24 to OSPF area 0 on router 2  
+- [/] Add network 192.168.1.0/24 to OSPF area 0 on router 2  [USEDTHIS]
 
 
 - [/] Set router ID 1.1.1.1 and advertise 10.0.0.0/24 in area 0 on SW1  

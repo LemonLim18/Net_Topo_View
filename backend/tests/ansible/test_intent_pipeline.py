@@ -54,6 +54,7 @@ from ansible.intent_validation import (
     correct_ospf_params_from_natural_language,
     get_schema_for_parsed_intent,
     strip_llm_ospf_advertisement_guesses_if_not_explicit_in_prompt,
+    strip_llm_ospf_passive_guesses_if_not_explicit_in_prompt,
     strip_llm_ospf_process_id_if_not_explicit_in_prompt,
     validate_completeness,
 )
@@ -764,6 +765,50 @@ def test_strip_llm_ospf_process_id_surfaces_wizard_when_prompt_implicit():
     fields = (res.params_disambiguation or {}).get("fields") or []
     names = {f.get("field") for f in fields if isinstance(f, dict)}
     assert "process_id" in names
+
+
+def test_strip_llm_ospf_passive_guess_for_network_prompt():
+    parsed = {
+        "action": "configure_ospf_passive_interface",
+        "feature": "ospf",
+        "parameters": {
+            "process_id": 1,
+            "network_address": "192.168.1.0",
+            "prefix_length": 24,
+            "area": 0,
+            "passive_interfaces": ["GigabitEthernet1/0/1"],
+            "_canonical_operation": "configure_ospf_passive_interface",
+        },
+    }
+    strip_llm_ospf_passive_guesses_if_not_explicit_in_prompt(
+        "Add network 192.168.1.0/24 to OSPF area 0 on router 2",
+        parsed,
+        client_supplied_passive_interfaces=False,
+    )
+    p = parsed["parameters"]
+    assert "passive_interfaces" not in p
+    assert str(parsed.get("action") or "") == "configure_ospf"
+    assert str(p.get("_canonical_operation") or "") == "configure_ospf"
+
+
+def test_keep_ospf_passive_when_prompt_explicit():
+    parsed = {
+        "action": "configure_ospf_passive_interface",
+        "feature": "ospf",
+        "parameters": {
+            "process_id": 1,
+            "passive_interfaces": ["GigabitEthernet1/0/1"],
+            "_canonical_operation": "configure_ospf_passive_interface",
+        },
+    }
+    strip_llm_ospf_passive_guesses_if_not_explicit_in_prompt(
+        "Make GigabitEthernet1/0/1 passive in OSPF on router 1",
+        parsed,
+        client_supplied_passive_interfaces=False,
+    )
+    p = parsed["parameters"]
+    assert p.get("passive_interfaces") == ["GigabitEthernet1/0/1"]
+    assert str(parsed.get("action") or "") == "configure_ospf_passive_interface"
 
 
 def test_configure_interface_conditional_does_not_require_native_vlan_for_trunk_ports():

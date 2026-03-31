@@ -3,7 +3,7 @@ import Editor from '@monaco-editor/react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import {
-  X, Save, Download, Play, ShieldCheck, RefreshCw, FlaskConical, Lock, FileText, Check
+  X, Save, Download, Play, ShieldCheck, RefreshCw, FlaskConical, Lock, FileText, Check, Loader2
 } from 'lucide-react';
 import type { AnsibleTab, AnsibleJob, AnsibleCheckResult } from '../../typesLLM';
 
@@ -210,8 +210,17 @@ const PlaybookEditor: React.FC<PlaybookEditorProps> = ({
           disabled={!canRunCheck}
           title={checkTitle}
         >
-          <FlaskConical className="h-3 w-3" />
-          {isChecking ? 'Checking…' : 'Check'}
+          {isChecking ? (
+            <>
+              <Loader2 className="h-3 w-3 animate-spin" />
+              Checking...
+            </>
+          ) : (
+            <>
+              <FlaskConical className="h-3 w-3" />
+              Check
+            </>
+          )}
         </button>
 
         <button

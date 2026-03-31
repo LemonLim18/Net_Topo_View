@@ -2553,6 +2553,24 @@ def prompt_contains_explicit_ospf_router_id_in_prompt(intent_description: str) -
     return bool(re.search(r"\brouter[\s_-]*id\s+\d{1,3}(?:\.\d{1,3}){3}\b", text, re.I))
 
 
+def prompt_contains_explicit_ospf_passive_interfaces(intent_description: str) -> bool:
+    """
+    True when the user explicitly asks for OSPF passive-interface behavior.
+    Prevents generic OSPF network prompts from being misrouted to passive-interface flow.
+    """
+    text = str(intent_description or "").strip()
+    if not text:
+        return False
+    tl = text.lower()
+    if "ospf" not in tl or "passive" not in tl:
+        return False
+    if re.search(r"\b(?:no|not|without)\s+passive\b", tl):
+        return False
+    if re.search(r"\bpassive(?:\s*[-_]\s*|\s+)interface\b", tl):
+        return True
+    return bool(re.search(r"\bpassive\b", tl) and re.search(r"\bospf\b", tl))
+
+
 def prompt_contains_explicit_static_route_next_hop(intent_description: str) -> bool:
     """
     True when the prompt explicitly states the route target (next-hop IP or egress interface),
@@ -2643,6 +2661,13 @@ def client_supplied_ospf_router_id_param(params: Optional[Dict[str, Any]]) -> bo
     return v is not None and str(v).strip() != ""
 
 
+def client_supplied_ospf_passive_interfaces_param(params: Optional[Dict[str, Any]]) -> bool:
+    if not isinstance(params, dict):
+        return False
+    raw = params.get("passive_interfaces") or params.get("passive_interface")
+    return ospf_passive_interfaces_non_empty(raw)
+
+
 def strip_llm_ospf_advertisement_guesses_if_not_explicit_in_prompt(
     intent_description: str,
     parsed_intent: Dict[str, Any],
@@ -2721,6 +2746,54 @@ def strip_llm_ospf_process_id_if_not_explicit_in_prompt(
         sa = str(sec.get("action") or "").strip().lower().replace("-", "_")
         sf = str(sec.get("feature") or "").strip().lower()
         if sa == "configure_ospf" or sf == "ospf":
+            _strip(sec)
+
+
+def strip_llm_ospf_passive_guesses_if_not_explicit_in_prompt(
+    intent_description: str,
+    parsed_intent: Dict[str, Any],
+    *,
+    client_supplied_passive_interfaces: bool = False,
+) -> None:
+    """
+    Remove passive-interface guesses unless prompt (or client params) explicitly requests passive OSPF.
+    Also downgrades passive-only OSPF action/canonical markers back to generic configure_ospf.
+    """
+    if not isinstance(parsed_intent, dict):
+        return
+    if client_supplied_passive_interfaces or prompt_contains_explicit_ospf_passive_interfaces(intent_description or ""):
+        return
+
+    def _strip(container: Dict[str, Any]) -> None:
+        p = container.get("parameters")
+        if not isinstance(p, dict):
+            return
+        p.pop("passive_interfaces", None)
+        p.pop("passive_interface", None)
+
+        canonical = str(
+            p.get("_canonical_operation") or p.get("canonical_operation") or ""
+        ).strip().lower().replace("-", "_")
+        if canonical in ("configure_passive_interface", "configure_ospf_passive_interface"):
+            p["_canonical_operation"] = "configure_ospf"
+            p["canonical_operation"] = "configure_ospf"
+
+        act = str(container.get("action") or "").strip().lower().replace("-", "_")
+        if act in ("configure_passive_interface", "configure_ospf_passive_interface"):
+            container["action"] = "configure_ospf"
+
+        container["parameters"] = p
+
+    act = str(parsed_intent.get("action") or "").strip().lower().replace("-", "_")
+    feat = str(parsed_intent.get("feature") or "").strip().lower()
+    if feat == "ospf" or act in ("configure_ospf", "configure_passive_interface", "configure_ospf_passive_interface"):
+        _strip(parsed_intent)
+    for sec in parsed_intent.get("secondary_intents") or []:
+        if not isinstance(sec, dict):
+            continue
+        sa = str(sec.get("action") or "").strip().lower().replace("-", "_")
+        sf = str(sec.get("feature") or "").strip().lower()
+        if sf == "ospf" or sa in ("configure_ospf", "configure_passive_interface", "configure_ospf_passive_interface"):
             _strip(sec)
 
 
