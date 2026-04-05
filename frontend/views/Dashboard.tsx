@@ -19,6 +19,7 @@ import { useDeviceContext } from '../contexts/DeviceContext';
 import { Terminal, Info, RefreshCw, Cable, AlertTriangle } from 'lucide-react';
 import { Toast } from '../src/utils/swal';
 import { sshApi } from '../src/services/api';
+import { validateLinkInterfaceCompatibility } from '../src/utils/linkValidation';
 
 type TopologyView = 'actual' | 'planned' | 'diff';
 
@@ -711,6 +712,13 @@ const Dashboard: React.FC = () => {
     const handleSaveLink = async () => {
         if (!linkForm.src_device_id || !linkForm.dst_device_id) {
             setLinkFormError('Both source and destination devices are required');
+            return;
+        }
+        const srcIface = srcInterfaces.find((i) => i.id === linkForm.src_interface_id);
+        const dstIface = dstInterfaces.find((i) => i.id === linkForm.dst_interface_id);
+        const compatibilityError = validateLinkInterfaceCompatibility(srcIface, dstIface);
+        if (compatibilityError) {
+            setLinkFormError(compatibilityError);
             return;
         }
         setLinkFormError(null);

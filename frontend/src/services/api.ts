@@ -519,6 +519,7 @@ export interface DeviceRecord {
   hostname: string;
   management_ip: string | null;
   management_subnet_mask: string | null;
+  management_interface: string | null;
   vendor: string | null;
   model: string | null;
   os_version: string | null;
@@ -533,6 +534,72 @@ export interface DeviceRecord {
   ssh_password: string | null;
   ssh_port: number | null;
 }
+
+export interface CommonServicesProfile {
+  id?: number;
+  scope_type: 'global' | 'site' | 'role' | 'device';
+  scope_value: string;
+  snmp_community: string | null;
+  snmp_location: string | null;
+  snmp_contact: string | null;
+  snmp_host_ip: string | null;
+  syslog_host_ip: string | null;
+  ntp_server_ip: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+}
+
+export const commonServicesApi = {
+  listProfiles: () => request<{ items: CommonServicesProfile[] }>('/common-services/profiles'),
+
+  getProfile: (scopeType: string, scopeValue: string) =>
+    request<CommonServicesProfile>(`/common-services/profiles/${encodeURIComponent(scopeType)}/${encodeURIComponent(scopeValue)}`),
+
+  upsertProfile: (
+    scopeType: string,
+    scopeValue: string,
+    payload: {
+      snmp_community?: string | null;
+      snmp_location?: string | null;
+      snmp_contact?: string | null;
+      snmp_host_ip?: string | null;
+      syslog_host_ip?: string | null;
+      ntp_server_ip?: string | null;
+    },
+  ) =>
+    request<CommonServicesProfile>(`/common-services/profiles/${encodeURIComponent(scopeType)}/${encodeURIComponent(scopeValue)}`, {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    }),
+
+  deleteProfile: (scopeType: string, scopeValue: string) =>
+    request<{ deleted: boolean }>(`/common-services/profiles/${encodeURIComponent(scopeType)}/${encodeURIComponent(scopeValue)}`, {
+      method: 'DELETE',
+    }),
+
+  getEffective: (params?: { device_id?: number; role?: string; site?: string }) => {
+    const qp = new URLSearchParams();
+    if (params?.device_id != null) qp.set('device_id', String(params.device_id));
+    if (params?.role) qp.set('role', params.role);
+    if (params?.site) qp.set('site', params.site);
+    const suffix = qp.toString() ? `?${qp.toString()}` : '';
+    return request<{
+      site: string | null;
+      role: string | null;
+      device_id: number | null;
+      effective: {
+        snmp_community: string | null;
+        snmp_location: string | null;
+        snmp_contact: string | null;
+        snmp_host_ip: string | null;
+        syslog_host_ip: string | null;
+        ntp_server_ip: string | null;
+        sources: Record<string, string | null>;
+        chain: string[];
+      };
+    }>(`/common-services/effective${suffix}`);
+  },
+};
 
 export interface InterfaceRecord {
   id: number;
@@ -629,6 +696,7 @@ export const netboxApi = {
     hostname: string;
     management_ip?: string;
     management_subnet_mask?: string;
+    management_interface?: string;
     vendor?: string;
     model?: string;
     os_version?: string;
@@ -648,6 +716,7 @@ export const netboxApi = {
     hostname?: string;
     management_ip?: string;
     management_subnet_mask?: string;
+    management_interface?: string;
     vendor?: string;
     model?: string;
     os_version?: string;

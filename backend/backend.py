@@ -1,9 +1,12 @@
 
 # backend.py
 import asyncio
+import ipaddress
 import json
 import logging
 import os
+import socket
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from typing import Dict, List, Optional, Set, Tuple
 
@@ -66,6 +69,7 @@ from agent.api import router as agent_router, setup_agent_api
 
 # M0 — Device Onboarding Wizard
 from onboarding.api import router as onboarding_router
+from common_services.api import router as common_services_router
 
 # Phase 1 — Intent Lifecycle Management (UC02-UC05)
 from llm.intent_api import router as intent_router, setup_intents
@@ -114,6 +118,17 @@ CRAWL_PASSWORD = os.getenv("CRAWL_PASSWORD", "")
 CRAWL_KEYFILE  = os.getenv("CRAWL_KEYFILE") or None
 CRAWL_DRIVER   = os.getenv("CRAWL_DRIVER", "cisco_ios")
 CRAWL_JUMP     = None  # set via env JSON if needed
+
+CRAWL_AUTO_SUBNET_DISCOVERY = os.getenv("CRAWL_AUTO_SUBNET_DISCOVERY", "false").strip().lower() in {
+    "1", "true", "yes", "on"
+}
+CRAWL_DISCOVERY_SUBNETS: List[str] = [
+    s.strip() for s in os.getenv("CRAWL_DISCOVERY_SUBNETS", "").split(",") if s.strip()
+]
+CRAWL_DISCOVERY_PORT = int(os.getenv("CRAWL_DISCOVERY_PORT", "22"))
+CRAWL_DISCOVERY_TIMEOUT_MS = int(os.getenv("CRAWL_DISCOVERY_TIMEOUT_MS", "250"))
+CRAWL_DISCOVERY_WORKERS = int(os.getenv("CRAWL_DISCOVERY_WORKERS", "64"))
+CRAWL_DISCOVERY_MAX_HOSTS = int(os.getenv("CRAWL_DISCOVERY_MAX_HOSTS", "1024"))
 
 # Per-device credential overrides: "IP:user:pass,IP:user:pass,..."
 _CRAWL_CRED_OVERRIDES: Dict[str, Tuple[str, str]] = {}
@@ -197,15 +212,135 @@ def do_sync_crawl() -> dict:
         logger.error("No crawl credentials configured — set CRAWL_USER/CRAWL_PASSWORD or store a vault entry")
         return {"timestamp": datetime.now().isoformat(), "seeds": CRAWL_SEEDS, "nodes": {}}
 
+    # Build effective seeds from static env + inventory management IPs so newly
+    # registered devices are pollable even before LLDP/CDP adjacency is learned.
+    effective_seeds: List[str] = []
+    seen_seed_ips: Set[str] = set()
+    for ip in CRAWL_SEEDS:
+        cleaned = str(ip or "").strip()
+        if cleaned and cleaned not in seen_seed_ips:
+            seen_seed_ips.add(cleaned)
+            effective_seeds.append(cleaned)
+
+    db_seed_count = 0
+    db_cred_overrides: Dict[str, Tuple[str, str]] = {}
+    if _db is not None:
+        try:
+            for dev in _db.get_all_devices():
+                mgmt_ip = str(getattr(dev, "management_ip", "") or "").strip()
+                if not mgmt_ip:
+                    continue
+                if mgmt_ip not in seen_seed_ips:
+                    seen_seed_ips.add(mgmt_ip)
+                    effective_seeds.append(mgmt_ip)
+                    db_seed_count += 1
+
+                ssh_user = str(getattr(dev, "ssh_user", "") or "").strip()
+                ssh_password = getattr(dev, "ssh_password", None)
+                if ssh_user and ssh_password:
+                    db_cred_overrides[mgmt_ip] = (ssh_user, str(ssh_password))
+        except Exception as exc:
+            logger.warning("Could not augment crawl seeds from inventory: %s", exc)
+
+    if db_seed_count:
+        logger.info(
+            "Augmented crawler seeds with %d inventory management IP(s); total seeds=%d",
+            db_seed_count,
+            len(effective_seeds),
+        )
+
+    # Optional subnet auto-discovery: quickly probe for new SSH-reachable IPs
+    # and include them as additional crawl seeds.
+    if CRAWL_AUTO_SUBNET_DISCOVERY:
+        discovery_targets: Set[str] = set()
+        discovery_networks: List[ipaddress.IPv4Network] = []
+
+        for raw in CRAWL_DISCOVERY_SUBNETS:
+            try:
+                net = ipaddress.ip_network(raw, strict=False)
+            except ValueError:
+                logger.warning("Ignoring invalid CRAWL_DISCOVERY_SUBNETS entry: %s", raw)
+                continue
+            if isinstance(net, ipaddress.IPv4Network):
+                discovery_networks.append(net)
+
+        if not discovery_networks:
+            # Default behavior: discover inside /24 networks derived from current seeds.
+            derived: Set[str] = set()
+            for ip in list(effective_seeds):
+                try:
+                    net = ipaddress.ip_network(f"{ip}/24", strict=False)
+                except ValueError:
+                    continue
+                if isinstance(net, ipaddress.IPv4Network):
+                    key = str(net)
+                    if key in derived:
+                        continue
+                    derived.add(key)
+                    discovery_networks.append(net)
+
+        for net in discovery_networks:
+            for host in net.hosts():
+                host_ip = str(host)
+                if host_ip in seen_seed_ips:
+                    continue
+                discovery_targets.add(host_ip)
+                if len(discovery_targets) >= max(1, CRAWL_DISCOVERY_MAX_HOSTS):
+                    break
+            if len(discovery_targets) >= max(1, CRAWL_DISCOVERY_MAX_HOSTS):
+                break
+
+        if discovery_targets:
+            timeout_seconds = max(10, CRAWL_DISCOVERY_TIMEOUT_MS) / 1000.0
+
+            def _is_ssh_open(ip_addr: str) -> bool:
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.settimeout(timeout_seconds)
+                try:
+                    return sock.connect_ex((ip_addr, CRAWL_DISCOVERY_PORT)) == 0
+                except Exception:
+                    return False
+                finally:
+                    sock.close()
+
+            discovered_ips: List[str] = []
+            workers = max(4, CRAWL_DISCOVERY_WORKERS)
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                futures = {pool.submit(_is_ssh_open, ip): ip for ip in discovery_targets}
+                for fut in as_completed(futures):
+                    ip = futures[fut]
+                    try:
+                        if fut.result():
+                            discovered_ips.append(ip)
+                    except Exception:
+                        continue
+
+            if discovered_ips:
+                for ip in sorted(set(discovered_ips)):
+                    if ip not in seen_seed_ips:
+                        seen_seed_ips.add(ip)
+                        effective_seeds.append(ip)
+                logger.info(
+                    "Subnet discovery found %d SSH-reachable host(s); crawl seeds now=%d",
+                    len(discovered_ips),
+                    len(effective_seeds),
+                )
+            else:
+                logger.debug("Subnet discovery scanned %d hosts and found no new SSH targets", len(discovery_targets))
+
+    # Environment overrides remain authoritative; DB credentials are fallback.
+    effective_cred_overrides = dict(db_cred_overrides)
+    effective_cred_overrides.update(_CRAWL_CRED_OVERRIDES)
+
     return _bfs_crawl(
-        seeds=CRAWL_SEEDS,
+        seeds=effective_seeds,
         username=user,
         password=password,
         key_file=CRAWL_KEYFILE,
         driver_type=CRAWL_DRIVER,
         jump_host=CRAWL_JUMP,
         workers=CRAWL_WORKERS,
-        cred_overrides=_CRAWL_CRED_OVERRIDES or None,
+        cred_overrides=effective_cred_overrides or None,
     )
 
 def canonical_topology(topo: dict) -> dict:
@@ -602,6 +737,7 @@ app.include_router(agent_router, prefix="/api/v1", tags=["Autonomous Agent (M25)
 
 # M0 — Onboarding
 app.include_router(onboarding_router, prefix="/api/v1", tags=["Onboarding (M0)"])
+app.include_router(common_services_router, prefix="/api/v1", tags=["Common Services"])
 
 # Phase 1 — Intent Lifecycle
 app.include_router(intent_router, prefix="/api/v1", tags=["Intent Lifecycle"])

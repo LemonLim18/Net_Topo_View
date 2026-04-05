@@ -157,6 +157,7 @@ class DatabaseManager:
             ("devices", "source", "TEXT DEFAULT 'manual'"),
             ("devices", "role", "TEXT DEFAULT 'network-device'"),
             ("devices", "management_subnet_mask", "TEXT"),
+            ("devices", "management_interface", "TEXT"),
             ("devices", "netbox_id", "INTEGER"),
         ]
         with self._connect() as conn:
@@ -280,6 +281,41 @@ class DatabaseManager:
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_compliance_results_status_checked ON compliance_results(status, checked_at DESC)")
             except Exception as e:
                 logger.warning("M26 migration: create compliance_results failed: %s", e)
+
+            # Common services profile table (global/site/role/device inheritance).
+            try:
+                conn.execute(
+                    """CREATE TABLE IF NOT EXISTS common_service_profiles (
+                        id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                        scope_type          TEXT NOT NULL,
+                        scope_value         TEXT NOT NULL,
+                        snmp_community      TEXT,
+                        snmp_location       TEXT,
+                        snmp_contact        TEXT,
+                        snmp_host_ip        TEXT,
+                        syslog_servers_json TEXT,
+                        ntp_servers_json    TEXT,
+                        syslog_host_ip      TEXT,
+                        ntp_server_ip       TEXT,
+                        created_at          TEXT DEFAULT (datetime('now')),
+                        updated_at          TEXT DEFAULT (datetime('now')),
+                        UNIQUE(scope_type, scope_value)
+                    )"""
+                )
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_common_service_scope ON common_service_profiles(scope_type, scope_value)")
+                for col, col_def in (
+                    ("snmp_location", "TEXT"),
+                    ("snmp_contact", "TEXT"),
+                    ("snmp_host_ip", "TEXT"),
+                    ("syslog_host_ip", "TEXT"),
+                    ("ntp_server_ip", "TEXT"),
+                ):
+                    try:
+                        conn.execute(f"ALTER TABLE common_service_profiles ADD COLUMN {col} {col_def}")
+                    except Exception:
+                        pass
+            except Exception as e:
+                logger.warning("Migration error creating common_service_profiles: %s", e)
 
     # =============================================================
     # Initialisation
@@ -593,13 +629,13 @@ class DatabaseManager:
             if row:
                 conn.execute(
                     """UPDATE devices
-                       SET hostname = ?, management_ip = ?, management_subnet_mask = ?, vendor = ?, model = ?,
+                       SET hostname = ?, management_ip = ?, management_subnet_mask = ?, management_interface = ?, vendor = ?, model = ?,
                            os_version = ?, serial_number = ?, status = ?,
                            role = ?, source = ?, last_polled = ?, ssh_user = ?,
                            ssh_password = ?, ssh_port = ?, netbox_id = ?, updated_at = ?
                      WHERE id = ?""",
                     (
-                        device.hostname, device.management_ip, device.management_subnet_mask, device.vendor, device.model,
+                        device.hostname, device.management_ip, device.management_subnet_mask, device.management_interface, device.vendor, device.model,
                         device.os_version, device.serial_number, device.status,
                         device.role, device.source, device.last_polled or now,
                         device.ssh_user, device.ssh_password, device.ssh_port,
@@ -610,13 +646,13 @@ class DatabaseManager:
             else:
                 cur2 = conn.execute(
                     """INSERT INTO devices
-                       (hostname, management_ip, management_subnet_mask, vendor, model, os_version,
+                       (hostname, management_ip, management_subnet_mask, management_interface, vendor, model, os_version,
                         serial_number, status, role, source, last_polled,
                         ssh_user, ssh_password, ssh_port, netbox_id,
                         created_at, updated_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
-                        device.hostname, device.management_ip, device.management_subnet_mask, device.vendor,
+                        device.hostname, device.management_ip, device.management_subnet_mask, device.management_interface, device.vendor,
                         device.model, device.os_version, device.serial_number,
                         device.status, device.role, device.source, device.last_polled or now,
                         device.ssh_user, device.ssh_password, device.ssh_port, device.netbox_id,
@@ -668,6 +704,7 @@ class DatabaseManager:
             id=row["id"],
             hostname=row["hostname"],
             management_ip=row["management_ip"],
+            management_interface=row["management_interface"] if "management_interface" in keys else None,
             vendor=row["vendor"],
             model=row["model"],
             os_version=row["os_version"],

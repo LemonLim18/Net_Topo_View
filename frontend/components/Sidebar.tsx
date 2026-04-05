@@ -10,12 +10,12 @@ import {
   BookOpen,
   Workflow,
   PackagePlus,
-  History,
   ListChecks,
   ChevronLeft,
   ChevronRight,
   FileCode2,
   HardDrive,
+  RadioTower,
 } from 'lucide-react';
 import type { ViewId, User } from '../types';
 import { normalizeUserRole } from '../types';
@@ -157,6 +157,7 @@ const Sidebar: React.FC<SidebarProps> = ({ currentView, setView, user, onLogout,
           onToggle={() => setNetworkOpen(!networkOpen)}
         >
           
+          <MenuItem id="common_services" label="Common Services" icon={RadioTower} iconColor="text-primary"/>
           <MenuItem id="netbox_devices" label="Device Inventory" icon={Server} iconColor="text-primary"/>
           <MenuItem id="template_studio" label="Template Studio" icon={FileCode2} iconColor="text-primary"/>
           <MenuItem id="onboarding" label="Onboard Device" icon={PackagePlus} iconColor="text-primary"/>
@@ -173,7 +174,7 @@ const Sidebar: React.FC<SidebarProps> = ({ currentView, setView, user, onLogout,
           <MenuItem id="net_perf" label="Performance" icon={Activity} iconColor="text-secondary"/>
           <MenuItem
             id="compliance_hub"
-            label="Compliance & governance"
+            label="Compliance & Governance"
             icon={ShieldCheck}
             iconColor="text-secondary"
             matchViews={['compliance_hub', 'drift', 'policy_builder']}

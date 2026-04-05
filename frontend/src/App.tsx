@@ -20,6 +20,7 @@ import IntentParserView from '../views/IntentParserView';
 import SDNDashboardView from '../views/SDNDashboardView';
 import PlaybookComparisonView from '../views/PlaybookComparisonView';
 import ApprovalQueueView from '../views/ApprovalQueueView';
+import CommonServicesProfilesView from '../views/CommonServicesProfilesView.tsx';
 import FloatingInventoryOverlay from '../components/FloatingInventoryOverlay';
 
 import Login from '../views/Login';
@@ -60,6 +61,7 @@ const isViewId = (value: string | null): value is ViewId => {
     'sec_chat',
     'incidents',
     'onboarding',
+    'common_services',
     'intent_history',
     'intent_parser',
     ...(SHOW_SDN_CONTROLLER ? ['sdn_dashboard'] : []),
@@ -262,6 +264,8 @@ const App: React.FC = () => {
       // M0 — Device Onboarding
       case 'onboarding':
         return <OnboardingView setView={setView} />;
+      case 'common_services':
+        return <CommonServicesProfilesView />;
 
       // Phase 1 — Intent Lifecycle Management
       case 'intent_history':

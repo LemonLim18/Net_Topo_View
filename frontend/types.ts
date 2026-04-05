@@ -91,6 +91,7 @@ export type ViewId =
   | 'sec_chat'
   | 'incidents'
   | 'onboarding'
+  | 'common_services'
   | 'intent_history'
   | 'intent_parser'
   | 'sdn_dashboard'

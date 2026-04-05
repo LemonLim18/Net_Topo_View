@@ -34,6 +34,14 @@
       "type": "string",
       "description": "Management interface name"
     },
+    "role": {
+      "type": "string",
+      "description": "Device role: core | distribution | access | firewall"
+    },
+    "mgmt_l3_interface": {
+      "type": "boolean",
+      "description": "When true, render routed management interface mode (e.g. no switchport on Cisco)."
+    },
     "vendor": {
       "type": "string",
       "description": "Target vendor key"
@@ -49,6 +57,30 @@
     "port": {
       "type": "integer",
       "description": "SSH port"
+    },
+    "snmp_community": {
+      "type": "string",
+      "description": "SNMP community string inherited from common services profile"
+    },
+    "snmp_location": {
+      "type": "string",
+      "description": "SNMP location"
+    },
+    "snmp_contact": {
+      "type": "string",
+      "description": "SNMP contact"
+    },
+    "snmp_host_ip": {
+      "type": "string",
+      "description": "SNMP server/trap host IP"
+    },
+    "syslog_host_ip": {
+      "type": "string",
+      "description": "Syslog server host IP"
+    },
+    "ntp_server_ip": {
+      "type": "string",
+      "description": "NTP server IP"
     }
   }
 }

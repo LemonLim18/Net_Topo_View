@@ -23,6 +23,7 @@ import {
 import { netboxApi, type DeviceRecord, type InterfaceRecord, type LinkRecord } from '../src/services/api';
 import { useDeviceContext } from '../contexts/DeviceContext';
 import { Toast, Confirm } from '../src/utils/swal';
+import { validateLinkInterfaceCompatibility } from '../src/utils/linkValidation';
 
 const NETBOX_SELECTED_DEVICE_KEY = 'netbox.selectedDeviceId';
 const NETBOX_DETAIL_TAB_KEY = 'netbox.detailTab';
@@ -57,6 +58,47 @@ const ROLE_OPTIONS = [
   { value: 'access', label: 'Access Switch' },
   { value: 'firewall', label: 'Firewall' },
 ];
+
+const MGMT_INTERFACE_TYPES: Record<string, string[]> = {
+  cisco_ios__core: ['GigabitEthernet', 'Loopback'],
+  cisco_ios__distribution: ['Ethernet', 'GigabitEthernet', 'Vlan', 'Loopback'],
+  cisco_ios__access: ['Vlan', 'Ethernet', 'GigabitEthernet', 'Loopback'],
+  huawei_vrp__core: ['MEth', 'GigabitEthernet', 'LoopBack'],
+  huawei_vrp__distribution: ['MEth', 'GigabitEthernet', 'Vlanif', 'LoopBack'],
+  huawei_vrp__access: ['Vlanif', 'MEth', 'GigabitEthernet', 'LoopBack'],
+  juniper_junos__core: ['fxp', 'ge-', 'lo'],
+  juniper_junos__distribution: ['fxp', 'ge-', 'irb.', 'lo'],
+  juniper_junos__access: ['fxp', 'ge-', 'irb.', 'lo'],
+};
+
+const getManagementInterfaceTypeOptions = (vendor: string, role: string): string[] => {
+  const v = String(vendor || '').trim().toLowerCase();
+  const r = String(role || '').trim().toLowerCase();
+  const exact = MGMT_INTERFACE_TYPES[`${v}__${r}`];
+  if (exact && exact.length > 0) return exact;
+  const byVendor = Object.entries(MGMT_INTERFACE_TYPES)
+    .find(([key]) => key.startsWith(`${v}__`))?.[1];
+  if (byVendor && byVendor.length > 0) return byVendor;
+  return ['GigabitEthernet'];
+};
+
+const splitManagementInterface = (full: string, options: string[]): { type: string; suffix: string } => {
+  const value = String(full || '').trim();
+  if (!value) {
+    return { type: options[0] || 'GigabitEthernet', suffix: '' };
+  }
+  const sorted = [...options].sort((a, b) => b.length - a.length);
+  for (const prefix of sorted) {
+    if (value.startsWith(prefix)) {
+      return { type: prefix, suffix: value.slice(prefix.length) };
+    }
+  }
+  return { type: options[0] || 'GigabitEthernet', suffix: value };
+};
+
+const composeManagementInterface = (type: string, suffix: string): string => {
+  return `${String(type || '').trim()}${String(suffix || '').trim()}`;
+};
 
 const vendorLabel = (v: string | null) => {
   if (!v) return '—';
@@ -171,6 +213,8 @@ const EMPTY_FORM = {
   hostname: '',
   management_ip: '',
   management_subnet_mask: '255.255.255.0',
+  management_interface_type: 'GigabitEthernet',
+  management_interface_suffix: '0/0',
   vendor: '',
   model: '',
   os_version: '',
@@ -250,6 +294,19 @@ const NetBoxDevices: React.FC = () => {
   const [editId, setEditId] = useState<number | null>(null);
   const [form, setForm] = useState({ ...EMPTY_FORM });
   const [formError, setFormError] = useState<string | null>(null);
+
+  const managementInterfaceTypeOptions = getManagementInterfaceTypeOptions(form.vendor, form.role);
+
+  useEffect(() => {
+    setForm((prev) => {
+      const options = getManagementInterfaceTypeOptions(prev.vendor, prev.role);
+      if (!options.length) return prev;
+      if (!options.includes(prev.management_interface_type)) {
+        return { ...prev, management_interface_type: options[0] };
+      }
+      return prev;
+    });
+  }, [form.vendor, form.role]);
 
   // Interface modal state
   const [showIfaceModal, setShowIfaceModal] = useState(false);
@@ -426,7 +483,8 @@ const NetBoxDevices: React.FC = () => {
   // -----------------------------------------------------------------------
 
   const handleCreate = () => {
-    setForm({ ...EMPTY_FORM });
+    const mgmtTypes = getManagementInterfaceTypeOptions(EMPTY_FORM.vendor, EMPTY_FORM.role);
+    setForm({ ...EMPTY_FORM, management_interface_type: mgmtTypes[0] || 'GigabitEthernet', management_interface_suffix: '0/0' });
     setIsEditing(false);
     setEditId(null);
     setFormError(null);
@@ -434,10 +492,14 @@ const NetBoxDevices: React.FC = () => {
   };
 
   const handleEdit = (d: DeviceRecord) => {
+    const mgmtTypes = getManagementInterfaceTypeOptions(d.vendor || '', d.role || '');
+    const parsedMgmt = splitManagementInterface(d.management_interface || '', mgmtTypes);
     setForm({
       hostname: d.hostname,
       management_ip: d.management_ip || '',
       management_subnet_mask: d.management_subnet_mask || '255.255.255.0',
+      management_interface_type: parsedMgmt.type,
+      management_interface_suffix: parsedMgmt.suffix,
       vendor: d.vendor || '',
       model: d.model || '',
       os_version: d.os_version || '',
@@ -462,12 +524,15 @@ const NetBoxDevices: React.FC = () => {
     setFormError(null);
     setIsActionLoading(true);
 
+    const managementInterface = composeManagementInterface(form.management_interface_type, form.management_interface_suffix);
+
     try {
       if (isEditing && editId !== null) {
         const updated = await netboxApi.updateDevice(editId, {
           hostname: form.hostname,
           management_ip: form.management_ip,
           management_subnet_mask: form.management_subnet_mask,
+          management_interface: managementInterface,
           vendor: form.vendor,
           model: form.model,
           os_version: form.os_version,
@@ -488,6 +553,7 @@ const NetBoxDevices: React.FC = () => {
           hostname: form.hostname,
           management_ip: form.management_ip,
           management_subnet_mask: form.management_subnet_mask,
+          management_interface: managementInterface,
           vendor: form.vendor,
           model: form.model,
           os_version: form.os_version,
@@ -656,6 +722,13 @@ const NetBoxDevices: React.FC = () => {
       setLinkFormError('Both source and destination devices are required');
       return;
     }
+    const srcIface = srcInterfaces.find((i) => i.id === linkForm.src_interface_id);
+    const dstIface = dstInterfaces.find((i) => i.id === linkForm.dst_interface_id);
+    const compatibilityError = validateLinkInterfaceCompatibility(srcIface, dstIface);
+    if (compatibilityError) {
+      setLinkFormError(compatibilityError);
+      return;
+    }
     setLinkFormError(null);
     try {
       await netboxApi.createLink({
@@ -687,6 +760,11 @@ const NetBoxDevices: React.FC = () => {
       Toast.error('Delete failed', e.message);
     }
   };
+
+  const selectedMgmtInterface = selected?.management_interface
+    ? interfaces.find((i) => i.name === selected.management_interface)
+    : undefined;
+  const selectedSubnetMaskDisplay = selected?.management_subnet_mask || selectedMgmtInterface?.subnet_mask || '—';
 
   // -----------------------------------------------------------------------
   //  Render
@@ -886,7 +964,8 @@ const NetBoxDevices: React.FC = () => {
                     <DetailRow label="ID" value={String(selected.id)} />
                     <DetailRow label="Hostname" value={selected.hostname} mono />
                     <DetailRow label="Management IP" value={selected.management_ip || '—'} mono />
-                    <DetailRow label="Subnet Mask" value={selected.management_subnet_mask || '—'} mono />
+                    <DetailRow label="Management Interface" value={selected.management_interface || '—'} mono />
+                    <DetailRow label="Subnet Mask" value={selectedSubnetMaskDisplay} mono />
                     <DetailRow label="Vendor" value={vendorLabel(selected.vendor)} />
                     <DetailRow label="Role" value={ROLE_OPTIONS.find(r => r.value === selected.role)?.label || selected.role} />
                     <DetailRow label="Model" value={selected.model || '—'} />
@@ -1105,6 +1184,33 @@ const NetBoxDevices: React.FC = () => {
                 </div>
               </div>
 
+              <label className="form-control w-full">
+                <div className="label"><span className="label-text">Management Interface</span></div>
+                <div className="grid grid-cols-2 gap-3">
+                  <select
+                    className="select select-bordered w-full"
+                    value={form.management_interface_type}
+                    onChange={(e) => setForm({ ...form, management_interface_type: e.target.value })}
+                  >
+                    {managementInterfaceTypeOptions.map((name) => (
+                      <option key={name} value={name}>{name}</option>
+                    ))}
+                  </select>
+                  <input
+                    type="text"
+                    className="input input-bordered w-full"
+                    placeholder="suffix (e.g. 0/0 or 100)"
+                    value={form.management_interface_suffix}
+                    onChange={(e) => setForm({ ...form, management_interface_suffix: e.target.value })}
+                  />
+                </div>
+                <div className="label">
+                  <span className="label-text-alt opacity-70">
+                    Result: {composeManagementInterface(form.management_interface_type, form.management_interface_suffix) || '—'}
+                  </span>
+                </div>
+              </label>
+
               <div className="grid grid-cols-2 gap-3">
                 <label className="form-control w-full">
                   <div className="label"><span className="label-text">Model</span></div>
@@ -1195,18 +1301,18 @@ const NetBoxDevices: React.FC = () => {
                 </label>
               </div>
               <div className="grid grid-cols-2 gap-3">
-                <label className="form-control w-full">
+                {/* <label className="form-control w-full">
                   <div className="label"><span className="label-text">MAC Address</span></div>
                   <input type="text" className="input input-bordered w-full" placeholder="00:11:22:33:44:55"
                     value={ifaceForm.mac_address}
                     onChange={(e) => setIfaceForm({ ...ifaceForm, mac_address: e.target.value })} />
-                </label>
-                <label className="form-control w-full">
+                </label> */}
+                {/* <label className="form-control w-full">
                   <div className="label"><span className="label-text">Speed</span></div>
                   <input type="text" className="input input-bordered w-full" placeholder="1Gbps"
                     value={ifaceForm.speed}
                     onChange={(e) => setIfaceForm({ ...ifaceForm, speed: e.target.value })} />
-                </label>
+                </label> */}
               </div>
             </div>
 

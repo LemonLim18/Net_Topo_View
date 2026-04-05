@@ -17,6 +17,7 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
+from common_services.service import get_effective_profile
 from config_engine.renderer import TemplateRenderer
 from .config_generator import OnboardingConfigGenerator
 from db.manager import DatabaseManager
@@ -90,17 +91,26 @@ async def generate_for_device(device_id: int):
     if not device:
         raise HTTPException(404, f"Device {device_id} not found in inventory")
 
+    # Merge inherited common services defaults (global -> site -> role -> device).
+    effective_common = get_effective_profile(
+        DB_PATH,
+        role=device.role,
+        device_id=device.id,
+    )
+
     # Build params dict from the device record.
     raw_params = {
         "hostname":       device.hostname,
         "mgmt_ip":        device.management_ip or "0.0.0.0",
-        "subnet_mask":    "255.255.255.0",
+        "subnet_mask":    device.management_subnet_mask or "255.255.255.0",
         "gateway":        _guess_gateway(device.management_ip),
-        "mgmt_interface": _default_mgmt_iface(device.vendor),
+        "mgmt_interface": (device.management_interface or _default_mgmt_iface(device.vendor, device.role)),
         "vendor":         device.vendor or "cisco_ios",
+        "role":           device.role or "network-device",
         "ssh_user":       device.ssh_user or "admin",
         "ssh_password":   device.ssh_password or "CHANGE_ME",
         "port":           device.ssh_port or 22,
+        **_common_services_template_params(effective_common),
     }
     params = _normalize_day0_params(raw_params)
 
@@ -152,10 +162,15 @@ def _guess_gateway(mgmt_ip: Optional[str]) -> str:
         return "0.0.0.0"
 
 
-def _default_mgmt_iface(vendor: Optional[str]) -> str:
+def _default_mgmt_iface(vendor: Optional[str], role: Optional[str] = None) -> str:
     vendor = (vendor or "cisco_ios").lower()
+    role_norm = (role or "").strip().lower()
+
+    # Cisco distribution/access in this project commonly use L3-routed mgmt ports.
+    if "cisco" in vendor and role_norm in ("distribution", "access"):
+        return "Ethernet0/0"
     if "huawei" in vendor:
-        return "GigabitEthernet0/0/0"
+        return "MEth0/0/0"
     if "juniper" in vendor:
         return "fxp0"
     return "GigabitEthernet0/0"
@@ -164,9 +179,25 @@ def _default_mgmt_iface(vendor: Optional[str]) -> str:
 def _normalize_day0_params(params: dict) -> dict:
     normalized = dict(params)
     normalized["vendor"] = (normalized.get("vendor") or "cisco_ios").lower()
+    normalized["role"] = str(normalized.get("role") or "network-device").strip().lower()
     normalized.setdefault("subnet_mask", "255.255.255.0")
+    # Cisco distribution/access profiles in this project expect routed mgmt interfaces.
+    normalized["mgmt_l3_interface"] = bool(
+        "cisco" in normalized["vendor"] and normalized["role"] in ("distribution", "access")
+    )
     normalized["mgmt_prefix_len"] = _prefix_from_mask(str(normalized.get("subnet_mask") or "255.255.255.0"))
     return normalized
+
+
+def _common_services_template_params(profile: dict) -> dict:
+    return {
+        "snmp_community": profile.get("snmp_community"),
+        "snmp_location": profile.get("snmp_location"),
+        "snmp_contact": profile.get("snmp_contact"),
+        "snmp_host_ip": profile.get("snmp_host_ip"),
+        "syslog_host_ip": profile.get("syslog_host_ip"),
+        "ntp_server_ip": profile.get("ntp_server_ip"),
+    }
 
 
 def _render_day0_config(params: dict) -> str:

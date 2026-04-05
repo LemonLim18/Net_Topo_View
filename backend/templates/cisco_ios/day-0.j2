@@ -5,11 +5,12 @@ configure terminal
 hostname {{ hostname }}
 !
 interface {{ mgmt_interface }}
+{% if mgmt_l3_interface %}
+ no switchport
+{% endif %}
  ip address {{ mgmt_ip }} {{ subnet_mask }}
  no shutdown
  exit
-!
-ip default-gateway {{ gateway }}
 !
 username {{ ssh_user }} privilege 15 secret {{ ssh_password }}
 !
@@ -25,9 +26,29 @@ line vty 0 4
  transport input ssh
  exit
 !
+{% if snmp_community %}
+snmp-server community {{ snmp_community }} RO
+{% if snmp_location %}
+snmp-server location {{ snmp_location }}
+{% endif %}
+{% if snmp_contact %}
+snmp-server contact {{ snmp_contact }}
+{% endif %}
+{% if snmp_host_ip %}
+snmp-server host {{ snmp_host_ip }} version 2c {{ snmp_community }}
+{% endif %}
+!
+{% endif %}
+{% if syslog_host_ip %}
+logging host {{ syslog_host_ip }}
+!
+{% endif %}
+{% if ntp_server_ip %}
+ntp server {{ ntp_server_ip }}
+!
+{% endif %}
 service password-encryption
 no ip http server
-no ip http secure-server
 !
 end
 write memory

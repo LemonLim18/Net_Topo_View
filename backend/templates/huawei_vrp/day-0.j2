@@ -27,5 +27,27 @@ user-interface vty 0 4
  user privilege level 15
  quit
 #
+{% if snmp_community %}
+snmp-agent
+snmp-agent community read {{ snmp_community }}
+{% if snmp_location %}
+snmp-agent sys-info location {{ snmp_location }}
+{% endif %}
+{% if snmp_contact %}
+snmp-agent sys-info contact {{ snmp_contact }}
+{% endif %}
+{% if snmp_host_ip %}
+snmp-agent target-host trap address udp-domain {{ snmp_host_ip }} params securityname {{ snmp_community }}
+{% endif %}
+#
+{% endif %}
+{% if syslog_host_ip %}
+info-center loghost {{ syslog_host_ip }}
+#
+{% endif %}
+{% if ntp_server_ip %}
+ntp-service unicast-server {{ ntp_server_ip }}
+#
+{% endif %}
 return
 save force

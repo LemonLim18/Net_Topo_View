@@ -28,6 +28,13 @@ const TEMPLATE_GIT_HEIGHT_KEY = 'templateStudio.gitTerminalHeight';
 const TEMPLATE_GIT_MIN_KEY = 'templateStudio.gitTerminalMinimized';
 const TEMPLATE_EDITOR_LANGUAGE = 'nettopo-jinja';
 
+const TEMPLATE_SCOPE_OPTIONS = [
+  { value: 'shared', label: 'Shared (all roles)' },
+  { value: 'core', label: 'Core' },
+  { value: 'distribution', label: 'Distribution' },
+  { value: 'access', label: 'Access' },
+];
+
 const TEMPLATE_EXPR_KEYWORDS = new Set([
   'if', 'else', 'elif', 'endif', 'for', 'endfor', 'in', 'is', 'defined', 'and', 'or', 'not',
   'true', 'false', 'none', 'set', 'with', 'without', 'loop', 'block', 'endblock', 'macro',
@@ -296,6 +303,7 @@ const TemplateStudioView: React.FC = () => {
   };
 
   const hasStoredExpandedRef = useRef(Boolean(localStorage.getItem(TEMPLATE_EXPANDED_VENDORS_KEY)));
+  const hasSyncedStoredTabsRef = useRef(false);
 
   // File tree
   const [templates, setTemplates] = useState<TemplateInfo[]>([]);
@@ -318,9 +326,16 @@ const TemplateStudioView: React.FC = () => {
   // Modals
   const [showNewModal, setShowNewModal] = useState(false);
   const [newVendor, setNewVendor] = useState('cisco_ios');
+  const [newScope, setNewScope] = useState('shared');
   const [newFeature, setNewFeature] = useState('');
   const [newContent, setNewContent] = useState('');
   const [newError, setNewError] = useState<string | null>(null);
+
+  const scopedNewFeature = useMemo(() => {
+    const base = newFeature.trim();
+    if (!base) return '';
+    return newScope === 'shared' ? base : `${newScope}__${base}`;
+  }, [newFeature, newScope]);
 
   const [, setGitStatus] = useState<TemplateGitStatus | null>(null);
   const [, setGitOutputLines] = useState<string[]>([]);
@@ -368,6 +383,64 @@ const TemplateStudioView: React.FC = () => {
   }, []);
 
   useEffect(() => { fetchTemplates(); }, [fetchTemplates]);
+
+  useEffect(() => {
+    const interval = window.setInterval(() => {
+      fetchTemplates();
+    }, 10000);
+
+    const onFocus = () => fetchTemplates();
+    window.addEventListener('focus', onFocus);
+
+    return () => {
+      window.clearInterval(interval);
+      window.removeEventListener('focus', onFocus);
+    };
+  }, [fetchTemplates]);
+
+  const reloadTabFromSource = useCallback(async (vendor: string, feature: string, forceIfDirty = false) => {
+    const id = `${vendor}/${feature}`;
+    const existing = tabs.find((t) => t.id === id);
+    if (existing?.isDirty && !forceIfDirty) {
+      return false;
+    }
+
+    const res = await configApi.getTemplateSource(vendor, feature);
+    setTabs((prev) => {
+      const idx = prev.findIndex((t) => t.id === id);
+      const reloaded: OpenTab = {
+        id,
+        vendor,
+        feature,
+        content: res.content,
+        originalContent: res.content,
+        isDirty: false,
+      };
+      if (idx === -1) return [...prev, reloaded];
+      const next = [...prev];
+      next[idx] = reloaded;
+      return next;
+    });
+    return true;
+  }, [tabs]);
+
+  useEffect(() => {
+    if (hasSyncedStoredTabsRef.current) return;
+    if (!tabs.length) {
+      hasSyncedStoredTabsRef.current = true;
+      return;
+    }
+    hasSyncedStoredTabsRef.current = true;
+
+    const nonDirtyTabs = tabs.filter((t) => !t.isDirty);
+    if (!nonDirtyTabs.length) return;
+
+    (async () => {
+      await Promise.all(
+        nonDirtyTabs.map((t) => reloadTabFromSource(t.vendor, t.feature, false).catch(() => false))
+      );
+    })();
+  }, [tabs, reloadTabFromSource]);
 
   useEffect(() => {
     localStorage.setItem(TEMPLATE_TABS_KEY, JSON.stringify(tabs));
@@ -512,25 +585,81 @@ const TemplateStudioView: React.FC = () => {
     // Already open?
     const existing = tabs.find(t => t.id === id);
     if (existing) {
+      if (!existing.isDirty) {
+        try {
+          await reloadTabFromSource(vendor, feature, false);
+        } catch {
+          // keep showing current content if reload fails
+        }
+      }
       setActiveTabId(id);
       return;
     }
 
     try {
-      const res = await configApi.getTemplateSource(vendor, feature);
-      const tab: OpenTab = {
-        id,
-        vendor,
-        feature,
-        content: res.content,
-        originalContent: res.content,
-        isDirty: false,
-      };
-      setTabs(prev => [...prev, tab]);
+      await reloadTabFromSource(vendor, feature, true);
       setActiveTabId(id);
     } catch (e: any) {
       Toast.error('Failed to open template', e.message);
     }
+  };
+
+  const refreshTreeAndOpenTabs = async () => {
+    await fetchTemplates();
+
+    const openTabs = [...tabs];
+    if (!openTabs.length) {
+      Toast.success('Template list refreshed from disk');
+      return;
+    }
+
+    let refreshedCount = 0;
+    const dirtyTabs = openTabs.filter((t) => t.isDirty);
+    let overwriteDirty = false;
+    if (dirtyTabs.length > 0) {
+      overwriteDirty = await Confirm.ask(
+        `Overwrite ${dirtyTabs.length} dirty tab(s)?`,
+        'This will discard unsaved changes and reload latest content from local template files.'
+      );
+    }
+
+    let skippedDirty = 0;
+    await Promise.all(
+      openTabs.map(async (t) => {
+        if (t.isDirty) {
+          if (overwriteDirty) {
+            try {
+              const changed = await reloadTabFromSource(t.vendor, t.feature, true);
+              if (changed) refreshedCount += 1;
+            } catch {
+              // keep current tab content if reload fails for that file
+            }
+            return;
+          }
+          skippedDirty += 1;
+          return;
+        }
+        try {
+          const changed = await reloadTabFromSource(t.vendor, t.feature, false);
+          if (changed) refreshedCount += 1;
+        } catch {
+          // keep current tab content if reload fails for that file
+        }
+      })
+    );
+
+    if (skippedDirty > 0) {
+      Toast.info(
+        'Template list refreshed from disk',
+        `${refreshedCount} open tab(s) reloaded; ${skippedDirty} dirty tab(s) kept unchanged.`
+      );
+      return;
+    }
+    if (overwriteDirty) {
+      Toast.success(`Template list refreshed from disk; ${dirtyTabs.length} dirty tab(s) overwritten.`);
+      return;
+    }
+    Toast.success('Template list refreshed from disk');
   };
 
   // -----------------------------------------------------------------------
@@ -643,15 +772,21 @@ const TemplateStudioView: React.FC = () => {
       setNewError('Feature name is required');
       return;
     }
+    const featureName = scopedNewFeature;
+    if (!featureName) {
+      setNewError('Feature name is required');
+      return;
+    }
     setNewError(null);
     try {
       await configApi.createTemplate(
         newVendor,
-        newFeature.trim(),
-        newContent || `{# ${newFeature.trim()} template for ${newVendor} #}\n\n`,
+        featureName,
+        newContent || `{# ${featureName} template for ${newVendor} #}\n\n`,
       );
-      Toast.success(`Template "${newVendor}/${newFeature}" created`);
+      Toast.success(`Template "${newVendor}/${featureName}" created`);
       setShowNewModal(false);
+      setNewScope('shared');
       setNewFeature('');
       setNewContent('');
       fetchTemplates();
@@ -686,6 +821,7 @@ const TemplateStudioView: React.FC = () => {
       const content = await file.text();
       const featureName = file.name.replace(/\.(j2|jinja2|txt)$/, '');
       setNewContent(content);
+      setNewScope('shared');
       setNewFeature(featureName);
       setShowNewModal(true);
     };
@@ -728,14 +864,14 @@ const TemplateStudioView: React.FC = () => {
               <button
                 className="btn btn-ghost btn-xs"
                 title="New template"
-                onClick={() => { setNewContent(''); setNewFeature(''); setShowNewModal(true); }}
+                onClick={() => { setNewContent(''); setNewScope('shared'); setNewFeature(''); setShowNewModal(true); }}
               >
                 <Plus className="w-3.5 h-3.5" />
               </button>
               <button
                 className="btn btn-ghost btn-xs"
                 title="Refresh"
-                onClick={fetchTemplates}
+                onClick={refreshTreeAndOpenTabs}
                 disabled={loadingTree}
               >
                 <RefreshCw className={`w-3.5 h-3.5 ${loadingTree ? 'animate-spin' : ''}`} />
@@ -868,7 +1004,7 @@ const TemplateStudioView: React.FC = () => {
                   Or{' '}
                   <button className="link link-primary" onClick={handleUpload}>upload a .j2 file</button>{' '}
                   or{' '}
-                  <button className="link link-primary" onClick={() => setShowNewModal(true)}>create a new template</button>
+                  <button className="link link-primary" onClick={() => { setNewScope('shared'); setShowNewModal(true); }}>create a new template</button>
                 </p>
               </div>
             )}
@@ -1131,6 +1267,19 @@ const TemplateStudioView: React.FC = () => {
               </label>
 
               <label className="form-control w-full">
+                <div className="label"><span className="label-text">Template Scope</span></div>
+                <select
+                  className="select select-bordered w-full"
+                  value={newScope}
+                  onChange={(e) => setNewScope(e.target.value)}
+                >
+                  {TEMPLATE_SCOPE_OPTIONS.map((opt) => (
+                    <option key={opt.value} value={opt.value}>{opt.label}</option>
+                  ))}
+                </select>
+              </label>
+
+              <label className="form-control w-full">
                 <div className="label"><span className="label-text">Feature Name *</span></div>
                 <input
                   type="text"
@@ -1141,7 +1290,7 @@ const TemplateStudioView: React.FC = () => {
                 />
                 <div className="label">
                   <span className="label-text-alt opacity-50">
-                    Will be saved as {newVendor}/{newFeature || '…'}.j2
+                    Will be saved as {newVendor}/{scopedNewFeature || '…'}.j2
                   </span>
                 </div>
               </label>

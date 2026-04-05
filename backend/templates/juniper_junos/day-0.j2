@@ -11,4 +11,23 @@ set system services ssh protocol-version v2
 set interfaces {{ mgmt_interface }} unit 0 family inet address {{ mgmt_ip }}/{{ mgmt_prefix_len if mgmt_prefix_len is defined else 24 }}
 set routing-options static route 0.0.0.0/0 next-hop {{ gateway }}
 #
+{% if snmp_community %}
+set snmp community {{ snmp_community }} authorization read-only
+{% if snmp_location %}
+set snmp location "{{ snmp_location }}"
+{% endif %}
+{% if snmp_contact %}
+set snmp contact "{{ snmp_contact }}"
+{% endif %}
+{% if snmp_host_ip %}
+set snmp trap-group NMS targets {{ snmp_host_ip }}
+{% endif %}
+{% endif %}
+{% if syslog_host_ip %}
+set system syslog host {{ syslog_host_ip }} any notice
+{% endif %}
+{% if ntp_server_ip %}
+set system ntp server {{ ntp_server_ip }}
+{% endif %}
+#
 commit and-quit

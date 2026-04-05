@@ -11,6 +11,7 @@ from netbox.sync_topology import TopologySyncer
 from netbox.client import NetBoxClient
 import logging
 import sqlite3
+import ipaddress
 
 logger = logging.getLogger("netbox.api")
 
@@ -45,6 +46,7 @@ class DeviceCreate(BaseModel):
     hostname: str
     management_ip: Optional[str] = None
     management_subnet_mask: Optional[str] = None
+    management_interface: Optional[str] = None
     vendor: Optional[str] = None
     model: Optional[str] = None
     os_version: Optional[str] = None
@@ -59,6 +61,7 @@ class DeviceUpdate(BaseModel):
     hostname: Optional[str] = None
     management_ip: Optional[str] = None
     management_subnet_mask: Optional[str] = None
+    management_interface: Optional[str] = None
     vendor: Optional[str] = None
     model: Optional[str] = None
     os_version: Optional[str] = None
@@ -104,6 +107,7 @@ def _device_dict(d: Device) -> dict:
         "hostname": d.hostname,
         "management_ip": d.management_ip,
         "management_subnet_mask": d.management_subnet_mask,
+        "management_interface": d.management_interface,
         "vendor": d.vendor,
         "model": d.model,
         "os_version": d.os_version,
@@ -139,6 +143,78 @@ def _parse_cidr(ip_str: Optional[str], current_mask: Optional[str]) -> tuple[Opt
         return ip, mask if not current_mask else current_mask
     except Exception:
         return ip_str, current_mask
+
+
+def _normalize_mask_to_prefix(mask_raw: Optional[str]) -> Optional[int]:
+    txt = str(mask_raw or "").strip()
+    if not txt:
+        return None
+    if txt.startswith("/"):
+        txt = txt[1:]
+    if txt.isdigit():
+        pfx = int(txt)
+        if 0 <= pfx <= 32:
+            return pfx
+        return None
+    try:
+        return int(ipaddress.IPv4Network(f"0.0.0.0/{txt}").prefixlen)
+    except ValueError:
+        return None
+
+
+def _interface_network_tuple(iface_row: sqlite3.Row) -> tuple[str, Optional[ipaddress.IPv4Network]]:
+    """Return inferred layer (l2/l3) and IPv4 network when available."""
+    ip_txt = str(iface_row["ip_address"] or "").strip()
+    mask_txt = str(iface_row["subnet_mask"] or "").strip()
+
+    if not ip_txt:
+        return "l2", None
+
+    # Treat any interface with an IP as routed/L3 and require mask for subnet checks.
+    if "/" in ip_txt:
+        try:
+            iface = ipaddress.IPv4Interface(ip_txt)
+            return "l3", iface.network
+        except ValueError as exc:
+            raise HTTPException(400, f"Invalid interface IP format '{ip_txt}' on {iface_row['name']}: {exc}") from exc
+
+    pfx = _normalize_mask_to_prefix(mask_txt)
+    if pfx is None:
+        raise HTTPException(
+            400,
+            (
+                f"Interface {iface_row['name']} has IP '{ip_txt}' but missing/invalid subnet mask '{mask_txt}'. "
+                "Set a valid subnet mask before creating this link."
+            ),
+        )
+    try:
+        iface = ipaddress.IPv4Interface(f"{ip_txt}/{pfx}")
+        return "l3", iface.network
+    except ValueError as exc:
+        raise HTTPException(400, f"Invalid interface IP '{ip_txt}' on {iface_row['name']}: {exc}") from exc
+
+
+def _validate_link_interfaces_compatible(src_row: sqlite3.Row, dst_row: sqlite3.Row) -> None:
+    src_layer, src_net = _interface_network_tuple(src_row)
+    dst_layer, dst_net = _interface_network_tuple(dst_row)
+
+    if src_layer != dst_layer:
+        raise HTTPException(
+            400,
+            (
+                f"Cannot connect interfaces with different layer types: "
+                f"{src_row['name']} is {src_layer.upper()} and {dst_row['name']} is {dst_layer.upper()}."
+            ),
+        )
+
+    if src_layer == "l3" and src_net is not None and dst_net is not None and src_net != dst_net:
+        raise HTTPException(
+            400,
+            (
+                "Cannot connect routed interfaces from different subnets: "
+                f"{src_row['name']} is in {src_net} and {dst_row['name']} is in {dst_net}."
+            ),
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -215,6 +291,7 @@ async def create_device(body: DeviceCreate):
         hostname=body.hostname,
         management_ip=body.management_ip,
         management_subnet_mask=body.management_subnet_mask,
+        management_interface=body.management_interface,
         vendor=body.vendor,
         model=body.model,
         os_version=body.os_version,
@@ -297,6 +374,7 @@ async def update_device(device_id: int, body: DeviceUpdate):
         hostname=hostname,
         management_ip=mgmt_ip,
         management_subnet_mask=body.management_subnet_mask if body.management_subnet_mask is not None else existing.management_subnet_mask,
+        management_interface=body.management_interface if body.management_interface is not None else existing.management_interface,
         vendor=vendor,
         netbox_id=nb_id,
         model=model,
@@ -608,15 +686,17 @@ async def create_link(body: LinkCreate):
             raise HTTPException(404, "Source or destination device not found")
 
         src_row = conn.execute(
-            "SELECT name FROM interfaces WHERE id = ? AND device_id = ?",
+            "SELECT id, name, ip_address, subnet_mask FROM interfaces WHERE id = ? AND device_id = ?",
             (body.src_interface_id, body.src_device_id),
         ).fetchone()
         dst_row = conn.execute(
-            "SELECT name FROM interfaces WHERE id = ? AND device_id = ?",
+            "SELECT id, name, ip_address, subnet_mask FROM interfaces WHERE id = ? AND device_id = ?",
             (body.dst_interface_id, body.dst_device_id),
         ).fetchone()
         if not src_row or not dst_row:
             raise HTTPException(400, "Source or destination interface is invalid for the selected device")
+
+        _validate_link_interfaces_compatible(src_row, dst_row)
 
         src_iface_name = src_row["name"]
         dst_iface_name = dst_row["name"]

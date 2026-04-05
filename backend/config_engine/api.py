@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
+from common_services.service import get_effective_profile
 from config_engine.renderer import TemplateRenderer
 from config_engine.differ import ConfigDiffer
 from config_engine.validator import SyntaxValidator
@@ -24,6 +25,7 @@ router = APIRouter(prefix="/config", tags=["Config Engine (M3)"])
 _renderer = TemplateRenderer()
 _differ = ConfigDiffer()
 _validator = SyntaxValidator()
+_DB_PATH = "db/netauto.db"
 
 # ---------------------------------------------------------------------------
 # Request / Response Models
@@ -68,6 +70,31 @@ class TemplateInfo(BaseModel):
     has_undo: bool
     schema_exists: bool
 
+
+def _maybe_inject_common_services(params: Dict[str, Any]) -> Dict[str, Any]:
+    merged = dict(params or {})
+
+    device_id = None
+    for key in ("device_id", "target_device_id", "netbox_device_id"):
+        raw = merged.get(key)
+        if raw is None or raw == "":
+            continue
+        try:
+            device_id = int(raw)
+            break
+        except Exception:
+            continue
+
+    role = merged.get("role")
+    site = merged.get("site")
+    effective = get_effective_profile(_DB_PATH, site=site, role=role, device_id=device_id)
+
+    for key in ("snmp_community", "snmp_location", "snmp_contact", "snmp_host_ip", "syslog_host_ip", "ntp_server_ip"):
+        if (merged.get(key) is None or str(merged.get(key)).strip() == "") and effective.get(key):
+            merged[key] = effective.get(key)
+
+    return merged
+
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
@@ -101,8 +128,10 @@ async def render_template(req: RenderRequest):
     
     Returns the generated CLI commands and optionally the undo/rollback commands.
     """
+    effective_params = _maybe_inject_common_services(req.params)
+
     try:
-        config = _renderer.render(req.vendor, req.feature, req.params)
+        config = _renderer.render(req.vendor, req.feature, effective_params)
     except ValueError as e:
         raise HTTPException(400, str(e))
     except FileNotFoundError as e:
@@ -114,7 +143,7 @@ async def render_template(req: RenderRequest):
     # Try rendering the undo template (optional — not all features have one)
     undo_config = None
     try:
-        undo_config = _renderer.render_undo(req.vendor, req.feature, req.params)
+        undo_config = _renderer.render_undo(req.vendor, req.feature, effective_params)
     except (FileNotFoundError, Exception):
         pass  # Undo template is optional
 

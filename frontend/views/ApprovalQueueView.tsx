@@ -60,17 +60,15 @@ function normalizeQueueItems(raw: QueueItem[]): QueueItem[] {
   const ordered = [...(raw || [])].sort((a, b) => {
     const aPlaybook = String(a.type || '').toLowerCase() === 'ansible_job';
     const bPlaybook = String(b.type || '').toLowerCase() === 'ansible_job';
-    return Number(aPlaybook) - Number(bPlaybook);
+    // Prefer playbook job rows when both request/job records point to same request.
+    return Number(bPlaybook) - Number(aPlaybook);
   });
   const byRequest = new Map<number, QueueItem>();
   for (const item of ordered) {
     const key = Number(item.request_id || item.id);
     if (!Number.isFinite(key)) continue;
     if (byRequest.has(key)) continue;
-    byRequest.set(key, {
-      ...item,
-      type: 'request',
-    });
+    byRequest.set(key, { ...item });
   }
   return Array.from(byRequest.values());
 }
@@ -152,7 +150,9 @@ const ApprovalQueueView: React.FC<Props> = ({ setView: _setView }) => {
     const label = action === 'approve' ? 'Approve' : 'Reject';
     const confirmMessage =
       action === 'approve'
-        ? 'This approves the change request and marks it ready for deployment.'
+        ? item.type === 'ansible_job'
+          ? 'This approves the Ansible job and the linked change request. You can run Execute from Ansible Studio after approval.'
+          : 'This approves the change request. If a playbook job exists, prefer approving from the Playbook row so job state stays in sync.'
         : 'This will move the item to Rejected with your review note.';
     if (!opts?.skipConfirm) {
       const ok = await Confirm.ask(`${label} #${item.id}?`, confirmMessage);
@@ -161,7 +161,13 @@ const ApprovalQueueView: React.FC<Props> = ({ setView: _setView }) => {
 
     setActionId(item.id);
     try {
-      if (action === 'approve') {
+      if (item.type === 'ansible_job') {
+        if (action === 'approve') {
+          await ansibleApi.approveJob(item.id);
+        } else {
+          await ansibleApi.rejectJob(item.id, actionComment);
+        }
+      } else if (action === 'approve') {
         await deployApi.approveRequest(item.request_id, 'admin', actionComment);
       } else {
         await deployApi.rejectRequest(item.request_id, 'admin', actionComment);
@@ -201,14 +207,18 @@ const ApprovalQueueView: React.FC<Props> = ({ setView: _setView }) => {
       setPreviewContent('Loading playbook preview...');
       setPreviewLoading(true);
       try {
-        try {
-          const link = await ansibleApi.getJobForRequest(item.request_id);
-          await loadPlaybookPreviewForJob(link.job_id, link.entrypoint_path);
-        } catch {
-          setPreviewContent(
-            'No Ansible playbook job is linked to this change request, so there is nothing to preview. ' +
-              'If this was submitted outside Ansible Studio, YAML preview may not be available.'
-          );
+        if (item.type === 'ansible_job') {
+          await loadPlaybookPreviewForJob(item.id, item.entrypoint_path);
+        } else {
+          try {
+            const link = await ansibleApi.getJobForRequest(item.request_id);
+            await loadPlaybookPreviewForJob(link.job_id, link.entrypoint_path);
+          } catch {
+            setPreviewContent(
+              'No Ansible playbook job is linked to this change request, so there is nothing to preview. ' +
+                'If this was submitted outside Ansible Studio, YAML preview may not be available.'
+            );
+          }
         }
       } catch (err: any) {
         setPreviewContent(`Unable to load preview.\n\n${err.message || 'Unknown error'}`);

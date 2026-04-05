@@ -86,7 +86,7 @@ const ComplianceHubView: React.FC<Props> = ({ setView, setSelectedDeviceId }) =>
               <Shield className="w-5 h-5" />
             </div>
             <div>
-              <h1 className="text-xl font-bold tracking-tight">Compliance &amp; governance</h1>
+              <h1 className="text-xl font-bold tracking-tight">Compliance &amp; Governance</h1>
               <p className="text-xs opacity-60">
                 Policies, drift results, alerts, and remediation — tied to planned inventory
               </p>

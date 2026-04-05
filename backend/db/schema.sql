@@ -20,6 +20,7 @@ CREATE TABLE IF NOT EXISTS devices (
     hostname        TEXT    NOT NULL UNIQUE,
     management_ip   TEXT,
     management_subnet_mask TEXT,
+    management_interface TEXT,
     vendor          TEXT,                       -- cisco_ios | huawei_vrp | juniper_junos
     model           TEXT,
     os_version      TEXT,
@@ -291,6 +292,28 @@ CREATE TABLE IF NOT EXISTS audit_findings (
 );
 
 CREATE INDEX IF NOT EXISTS idx_findings_audit ON audit_findings(audit_id);
+
+-- -----------------------------------------------------------
+-- 11b. Common Services Profiles
+-- -----------------------------------------------------------
+CREATE TABLE IF NOT EXISTS common_service_profiles (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    scope_type          TEXT NOT NULL,            -- global | site | role | device
+    scope_value         TEXT NOT NULL,
+    snmp_community      TEXT,
+    snmp_location       TEXT,
+    snmp_contact        TEXT,
+    snmp_host_ip        TEXT,
+    syslog_servers_json TEXT,
+    ntp_servers_json    TEXT,
+    syslog_host_ip      TEXT,
+    ntp_server_ip       TEXT,
+    created_at          TEXT DEFAULT (datetime('now')),
+    updated_at          TEXT DEFAULT (datetime('now')),
+    UNIQUE(scope_type, scope_value)
+);
+
+CREATE INDEX IF NOT EXISTS idx_common_service_scope ON common_service_profiles(scope_type, scope_value);
 
 -- -----------------------------------------------------------
 -- 12. Security Events (M13b — threats / alerts)

@@ -54,7 +54,7 @@ const ComplianceOverviewCards: React.FC<Props> = ({
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
         <div className="relative overflow-hidden bg-base-100/60 backdrop-blur-md rounded-2xl border border-base-300 p-4 shadow-sm">
           <div className="absolute top-0 left-0 w-1 h-full bg-primary opacity-40" />
-          <p className="text-[10px] font-black uppercase tracking-[0.2em] opacity-30 mb-1">Health index</p>
+          <p className="text-[10px] font-black capitalize tracking-[0.2em] opacity-30 mb-1">Health index</p>
           <div className="flex justify-between items-start">
             <div className="flex items-baseline gap-2">
               <span
@@ -80,7 +80,7 @@ const ComplianceOverviewCards: React.FC<Props> = ({
 
         <div className="relative overflow-hidden bg-base-100/60 backdrop-blur-md rounded-2xl border border-base-300 p-4 shadow-sm">
           <div className="absolute top-0 left-0 w-1 h-full bg-error opacity-40" />
-          <p className="text-[10px] font-black uppercase tracking-[0.2em] opacity-30 mb-1">Drift / violations</p>
+          <p className="text-[10px] font-black capitalize tracking-[0.2em] opacity-30 mb-1">Drift / violations</p>
           <div className="flex items-baseline gap-2">
             <span className={`text-4xl font-black ${driftCount === 0 ? 'text-success' : 'text-error'}`}>
               {driftCount}
@@ -92,7 +92,7 @@ const ComplianceOverviewCards: React.FC<Props> = ({
 
         <div className="relative overflow-hidden bg-base-100/60 backdrop-blur-md rounded-2xl border border-base-300 p-4 shadow-sm">
           <div className="absolute top-0 left-0 w-1 h-full bg-info opacity-40" />
-          <p className="text-[10px] font-black uppercase tracking-[0.2em] opacity-30 mb-1">Latest check</p>
+          <p className="text-[10px] font-black capitalize tracking-[0.2em] opacity-30 mb-1">Latest check</p>
           <div className="flex items-center gap-2 text-sm font-bold">
             <Calendar className="w-4 h-4 opacity-50" />
             {events[0]?.checked_at ? new Date(events[0].checked_at).toLocaleString() : 'N/A'}

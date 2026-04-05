@@ -48,6 +48,7 @@ class OnboardingConfigGenerator:
     # ------------------------------------------------------------------
 
     def _cisco_ios(self, p: dict) -> str:
+        common_services = self._cisco_common_services(p)
         return f"""\
 ! ===== Day-0 Bootstrap: {p['hostname']} (Cisco IOS) =====
 enable
@@ -76,6 +77,7 @@ line vty 0 4
  transport input ssh
  exit
 !
+{common_services}
 service password-encryption
 no ip http server
 no ip http secure-server
@@ -112,6 +114,7 @@ write memory
     # ------------------------------------------------------------------
 
     def _huawei_vrp(self, p: dict) -> str:
+        common_services = self._huawei_common_services(p)
         return f"""\
 # ===== Day-0 Bootstrap: {p['hostname']} (Huawei VRP) =====
 system-view
@@ -142,6 +145,7 @@ user-interface vty 0 4
  user privilege level 15
  quit
 #
+{common_services}
 return
 save force
 """
@@ -152,6 +156,7 @@ save force
 
     def _juniper_junos(self, p: dict) -> str:
         prefix_len = self._prefix_from_mask(p['subnet_mask'])
+        common_services = self._juniper_common_services(p)
         return f"""\
 # ===== Day-0 Bootstrap: {p['hostname']} (Juniper JunOS) =====
 configure
@@ -166,6 +171,7 @@ set system services ssh protocol-version v2
 set interfaces {p['mgmt_interface']} unit 0 family inet address {p['mgmt_ip']}/{prefix_len}
 set routing-options static route 0.0.0.0/0 next-hop {p['gateway']}
 #
+{common_services}
 commit and-quit
 """
 
@@ -188,3 +194,57 @@ commit and-quit
             return sum(bin(int(o)).count('1') for o in mask.split('.'))
         except Exception:
             return 24
+
+    @staticmethod
+    def _cisco_common_services(p: dict) -> str:
+        lines = []
+        snmp_community = p.get("snmp_community")
+        if snmp_community:
+            lines.append(f"snmp-server community {snmp_community} RO")
+            if p.get("snmp_location"):
+                lines.append(f"snmp-server location {p['snmp_location']}")
+            if p.get("snmp_contact"):
+                lines.append(f"snmp-server contact {p['snmp_contact']}")
+            if p.get("snmp_host_ip"):
+                lines.append(f"snmp-server host {p['snmp_host_ip']} version 2c {snmp_community}")
+        if p.get("syslog_host_ip"):
+            lines.append(f"logging host {p['syslog_host_ip']}")
+        if p.get("ntp_server_ip"):
+            lines.append(f"ntp server {p['ntp_server_ip']}")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _huawei_common_services(p: dict) -> str:
+        lines = []
+        snmp_community = p.get("snmp_community")
+        if snmp_community:
+            lines.append(f"snmp-agent community read {snmp_community}")
+            if p.get("snmp_location"):
+                lines.append(f"snmp-agent sys-info location {p['snmp_location']}")
+            if p.get("snmp_contact"):
+                lines.append(f"snmp-agent sys-info contact {p['snmp_contact']}")
+            if p.get("snmp_host_ip"):
+                lines.append(f"snmp-agent target-host trap address udp-domain {p['snmp_host_ip']} params securityname {snmp_community}")
+        if p.get("syslog_host_ip"):
+            lines.append(f"info-center loghost {p['syslog_host_ip']}")
+        if p.get("ntp_server_ip"):
+            lines.append(f"ntp-service unicast-server {p['ntp_server_ip']}")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _juniper_common_services(p: dict) -> str:
+        lines = []
+        snmp_community = p.get("snmp_community")
+        if snmp_community:
+            lines.append(f"set snmp community {snmp_community} authorization read-only")
+            if p.get("snmp_location"):
+                lines.append(f"set snmp location \"{p['snmp_location']}\"")
+            if p.get("snmp_contact"):
+                lines.append(f"set snmp contact \"{p['snmp_contact']}\"")
+            if p.get("snmp_host_ip"):
+                lines.append(f"set snmp trap-group NMS targets {p['snmp_host_ip']}")
+        if p.get("syslog_host_ip"):
+            lines.append(f"set system syslog host {p['syslog_host_ip']} any notice")
+        if p.get("ntp_server_ip"):
+            lines.append(f"set system ntp server {p['ntp_server_ip']}")
+        return "\n".join(lines)
