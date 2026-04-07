@@ -137,11 +137,14 @@ class NetBoxClient:
             ifaces = list(self.api.dcim.interfaces.filter(device_id=nb_device_id))
             result = []
             for iface in ifaces:
+                # Use detail object when possible so primary_mac_address is fully available.
+                iface_detail = self.api.dcim.interfaces.get(iface.id) if getattr(iface, "id", None) else iface
+                iface_obj = iface_detail or iface
                 ip_address = None
                 subnet_mask = None
                 # Fetch IPs assigned to this interface
                 try:
-                    ips = list(self.api.ipam.ip_addresses.filter(interface_id=iface.id))
+                    ips = list(self.api.ipam.ip_addresses.filter(interface_id=iface_obj.id))
                     if ips:
                         # Parse CIDR notation (e.g. "10.0.1.1/24")
                         address_str = str(ips[0].address)
@@ -156,8 +159,8 @@ class NetBoxClient:
                 # Fetch link connectivity details
                 connected_endpoint = None
                 link_status = None
-                if getattr(iface, "link_peers", None):
-                    peers = iface.link_peers
+                if getattr(iface_obj, "link_peers", None):
+                    peers = iface_obj.link_peers
                     if peers:
                         peer = peers[0]
                         connected_endpoint = {
@@ -165,15 +168,15 @@ class NetBoxClient:
                             "interface": getattr(peer, "name", "Unknown")
                         }
                         # Find cable status if possible
-                        if getattr(iface, "cable", None):
-                            link_status = str(getattr(iface.cable, "status", "unknown"))
+                        if getattr(iface_obj, "cable", None):
+                            link_status = str(getattr(iface_obj.cable, "status", "unknown"))
 
                 result.append({
-                    "name": iface.name,
+                    "name": iface_obj.name,
                     "ip_address": ip_address,
                     "subnet_mask": subnet_mask,
-                    "mac_address": getattr(iface, "mac_address", None),
-                    "type": str(getattr(iface, "type", "other")),
+                    "mac_address": self._extract_interface_mac(iface_obj),
+                    "type": str(getattr(iface_obj, "type", "other")),
                     "connected_endpoint": connected_endpoint,
                     "link_status": link_status,
                 })
@@ -181,6 +184,54 @@ class NetBoxClient:
         except Exception as e:
             logger.error(f"Error fetching interfaces for device {nb_device_id}: {e}")
             return []
+
+    def _extract_interface_mac(self, iface) -> str | None:
+        try:
+            primary = getattr(iface, "primary_mac_address", None)
+            if primary is not None:
+                if hasattr(primary, "mac_address"):
+                    mac = str(getattr(primary, "mac_address", "") or "").strip()
+                    if mac:
+                        return mac
+                # Some NetBox versions may return an ID/value directly.
+                if isinstance(primary, int) and self.api:
+                    mac_obj = self.api.dcim.mac_addresses.get(primary)
+                    mac = str(getattr(mac_obj, "mac_address", "") or "").strip() if mac_obj else ""
+                    if mac:
+                        return mac
+                if isinstance(primary, str) and primary.strip():
+                    return primary.strip()
+            raw = getattr(iface, "mac_address", None)
+            return str(raw).strip() if raw else None
+        except Exception:
+            raw = getattr(iface, "mac_address", None)
+            return str(raw).strip() if raw else None
+
+    def _patch_interface(self, interface_id: int, payload: dict) -> bool:
+        try:
+            base = (self.url or "").rstrip("/")
+            url = f"{base}/api/dcim/interfaces/{int(interface_id)}/"
+            headers = {}
+            if self.token:
+                headers["Authorization"] = f"Token {self.token}"
+            response = self.api.http_session.patch(url, json=payload, headers=headers, timeout=self.timeout_seconds)
+            if response.status_code in (200, 201):
+                return True
+            logger.warning("PATCH interface %s failed: %s %s", interface_id, response.status_code, response.text[:200])
+            return False
+        except Exception as e:
+            logger.warning("PATCH interface %s exception: %s", interface_id, e)
+            return False
+
+    @staticmethod
+    def _normalize_mac(mac: str | None) -> str | None:
+        raw = str(mac or "").strip().lower()
+        if not raw:
+            return None
+        hex_only = "".join(ch for ch in raw if ch in "0123456789abcdef")
+        if len(hex_only) != 12:
+            return None
+        return ":".join(hex_only[idx:idx + 2] for idx in range(0, 12, 2))
 
     def _cidr_to_mask(self, prefix: int) -> str:
         """Convert a CIDR prefix length (0-32) to a dotted-decimal mask."""
@@ -526,6 +577,68 @@ class NetBoxClient:
             return new_iface
         except Exception as e:
             logger.error(f"Error ensuring interface '{name}' on '{device_name}': {e}")
+            return None
+
+    def set_interface_mac_address(self, device_name: str, interface_name: str, mac_address: str):
+        """Assign MAC address to interface and set it as primary in NetBox.
+
+        Uses dcim.mac-addresses + interface.primary_mac_address when available.
+        Falls back to direct interface.mac_address update for older NetBox versions.
+        """
+        if not self.api:
+            return None
+
+        normalized_mac = self._normalize_mac(mac_address)
+        if not normalized_mac:
+            logger.warning("Invalid MAC address '%s' for %s:%s", mac_address, device_name, interface_name)
+            return None
+
+        try:
+            iface = self.get_or_create_interface(device_name, interface_name)
+            if not iface:
+                return None
+
+            # Preferred approach (NetBox 4.x): create/reuse mac-address object, then set primary.
+            mac_obj = None
+            try:
+                mac_obj = self.api.dcim.mac_addresses.get(mac_address=normalized_mac)
+                if mac_obj:
+                    assigned_obj_id = getattr(mac_obj, "assigned_object_id", None)
+                    assigned_obj_type = str(getattr(mac_obj, "assigned_object_type", "") or "")
+                    if assigned_obj_id != iface.id or "dcim.interface" not in assigned_obj_type:
+                        mac_obj.update({
+                            "assigned_object_type": "dcim.interface",
+                            "assigned_object_id": iface.id,
+                        })
+                        mac_obj.save()
+                if not mac_obj:
+                    mac_obj = self.api.dcim.mac_addresses.create({
+                        "mac_address": normalized_mac,
+                        "assigned_object_type": "dcim.interface",
+                        "assigned_object_id": iface.id,
+                    })
+                if mac_obj:
+                    primary_id = getattr(mac_obj, "id", None)
+                    patched = self._patch_interface(iface.id, {"primary_mac_address": primary_id}) if primary_id else False
+                    if not patched:
+                        iface.update({"primary_mac_address": primary_id})
+                        iface.save()
+                    logger.info("Set primary MAC '%s' on %s:%s", normalized_mac, device_name, interface_name)
+                    return mac_obj
+            except Exception as e:
+                logger.debug("NetBox mac-address object flow failed for %s:%s: %s", device_name, interface_name, e)
+
+            # Compatibility fallback (older NetBox): direct field on interface.
+            try:
+                iface.update({"mac_address": normalized_mac})
+                iface.save()
+                logger.info("Set interface MAC '%s' on %s:%s using legacy field", normalized_mac, device_name, interface_name)
+                return iface
+            except Exception as e:
+                logger.error("Failed setting MAC on %s:%s: %s", device_name, interface_name, e)
+                return None
+        except Exception as e:
+            logger.error("Error setting MAC for %s:%s: %s", device_name, interface_name, e)
             return None
 
     def assign_ip_to_interface(self, device_name: str, interface_name: str, ip_address: str, 

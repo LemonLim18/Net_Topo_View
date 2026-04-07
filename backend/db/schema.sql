@@ -367,7 +367,70 @@ CREATE TABLE IF NOT EXISTS device_credentials (
 CREATE INDEX IF NOT EXISTS idx_credentials_device ON device_credentials(device_id);
 
 -- -----------------------------------------------------------
--- 15. Config Proposals (M19 Agentic Workflow)
+-- 15. Onboarding ZTP Publish Jobs (M0 extension)
+-- -----------------------------------------------------------
+CREATE TABLE IF NOT EXISTS ztp_publish_jobs (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    status          TEXT    DEFAULT 'queued',       -- queued | running | success | partial | failed
+    mode            TEXT    NOT NULL,               -- single | batch
+    target_server_ip TEXT   NOT NULL,
+    credential_label TEXT   DEFAULT 'SSH',
+    requested_by    TEXT,
+    payload_json    TEXT,
+    summary_json    TEXT,
+    manifest_json   TEXT,
+    error_text      TEXT,
+    total_items     INTEGER DEFAULT 0,
+    success_items   INTEGER DEFAULT 0,
+    failed_items    INTEGER DEFAULT 0,
+    created_at      TEXT    DEFAULT (datetime('now')),
+    started_at      TEXT,
+    finished_at     TEXT,
+    updated_at      TEXT    DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_ztp_publish_jobs_created ON ztp_publish_jobs(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_ztp_publish_jobs_status  ON ztp_publish_jobs(status, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS ztp_publish_items (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id          INTEGER NOT NULL REFERENCES ztp_publish_jobs(id) ON DELETE CASCADE,
+    device_id       INTEGER REFERENCES devices(id) ON DELETE SET NULL,
+    hostname        TEXT,
+    vendor          TEXT,
+    management_ip   TEXT,
+    management_mac  TEXT,
+    filename        TEXT,
+    remote_path     TEXT,
+    status          TEXT    DEFAULT 'pending',      -- pending | running | success | failed
+    stage           TEXT,
+    error_text      TEXT,
+    details_json    TEXT,
+    created_at      TEXT    DEFAULT (datetime('now')),
+    updated_at      TEXT    DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_ztp_publish_items_job    ON ztp_publish_items(job_id);
+CREATE INDEX IF NOT EXISTS idx_ztp_publish_items_status ON ztp_publish_items(status, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS ztp_dhcp_mappings (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    device_id       INTEGER NOT NULL UNIQUE REFERENCES devices(id) ON DELETE CASCADE,
+    hostname        TEXT,
+    vendor          TEXT,
+    management_ip   TEXT,
+    management_mac  TEXT    NOT NULL,
+    filename        TEXT    NOT NULL,
+    enabled         BOOLEAN DEFAULT 1,
+    created_at      TEXT    DEFAULT (datetime('now')),
+    updated_at      TEXT    DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_ztp_dhcp_mappings_mac    ON ztp_dhcp_mappings(management_mac);
+CREATE INDEX IF NOT EXISTS idx_ztp_dhcp_mappings_enable ON ztp_dhcp_mappings(enabled, updated_at DESC);
+
+-- -----------------------------------------------------------
+-- 16. Config Proposals (M19 Agentic Workflow)
 -- -----------------------------------------------------------
 CREATE TABLE IF NOT EXISTS config_proposals (
     id              TEXT PRIMARY KEY,              -- UUID

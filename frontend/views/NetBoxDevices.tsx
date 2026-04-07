@@ -215,6 +215,7 @@ const EMPTY_FORM = {
   management_subnet_mask: '255.255.255.0',
   management_interface_type: 'GigabitEthernet',
   management_interface_suffix: '0/0',
+  management_mac: '',
   vendor: '',
   model: '',
   os_version: '',
@@ -491,15 +492,25 @@ const NetBoxDevices: React.FC = () => {
     setShowModal(true);
   };
 
-  const handleEdit = (d: DeviceRecord) => {
+  const handleEdit = async (d: DeviceRecord) => {
     const mgmtTypes = getManagementInterfaceTypeOptions(d.vendor || '', d.role || '');
     const parsedMgmt = splitManagementInterface(d.management_interface || '', mgmtTypes);
+    let managementMac = '';
+    try {
+      const ifaceRes = await netboxApi.listInterfaces(d.id);
+      const targetName = String(d.management_interface || '').trim().toLowerCase();
+      const target = (ifaceRes.interfaces || []).find((iface) => String(iface.name || '').trim().toLowerCase() === targetName);
+      managementMac = target?.mac_address || '';
+    } catch {
+      managementMac = '';
+    }
     setForm({
       hostname: d.hostname,
       management_ip: d.management_ip || '',
       management_subnet_mask: d.management_subnet_mask || '255.255.255.0',
       management_interface_type: parsedMgmt.type,
       management_interface_suffix: parsedMgmt.suffix,
+      management_mac: managementMac,
       vendor: d.vendor || '',
       model: d.model || '',
       os_version: d.os_version || '',
@@ -514,6 +525,30 @@ const NetBoxDevices: React.FC = () => {
     setEditId(d.id);
     setFormError(null);
     setShowModal(true);
+  };
+
+  const syncManagementInterfaceMac = async (deviceId: number, managementInterface: string, managementMac: string) => {
+    const ifaceName = String(managementInterface || '').trim();
+    const mac = String(managementMac || '').trim();
+    if (!ifaceName || !mac) return;
+
+    const ifaceRes = await netboxApi.listInterfaces(deviceId);
+    const existing = (ifaceRes.interfaces || []).find(
+      (iface) => String(iface.name || '').trim().toLowerCase() === ifaceName.toLowerCase(),
+    );
+
+    if (existing) {
+      await netboxApi.updateInterface(deviceId, existing.id, {
+        name: existing.name,
+        mac_address: mac,
+      });
+    } else {
+      await netboxApi.createInterface(deviceId, {
+        name: ifaceName,
+        mac_address: mac,
+        status: 'unknown',
+      });
+    }
   };
 
   const handleSubmit = async () => {
@@ -543,8 +578,15 @@ const NetBoxDevices: React.FC = () => {
           ssh_password: form.ssh_password,
           ssh_port: form.ssh_port ? Number(form.ssh_port) : undefined,
         });
+        try {
+          await syncManagementInterfaceMac(updated.id, managementInterface, form.management_mac);
+        } catch (macErr: any) {
+          Toast.warning('Device updated', `Management MAC not saved: ${macErr?.message || 'unknown error'}`);
+        }
         Toast.success(`Device "${updated.hostname}" updated`);
-        if (updated.netbox_synced === false) {
+        if (updated.netbox_sync_pending) {
+          Toast.info('Saved locally', updated.netbox_message || 'NetBox sync is running in background.');
+        } else if (updated.netbox_synced === false) {
           Toast.warning('Saved locally', updated.netbox_error || 'NetBox sync failed. Check NETBOX_URL and NETBOX_TOKEN.');
         }
         setSelected(updated);
@@ -564,8 +606,15 @@ const NetBoxDevices: React.FC = () => {
           ssh_password: form.ssh_password,
           ssh_port: form.ssh_port ? Number(form.ssh_port) : undefined,
         });
+        try {
+          await syncManagementInterfaceMac(created.id, managementInterface, form.management_mac);
+        } catch (macErr: any) {
+          Toast.warning('Device added', `Management MAC not saved: ${macErr?.message || 'unknown error'}`);
+        }
         Toast.success(`Device "${created.hostname}" added`, `ID ${created.id}`);
-        if (created.netbox_synced === false) {
+        if (created.netbox_sync_pending) {
+          Toast.info('Saved locally', created.netbox_message || 'NetBox sync is running in background.');
+        } else if (created.netbox_synced === false) {
           Toast.warning('Saved locally', created.netbox_error || 'NetBox sync failed. Check NETBOX_URL and NETBOX_TOKEN.');
         }
       }
@@ -587,8 +636,11 @@ const NetBoxDevices: React.FC = () => {
 
     setIsActionLoading(true);
     try {
-      await netboxApi.deleteDevice(d.id);
+      const res = await netboxApi.deleteDevice(d.id);
       Toast.success(`Device "${d.hostname}" deleted`);
+      if (res.netbox_sync_pending) {
+        Toast.info('Deleted locally', res.netbox_message || 'NetBox delete is running in background.');
+      }
       if (selected?.id === d.id) setSelected(null);
       fetchDevices(true); // Mutation (Delete) -> Update cache
     } catch (e: any) {
@@ -1186,6 +1238,11 @@ const NetBoxDevices: React.FC = () => {
 
               <label className="form-control w-full">
                 <div className="label"><span className="label-text">Management Interface</span></div>
+                <div className="label">
+                  <span className="text-sm label-text-alt opacity-70 ml-2">
+                    ({`Result: ${composeManagementInterface(form.management_interface_type, form.management_interface_suffix) || '—'}`})
+                  </span>
+                </div>
                 <div className="grid grid-cols-2 gap-3">
                   <select
                     className="select select-bordered w-full"
@@ -1204,11 +1261,24 @@ const NetBoxDevices: React.FC = () => {
                     onChange={(e) => setForm({ ...form, management_interface_suffix: e.target.value })}
                   />
                 </div>
+              </label>
+
+              <label className="form-control w-full">
                 <div className="label">
-                  <span className="label-text-alt opacity-70">
-                    Result: {composeManagementInterface(form.management_interface_type, form.management_interface_suffix) || '—'}
-                  </span>
+                  <span className="label-text">Management MAC Address</span>
+                  <div className="label">
+                    <span className="text-sm label-text-alt opacity-100 ml-1">
+                      ({`Legacy AutoInstall: ZTP DHCP mapping`})
+                    </span>
+                  </div>
                 </div>
+                <input
+                  type="text"
+                  className="input input-bordered w-full"
+                  placeholder="e.g. aa:bb:cc:dd:ee:ff"
+                  value={form.management_mac}
+                  onChange={(e) => setForm({ ...form, management_mac: e.target.value })}
+                />
               </label>
 
               <div className="grid grid-cols-2 gap-3">

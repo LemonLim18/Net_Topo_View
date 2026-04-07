@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel
 from typing import Optional, List
 from starlette.concurrency import run_in_threadpool
@@ -36,6 +36,87 @@ def _invalidate_inventory_context(source: str, summary: str, metadata: Optional[
         metadata=event_metadata,
         refresh_mode="none",
     )
+
+
+def _sync_created_device_to_netbox(device_id: int) -> None:
+    db = _db()
+    device = db.get_device_by_id(device_id)
+    if not device:
+        return
+
+    try:
+        nb = NetBoxClient.get_client()
+        if not nb or not nb.api:
+            logger.warning("Background NetBox create skipped for '%s': NetBox unavailable", device.hostname)
+            return
+
+        nb_dev = nb.create_device(
+            name=device.hostname,
+            mgmt_ip=device.management_ip,
+            mgmt_mask=device.management_subnet_mask,
+            vendor=device.vendor or "unknown",
+            model=device.model,
+            role=device.role,
+            ssh_user=device.ssh_user,
+            ssh_password=device.ssh_password,
+            serial=device.serial_number,
+            os_version=device.os_version,
+        )
+        if nb_dev and getattr(nb_dev, "id", None):
+            current = db.get_device_by_id(device_id)
+            if current:
+                current.netbox_id = getattr(nb_dev, "id", None)
+                db.upsert_device(current)
+        logger.info("Background NetBox create completed for '%s'", device.hostname)
+    except Exception as exc:
+        logger.warning("Background NetBox create failed for '%s': %s", device.hostname, exc)
+
+
+def _sync_updated_device_to_netbox(device_id: int, original_hostname: str) -> None:
+    db = _db()
+    device = db.get_device_by_id(device_id)
+    if not device:
+        return
+
+    try:
+        nb = NetBoxClient.get_client()
+        if not nb or not nb.api:
+            logger.warning("Background NetBox update skipped for '%s': NetBox unavailable", device.hostname)
+            return
+
+        nb_dev = nb.update_device(
+            name=device.hostname,
+            mgmt_ip=device.management_ip,
+            mgmt_mask=device.management_subnet_mask,
+            vendor=device.vendor or "unknown",
+            model=device.model,
+            role=device.role,
+            original_name=original_hostname,
+            ssh_user=device.ssh_user,
+            ssh_password=device.ssh_password,
+            serial=device.serial_number,
+            os_version=device.os_version,
+        )
+        if nb_dev and getattr(nb_dev, "id", None) and not device.netbox_id:
+            current = db.get_device_by_id(device_id)
+            if current and not current.netbox_id:
+                current.netbox_id = getattr(nb_dev, "id", None)
+                db.upsert_device(current)
+        logger.info("Background NetBox update completed for '%s'", device.hostname)
+    except Exception as exc:
+        logger.warning("Background NetBox update failed for '%s': %s", device.hostname, exc)
+
+
+def _sync_deleted_device_to_netbox(hostname: str) -> None:
+    try:
+        nb = NetBoxClient.get_client()
+        if not nb or not nb.api:
+            logger.warning("Background NetBox delete skipped for '%s': NetBox unavailable", hostname)
+            return
+        nb.delete_device_by_name(hostname)
+        logger.info("Background NetBox delete completed for '%s'", hostname)
+    except Exception as exc:
+        logger.warning("Background NetBox delete failed for '%s': %s", hostname, exc)
 
 
 # ---------------------------------------------------------------------------
@@ -243,7 +324,7 @@ async def get_device(device_id: int):
 
 
 @router.post("/devices")
-async def create_device(body: DeviceCreate):
+async def create_device(body: DeviceCreate, background_tasks: BackgroundTasks):
     """Create a new device in the local inventory and sync to NetBox.
 
     Device metadata (name, mgmt IP, vendor, role, etc.) is pushed to NetBox.
@@ -257,35 +338,8 @@ async def create_device(body: DeviceCreate):
     if existing:
         raise HTTPException(409, f"Device with hostname '{body.hostname}' already exists (id={existing.id})")
 
-    # Auto-push to NetBox (all manual entries sync immediately)
+    # NetBox sync is pushed in background to keep CRUD responsive.
     status = body.status or "planned"
-    nb_id = None
-    netbox_synced = False
-    netbox_error = None
-    try:
-        nb = NetBoxClient.get_client()
-        if nb and nb.api:
-            nb_dev = nb.create_device(
-                name=body.hostname,
-                mgmt_ip=body.management_ip,
-                mgmt_mask=body.management_subnet_mask,
-                vendor=body.vendor or "unknown",
-                model=body.model,
-                role=body.role,
-                ssh_user=body.ssh_user,
-                ssh_password=body.ssh_password,
-                serial=body.serial_number,
-                os_version=body.os_version,
-            )
-            if nb_dev:
-                nb_id = getattr(nb_dev, "id", None)
-                netbox_synced = True
-                logger.info("Auto-pushed device '%s' to NetBox on registration (ID: %s)", body.hostname, nb_id)
-        else:
-            netbox_error = "NetBox not configured or unavailable"
-    except Exception as e:
-        logger.warning("Auto-push for '%s' failed: %s — still registering locally", body.hostname, e)
-        netbox_error = str(e)
 
     device = Device(
         hostname=body.hostname,
@@ -299,12 +353,13 @@ async def create_device(body: DeviceCreate):
         status=status,
         role=body.role,
         source="manual",
-        netbox_id=nb_id,
+        netbox_id=None,
         ssh_user=body.ssh_user,
         ssh_password=body.ssh_password,
         ssh_port=body.ssh_port,
     )
     device_id = db.upsert_device(device)
+    background_tasks.add_task(_sync_created_device_to_netbox, device_id)
     created = db.get_device_by_id(device_id)
     _invalidate_inventory_context(
         source="netbox_api",
@@ -312,14 +367,14 @@ async def create_device(body: DeviceCreate):
         metadata={"hostname": body.hostname, "operation": "create"},
     )
     out = _device_dict(created)
-    out["netbox_synced"] = netbox_synced
-    if netbox_error:
-        out["netbox_error"] = netbox_error
+    out["netbox_synced"] = False
+    out["netbox_sync_pending"] = True
+    out["netbox_message"] = "Device saved locally. NetBox sync is running in background."
     return out
 
 
 @router.put("/devices/{device_id}")
-async def update_device(device_id: int, body: DeviceUpdate):
+async def update_device(device_id: int, body: DeviceUpdate, background_tasks: BackgroundTasks):
     """Update an existing device in the local DB and sync changes to NetBox.
 
     Device metadata (name, mgmt IP, vendor, role, etc.) is synced to NetBox.
@@ -337,38 +392,6 @@ async def update_device(device_id: int, body: DeviceUpdate):
     model = body.model if body.model is not None else existing.model
     role = body.role if body.role is not None else existing.role
 
-    # Auto-push or Sync to NetBox
-    nb_id = existing.netbox_id
-    netbox_synced = False
-    netbox_error = None
-    try:
-        nb = NetBoxClient.get_client()
-        if nb and nb.api:
-            # We sync to NetBox regardless of status (Planned/Active/Down)
-            # to ensure the single source of truth stays updated.
-            nb_dev = nb.update_device(
-                name=hostname,
-                mgmt_ip=mgmt_ip,
-                mgmt_mask=body.management_subnet_mask if body.management_subnet_mask is not None else existing.management_subnet_mask,
-                vendor=vendor or "unknown",
-                model=model,
-                role=role,
-                original_name=existing.hostname,
-                ssh_user=body.ssh_user if body.ssh_user is not None else existing.ssh_user,
-                ssh_password=body.ssh_password if body.ssh_password is not None else existing.ssh_password,
-                serial=body.serial_number if body.serial_number is not None else existing.serial_number,
-                os_version=body.os_version if body.os_version is not None else existing.os_version,
-            )
-            if nb_dev:
-                nb_id = getattr(nb_dev, "id", None) or nb_id
-                netbox_synced = True
-                logger.info("Synced updates for device '%s' (orig: '%s', ID: %s) to NetBox", hostname, existing.hostname, nb_id)
-        else:
-            netbox_error = "NetBox not configured or unavailable"
-    except Exception as e:
-        logger.warning("Auto-sync for '%s' failed: %s — still updating locally", hostname, e)
-        netbox_error = str(e)
-
     device = Device(
         id=device_id,
         hostname=hostname,
@@ -376,7 +399,7 @@ async def update_device(device_id: int, body: DeviceUpdate):
         management_subnet_mask=body.management_subnet_mask if body.management_subnet_mask is not None else existing.management_subnet_mask,
         management_interface=body.management_interface if body.management_interface is not None else existing.management_interface,
         vendor=vendor,
-        netbox_id=nb_id,
+        netbox_id=existing.netbox_id,
         model=model,
         os_version=body.os_version if body.os_version is not None else existing.os_version,
         serial_number=body.serial_number if body.serial_number is not None else existing.serial_number,
@@ -389,6 +412,7 @@ async def update_device(device_id: int, body: DeviceUpdate):
         ssh_port=body.ssh_port if body.ssh_port is not None else existing.ssh_port,
     )
     db.upsert_device(device)
+    background_tasks.add_task(_sync_updated_device_to_netbox, device_id, existing.hostname)
     updated = db.get_device_by_id(device_id)
     _invalidate_inventory_context(
         source="netbox_api",
@@ -396,36 +420,34 @@ async def update_device(device_id: int, body: DeviceUpdate):
         metadata={"hostname": hostname, "operation": "update"},
     )
     out = _device_dict(updated)
-    out["netbox_synced"] = netbox_synced
-    if netbox_error:
-        out["netbox_error"] = netbox_error
+    out["netbox_synced"] = False
+    out["netbox_sync_pending"] = True
+    out["netbox_message"] = "Device updated locally. NetBox sync is running in background."
     return out
 
 
 @router.delete("/devices/{device_id}")
-async def delete_device(device_id: int):
+async def delete_device(device_id: int, background_tasks: BackgroundTasks):
     """Delete a device from the local inventory and NetBox."""
     db = _db()
     existing = db.get_device_by_id(device_id)
     if not existing:
         raise HTTPException(404, "Device not found")
 
-    # Best-effort delete from NetBox
-    try:
-        nb = NetBoxClient.get_client()
-        if nb and nb.api:
-            nb.delete_device_by_name(existing.hostname)
-            logger.info("Deleted device '%s' from NetBox", existing.hostname)
-    except Exception as e:
-        logger.warning("NetBox delete for '%s' failed: %s — still deleting locally", existing.hostname, e)
-
     db.delete_device(device_id)
+    background_tasks.add_task(_sync_deleted_device_to_netbox, existing.hostname)
     _invalidate_inventory_context(
         source="netbox_api",
         summary=f"device deleted: {existing.hostname}",
         metadata={"hostname": existing.hostname, "operation": "delete"},
     )
-    return {"deleted": True, "id": device_id, "hostname": existing.hostname}
+    return {
+        "deleted": True,
+        "id": device_id,
+        "hostname": existing.hostname,
+        "netbox_sync_pending": True,
+        "netbox_message": "Device deleted locally. NetBox delete is running in background.",
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -526,8 +548,20 @@ async def create_interface(device_id: int, body: InterfaceCreate):
                     nb.assign_ip_to_interface(d.hostname, body.name, body.ip_address)
                 else:
                     nb.get_or_create_interface(d.hostname, body.name)
+                if body.mac_address:
+                    mac_sync = nb.set_interface_mac_address(d.hostname, body.name, body.mac_address)
+                    if not mac_sync:
+                        raise RuntimeError("NetBox did not accept MAC assignment")
         except Exception as e:
             logger.warning("Interface sync to NetBox for '%s:%s' failed: %s", d.hostname, body.name, e)
+            if body.mac_address:
+                raise HTTPException(
+                    status_code=502,
+                    detail=(
+                        "Interface saved locally, but failed to sync MAC to NetBox. "
+                        "Check NetBox token permissions for dcim.mac_addresses and interfaces write access."
+                    ),
+                )
 
         row = conn.execute("SELECT * FROM interfaces WHERE id = ?", (cur.lastrowid,)).fetchone()
         _invalidate_inventory_context(
@@ -583,6 +617,37 @@ async def update_interface(device_id: int, iface_id: int, body: InterfaceUpdate)
         conn.commit()
         row = conn.execute("SELECT * FROM interfaces WHERE id = ?", (iface_id,)).fetchone()
         device = db.get_device_by_id(device_id)
+
+        # Best-effort sync updates to NetBox.
+        try:
+            if device:
+                nb = NetBoxClient.get_client()
+                if nb and nb.api:
+                    iface_name = row["name"]
+                    if row["ip_address"]:
+                        nb.assign_ip_to_interface(device.hostname, iface_name, row["ip_address"], row["subnet_mask"])
+                    else:
+                        nb.get_or_create_interface(device.hostname, iface_name)
+                    if row["mac_address"]:
+                        mac_sync = nb.set_interface_mac_address(device.hostname, iface_name, row["mac_address"])
+                        if not mac_sync:
+                            raise RuntimeError("NetBox did not accept MAC assignment")
+        except Exception as e:
+            logger.warning(
+                "Interface update sync to NetBox for '%s:%s' failed: %s",
+                device.hostname if device else device_id,
+                row["name"],
+                e,
+            )
+            if row["mac_address"]:
+                raise HTTPException(
+                    status_code=502,
+                    detail=(
+                        "Interface updated locally, but failed to sync MAC to NetBox. "
+                        "Check NetBox token permissions for dcim.mac_addresses and interfaces write access."
+                    ),
+                )
+
         _invalidate_inventory_context(
             source="netbox_api",
             summary=f"interface updated: {(device.hostname if device else device_id)}:{row['name']}",

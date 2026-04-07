@@ -157,7 +157,7 @@ const Sidebar: React.FC<SidebarProps> = ({ currentView, setView, user, onLogout,
           onToggle={() => setNetworkOpen(!networkOpen)}
         >
           
-          <MenuItem id="common_services" label="Common Services" icon={RadioTower} iconColor="text-primary"/>
+          <MenuItem id="common_services" label="Global Service Profiles" icon={RadioTower} iconColor="text-primary"/>
           <MenuItem id="netbox_devices" label="Device Inventory" icon={Server} iconColor="text-primary"/>
           <MenuItem id="template_studio" label="Template Studio" icon={FileCode2} iconColor="text-primary"/>
           <MenuItem id="onboarding" label="Onboard Device" icon={PackagePlus} iconColor="text-primary"/>

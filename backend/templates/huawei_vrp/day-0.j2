@@ -1,5 +1,5 @@
 # ===== Day-0 Bootstrap: {{ hostname }} (Huawei VRP) =====
-system-view
+sys im
 #
 sysname {{ hostname }}
 #
@@ -8,28 +8,32 @@ interface {{ mgmt_interface }}
  undo shutdown
  quit
 #
-ip route-static 0.0.0.0 0.0.0.0 {{ gateway }}
-#
-stelnet server enable
 #
 aaa
  local-user {{ ssh_user }} password irreversible-cipher {{ ssh_password }}
- local-user {{ ssh_user }} privilege level 15
- local-user {{ ssh_user }} service-type ssh
+ local-user {{ ssh_user }} level 3
+ local-user {{ ssh_user }} service-type ssh snetconf terminal http 
+ local-user {{ ssh_user }} service-type snmp
  quit
 #
+rsa local-key-pair create
 ssh user {{ ssh_user }} authentication-type password
+ssh user {{ ssh_user }} service-type snetconf
 ssh user {{ ssh_user }} service-type stelnet
+stelnet server enable
 #
 user-interface vty 0 4
  authentication-mode aaa
  protocol inbound ssh
- user privilege level 15
+ idle-timeout 30 0
  quit
 #
 {% if snmp_community %}
 snmp-agent
-snmp-agent community read {{ snmp_community }}
+snmp-agent sys-info version v2c
+snmp-agent mib-view included ALL_ACCESS iso
+snmp-agent community read {{ snmp_community }} mib-view ALL_ACCESS
+snmp-agent community write {{ snmp_community }} mib-view ALL_ACCESS
 {% if snmp_location %}
 snmp-agent sys-info location {{ snmp_location }}
 {% endif %}
@@ -37,17 +41,25 @@ snmp-agent sys-info location {{ snmp_location }}
 snmp-agent sys-info contact {{ snmp_contact }}
 {% endif %}
 {% if snmp_host_ip %}
-snmp-agent target-host trap address udp-domain {{ snmp_host_ip }} params securityname {{ snmp_community }}
+snmp-agent target-host trap address udp-domain {{ snmp_host_ip }} params securityname {{ snmp_community }} v2c
 {% endif %}
 #
+netconf
+    protocol inbound ssh port 830
+    work-mode yang
+
+lldp enable
+lldp mdn enable
+
 {% endif %}
 {% if syslog_host_ip %}
-info-center loghost {{ syslog_host_ip }}
+info-center loghost {{ syslog_host_ip }} port 6514 facility local7
 #
 {% endif %}
 {% if ntp_server_ip %}
-ntp-service unicast-server {{ ntp_server_ip }}
+ntp unicast-server {{ ntp_server_ip }}
+undo ntp disable
 #
 {% endif %}
 return
-save force
+save

@@ -282,17 +282,32 @@ const InterfaceSelect: React.FC<{
   );
 };
 
-const processTopologyData = (data: TopologyData | null, deviceLinks: LinkRecord[] = [], devices: DeviceRecord[] = []) => {
+const processTopologyData = (
+    data: TopologyData | null,
+    deviceLinks: LinkRecord[] = [],
+    devices: DeviceRecord[] = [],
+    options?: { hideDownNodes?: boolean },
+) => {
     if (!data) { console.debug('[Topo] processTopologyData called with null'); return { nodes: [], links: [] }; }
     const nodeKeys = Object.keys(data.nodes);
     console.debug(`[Topo] processTopologyData: ${nodeKeys.length} nodes:`, nodeKeys);
 
     const hostnameToId = buildHostnameToDeviceId(devices);
 
-    const nodes: D3Node[] = Object.keys(data.nodes).map(nodeId => ({
+    const rawNodes: D3Node[] = Object.keys(data.nodes).map(nodeId => ({
         id: nodeId,
         ...data.nodes[nodeId],
     }));
+    const nodes: D3Node[] = (options?.hideDownNodes
+        ? rawNodes.filter((n) => {
+            const down = Boolean((n as any).down);
+            const ifaceList = (n as any).interfaceList;
+            const hasInterfaces = Array.isArray(ifaceList)
+                && ifaceList.some((row: unknown) => !!row && typeof row === 'object' && Object.keys(row as Record<string, unknown>).length > 0);
+            return !down && hasInterfaces;
+        })
+        : rawNodes);
+    const visibleNodeIds = new Set(nodes.map((n) => n.id));
 
     const links: D3Link[] = [];
     const linkSet = new Set<string>();
@@ -303,6 +318,9 @@ const processTopologyData = (data: TopologyData | null, deviceLinks: LinkRecord[
                 const targetId = linkInfo.remote_node;
                 const targetDetails = data.nodes[targetId];
                 if (!targetDetails) return;
+                if (options?.hideDownNodes && (!visibleNodeIds.has(sourceId) || !visibleNodeIds.has(targetId))) {
+                    return;
+                }
 
                 const linkKey1 = `${sourceId}-${targetId}`;
                 const linkKey2 = `${targetId}-${sourceId}`;
@@ -514,6 +532,26 @@ const Dashboard: React.FC = () => {
         localStorage.setItem(DASHBOARD_VIEW_KEY, topologyView);
     }, [topologyView]);
 
+    // Bootstrap Real-Time graph from the latest persisted crawl snapshot.
+    // This prevents an empty Real-Time view when WS has not pushed yet.
+    useEffect(() => {
+        let active = true;
+        (async () => {
+            try {
+                const snap = await topologyApi.get();
+                const count = snap?.nodes ? Object.keys(snap.nodes).length : 0;
+                if (active && count > 0) {
+                    setWsTopology(snap);
+                }
+            } catch {
+                // Ignore bootstrap failures; WS refresh path remains active.
+            }
+        })();
+        return () => {
+            active = false;
+        };
+    }, [setWsTopology]);
+
     useEffect(() => {
         localStorage.setItem(DASHBOARD_PANEL_HEIGHT_KEY, String(panelHeight));
     }, [panelHeight]);
@@ -592,7 +630,7 @@ const Dashboard: React.FC = () => {
 
     const graphData = useMemo(() => {
         const planned = processTopologyData(plannedTopology, allLinks, connectDevices);
-        const actual = processTopologyData(realTimeTopology, allLinks, connectDevices);
+        const actual = processTopologyData(realTimeTopology, allLinks, connectDevices, { hideDownNodes: true });
 
         if (topologyView === 'planned') return planned;
         if (topologyView === 'actual') return actual;

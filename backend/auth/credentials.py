@@ -74,7 +74,7 @@ class CredentialVault:
     def store(
         self,
         label: str,
-        device_id: int,
+        device_id: Optional[int],
         username: str,
         password: str,
     ) -> int:
@@ -83,7 +83,7 @@ class CredentialVault:
 
         Args:
             label:     Credential type (e.g. "SSH", "SNMP", "Enable").
-            device_id: FK to the devices table.
+            device_id: FK to the devices table, or ``None`` for global credentials.
             username:  Plaintext username (encrypted before storage).
             password:  Plaintext password (encrypted before storage).
 
@@ -96,10 +96,16 @@ class CredentialVault:
         conn = self._connect()
         try:
             # Upsert
-            existing = conn.execute(
-                "SELECT id FROM device_credentials WHERE device_id = ? AND label = ?",
-                (device_id, label),
-            ).fetchone()
+            if device_id is None:
+                existing = conn.execute(
+                    "SELECT id FROM device_credentials WHERE device_id IS NULL AND label = ?",
+                    (label,),
+                ).fetchone()
+            else:
+                existing = conn.execute(
+                    "SELECT id FROM device_credentials WHERE device_id = ? AND label = ?",
+                    (int(device_id), label),
+                ).fetchone()
 
             if existing:
                 conn.execute(
@@ -111,17 +117,21 @@ class CredentialVault:
             else:
                 cur = conn.execute(
                     "INSERT INTO device_credentials (device_id, label, username_enc, password_enc) VALUES (?, ?, ?, ?)",
-                    (device_id, label, enc_user, enc_pass),
+                    (int(device_id) if device_id is not None else None, label, enc_user, enc_pass),
                 )
                 conn.commit()
                 row_id = cur.lastrowid
 
-            logger.info("Stored %s credential for device %d", label, device_id)
+            logger.info(
+                "Stored %s credential for device %s",
+                label,
+                str(device_id) if device_id is not None else "<global>",
+            )
             return row_id
         finally:
             conn.close()
 
-    def get(self, device_id: int, label: str = "SSH") -> Optional[Dict[str, str]]:
+    def get(self, device_id: Optional[int], label: str = "SSH") -> Optional[Dict[str, str]]:
         """
         Retrieve and decrypt a credential for a device.
 
@@ -130,10 +140,16 @@ class CredentialVault:
         """
         conn = self._connect()
         try:
-            row = conn.execute(
-                "SELECT username_enc, password_enc FROM device_credentials WHERE device_id = ? AND label = ?",
-                (device_id, label),
-            ).fetchone()
+            if device_id is None:
+                row = conn.execute(
+                    "SELECT username_enc, password_enc FROM device_credentials WHERE device_id IS NULL AND label = ?",
+                    (label,),
+                ).fetchone()
+            else:
+                row = conn.execute(
+                    "SELECT username_enc, password_enc FROM device_credentials WHERE device_id = ? AND label = ?",
+                    (int(device_id), label),
+                ).fetchone()
             if not row:
                 return None
             return {
@@ -143,14 +159,20 @@ class CredentialVault:
         finally:
             conn.close()
 
-    def delete(self, device_id: int, label: str = "SSH") -> bool:
+    def delete(self, device_id: Optional[int], label: str = "SSH") -> bool:
         """Delete a stored credential. Returns True if one was deleted."""
         conn = self._connect()
         try:
-            cur = conn.execute(
-                "DELETE FROM device_credentials WHERE device_id = ? AND label = ?",
-                (device_id, label),
-            )
+            if device_id is None:
+                cur = conn.execute(
+                    "DELETE FROM device_credentials WHERE device_id IS NULL AND label = ?",
+                    (label,),
+                )
+            else:
+                cur = conn.execute(
+                    "DELETE FROM device_credentials WHERE device_id = ? AND label = ?",
+                    (int(device_id), label),
+                )
             conn.commit()
             return cur.rowcount > 0
         finally:
@@ -162,14 +184,14 @@ class CredentialVault:
         """
         conn = self._connect()
         try:
-            if device_id:
+            if device_id is None:
                 rows = conn.execute(
-                    "SELECT id, device_id, label, created_at, updated_at FROM device_credentials WHERE device_id = ?",
-                    (device_id,),
+                    "SELECT id, device_id, label, created_at, updated_at FROM device_credentials"
                 ).fetchall()
             else:
                 rows = conn.execute(
-                    "SELECT id, device_id, label, created_at, updated_at FROM device_credentials"
+                    "SELECT id, device_id, label, created_at, updated_at FROM device_credentials WHERE device_id = ?",
+                    (int(device_id),),
                 ).fetchall()
             return [dict(r) for r in rows]
         finally:

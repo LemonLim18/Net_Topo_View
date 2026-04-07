@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import socket
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from typing import Dict, List, Optional, Set, Tuple
@@ -108,6 +109,7 @@ NEW_FETCH_FILE = os.path.join(TOPOLOGY_SAVE_DIR, "new_fetch.json")
 
 CRAWL_INTERVAL_SECONDS = 300  # 5 minutes
 CRAWL_WORKERS = int(os.getenv("CRAWL_WORKERS", "6"))
+REALTIME_PULSE_SECONDS = max(5, int(os.getenv("REALTIME_PULSE_SECONDS", "30")))
 
 # Seeds & credentials from environment (no hardcoded secrets)
 CRAWL_SEEDS: List[str] = [
@@ -144,6 +146,8 @@ _current_topology_dict: Optional[dict] = None
 _current_topology_json: Optional[str] = None
 _previous_topology_dict: Optional[dict] = None
 _topology_lock = asyncio.Lock()
+_crawl_run_lock = asyncio.Lock()
+_last_crawl_finished_at_monotonic: float = 0.0
 
 # Shared instances promoted to module scope so run_crawl_and_broadcast
 # can feed every fresh crawl result into the agent's RAG cache.
@@ -208,10 +212,6 @@ def do_sync_crawl() -> dict:
             password = cred["password"]
             logger.info("Using CredentialVault default SSH credential for crawl")
 
-    if not user:
-        logger.error("No crawl credentials configured — set CRAWL_USER/CRAWL_PASSWORD or store a vault entry")
-        return {"timestamp": datetime.now().isoformat(), "seeds": CRAWL_SEEDS, "nodes": {}}
-
     # Build effective seeds from static env + inventory management IPs so newly
     # registered devices are pollable even before LLDP/CDP adjacency is learned.
     effective_seeds: List[str] = []
@@ -241,6 +241,25 @@ def do_sync_crawl() -> dict:
                     db_cred_overrides[mgmt_ip] = (ssh_user, str(ssh_password))
         except Exception as exc:
             logger.warning("Could not augment crawl seeds from inventory: %s", exc)
+
+    # Allow crawl to proceed from per-device credentials even when no global
+    # crawler credentials are configured.
+    if not user and db_cred_overrides:
+        sample_ip, (sample_user, sample_pass) = next(iter(db_cred_overrides.items()))
+        user, password = sample_user, sample_pass
+        logger.info(
+            "No global crawl credential configured; using inventory credential as default "
+            "(seed=%s, user=%s) with per-device overrides",
+            sample_ip,
+            sample_user,
+        )
+
+    if not user:
+        logger.error(
+            "No crawl credentials configured — set CRAWL_USER/CRAWL_PASSWORD, store a vault default, "
+            "or save SSH credentials on at least one inventory device"
+        )
+        return {"timestamp": datetime.now().isoformat(), "seeds": CRAWL_SEEDS, "nodes": {}}
 
     if db_seed_count:
         logger.info(
@@ -406,92 +425,98 @@ def save_topology_to_file(topo: dict, filepath: str, sort_keys: bool = False):
         logger.error(f"Failed to save topology to {filepath}: {e}")
 
 async def run_crawl_and_broadcast(trigger: str = "periodic"):
-    global _current_topology_dict, _current_topology_json, _previous_topology_dict
-    logger.info(f"Starting crawl (trigger={trigger})")
-    refresh_state = get_refresh_state_manager()
-    refresh_state.record_start("live_topology", trigger=trigger)
-    loop = asyncio.get_running_loop()
-    try:
-        new_topo = await loop.run_in_executor(None, do_sync_crawl)
-    except Exception as e:
-        logger.exception(f"Crawl failed: {e}")
-        refresh_state.record_failure(
+    global _current_topology_dict, _current_topology_json, _previous_topology_dict, _last_crawl_finished_at_monotonic
+    if _crawl_run_lock.locked():
+        logger.info("Skipping crawl (trigger=%s): another crawl is already running", trigger)
+        return
+
+    async with _crawl_run_lock:
+        logger.info(f"Starting crawl (trigger={trigger})")
+        refresh_state = get_refresh_state_manager()
+        refresh_state.record_start("live_topology", trigger=trigger)
+        loop = asyncio.get_running_loop()
+        try:
+            new_topo = await loop.run_in_executor(None, do_sync_crawl)
+        except Exception as e:
+            logger.exception(f"Crawl failed: {e}")
+            refresh_state.record_failure(
+                "live_topology",
+                str(e),
+                result={"status": "failed", "trigger": trigger},
+                trigger=trigger,
+            )
+            return
+
+        save_topology_to_file(new_topo, NEW_FETCH_FILE, sort_keys=True)
+
+        async with _topology_lock:
+            # 1. Archive current
+            if _current_topology_dict:
+                save_topology_to_file(_current_topology_dict, PREVIOUS_TOPOLOGY_FILE, sort_keys=True)
+                _previous_topology_dict = _current_topology_dict
+            else:
+                _previous_topology_dict = None
+
+            # 2. Update current
+            _current_topology_dict = new_topo
+            save_topology_to_file(_current_topology_dict, CURRENT_TOPOLOGY_FILE, sort_keys=True)
+            _current_topology_json = json.dumps(_current_topology_dict, sort_keys=True)
+
+            # 2b. Keep the agent's RAG cache in sync with every crawl result
+            if _db is not None:
+                _db.update_topology(new_topo)
+                # Persist devices + links to SQL (enriched with model/version/serial)
+                try:
+                    save_crawl_result(_db, new_topo, triggered_by=trigger)
+                except Exception as e:
+                    logger.warning("save_crawl_result failed: %s", e)
+            if _agent is not None:
+                _agent.refresh_context()
+                logger.debug("Agent RAG context refreshed after crawl")
+
+            # 2c. Phase 9 — Auto-embed network state into ChromaDB
+            if _state_embedder is not None:
+                try:
+                    embed_result = await loop.run_in_executor(
+                        None, _state_embedder.embed_crawl_result, new_topo, _previous_topology_dict
+                    )
+                    logger.info("Auto-embedded network state: %s", embed_result.get("status"))
+                except Exception as e:
+                    logger.warning("Network state auto-embedding failed: %s", e)
+
+            # 3. Detect changes
+            previous_canon = canonical_topology(_previous_topology_dict) if _previous_topology_dict else None
+            current_canon = canonical_topology(_current_topology_dict) if _current_topology_dict else canonical_topology({})
+
+            previous_json = json.dumps(previous_canon, sort_keys=True) if previous_canon else None
+            current_json = json.dumps(current_canon, sort_keys=True)
+
+            topology_changed = (previous_json is None) or (current_json != previous_json)
+
+            if topology_changed:
+                logger.info("Topology changed. Broadcasting update.")
+                event_msg = {
+                    "type": "topology_update",
+                    "timestamp": new_topo.get("timestamp"),
+                    "trigger": trigger,
+                    "full_topology": new_topo
+                }
+                await mgr.broadcast(json.dumps(event_msg, sort_keys=True))
+            else:
+                logger.info("Topology unchanged. Not broadcasting.")
+
+        _last_crawl_finished_at_monotonic = time.monotonic()
+        refresh_state.record_success(
             "live_topology",
-            str(e),
-            result={"status": "failed", "trigger": trigger},
+            result={
+                "status": "success",
+                "trigger": trigger,
+                "timestamp": new_topo.get("timestamp"),
+                "node_count": len(new_topo.get("nodes", {})),
+                "topology_changed": topology_changed,
+            },
             trigger=trigger,
         )
-        return
-    
-    save_topology_to_file(new_topo, NEW_FETCH_FILE, sort_keys=True)
-
-    async with _topology_lock:
-        # 1. Archive current
-        if _current_topology_dict:
-            save_topology_to_file(_current_topology_dict, PREVIOUS_TOPOLOGY_FILE, sort_keys=True)
-            _previous_topology_dict = _current_topology_dict
-        else:
-            _previous_topology_dict = None
-
-        # 2. Update current
-        _current_topology_dict = new_topo
-        save_topology_to_file(_current_topology_dict, CURRENT_TOPOLOGY_FILE, sort_keys=True)
-        _current_topology_json = json.dumps(_current_topology_dict, sort_keys=True)
-
-        # 2b. Keep the agent's RAG cache in sync with every crawl result
-        if _db is not None:
-            _db.update_topology(new_topo)
-            # Persist devices + links to SQL (enriched with model/version/serial)
-            try:
-                save_crawl_result(_db, new_topo, triggered_by=trigger)
-            except Exception as e:
-                logger.warning("save_crawl_result failed: %s", e)
-        if _agent is not None:
-            _agent.refresh_context()
-            logger.debug("Agent RAG context refreshed after crawl")
-
-        # 2c. Phase 9 — Auto-embed network state into ChromaDB
-        if _state_embedder is not None:
-            try:
-                embed_result = await loop.run_in_executor(
-                    None, _state_embedder.embed_crawl_result, new_topo, _previous_topology_dict
-                )
-                logger.info("Auto-embedded network state: %s", embed_result.get("status"))
-            except Exception as e:
-                logger.warning("Network state auto-embedding failed: %s", e)
-
-        # 3. Detect changes
-        previous_canon = canonical_topology(_previous_topology_dict) if _previous_topology_dict else None
-        current_canon = canonical_topology(_current_topology_dict) if _current_topology_dict else canonical_topology({})
-
-        previous_json = json.dumps(previous_canon, sort_keys=True) if previous_canon else None
-        current_json = json.dumps(current_canon, sort_keys=True)
-
-        topology_changed = (previous_json is None) or (current_json != previous_json)
-
-        if topology_changed:
-            logger.info("Topology changed. Broadcasting update.")
-            event_msg = {
-                "type": "topology_update",
-                "timestamp": new_topo.get("timestamp"),
-                "trigger": trigger,
-                "full_topology": new_topo
-            }
-            await mgr.broadcast(json.dumps(event_msg, sort_keys=True))
-        else:
-            logger.info("Topology unchanged. Not broadcasting.")
-
-    refresh_state.record_success(
-        "live_topology",
-        result={
-            "status": "success",
-            "trigger": trigger,
-            "timestamp": new_topo.get("timestamp"),
-            "node_count": len(new_topo.get("nodes", {})),
-            "topology_changed": topology_changed,
-        },
-        trigger=trigger,
-    )
 
 # (periodic_crawler removed — now managed by M16 scheduler)
 
@@ -638,6 +663,23 @@ async def lifespan(app: FastAPI):
     start_scheduler(run_crawl_and_broadcast, orchestrator=_orchestrator, broadcast_fn=_telemetry_broadcast)
     logger.info("Background scheduler started")
 
+    # 5b. Real-time pulse crawl: while dashboard WS clients are connected,
+    # trigger periodic non-overlapping crawls for near real-time topology.
+    async def _realtime_crawl_pulse():
+        while True:
+            await asyncio.sleep(REALTIME_PULSE_SECONDS)
+            try:
+                async with mgr.lock:
+                    has_realtime_clients = bool(mgr.active)
+                if not has_realtime_clients:
+                    continue
+                await run_crawl_and_broadcast(trigger="realtime_pulse")
+            except Exception as exc:
+                logger.warning("Realtime crawl pulse failed: %s", exc)
+
+    realtime_pulse_task = asyncio.create_task(_realtime_crawl_pulse())
+    logger.info("Realtime crawl pulse started (interval=%ss)", REALTIME_PULSE_SECONDS)
+
     # 6. SSH idle-session reaper (every 2 minutes)
     async def _ssh_reaper():
         while True:
@@ -653,6 +695,7 @@ async def lifespan(app: FastAPI):
 
     # Cleanup
     reaper_task.cancel()
+    realtime_pulse_task.cancel()
     stop_scheduler()
 
 app = FastAPI(title="CogniShield Backend", lifespan=lifespan)
@@ -763,6 +806,10 @@ async def websocket_endpoint(websocket: WebSocket):
                     "type": "initial_topology",
                     "topology": json.loads(_current_topology_json)
                 }))
+
+        # Kick an immediate refresh for near-real-time visibility when clients
+        # open the dashboard. This runs async and is protected by crawl lock.
+        asyncio.create_task(run_crawl_and_broadcast(trigger="ws_client_connected"))
         
         # Keep alive loop
         while True:

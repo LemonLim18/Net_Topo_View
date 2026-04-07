@@ -49,6 +49,8 @@ class OnboardingConfigGenerator:
 
     def _cisco_ios(self, p: dict) -> str:
         common_services = self._cisco_common_services(p)
+        role = str(p.get("role") or "").strip().lower()
+        routing_block = "ip routing\n!\n" if role == "distribution" else ""
         return f"""\
 ! ===== Day-0 Bootstrap: {p['hostname']} (Cisco IOS) =====
 enable
@@ -56,7 +58,7 @@ configure terminal
 !
 hostname {p['hostname']}
 !
-interface {p['mgmt_interface']}
+    {routing_block}interface {p['mgmt_interface']}
  ip address {p['mgmt_ip']} {p['subnet_mask']}
  no shutdown
  exit

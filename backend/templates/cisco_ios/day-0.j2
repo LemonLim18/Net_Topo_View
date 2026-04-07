@@ -3,7 +3,15 @@ enable
 configure terminal
 !
 hostname {{ hostname }}
-!
+{% if role == 'distribution' %}
+ip routing
+{% endif %}
+ip domain-name cognishield.lab
+no ip domain-lookup
+service password-encryption
+username {{ ssh_user }} privilege 15 secret {{ ssh_password }}
+enable secret {{ ssh_password }}
+
 interface {{ mgmt_interface }}
 {% if mgmt_l3_interface %}
  no switchport
@@ -12,19 +20,18 @@ interface {{ mgmt_interface }}
  no shutdown
  exit
 !
-username {{ ssh_user }} privilege 15 secret {{ ssh_password }}
-!
-ip domain-name mgmt.local
 crypto key generate rsa modulus 2048
-!
 ip ssh version 2
 ip ssh time-out 60
 ip ssh authentication-retries 3
 !
 line vty 0 4
- login local
  transport input ssh
- exit
+ login local
+ exec-timeout 30 0
+line con 0
+ login local
+ exec-timeout 30 0
 !
 {% if snmp_community %}
 snmp-server community {{ snmp_community }} RO
@@ -34,20 +41,29 @@ snmp-server location {{ snmp_location }}
 {% if snmp_contact %}
 snmp-server contact {{ snmp_contact }}
 {% endif %}
+snmp-server enable traps snmp linkdown linkup coldstart
+snmp-server enable traps syslog
 {% if snmp_host_ip %}
 snmp-server host {{ snmp_host_ip }} version 2c {{ snmp_community }}
 {% endif %}
 !
 {% endif %}
+
+lldp run
+cdp run
+
 {% if syslog_host_ip %}
-logging host {{ syslog_host_ip }}
+logging host {{ syslog_host_ip }} transport udp port 6514
+logging trap informational
+logging source-interface {{ mgmt_interface }}
 !
 {% endif %}
+
 {% if ntp_server_ip %}
 ntp server {{ ntp_server_ip }}
 !
 {% endif %}
-service password-encryption
+
 no ip http server
 !
 end

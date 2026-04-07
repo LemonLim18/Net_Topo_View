@@ -41,6 +41,154 @@ export const topologyApi = {
   crawl: () => request<{ status: string }>('/topology/crawl', { method: 'POST' }),
 };
 
+export interface OnboardingDeviceSummary {
+  id: number;
+  hostname: string;
+  management_ip: string | null;
+  vendor: string | null;
+  ssh_user: string | null;
+  ssh_port: number;
+  status: string;
+}
+
+export interface OnboardingGenerateResponse {
+  config: string;
+  filename: string;
+}
+
+export interface ZtpPublishRequestPayload {
+  device_ids: number[];
+  credential_device_id?: number;
+  credential_label?: string;
+  config_overrides?: Record<string, string>;
+  target_server_ip?: string;
+  target_server_port?: number;
+  restart_services?: boolean;
+  reset_leases?: boolean;
+  dry_run?: boolean;
+  requested_by?: string;
+}
+
+export interface ZtpPublishQueuedResponse {
+  job_id: number;
+  status: string;
+  total_items: number;
+}
+
+export interface ZtpServerCredentialStatus {
+  configured: boolean;
+  device_id: number | null;
+  label: string;
+  username?: string | null;
+}
+
+export interface ZtpServerConnectionTestResult {
+  ok: boolean;
+  server_ip: string;
+  server_port: number;
+  duration_ms: number;
+  credential_label: string;
+  credential_device_id: number | null;
+  stdout: string;
+  stderr: string;
+  message: string;
+}
+
+export interface ZtpPublishJobItem {
+  id: number;
+  job_id: number;
+  device_id: number;
+  hostname: string;
+  vendor: string;
+  management_ip: string;
+  management_mac?: string;
+  filename?: string;
+  remote_path?: string;
+  status: string;
+  stage?: string;
+  error_text?: string;
+  details?: Record<string, any>;
+  updated_at?: string;
+}
+
+export interface ZtpPublishJob {
+  id: number;
+  status: string;
+  mode: string;
+  target_server_ip: string;
+  credential_label: string;
+  requested_by?: string;
+  total_items: number;
+  success_items: number;
+  failed_items: number;
+  error_text?: string;
+  summary?: Record<string, any>;
+  manifest?: Record<string, any>;
+  created_at?: string;
+  started_at?: string;
+  finished_at?: string;
+  updated_at?: string;
+  items?: ZtpPublishJobItem[];
+}
+
+export const onboardingApi = {
+  listDevices: () => request<OnboardingDeviceSummary[]>('/onboarding/devices'),
+
+  generateForDevice: (deviceId: number) =>
+    request<OnboardingGenerateResponse>(`/onboarding/generate/${deviceId}`, {
+      method: 'POST',
+    }),
+
+  publishToZtp: (payload: ZtpPublishRequestPayload) =>
+    request<ZtpPublishQueuedResponse>('/onboarding/ztp/publish', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
+  getServerCredentialStatus: (label = 'ZTP_SERVER_SSH', deviceId?: number) => {
+    const params = new URLSearchParams();
+    params.set('label', label);
+    if (typeof deviceId === 'number') params.set('device_id', String(deviceId));
+    return request<ZtpServerCredentialStatus>(`/onboarding/ztp/server-credential?${params.toString()}`);
+  },
+
+  setServerCredential: (username: string, password: string, label = 'ZTP_SERVER_SSH', deviceId?: number) =>
+    request<{ id: number; device_id: number | null; label: string; stored: boolean }>('/onboarding/ztp/server-credential', {
+      method: 'POST',
+      body: JSON.stringify({
+        username,
+        password,
+        label,
+        ...(typeof deviceId === 'number' ? { device_id: deviceId } : {}),
+      }),
+    }),
+
+  testServerConnection: (
+    targetServerIp: string,
+    targetServerPort = 22,
+    credentialLabel = 'ZTP_SERVER_SSH',
+    credentialDeviceId?: number,
+  ) =>
+    request<ZtpServerConnectionTestResult>('/onboarding/ztp/server-credential/test', {
+      method: 'POST',
+      body: JSON.stringify({
+        target_server_ip: targetServerIp,
+        target_server_port: targetServerPort,
+        credential_label: credentialLabel,
+        credential_device_id: credentialDeviceId,
+      }),
+    }),
+
+  listPublishJobs: (limit = 20) =>
+    request<{ items: ZtpPublishJob[]; total: number }>(`/onboarding/ztp/publish?limit=${limit}`),
+
+  getPublishJob: (jobId: number) =>
+    request<ZtpPublishJob>(`/onboarding/ztp/publish/${jobId}`),
+
+  getPublishManifest: (jobId: number) =>
+    request<Record<string, any>>(`/onboarding/ztp/publish/${jobId}/manifest`),
+};
+
 // --- M4: Deployment API ---
 export const deployApi = {
   createRequest: (title: string, description: string) => 
@@ -533,6 +681,10 @@ export interface DeviceRecord {
   ssh_user: string | null;
   ssh_password: string | null;
   ssh_port: number | null;
+  netbox_synced?: boolean;
+  netbox_sync_pending?: boolean;
+  netbox_error?: string;
+  netbox_message?: string;
 }
 
 export interface CommonServicesProfile {
@@ -707,7 +859,7 @@ export const netboxApi = {
     ssh_password?: string;
     ssh_port?: number;
   }) =>
-    request<DeviceRecord & { netbox_synced?: boolean; netbox_error?: string }>('/netbox/devices', {
+    request<DeviceRecord & { netbox_synced?: boolean; netbox_sync_pending?: boolean; netbox_error?: string; netbox_message?: string }>('/netbox/devices', {
       method: 'POST',
       body: JSON.stringify(device),
     }),
@@ -727,13 +879,13 @@ export const netboxApi = {
     ssh_password?: string;
     ssh_port?: number;
   }) =>
-    request<DeviceRecord & { netbox_synced?: boolean; netbox_error?: string }>(`/netbox/devices/${id}`, {
+    request<DeviceRecord & { netbox_synced?: boolean; netbox_sync_pending?: boolean; netbox_error?: string; netbox_message?: string }>(`/netbox/devices/${id}`, {
       method: 'PUT',
       body: JSON.stringify(device),
     }),
 
   deleteDevice: (id: number) =>
-    request<{ deleted: boolean; id: number; hostname: string }>(
+    request<{ deleted: boolean; id: number; hostname: string; netbox_sync_pending?: boolean; netbox_message?: string }>(
       `/netbox/devices/${id}`, { method: 'DELETE' }
     ),
 
