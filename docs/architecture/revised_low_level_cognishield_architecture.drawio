@@ -1,0 +1,184 @@
+<mxfile host="app.diagrams.net" modified="2026-05-07T12:00:00.000Z" agent="Codex" version="24.7.17">
+  <diagram id="cognishield-architecture" name="Revised Low-Level Architecture">
+    <mxGraphModel dx="1800" dy="1000" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1800" pageHeight="1200" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+
+        <mxCell id="env" value="&lt;b&gt;PROXMOX-SUPPORTED COGNISHIELD LAB ENVIRONMENT&lt;/b&gt;" style="swimlane;html=1;rounded=0;startSize=36;fillColor=#ffffff;strokeColor=#000000;fontSize=22;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="20" y="20" width="1560" height="940" as="geometry" />
+        </mxCell>
+
+        <mxCell id="user" value="&lt;b&gt;User / Operator&lt;/b&gt;" style="swimlane;html=1;rounded=0;startSize=28;fillColor=#f5f5f5;strokeColor=#666666;fontSize=16;fontStyle=1;" vertex="1" parent="env">
+          <mxGeometry x="20" y="60" width="190" height="140" as="geometry" />
+        </mxCell>
+        <mxCell id="browser" value="Browser" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#333333;fontSize=14;" vertex="1" parent="user">
+          <mxGeometry x="35" y="50" width="120" height="44" as="geometry" />
+        </mxCell>
+
+        <mxCell id="frontend" value="&lt;b&gt;Frontend&lt;/b&gt;" style="swimlane;html=1;rounded=0;startSize=28;fillColor=#f5f5f5;strokeColor=#666666;fontSize=16;fontStyle=1;" vertex="1" parent="env">
+          <mxGeometry x="240" y="60" width="390" height="240" as="geometry" />
+        </mxCell>
+        <mxCell id="react" value="React" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=14;" vertex="1" parent="frontend">
+          <mxGeometry x="135" y="20" width="120" height="44" as="geometry" />
+        </mxCell>
+        <mxCell id="d3" value="D3.js" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=14;" vertex="1" parent="frontend">
+          <mxGeometry x="20" y="100" width="100" height="44" as="geometry" />
+        </mxCell>
+        <mxCell id="cyto" value="Cytoscape" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=14;" vertex="1" parent="frontend">
+          <mxGeometry x="145" y="100" width="100" height="44" as="geometry" />
+        </mxCell>
+        <mxCell id="monaco" value="Monaco Editor" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=14;" vertex="1" parent="frontend">
+          <mxGeometry x="270" y="100" width="100" height="44" as="geometry" />
+        </mxCell>
+        <mxCell id="recharts" value="Recharts" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=14;" vertex="1" parent="frontend">
+          <mxGeometry x="85" y="170" width="100" height="44" as="geometry" />
+        </mxCell>
+        <mxCell id="xterm" value="xterm.js" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=14;" vertex="1" parent="frontend">
+          <mxGeometry x="210" y="170" width="100" height="44" as="geometry" />
+        </mxCell>
+
+        <mxCell id="backend" value="&lt;b&gt;Backend Services&lt;/b&gt;" style="swimlane;html=1;rounded=0;startSize=28;fillColor=#f5f5f5;strokeColor=#666666;fontSize=16;fontStyle=1;" vertex="1" parent="env">
+          <mxGeometry x="670" y="60" width="380" height="260" as="geometry" />
+        </mxCell>
+        <mxCell id="uvicorn" value="Uvicorn" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=14;" vertex="1" parent="backend">
+          <mxGeometry x="40" y="35" width="120" height="44" as="geometry" />
+        </mxCell>
+        <mxCell id="fastapi" value="FastAPI" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=14;" vertex="1" parent="backend">
+          <mxGeometry x="220" y="35" width="120" height="44" as="geometry" />
+        </mxCell>
+        <mxCell id="pynetbox" value="pynetbox" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=14;" vertex="1" parent="backend">
+          <mxGeometry x="40" y="135" width="120" height="44" as="geometry" />
+        </mxCell>
+        <mxCell id="paramiko" value="Paramiko" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=14;" vertex="1" parent="backend">
+          <mxGeometry x="220" y="135" width="120" height="44" as="geometry" />
+        </mxCell>
+
+        <mxCell id="data" value="&lt;b&gt;Data Stores &amp;amp; Observability&lt;/b&gt;" style="swimlane;html=1;rounded=0;startSize=28;fillColor=#f5f5f5;strokeColor=#666666;fontSize=16;fontStyle=1;" vertex="1" parent="env">
+          <mxGeometry x="1080" y="60" width="450" height="260" as="geometry" />
+        </mxCell>
+        <mxCell id="sqlite" value="SQLite" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=14;" vertex="1" parent="data">
+          <mxGeometry x="25" y="35" width="110" height="44" as="geometry" />
+        </mxCell>
+        <mxCell id="chroma" value="ChromaDB" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=14;" vertex="1" parent="data">
+          <mxGeometry x="170" y="35" width="110" height="44" as="geometry" />
+        </mxCell>
+        <mxCell id="vault" value="Ansible Vault" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=14;" vertex="1" parent="data">
+          <mxGeometry x="315" y="35" width="110" height="44" as="geometry" />
+        </mxCell>
+        <mxCell id="telegraf" value="Telegraf" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=14;" vertex="1" parent="data">
+          <mxGeometry x="25" y="155" width="110" height="44" as="geometry" />
+        </mxCell>
+        <mxCell id="influx" value="InfluxDB" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=14;" vertex="1" parent="data">
+          <mxGeometry x="170" y="155" width="110" height="44" as="geometry" />
+        </mxCell>
+        <mxCell id="grafana" value="Grafana" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=14;" vertex="1" parent="data">
+          <mxGeometry x="315" y="155" width="110" height="44" as="geometry" />
+        </mxCell>
+
+        <mxCell id="support" value="&lt;b&gt;Supporting Services&lt;/b&gt;" style="swimlane;html=1;rounded=0;startSize=28;fillColor=#f5f5f5;strokeColor=#666666;fontSize=16;fontStyle=1;" vertex="1" parent="env">
+          <mxGeometry x="670" y="360" width="860" height="200" as="geometry" />
+        </mxCell>
+        <mxCell id="netbox" value="NetBox" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d9ead3;strokeColor=#82b366;fontSize=14;" vertex="1" parent="support">
+          <mxGeometry x="40" y="70" width="120" height="44" as="geometry" />
+        </mxCell>
+        <mxCell id="ansible" value="ansible-runner" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d9ead3;strokeColor=#82b366;fontSize=14;" vertex="1" parent="support">
+          <mxGeometry x="250" y="70" width="130" height="44" as="geometry" />
+        </mxCell>
+        <mxCell id="ollama" value="Ollama" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d9ead3;strokeColor=#82b366;fontSize=14;" vertex="1" parent="support">
+          <mxGeometry x="470" y="70" width="120" height="44" as="geometry" />
+        </mxCell>
+        <mxCell id="gemini" value="Gemini API" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d9ead3;strokeColor=#82b366;fontSize=14;" vertex="1" parent="support">
+          <mxGeometry x="680" y="70" width="120" height="44" as="geometry" />
+        </mxCell>
+
+        <mxCell id="lab" value="&lt;b&gt;Lab / Simulation&lt;/b&gt;" style="swimlane;html=1;rounded=0;startSize=28;fillColor=#f5f5f5;strokeColor=#666666;fontSize=16;fontStyle=1;" vertex="1" parent="env">
+          <mxGeometry x="670" y="600" width="860" height="160" as="geometry" />
+        </mxCell>
+        <mxCell id="eveng" value="EVE-NG" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=14;" vertex="1" parent="lab">
+          <mxGeometry x="180" y="55" width="120" height="44" as="geometry" />
+        </mxCell>
+        <mxCell id="devices" value="Virtual Devices" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=14;" vertex="1" parent="lab">
+          <mxGeometry x="520" y="55" width="140" height="44" as="geometry" />
+        </mxCell>
+
+        <mxCell id="e1" value="loads UI" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;strokeWidth=1.5;" edge="1" parent="env" source="browser" target="react">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e2" value="topology view" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;strokeWidth=1.2;" edge="1" parent="frontend" source="react" target="d3">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e3" value="topology graph" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;strokeWidth=1.2;" edge="1" parent="frontend" source="react" target="cyto">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e4" value="playbook editing" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;strokeWidth=1.2;" edge="1" parent="frontend" source="react" target="monaco">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e5" value="charts" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;strokeWidth=1.2;" edge="1" parent="frontend" source="react" target="recharts">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e6" value="SSH terminal" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;strokeWidth=1.2;" edge="1" parent="frontend" source="react" target="xterm">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <mxCell id="e7" value="HTTP / WebSocket" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;strokeWidth=1.5;" edge="1" parent="env" source="react" target="uvicorn">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e8" value="serves app" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;strokeWidth=1.5;" edge="1" parent="backend" source="uvicorn" target="fastapi">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <mxCell id="e9" value="inventory sync" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;strokeWidth=1.5;" edge="1" parent="env" source="fastapi" target="pynetbox">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e10" value="API access" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;strokeWidth=1.5;" edge="1" parent="env" source="pynetbox" target="netbox">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <mxCell id="e11" value="topology discovery" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;strokeWidth=1.5;" edge="1" parent="env" source="fastapi" target="paramiko">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e12" value="SSH / LLDP / CDP" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;strokeWidth=1.5;" edge="1" parent="env" source="paramiko" target="devices">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <mxCell id="e13" value="application data" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;strokeWidth=1.5;" edge="1" parent="env" source="fastapi" target="sqlite">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e14" value="knowledge retrieval" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;strokeWidth=1.5;" edge="1" parent="env" source="fastapi" target="chroma">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e15" value="secret lookup" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;strokeWidth=1.5;" edge="1" parent="env" source="fastapi" target="vault">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <mxCell id="e16" value="metrics query" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;strokeWidth=1.5;" edge="1" parent="env" source="fastapi" target="influx">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e17" value="SNMP metrics" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;strokeWidth=1.5;" edge="1" parent="env" source="telegraf" target="influx">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e18" value="dashboard query" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;strokeWidth=1.5;" edge="1" parent="env" source="grafana" target="influx">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <mxCell id="e19" value="check / deploy" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;strokeWidth=1.5;" edge="1" parent="env" source="fastapi" target="ansible">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e20" value="local inference" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;strokeWidth=1.5;" edge="1" parent="env" source="fastapi" target="ollama">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e21" value="hosted inference" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;strokeWidth=1.5;dashed=1;" edge="1" parent="env" source="fastapi" target="gemini">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e22" value="Ansible / SSH" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;strokeWidth=1.5;" edge="1" parent="env" source="ansible" target="devices">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <mxCell id="e23" value="runs inside" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;strokeWidth=1.5;" edge="1" parent="lab" source="devices" target="eveng">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

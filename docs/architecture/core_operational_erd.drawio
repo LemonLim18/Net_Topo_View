@@ -1,0 +1,117 @@
+﻿<mxfile host="app.diagrams.net" modified="2026-05-07T07:57:16Z" agent="Codex" version="24.7.17">
+  <diagram id="core-operational-erd" name="Core Operational ERD">
+    <mxGraphModel dx="1800" dy="1000" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="2100" pageHeight="1300" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="core_title" value="Core Operational ERD (Current Implementation Focus)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#666666;fontSize=20;fontStyle=1;align=left;verticalAlign=middle;spacing=6;" vertex="1" parent="1">
+          <mxGeometry x="30" y="20" width="520" height="36" as="geometry" />
+        </mxCell>
+        <mxCell id="core_legend" value="Legend:
+Solid line = enforced FK
+Dashed line = logical or text reference" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#666666;fontSize=14;fontStyle=0;align=left;verticalAlign=middle;spacing=6;" vertex="1" parent="1">
+          <mxGeometry x="30" y="70" width="270" height="72" as="geometry" />
+        </mxCell>
+        <mxCell id="users" value="&lt;b&gt;USERS&lt;/b&gt;&lt;hr size=&apos;1&apos;/&gt;&lt;font face=&apos;Courier New&apos;&gt;PK id&lt;br/&gt;username&lt;br/&gt;password_hash&lt;br/&gt;role&lt;br/&gt;is_active&lt;br/&gt;created_at&lt;br/&gt;last_login&lt;/font&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#fce4ec;strokeColor=#333333;fontSize=12;align=left;verticalAlign=top;spacing=6;spacingTop=6;" vertex="1" parent="1">
+          <mxGeometry x="30" y="170" width="240" height="190" as="geometry" />
+        </mxCell>
+        <mxCell id="devices" value="&lt;b&gt;DEVICES&lt;/b&gt;&lt;hr size=&apos;1&apos;/&gt;&lt;font face=&apos;Courier New&apos;&gt;PK id&lt;br/&gt;hostname&lt;br/&gt;management_ip&lt;br/&gt;vendor&lt;br/&gt;model&lt;br/&gt;os_version&lt;br/&gt;serial_number&lt;br/&gt;netbox_id&lt;br/&gt;status&lt;br/&gt;role&lt;br/&gt;source&lt;br/&gt;ssh_user&lt;br/&gt;ssh_password&lt;br/&gt;ssh_port&lt;br/&gt;created_at&lt;br/&gt;updated_at&lt;/font&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#e8f5e9;strokeColor=#333333;fontSize=12;align=left;verticalAlign=top;spacing=6;spacingTop=6;" vertex="1" parent="1">
+          <mxGeometry x="30" y="400" width="270" height="310" as="geometry" />
+        </mxCell>
+        <mxCell id="credentials" value="&lt;b&gt;DEVICE_CREDENTIALS&lt;/b&gt;&lt;hr size=&apos;1&apos;/&gt;&lt;font face=&apos;Courier New&apos;&gt;PK id&lt;br/&gt;FK device_id&lt;br/&gt;label&lt;br/&gt;username_enc&lt;br/&gt;password_enc&lt;br/&gt;created_at&lt;br/&gt;updated_at&lt;/font&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#e8f5e9;strokeColor=#333333;fontSize=12;align=left;verticalAlign=top;spacing=6;spacingTop=6;" vertex="1" parent="1">
+          <mxGeometry x="30" y="750" width="250" height="170" as="geometry" />
+        </mxCell>
+        <mxCell id="interfaces" value="&lt;b&gt;INTERFACES&lt;/b&gt;&lt;hr size=&apos;1&apos;/&gt;&lt;font face=&apos;Courier New&apos;&gt;PK id&lt;br/&gt;FK device_id&lt;br/&gt;name&lt;br/&gt;ip_address&lt;br/&gt;subnet_mask&lt;br/&gt;mac_address&lt;br/&gt;speed&lt;br/&gt;status&lt;br/&gt;created_at&lt;br/&gt;updated_at&lt;/font&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#e8f5e9;strokeColor=#333333;fontSize=12;align=left;verticalAlign=top;spacing=6;spacingTop=6;" vertex="1" parent="1">
+          <mxGeometry x="350" y="400" width="230" height="220" as="geometry" />
+        </mxCell>
+        <mxCell id="links" value="&lt;b&gt;LINKS&lt;/b&gt;&lt;hr size=&apos;1&apos;/&gt;&lt;font face=&apos;Courier New&apos;&gt;PK id&lt;br/&gt;FK src_device_id&lt;br/&gt;FK src_interface_id&lt;br/&gt;FK dst_device_id&lt;br/&gt;FK dst_interface_id&lt;br/&gt;discovery_protocol&lt;br/&gt;created_at&lt;br/&gt;updated_at&lt;/font&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#e8f5e9;strokeColor=#333333;fontSize=12;align=left;verticalAlign=top;spacing=6;spacingTop=6;" vertex="1" parent="1">
+          <mxGeometry x="630" y="400" width="250" height="230" as="geometry" />
+        </mxCell>
+        <mxCell id="change_requests" value="&lt;b&gt;CHANGE_REQUESTS&lt;/b&gt;&lt;hr size=&apos;1&apos;/&gt;&lt;font face=&apos;Courier New&apos;&gt;PK id&lt;br/&gt;title&lt;br/&gt;description&lt;br/&gt;status&lt;br/&gt;requester&lt;br/&gt;created_at&lt;br/&gt;updated_at&lt;/font&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#e3f2fd;strokeColor=#333333;fontSize=12;align=left;verticalAlign=top;spacing=6;spacingTop=6;" vertex="1" parent="1">
+          <mxGeometry x="930" y="170" width="260" height="200" as="geometry" />
+        </mxCell>
+        <mxCell id="jobs" value="&lt;b&gt;JOBS&lt;/b&gt;&lt;hr size=&apos;1&apos;/&gt;&lt;font face=&apos;Courier New&apos;&gt;PK id&lt;br/&gt;FK request_id&lt;br/&gt;FK device_id&lt;br/&gt;status&lt;br/&gt;stage&lt;br/&gt;FK snapshot_pre_id&lt;br/&gt;FK snapshot_post_id&lt;br/&gt;error_message&lt;br/&gt;generated_config&lt;br/&gt;rollback_config&lt;br/&gt;execution_engine&lt;br/&gt;ansible_playbook&lt;br/&gt;ansible_artifact_manifest&lt;br/&gt;ansible_entrypoint_path&lt;br/&gt;created_at&lt;br/&gt;updated_at&lt;/font&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#e3f2fd;strokeColor=#333333;fontSize=12;align=left;verticalAlign=top;spacing=6;spacingTop=6;" vertex="1" parent="1">
+          <mxGeometry x="930" y="410" width="310" height="330" as="geometry" />
+        </mxCell>
+        <mxCell id="job_steps" value="&lt;b&gt;JOB_STEPS&lt;/b&gt;&lt;hr size=&apos;1&apos;/&gt;&lt;font face=&apos;Courier New&apos;&gt;PK id&lt;br/&gt;FK job_id&lt;br/&gt;stage&lt;br/&gt;status&lt;br/&gt;details&lt;br/&gt;created_at&lt;/font&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#e3f2fd;strokeColor=#333333;fontSize=12;align=left;verticalAlign=top;spacing=6;spacingTop=6;" vertex="1" parent="1">
+          <mxGeometry x="930" y="790" width="260" height="170" as="geometry" />
+        </mxCell>
+        <mxCell id="snapshots" value="&lt;b&gt;CONFIG_SNAPSHOTS&lt;/b&gt;&lt;hr size=&apos;1&apos;/&gt;&lt;font face=&apos;Courier New&apos;&gt;PK id&lt;br/&gt;FK device_id&lt;br/&gt;config_text&lt;br/&gt;config_hash&lt;br/&gt;captured_at&lt;br/&gt;snapshot_type&lt;br/&gt;source_type&lt;br/&gt;normalized_config&lt;br/&gt;checksum&lt;br/&gt;intent_id&lt;br/&gt;execution_id&lt;br/&gt;approved_by&lt;br/&gt;verified_by&lt;br/&gt;verified_at&lt;/font&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#e3f2fd;strokeColor=#333333;fontSize=12;align=left;verticalAlign=top;spacing=6;spacingTop=6;" vertex="1" parent="1">
+          <mxGeometry x="1290" y="410" width="320" height="300" as="geometry" />
+        </mxCell>
+        <mxCell id="proposals" value="&lt;b&gt;CONFIG_PROPOSALS&lt;/b&gt;&lt;hr size=&apos;1&apos;/&gt;&lt;font face=&apos;Courier New&apos;&gt;PK id&lt;br/&gt;status&lt;br/&gt;user_prompt&lt;br/&gt;target_device&lt;br/&gt;target_device_id&lt;br/&gt;vendor&lt;br/&gt;feature&lt;br/&gt;params&lt;br/&gt;generated_config&lt;br/&gt;rollback_config&lt;br/&gt;diff_text&lt;br/&gt;risk_level&lt;br/&gt;ai_explanation&lt;br/&gt;action_artifact_json&lt;br/&gt;FK job_id&lt;br/&gt;FK request_id&lt;br/&gt;created_at&lt;br/&gt;updated_at&lt;/font&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#fff8e1;strokeColor=#333333;fontSize=12;align=left;verticalAlign=top;spacing=6;spacingTop=6;" vertex="1" parent="1">
+          <mxGeometry x="1290" y="150" width="330" height="310" as="geometry" />
+        </mxCell>
+        <mxCell id="intents" value="&lt;b&gt;INTENTS&lt;/b&gt;&lt;hr size=&apos;1&apos;/&gt;&lt;font face=&apos;Courier New&apos;&gt;PK id&lt;br/&gt;user_prompt&lt;br/&gt;intent_type&lt;br/&gt;action&lt;br/&gt;feature&lt;br/&gt;vendor&lt;br/&gt;parameters&lt;br/&gt;scope&lt;br/&gt;risk_level&lt;br/&gt;resolved_devices&lt;br/&gt;policy_approved&lt;br/&gt;policy_result&lt;br/&gt;blast_radius&lt;br/&gt;status&lt;br/&gt;FK proposal_id&lt;br/&gt;created_at&lt;/font&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#fff8e1;strokeColor=#333333;fontSize=12;align=left;verticalAlign=top;spacing=6;spacingTop=6;" vertex="1" parent="1">
+          <mxGeometry x="1670" y="170" width="250" height="230" as="geometry" />
+        </mxCell>
+        <mxCell id="audit" value="&lt;b&gt;AUDIT_LOG&lt;/b&gt;&lt;hr size=&apos;1&apos;/&gt;&lt;font face=&apos;Courier New&apos;&gt;PK id&lt;br/&gt;created_at&lt;br/&gt;action&lt;br/&gt;actor&lt;br/&gt;request_id&lt;br/&gt;job_id&lt;br/&gt;comment&lt;br/&gt;metadata&lt;/font&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#fce4ec;strokeColor=#333333;fontSize=12;align=left;verticalAlign=top;spacing=6;spacingTop=6;" vertex="1" parent="1">
+          <mxGeometry x="1290" y="760" width="320" height="210" as="geometry" />
+        </mxCell>
+        <mxCell id="ce1" value="device_id" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=none;strokeWidth=1.2;" edge="1" parent="1" source="interfaces" target="devices">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="ce2" value="device_id" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=none;strokeWidth=1.2;" edge="1" parent="1" source="credentials" target="devices">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="ce3" value="src_device_id" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=none;strokeWidth=1.2;" edge="1" parent="1" source="links" target="devices">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="ce4" value="dst_device_id" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=none;strokeWidth=1.2;" edge="1" parent="1" source="links" target="devices">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="ce5" value="src_interface_id" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=none;strokeWidth=1.2;" edge="1" parent="1" source="links" target="interfaces">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="ce6" value="dst_interface_id" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=none;strokeWidth=1.2;" edge="1" parent="1" source="links" target="interfaces">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="ce7" value="request_id" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=none;strokeWidth=1.2;" edge="1" parent="1" source="jobs" target="change_requests">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="ce8" value="device_id" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=none;strokeWidth=1.2;" edge="1" parent="1" source="jobs" target="devices">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="ce9" value="job_id" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=none;strokeWidth=1.2;" edge="1" parent="1" source="job_steps" target="jobs">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="ce10" value="device_id" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=none;strokeWidth=1.2;" edge="1" parent="1" source="snapshots" target="devices">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="ce11" value="snapshot_pre_id / snapshot_post_id" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=none;strokeWidth=1.2;" edge="1" parent="1" source="jobs" target="snapshots">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="ce12" value="job_id" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=none;strokeWidth=1.2;" edge="1" parent="1" source="proposals" target="jobs">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="ce13" value="request_id" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=none;strokeWidth=1.2;" edge="1" parent="1" source="proposals" target="change_requests">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="ce14" value="proposal_id" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=none;strokeWidth=1.2;" edge="1" parent="1" source="intents" target="proposals">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="ce15" value="requester" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=none;strokeWidth=1.2;dashed=1;strokeColor=#666666;" edge="1" parent="1" source="users" target="change_requests">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="ce16" value="actor / user_id" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=none;strokeWidth=1.2;dashed=1;strokeColor=#666666;" edge="1" parent="1" source="users" target="audit">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="ce17" value="request_id" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=none;strokeWidth=1.2;dashed=1;strokeColor=#666666;" edge="1" parent="1" source="audit" target="change_requests">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="ce18" value="job_id" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=none;strokeWidth=1.2;dashed=1;strokeColor=#666666;" edge="1" parent="1" source="audit" target="jobs">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="ce19" value="target_device_id" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=none;strokeWidth=1.2;dashed=1;strokeColor=#666666;" edge="1" parent="1" source="proposals" target="devices">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="ce20" value="intent_id" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=none;strokeWidth=1.2;dashed=1;strokeColor=#666666;" edge="1" parent="1" source="snapshots" target="intents">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="ce21" value="execution_id" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=none;strokeWidth=1.2;dashed=1;strokeColor=#666666;" edge="1" parent="1" source="snapshots" target="jobs">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

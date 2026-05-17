@@ -163,7 +163,7 @@ const CommonServicesProfilesView: React.FC = () => {
     try {
       const result = await onboardingApi.testServerConnection(targetServerIp, 22, credentialLabel);
       const details = result.ok
-        ? `Connected in ${result.duration_ms} ms using ${result.credential_label} (device_id=${result.credential_device_id})`
+        ? `Connected in ${result.duration_ms} ms using ${result.credential_label}`
         : (result.stderr || result.message || 'Connection test failed');
       setServerConnectionResult({
         ok: Boolean(result.ok),

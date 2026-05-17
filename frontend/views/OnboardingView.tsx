@@ -314,7 +314,7 @@ const OnboardingView: React.FC<{ setView: (id: ViewId) => void }> = ({ setView }
     try {
       const result = await onboardingApi.testServerConnection(targetServerIp, 22, credentialLabel);
       const details = result.ok
-        ? `Connected in ${result.duration_ms} ms using ${result.credential_label} (device_id=${result.credential_device_id})`
+        ? `Connected in ${result.duration_ms} ms using ${result.credential_label})`
         : (result.stderr || result.message || 'Connection test failed');
       setServerConnectionResult({
         ok: Boolean(result.ok),
@@ -365,7 +365,7 @@ const OnboardingView: React.FC<{ setView: (id: ViewId) => void }> = ({ setView }
         <div>
           <h1 className="text-xl font-bold">Onboard New Device</h1>
           <p className="text-sm opacity-60">
-            Select a planned device, review the generated Day-0 config in the editor, then publish the configuration to the device.
+            Select a planned device, review the generated Day-0 config in the editor, then publish the configuration to the ZTP server.
           </p>
         </div>
       </div>

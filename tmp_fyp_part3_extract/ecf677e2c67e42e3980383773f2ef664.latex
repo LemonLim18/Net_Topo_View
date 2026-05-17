@@ -1,0 +1,4301 @@
+% Options for packages loaded elsewhere
+\PassOptionsToPackage{unicode}{hyperref}
+\PassOptionsToPackage{hyphens}{url}
+%
+\documentclass[
+]{article}
+\usepackage{amsmath,amssymb}
+\usepackage{lmodern}
+\usepackage{iftex}
+\ifPDFTeX
+  \usepackage[T1]{fontenc}
+  \usepackage[utf8]{inputenc}
+  \usepackage{textcomp} % provide euro and other symbols
+\else % if luatex or xetex
+  \usepackage{unicode-math}
+  \defaultfontfeatures{Scale=MatchLowercase}
+  \defaultfontfeatures[\rmfamily]{Ligatures=TeX,Scale=1}
+\fi
+% Use upquote if available, for straight quotes in verbatim environments
+\IfFileExists{upquote.sty}{\usepackage{upquote}}{}
+\IfFileExists{microtype.sty}{% use microtype if available
+  \usepackage[]{microtype}
+  \UseMicrotypeSet[protrusion]{basicmath} % disable protrusion for tt fonts
+}{}
+\makeatletter
+\@ifundefined{KOMAClassName}{% if non-KOMA class
+  \IfFileExists{parskip.sty}{%
+    \usepackage{parskip}
+  }{% else
+    \setlength{\parindent}{0pt}
+    \setlength{\parskip}{6pt plus 2pt minus 1pt}}
+}{% if KOMA class
+  \KOMAoptions{parskip=half}}
+\makeatother
+\usepackage{xcolor}
+\usepackage{longtable,booktabs,array}
+\usepackage{calc} % for calculating minipage widths
+% Correct order of tables after \paragraph or \subparagraph
+\usepackage{etoolbox}
+\makeatletter
+\patchcmd\longtable{\par}{\if@noskipsec\mbox{}\fi\par}{}{}
+\makeatother
+% Allow footnotes in longtable head/foot
+\IfFileExists{footnotehyper.sty}{\usepackage{footnotehyper}}{\usepackage{footnote}}
+\makesavenoteenv{longtable}
+\usepackage{graphicx}
+\makeatletter
+\def\maxwidth{\ifdim\Gin@nat@width>\linewidth\linewidth\else\Gin@nat@width\fi}
+\def\maxheight{\ifdim\Gin@nat@height>\textheight\textheight\else\Gin@nat@height\fi}
+\makeatother
+% Scale images if necessary, so that they will not overflow the page
+% margins by default, and it is still possible to overwrite the defaults
+% using explicit options in \includegraphics[width, height, ...]{}
+\setkeys{Gin}{width=\maxwidth,height=\maxheight,keepaspectratio}
+% Set default figure placement to htbp
+\makeatletter
+\def\fps@figure{htbp}
+\makeatother
+\setlength{\emergencystretch}{3em} % prevent overfull lines
+\providecommand{\tightlist}{%
+  \setlength{\itemsep}{0pt}\setlength{\parskip}{0pt}}
+\setcounter{secnumdepth}{-\maxdimen} % remove section numbering
+\ifLuaTeX
+  \usepackage{selnolig}  % disable illegal ligatures
+\fi
+\IfFileExists{bookmark.sty}{\usepackage{bookmark}}{\usepackage{hyperref}}
+\IfFileExists{xurl.sty}{\usepackage{xurl}}{} % add URL line breaks if available
+\urlstyle{same} % disable monospaced font for URLs
+\hypersetup{
+  hidelinks,
+  pdfcreator={LaTeX via pandoc}}
+
+\author{}
+\date{}
+
+\begin{document}
+
+\begin{quote}
+\textbf{Chapter 3 -- System Requirements and Design}
+
+\textbf{3.1 Project Scope, System Capabilities and Limitations}
+
+\textbf{3.1.1 Project Scope}
+
+CogniShield is an open-source, vendor-neutral, LLM-assisted network
+automation and operations platform developed as a student project and
+targeted at universities, small and medium enterprises and research
+laboratories. The current project scope focuses primarily on Day-1 and
+Day-2 network operations for mixed-vendor and legacy-oriented
+environments, rather than full end-to-end autonomous provisioning. In
+its current implementation, the system provides a web-based
+controller-style workspace that integrates planned inventory management,
+live topology visibility, knowledge-base-assisted AI support, Ansible
+playbook generation, dry-run checking, approval-governed deployment,
+compliance and drift functions, incident and security views, onboarding
+support and configuration backup.
+
+Within the automation workflow, the project scope centers on turning
+natural-language configuration requests into reviewable and governed
+Ansible-based change artifacts. This includes a prompt-driven interface
+in Ansible Studio, preview and clarification flow for missing or
+ambiguous parameters, schema- and context-based validation, playbook
+generation, dry-run checking, approval queue handling and controlled
+deployment to supported lab or permitted devices. The system also
+supports related operational views such as topology inspection,
+planned-versus-live context comparison, intent history, playbook
+comparison, knowledge base management and backup-related workflows. For
+onboarding, the scope includes generated bootstrap configuration and ZTP
+publishing support, but not a full zero-touch autonomous onboarding
+pipeline.
+
+The project intentionally focuses on network operations and automation
+concerns such as inventory, topology, playbook workflow, validation,
+approval, monitoring support, compliance, incidents and configuration
+handling. It does not aim to cover application lifecycle orchestration,
+large-scale production high availability or fully autonomous closed-loop
+network control. Likewise, the system should not be described as a full
+SDN controller, a strict full intent-based networking platform or a
+complete Day-0 to Day-2
+
+autonomous controller. Although the platform includes AI assistance and
+controller-style organization, the current implementation remains
+centered on human-governed automation rather than autonomous execution
+authority.
+
+The design emphasizes demonstrability and reproducibility in an academic
+and lab setting. The implementation is intended to be runnable on
+accessible virtualized infrastructure and tested against environments
+such as EVE-NG, planned inventory data and reproducible lab scenarios,
+so that the system can be evaluated realistically within a student
+project context without requiring expensive proprietary platforms or
+specialized enterprise hardware.
+
+\textbf{3.1.2 System Capabilities --- Module Description}
+
+\textbf{Network Topology Visualization Module}
+
+The Network Topology Visualization Module provides a browser-based
+environment for representing and comparing the planned and live states
+of the network. In the current implementation, this module functions
+primarily as a visibility and comparison layer that helps users
+understand network structure, inspect device relationships and observe
+differences between intended design information and discovered
+operational state.
+
+The module maintains two complementary topology perspectives. The
+planned topology is derived from the system's inventory and planned
+network records, including device information, interface data, link
+definitions and related structured network details. Where applicable,
+NetBox-related inventory and planned-topology functions support this
+planned view. This layer reflects the intended network design and
+provides a structured reference for device roles, connectivity
+expectations and managed assets.
+
+The live topology is built from discovery-oriented operational data,
+such as crawler results and live topology snapshots gathered from the
+environment. In the currently delivered scope, this live layer is used
+to show discovered nodes, links and operational relationships in a
+browser-based dashboard environment. This allows users to inspect how
+the network currently appears from the system's discovery and live-state
+perspective.
+
+A key capability of this module is support for planned-versus-live
+awareness. By presenting both perspectives within the same platform, the
+system helps users identify differences such as devices that exist in
+one view but not the other, mismatched topology expectations, stale
+inventory assumptions or operational drift between documented design and
+discovered state. In the current implementation, this comparison is
+surfaced mainly through topology views, dashboard context and related
+inventory pages rather than through a fully autonomous reconciliation
+engine.
+
+The module is designed to remain accessible in student, lab and
+SME-oriented environments. Its interface is lightweight and intended for
+practical use in moderate-sized campus or lab topologies, allowing users
+to inspect network structure without relying on heavy proprietary
+controller platforms. Overall, this module strengthens operational
+visibility by giving users a
+
+clearer understanding of both what the network is expected to look like
+and what the system is currently able to observe.
+
+\textbf{Knowledge-Grounded LLM Playbook Generation Module}
+
+The Knowledge-Grounded LLM Playbook Generation Module provides the
+system's prompt-assisted automation workflow for converting
+natural-language network requests into reviewable Ansible-based change
+artifacts. In the current implementation, this module is centered around
+Ansible Studio, where users can describe a requested network change in
+plain language and progressively refine it into a structured and
+governable automation task.
+
+The workflow begins when a user submits a configuration request through
+the prompt-driven interface. Instead of executing directly from the
+prompt, the system first interprets the request and attempts to extract
+a structured representation of the intended operation, including the
+likely category, target devices and relevant parameters. When
+information is incomplete, ambiguous or inconsistent with the planned
+context, the system provides clarification and guided follow-up rather
+than proceeding blindly.
+
+To support this process, the module makes use of knowledge-grounded
+context from the current system. This may include planned inventory
+data, device and interface records, stored reference playbooks, schema
+definitions and knowledge-base content managed through the platform.
+These supporting sources help the system constrain generation and
+improve relevance, especially in multi-vendor and legacy-oriented
+workflows. In this sense, the module is not only prompt-driven but also
+context-supported.
+
+An important characteristic of the current implementation is that
+playbook generation is hybrid rather than fully free-form. In many
+supported flows, the LLM first helps interpret the request into
+structured intent and the system then uses that result in a more
+constrained generation path, such as reference-template filling or
+validation-driven playbook preparation. In other cases, the LLM may
+assist more directly in drafting the playbook. Regardless of the path
+used, the result is still treated as a generated artifact that must pass
+further checking before deployment.
+
+The generated outputs are surfaced through the Ansible workflow,
+allowing users to inspect the resulting playbook and continue into
+dry-run and approval stages. For this reason, the
+
+module should be understood not as an autonomous configuration engine,
+but as an LLM-assisted and knowledge-grounded playbook preparation
+workflow that helps users move from natural-language requests to
+structured network automation in a more usable and controlled way.
+
+\textbf{Playbook Validation \& Execution Module}
+
+The Playbook Validation \& Execution Module provides the platform's main
+safety and governance workflow for handling generated automation
+artifacts before they are applied to devices. It functions as the
+controlled operational layer that connects playbook preparation with
+dry-run checking, approval, deployment and execution visibility.
+
+After a playbook is generated, the system supports validation-oriented
+handling before execution. In the current implementation, this includes
+playbook checking, structured workflow gating and dry-run support
+through Ansible check mode where applicable. The purpose of this stage
+is to help users inspect whether the playbook is suitable for deployment
+before any live configuration changes are attempted. Rather than
+assuming that generated output is safe by default, the system requires
+review and verification as part of the workflow.
+
+A central capability of this module is the Check step, which allows
+users to perform a dry-run style assessment before submission for
+approval or deployment. The corresponding outputs are used to help users
+understand what the playbook is likely to do and whether any issues must
+be resolved first. This creates a more controlled operational flow than
+directly applying generated changes.
+
+Once a playbook has been checked, the module supports an
+approval-governed deployment process. In the current exposed
+implementation, the workflow includes sending the playbook for approval,
+managing it through the Approval Queue and only allowing deployment
+after the required review stage has been completed. This
+approval-oriented structure is one of the key governance mechanisms of
+the system and is especially important because CogniShield is designed
+as a human-governed automation platform rather than an autonomous
+executor.
+
+After approval, the system supports controlled execution and surfaces
+execution-related information through logs, results and associated job
+records. The focus of the current implementation is on making the
+deployment workflow understandable, reviewable and
+
+operationally traceable. The module should therefore be described
+primarily in terms of playbook review, dry-run checking, approval
+workflow and controlled execution visibility, rather than as a fully
+autonomous rollback and recovery engine.
+
+Overall, this module ensures that prompt-assisted network automation
+remains governed by validation, user review and explicit deployment
+control rather than by unrestricted model output.
+
+\textbf{Performance Metric Monitoring Module}
+
+The Performance Metric Monitoring Module provides the platform's
+operational monitoring view for observing network health and
+performance-related indicators. In the current implementation, this
+module is centered around frontend-visible monitoring pages that help
+users inspect device and interface status, review active alerts and
+observe performance trends in a practical dashboard environment.
+
+The module presents monitoring-oriented information such as interface
+state, traffic-related metrics, device resource indicators and alert
+summaries where available through the current monitoring pipeline. Its
+purpose is to give users a clearer view of network conditions and help
+them identify abnormal or degraded behavior without relying solely on
+manual command-line inspection.
+
+A key role of this module is to support operational awareness before and
+after configuration changes. By surfacing relevant performance
+indicators and alert-related context, the module helps users assess
+whether a network segment appears healthy, whether there are visible
+issues requiring attention and whether recent changes may have affected
+the observed state of the environment. In this sense, the module
+complements the automation workflow by providing monitoring context
+rather than by acting as a self-healing or autonomous remediation
+engine.
+
+The current implementation focuses on visibility, summarization and
+inspection rather than unattended corrective action. It should therefore
+be described as a performance monitoring and alert-awareness module, not
+as a full incident-response or automated remediation subsystem. This
+keeps the module aligned with the delivered frontend scope while still
+reflecting its practical value within the overall platform.
+
+Overall, the Performance Metric Monitoring Module strengthens
+CogniShield by providing accessible monitoring support that helps users
+understand current network behavior, correlate observed conditions with
+planned or recent operational activity and work more confidently within
+the platform's governed automation workflow.
+
+\textbf{3.1.3 System Limitations}
+
+CogniShield is developed with explicit technical, operational and
+scope-related limitations that should be stated clearly so that the
+project is evaluated according to what the current implementation
+actually delivers.
+
+\textbf{Multi-vendor and legacy-environment constraints:}
+
+A major limitation arises from the type of environments targeted by the
+project. CogniShield is designed for mixed-vendor and legacy-oriented
+networks, which means many devices may rely on vendor-specific CLI
+behavior, partial automation support, inconsistent module capabilities
+and limited modern programmability interfaces. In such environments, it
+is difficult to implement a uniform, fully autonomous end-to-end
+automation workflow because different vendors and device families do not
+always expose the same management abstractions, transaction models,
+rollback behavior or context interfaces. This is one of the key reasons
+the current system should not be described as a full SDN controller, a
+strict full intent-based networking platform or a fully autonomous Day-0
+to Day-2 control system. Instead, its automation is implemented
+primarily through LLM-assisted, Ansible-centered, approval-governed
+workflows that remain practical for legacy and heterogeneous
+environments.
+
+\textbf{Nature of the current automation workflow:}
+
+The automation provided by CogniShield is not fully autonomous
+automation that supports the entire network lifecycle from Day-0
+onboarding to continuous deployment and operation like Software-Defined
+Networking (SDN) controllers, but rather a governed Ansible-based
+prompt-to-device execution workflow. In this context, Ansible automation
+refers to the use of structured and repeatable playbooks to automate
+network configuration validation and deployment tasks across target
+devices in a consistent and manageable manner. Therefore, the system is
+best understood as an LLM-assisted playbook-generation and
+governed-execution platform, rather than a system that automatically
+derives all network behavior and continuously enforces it without human
+oversight. The automation strength of the current system lies in helping
+users prepare, validate, and execute network changes more efficiently,
+consistently, and safely through reusable playbooks and controlled
+workflows across multiple network devices. By reducing the need for
+manual device-by-device configuration, the
+
+system also helps minimize human error and operational inconsistency
+while improving deployment speed, configuration consistency, and
+operational efficiency, rather than fully replacing network engineers or
+providing fully autonomous network management.
+
+\textbf{LLM limitations, generation risk and prompt dependence:}
+
+Another major limitation arises from the use of large language models.
+LLM outputs are probabilistic and may produce responses that are
+plausible in form but incomplete, incorrect or operationally unsuitable.
+In the context of CogniShield, model output must therefore not be
+treated as authoritative network truth. The system treats generated
+results as reviewable artifacts rather than direct executable
+instructions. In practice, the LLM is used mainly to interpret
+natural-language requests and assist playbook generation while the
+surrounding system applies schema checks, planned-context checks,
+dry-run support and approval workflow to reduce risk.
+
+The quality of results also depends heavily on the style and clarity of
+the user prompt. The current workflow works best when prompts are
+operationally scoped and reasonably specific, for example requests such
+as configuring VLANs, interfaces, static routes, ACLs, QoS or OSPF on
+named devices. More abstract or business-level requests may require
+clarification and very broad prompts may not reliably produce complete
+automation artifacts in one pass. As a result, users should expect
+CogniShield to work most effectively with device-scoped,
+operation-oriented prompts rather than vague high-level policy
+statements. Human oversight remains necessary because even a well-formed
+prompt may still lead to incomplete or suboptimal generation.
+
+\textbf{Supported operation and orchestration limits:}
+
+The current implementation does not provide unlimited operational
+coverage across all network tasks. It is centered on selected automation
+categories and their associated workflow support, rather than universal
+handling of every possible network operation. Complex multi-step
+requests, highly coupled cross-device changes or prompts involving
+multiple simultaneous operations may still require clarification,
+decomposition or manual refinement. This means that the system should
+not be expected to reliably transform every complex prompt into a fully
+complete playbook without additional user guidance.
+
+\textbf{Hardware and model constraints:}
+
+Hardware and runtime constraints also define the project's operational
+limits. Running large on-premise foundation models typically requires
+substantial GPU resources and additional deployment complexity, which
+are outside the normal scope of a university student project. For this
+reason, the implementation is designed around accessible model options
+such as hosted LLM APIs or lightweight local models that can operate in
+modest lab environments. Similarly, the computing resources available in
+student machines, virtual machines and EVE-NG-based lab setups impose
+practical constraints on the size and complexity of the environments
+that can be demonstrated and tested. As a result, the project is
+optimized for manageable and reproducible lab-scale deployments rather
+than large production-scale environments.
+
+\textbf{Partial dry-run and execution predictability:}
+
+Another limitation concerns dry-run support. Although CogniShield
+provides a check-oriented workflow and can use Ansible check mode where
+applicable, not all modules, vendor behaviors or playbook actions can be
+simulated with equal completeness. This means dry-run outputs may be
+partial for some operations and users must still interpret the results
+carefully before deployment. The system reduces risk through workflow
+control and review, but dry-run support should not be interpreted as a
+guarantee of complete execution predictability for every task.
+
+\textbf{Dependence on context quality and state consistency:}
+
+The quality of generated outputs depends significantly on the quality of
+the supporting context available to the system. Planned inventory
+records, topology information, interface data, stored references and
+knowledge-base content all influence how accurately a request can be
+interpreted and prepared. If this context is incomplete, outdated,
+inconsistent or missing, the resulting playbook workflow may require
+more clarification or may produce less reliable intermediate outputs. In
+addition, the platform does not yet fully eliminate state-authority
+tensions between LLM interpretation, planned inventory, live
+observations and user overrides. Therefore, CogniShield performs best
+when the surrounding inventory and contextual records are reasonably
+maintained.
+
+\textbf{Partial Day-0 and non-autonomous onboarding scope:}
+
+The system also has limitations in onboarding and lifecycle automation.
+The current implementation supports onboarding assistance, generated
+bootstrap configuration and related publishing workflows, but it does
+not yet provide a fully autonomous zero-touch onboarding process in
+which newly powered devices automatically join, authenticate, retrieve
+initial management settings, receive the required bootstrap
+configuration and transition seamlessly into full operational control.
+This limitation is influenced not only by the mixed-vendor and legacy
+nature of the target environment, but also by the characteristics of the
+testing platform used in this project.
+
+In this project, EVE-NG is used as the main laboratory environment,
+where many network devices are virtualized images rather than full
+physical hardware implementations. As a result, some virtual switch or
+router images do not faithfully reproduce the complete Day-0 bootstrap
+behavior available on actual devices. For example, certain images may
+not fully support automatic DHCP-based onboarding flows, automatic
+retrieval of configuration files from a bootstrap server or legacy
+vendor-specific mechanisms such as Cisco AutoInstall-style startup
+provisioning. In other cases, management interface naming and early boot
+behavior may differ from real hardware, making automated zero-touch
+registration and initial configuration delivery difficult to demonstrate
+consistently.
+
+Because of these constraints, the current onboarding workflow is
+implemented in a more practical and controlled manner: the system
+generates bootstrap or zero-day configuration artifacts and supports
+onboarding-related publishing workflows, but the final application of
+those initial configurations may still require manual or semi-manual
+steps in the lab environment. Therefore, CogniShield should not yet be
+described as a fully autonomous Day-0 onboarding platform. Its present
+onboarding capability is better understood as assisted bootstrap
+generation and onboarding support, shaped by both the realities of
+mixed-vendor legacy environments and the limitations of virtualized
+testbed behavior in EVE-NG.
+
+\textbf{Architectural and deployment-model limitations:}
+
+The current system is intentionally designed for mixed-vendor and
+legacy-oriented network environments, which are common in SMEs, student
+laboratories and research settings because these environments typically
+rely on equipment that is acquired incrementally and under budget
+constraints. In practice, such devices often expose heterogeneous
+management methods, uneven automation support, vendor-specific CLI
+behavior and inconsistent support for modern controller-driven
+abstractions. Because of this heterogeneity, CogniShield does not
+implement a single dominant control plane that can continuously program
+and reconcile all devices in the manner expected of a full SDN
+controller. Likewise, it should not be described as a strict full
+intent-based networking platform, because the current implementation
+does not yet provide deterministic end-to-end realization of all
+high-level network goals through continuous verification and autonomous
+policy reconciliation. Instead, the system uses LLM-assisted,
+Ansible-centered and approval-governed automation workflows, where
+natural-language requests are interpreted into structured change
+artifacts that may still require clarification, schema validation,
+planned-context checking, dry-run assessment and human approval before
+execution. This makes CogniShield more accurately positioned as a
+practical automation platform for heterogeneous and resource-constrained
+environments rather than as a full SDN or fully realized IBN system.
+
+\textbf{Scope and scale limits:}
+
+Finally, the system is intentionally scoped for campus-style, SME,
+educational and lab-oriented environments. Extremely large carrier
+networks, hyperscale cloud fabrics, multi-region enterprise operations
+and highly complex cross-domain orchestration are outside the project
+boundaries. Likewise, the currently supported automation workflows,
+schema coverage and playbook patterns are intentionally selective rather
+than exhaustive. The goal of the project is to demonstrate a practical
+and governed LLM-assisted network automation platform within a realistic
+and manageable scope, not to claim universal coverage across all network
+environments and operational scenarios.
+
+\textbf{3.2 Project Management}\\
+\textbf{3.2.1 Work Breakdown Structure (WBS)}
+\end{quote}
+
+\includegraphics[width=6.27083in,height=1.61389in]{vertopal_ecf677e2c67e42e3980383773f2ef664/media/image1.png}
+
+\begin{quote}
+\textbf{Network Topology Visualization Module}
+\end{quote}
+
+\begin{longtable}[]{@{}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.3333}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.3333}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.3333}}@{}}
+\toprule()
+\begin{minipage}[b]{\linewidth}\raggedright
+\textbf{Activity}
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+\textbf{Date}
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Duration (Days)}
+\end{quote}
+\end{minipage} \\
+\midrule()
+\endhead
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{1. Project Planning}
+\end{quote}
+\end{minipage} & & \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+a.\hspace{0pt} Define project scope
+\end{quote}
+\end{minipage} & 01/10/2025 & 3 \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+b.\hspace{0pt} Develop WBS and build schedule for topology visualization
+module
+\end{quote}
+\end{minipage} & 04/10/2025 & 4 \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+c.\hspace{0pt} Risk Planning
+\end{quote}
+\end{minipage} & 08/10/2025 & 4 \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{2. Analysis Task}
+\end{quote}
+\end{minipage} & & \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+a.\hspace{0pt} Gather and analyze planned inventory and live discovery
+data structures
+\end{quote}
+\end{minipage} & 12/10/2025 & 5 \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+b.\hspace{0pt} Identify key topology entities and comparison attributes
+\end{quote}
+\end{minipage} & 17/10/2025 & 4 \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+c.\hspace{0pt} Define and prioritize planned/live visualization
+requirements
+\end{quote}
+\end{minipage} & 21/10/2025 & 4 \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+d.\hspace{0pt} Model topology view and comparison flow using UML
+\end{quote}
+\end{minipage} & 25/10/2025 & 4 \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{3. Design Task}
+\end{quote}
+\end{minipage} & & \\
+\bottomrule()
+\end{longtable}
+
+\begin{longtable}[]{@{}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.3333}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.3333}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.3333}}@{}}
+\toprule()
+\begin{minipage}[b]{\linewidth}\raggedright
+\begin{quote}
+a.\hspace{0pt} Design topology snapshot and cache handling
+\end{quote}
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+29/10/2025
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+4
+\end{minipage} \\
+\midrule()
+\endhead
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+b.\hspace{0pt} Design GUI layouts for planned and live topology views
+\end{quote}
+\end{minipage} & 02/11/2025 & 5 \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+c.\hspace{0pt} Design planned-versus-live comparison interactions
+\end{quote}
+\end{minipage} & 07/11/2025 & 4 \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{4. Build Task}
+\end{quote}
+\end{minipage} & & \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+a.\hspace{0pt} Implement planned topology view
+\end{quote}
+\end{minipage} & 11/11/2025 & 5 \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+b.\hspace{0pt} Implement live topology view
+\end{quote}
+\end{minipage} & 16/11/2025 & 6 \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+c.\hspace{0pt} Implement planned-versus-live comparison and device
+detail interaction
+\end{quote}
+\end{minipage} & 22/11/2025 & 5 \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+d.\hspace{0pt} Perform unit testing: topology parsing and visualization
+logic
+\end{quote}
+\end{minipage} & 27/11/2025 & 4 \\
+e.\hspace{0pt} Perform integration test: GUI + backend + data source &
+01/12/2025 & 4 \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+f.\hspace{0pt} Perform system and acceptance test
+\end{quote}
+\end{minipage} & 05/12/2025 & 6 \\
+\multicolumn{3}{@{}>{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{1.0000} + 4\tabcolsep}@{}}{%
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+Note: The use cases that will be developed in this module:\\
+●\hspace{0pt} UC01 - View planned network topology\\
+●\hspace{0pt} UC02 - View live network topology\\
+●\hspace{0pt} UC03 - Compare planned and live topology\\
+●\hspace{0pt} UC04 - Inspect topology-linked device and connection
+details
+\end{quote}\strut
+\end{minipage}} \\
+\bottomrule()
+\end{longtable}
+
+\emph{Table 2: WBS table for Network Topology Visualization Module}
+
+\begin{quote}
+\textbf{LLM Playbook Generation Module}
+\end{quote}
+
+\begin{longtable}[]{@{}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.3333}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.3333}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.3333}}@{}}
+\toprule()
+\begin{minipage}[b]{\linewidth}\raggedright
+\textbf{Activity}
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+\textbf{Date}
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Duration (Days)}
+\end{quote}
+\end{minipage} \\
+\midrule()
+\endhead
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{1. Project Planning}
+\end{quote}
+\end{minipage} & & \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+a.\hspace{0pt} Define project scope
+\end{quote}
+\end{minipage} & 06/10/2025 & 3 \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+b.\hspace{0pt} Develop WBS and build schedule and then plan the work
+\end{quote}
+\end{minipage} & 09/10/2025 & 4 \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+c.\hspace{0pt} Risk Planning
+\end{quote}
+\end{minipage} & 13/10/2025 & 4 \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{2. Analysis Task}
+\end{quote}
+\end{minipage} & & \\
+a.\hspace{0pt} Gather and analyze prompt-to-playbook requirements &
+17/10/2025 & 5 \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+b.\hspace{0pt} Review and analyze supported automation categories and
+vendor workflows
+\end{quote}
+\end{minipage} & 22/10/2025 & 4 \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+c.\hspace{0pt} Define and prioritize prompt, context and generation
+requirements
+\end{quote}
+\end{minipage} & 26/10/2025 & 4 \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+d.\hspace{0pt} Model prompt -\textgreater{} preview -\textgreater{}
+clarify -\textgreater{} generate flow using UML
+\end{quote}
+\end{minipage} & 30/10/2025 & 4 \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{3. Design Task}
+\end{quote}
+\end{minipage} & & \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+a.\hspace{0pt} Design prompt/request data structure and generated
+artifact storage
+\end{quote}
+\end{minipage} & 03/11/2025 & 4 \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+b.\hspace{0pt} Design GUI layouts for Ansible Studio prompt and preview
+flow
+\end{quote}
+\end{minipage} & 07/11/2025 & 5 \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+c.\hspace{0pt} Design schema/context and knowledge-grounded generation
+endpoints
+\end{quote}
+\end{minipage} & 12/11/2025 & 4 \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{4. Build Task}
+\end{quote}
+\end{minipage} & & \\
+a.\hspace{0pt} Implement prompt submission and preview workflow &
+16/11/2025 & 4 \\
+\bottomrule()
+\end{longtable}
+
+\begin{longtable}[]{@{}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.3333}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.3333}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.3333}}@{}}
+\toprule()
+\begin{minipage}[b]{\linewidth}\raggedright
+\begin{quote}
+b.\hspace{0pt} Implement clarification and context-supported playbook
+generation flow
+\end{quote}
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+20/11/2025
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+5
+\end{minipage} \\
+\midrule()
+\endhead
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+c.\hspace{0pt} Perform unit testing: prompt parsing and generation flow
+\end{quote}
+\end{minipage} & 25/11/2025 & 4 \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+d.\hspace{0pt} Perform integration test: GUI + backend + context sources
+\end{quote}
+\end{minipage} & 29/11/2025 & 4 \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+e.\hspace{0pt} Perform system and acceptance test
+\end{quote}
+\end{minipage} & 03/12/2025 & 6 \\
+\multicolumn{3}{@{}>{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{1.0000} + 4\tabcolsep}@{}}{%
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+Note: The use cases that will be developed in this module: ●\hspace{0pt}
+UC05 - Submit natural-language configuration request ●\hspace{0pt} UC06
+- Review parsed request and clarify parameters ●\hspace{0pt} UC07 -
+Generate Ansible playbook\\
+●\hspace{0pt} UC08 - Review generated playbook\\
+●\hspace{0pt} UC09 - Regenerate or refine playbook
+\end{quote}\strut
+\end{minipage}} \\
+\bottomrule()
+\end{longtable}
+
+\emph{Table 3: WBS table for LLM Playbook Generation Module}
+
+\begin{quote}
+\textbf{Playbook Validation, Approval \& Execution Module}
+\end{quote}
+
+\begin{longtable}[]{@{}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.3333}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.3333}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.3333}}@{}}
+\toprule()
+\begin{minipage}[b]{\linewidth}\raggedright
+\textbf{Activity}
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+\textbf{Date}
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Duration (Days)}
+\end{quote}
+\end{minipage} \\
+\midrule()
+\endhead
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{1. Project Planning}
+\end{quote}
+\end{minipage} & & \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+d.\hspace{0pt} Define project scope
+\end{quote}
+\end{minipage} & 04/12/2025 & 3 \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+e.\hspace{0pt} Develop WBS and build schedule and then plan the work
+\end{quote}
+\end{minipage} & 07/12/2025 & 4 \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+f.\hspace{0pt} Risk planning (check, approval and execution safety)
+\end{quote}
+\end{minipage} & 11/12/2025 & 3 \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{2. Analysis Task}
+\end{quote}
+\end{minipage} & & \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+e.\hspace{0pt} Gather and analyze playbook validation and dry-run
+requirements
+\end{quote}
+\end{minipage} & 14/12/2025 & 5 \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+f.\hspace{0pt} Define approval workflow and deployment gates
+\end{quote}
+\end{minipage} & 19/12/2025 & 4 \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+g.\hspace{0pt} Analyze execution logging and job traceability needs
+\end{quote}
+\end{minipage} & 23/12/2025 & 4 \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+h.\hspace{0pt} Model end-to-end validation -\textgreater{} approval
+-\textgreater{} deploy flow using UML
+\end{quote}
+\end{minipage} & 27/12/2025 & 4 \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{3. Design Task}
+\end{quote}
+\end{minipage} & & \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+d.\hspace{0pt} Design check result reporting and artifact handling
+\end{quote}
+\end{minipage} & 31/12/2025 & 4 \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+e.\hspace{0pt} Design approval interface and workflow logic
+\end{quote}
+\end{minipage} & 04/01/2026 & 5 \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+f.\hspace{0pt} Design controlled deployment and execution logging flow
+\end{quote}
+\end{minipage} & 09/01/2026 & 5 \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{4. Build Task}
+\end{quote}
+\end{minipage} & & \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+f.\hspace{0pt} Implement playbook check and result reporting
+\end{quote}
+\end{minipage} & 14/01/2026 & 6 \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+g.\hspace{0pt} Implement approval UI and workflow
+\end{quote}
+\end{minipage} & 20/01/2026 & 5 \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+h.\hspace{0pt} Implement controlled deployment execution and log
+streaming
+\end{quote}
+\end{minipage} & 25/01/2026 & 5 \\
+\bottomrule()
+\end{longtable}
+
+\begin{longtable}[]{@{}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.3333}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.3333}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.3333}}@{}}
+\toprule()
+\begin{minipage}[b]{\linewidth}\raggedright
+i.\hspace{0pt} Implement post-deployment status and result handling
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+30/01/2026
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+5
+\end{minipage} \\
+\midrule()
+\endhead
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+j.\hspace{0pt} Perform unit testing: check + approval + execution
+\end{quote}
+\end{minipage} & 04/02/2026 & 4 \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+k.\hspace{0pt} Perform integration test: full governed workflow
+\end{quote}
+\end{minipage} & 08/02/2026 & 4 \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+l.\hspace{0pt} Perform system and acceptance test
+\end{quote}
+\end{minipage} & 12/02/2026 & 5 \\
+\multicolumn{3}{@{}>{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{1.0000} + 4\tabcolsep}@{}}{%
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+Note: The use cases that will be developed in this module: ●\hspace{0pt}
+UC10 - Run playbook check\\
+●\hspace{0pt} UC11 - Review check results and change summary
+●\hspace{0pt} UC12 - Submit playbook for approval\\
+●\hspace{0pt} UC13 - Approve or reject playbook\\
+●\hspace{0pt} UC14 - Deploy approved playbook\\
+●\hspace{0pt} UC15 - View deployment logs and results
+\end{quote}\strut
+\end{minipage}} \\
+\bottomrule()
+\end{longtable}
+
+\emph{Table 4: WBS table for Playbook Validation \& Execution Module}
+
+\begin{quote}
+\textbf{Performance Metric Monitoring Module}
+\end{quote}
+
+\begin{longtable}[]{@{}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.3333}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.3333}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.3333}}@{}}
+\toprule()
+\begin{minipage}[b]{\linewidth}\raggedright
+\textbf{Activity}
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+\textbf{Date}
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Duration (Days)}
+\end{quote}
+\end{minipage} \\
+\midrule()
+\endhead
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{1. Project Planning}
+\end{quote}
+\end{minipage} & & \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+g.\hspace{0pt} Define project scope
+\end{quote}
+\end{minipage} & 15/02/2026 & 3 \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+h.\hspace{0pt} Develop WBS and build schedule
+\end{quote}
+\end{minipage} & 18/02/2026 & 4 \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+i.\hspace{0pt} Risk planning (metric accuracy and alert noise)
+\end{quote}
+\end{minipage} & 22/02/2026 & 3 \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{2. Analysis Task}
+\end{quote}
+\end{minipage} & & \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+i.\hspace{0pt} Gather and analyze performance metrics and alert
+indicators
+\end{quote}
+\end{minipage} & 25/02/2026 & 5 \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+j.\hspace{0pt} Define dashboard KPI and threshold display requirements
+\end{quote}
+\end{minipage} & 02/03/2026 & 4 \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+k.\hspace{0pt} Identify device/interface drill-down and trend-view needs
+\end{quote}
+\end{minipage} & 06/03/2026 & 4 \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+l.\hspace{0pt} Model monitoring view workflow using UML
+\end{quote}
+\end{minipage} & 10/03/2026 & 4 \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{3. Design Task}
+\end{quote}
+\end{minipage} & & \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+g.\hspace{0pt} Design metric aggregation and query flow
+\end{quote}
+\end{minipage} & 14/03/2026 & 4 \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+h.\hspace{0pt} Design performance dashboard and alert views
+\end{quote}
+\end{minipage} & 18/03/2026 & 5 \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+i.\hspace{0pt} Design drill-down charts and trend presentation
+\end{quote}
+\end{minipage} & 23/03/2026 & 4 \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{4. Build Task}
+\end{quote}
+\end{minipage} & & \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+m.\hspace{0pt} Implement performance summary cards and charts
+\end{quote}
+\end{minipage} & 27/03/2026 & 5 \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+n.\hspace{0pt} Implement active alert and threshold views
+\end{quote}
+\end{minipage} & 01/04/2026 & 6 \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+o.\hspace{0pt} Implement device and interface drill-down monitoring
+screens
+\end{quote}
+\end{minipage} & 07/04/2026 & 5 \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+p.\hspace{0pt} Perform unit testing
+\end{quote}
+\end{minipage} & 12/04/2026 & 4 \\
+\bottomrule()
+\end{longtable}
+
+\begin{longtable}[]{@{}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.3333}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.3333}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.3333}}@{}}
+\toprule()
+\begin{minipage}[b]{\linewidth}\raggedright
+\begin{quote}
+q.\hspace{0pt} Perform integration test
+\end{quote}
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+16/04/2026
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+4
+\end{minipage} \\
+\midrule()
+\endhead
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+r.\hspace{0pt} Perform system and acceptance test
+\end{quote}
+\end{minipage} & 20/04/2026 & 5 \\
+\multicolumn{3}{@{}>{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{1.0000} + 4\tabcolsep}@{}}{%
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+Note: The use cases that will be developed in this module: ●\hspace{0pt}
+UC16 - View device performance summary\\
+●\hspace{0pt} UC17 - View interface health and traffic metrics
+●\hspace{0pt} UC18 - View active alerts and threshold status
+●\hspace{0pt} UC19 - Inspect time-series performance trends
+\end{quote}\strut
+\end{minipage}} \\
+\bottomrule()
+\end{longtable}
+
+\emph{Table 5: WBS table for Performance Metric Monitoring Module}
+
+\begin{quote}
+\textbf{3.2.2 Gantt Chart}
+
+\includegraphics[width=10.48889in,height=2.33333in]{vertopal_ecf677e2c67e42e3980383773f2ef664/media/image2.png}
+
+\includegraphics[width=10.5in,height=2.10417in]{vertopal_ecf677e2c67e42e3980383773f2ef664/media/image3.png}
+
+\includegraphics[width=10.42639in,height=2.30139in]{vertopal_ecf677e2c67e42e3980383773f2ef664/media/image4.png}
+
+\includegraphics[width=10.41667in,height=2.17639in]{vertopal_ecf677e2c67e42e3980383773f2ef664/media/image5.png}
+
+\textbf{3.2.3 SWOT Analysis}
+
+\textbf{Strengths}
+
+CogniShield offers several important strengths within the scope of its
+current implementation. First, it is built by combining free and
+open-source components into a more centralized management and automation
+platform, which improves accessibility and reduces dependence on
+expensive proprietary ecosystems. This makes it more suitable for
+universities, research environments, SMEs and individual learners who
+may not have access to commercial enterprise controllers. Because the
+platform is open and modifiable, it also encourages community-based
+development, experimentation and improvement, allowing users to study,
+adapt and extend the system more freely. Second, it is intended for
+mixed-vendor and legacy-oriented environments, making it more practical
+for settings where users must work with heterogeneous devices rather
+than a single tightly controlled vendor ecosystem. Third, its main
+automation value lies in a governed LLM-assisted workflow that helps
+users move from natural-language configuration requests to reviewable
+Ansible-based playbooks through prompt interpretation, context support,
+dry-run checking, approval handling and controlled execution. This helps
+reduce manual effort while preserving human oversight. In addition, the
+platform brings together multiple useful operational views in one
+workspace, including topology and inventory visibility, Ansible Studio,
+approval workflow, knowledge base support, monitoring-related views,
+compliance and governance support, onboarding support and configuration
+backup. This integrated and accessible structure is a practical strength
+for academic, lab and cost-sensitive environments.
+
+\textbf{Weaknesses}
+
+The primary limitation of CogniShield remains its dependence on
+LLM-assisted generation within a controlled but still imperfect
+workflow. LLM outputs may be incomplete, incorrect or operationally
+unsuitable, especially when prompts are vague, context is missing or
+requests are too broad or complex. As a result, the system cannot safely
+operate as an autonomous executor and still depends heavily on review,
+checking and approval. Another weakness is that the current platform
+does not yet provide full autonomous Day-0 to Day-2 lifecycle control,
+nor does it deliver the deterministic policy reconciliation expected of
+a full SDN or strict full intent-based networking platform.
+
+The system is also affected by the limitations of its testing
+environment, particularly the use of EVE-NG with limited RAM and CPU
+resources. Because the lab environment relies heavily on virtualized
+device images, some devices only provide basic or partial behavior
+compared with real production hardware. Certain boot-time capabilities
+that may exist on physical devices, such as legacy AutoInstall-style
+provisioning, automatic DHCP-based bootstrap behavior or other
+vendor-specific Day-0 processes, may not be fully present or
+reproducible in the virtual images used for testing. This restricts how
+far fully autonomous Day-0 onboarding can be demonstrated in practice.
+In addition, some hardware-dependent behavior found in real physical
+switches, especially ASIC-assisted packet forwarding characteristics, is
+only simulated in the lab environment and may not fully reflect actual
+hardware performance or implementation details.
+
+Furthermore, the project depends on the integration of multiple
+supporting components such as inventory, topology, monitoring, knowledge
+base and Ansible workflow, which increases design and maintenance
+complexity. For demonstration purposes, the test environment is
+intentionally kept manageable, often using only one or two supporting
+devices around the main workflow to prove that the platform operates as
+intended. While this is sufficient for academic demonstration and
+controlled validation, it also means that the scale, hardware fidelity
+and operational diversity of the environment remain lower than those of
+a full real-world production deployment.
+
+\textbf{Opportunities}
+
+CogniShield is well positioned to address a real accessibility gap in
+network automation. Many commercial platforms are powerful but remain
+costly, proprietary and less practical for students, researchers and
+SMEs. This creates an opportunity for CogniShield to serve as a
+lower-cost and more open platform for learning, experimentation and
+controlled network automation in lab and mixed-vendor settings. There is
+also a broader opportunity in the growing interest in LLM-assisted
+operational workflows, especially where users want more usable
+automation interfaces without abandoning governance and review. Because
+CogniShield combines prompt-based interaction with Ansible workflow,
+approval handling and contextual support, it can serve as a practical
+bridge between traditional manual automation and more advanced
+AI-assisted operations. The platform also has room to expand
+
+incrementally in areas such as stronger onboarding support, broader
+operation coverage, more mature context integration and tighter
+validation logic.
+
+\textbf{Threats}
+
+The project faces strong competition from highly integrated proprietary
+platforms that already provide mature operational tooling, enterprise
+support and increasingly sophisticated AI-assisted features. As these
+platforms continue to incorporate conversational interfaces, AI
+assistance and broader orchestration capabilities, the relative novelty
+of LLM-assisted interaction may become less distinctive over time.
+Another threat is the inherent risk associated with LLM-based
+generation, where if the surrounding context is incomplete, outdated or
+misinterpreted, the resulting automation artifact may still be
+inaccurate or unsafe despite the presence of validation steps. In
+mixed-vendor and legacy environments, inconsistent device behavior,
+limited programmability and uneven module support also create practical
+risks that can reduce reliability and make automation harder to
+generalize. Finally, because the system is developed within a
+student-project and lab-oriented scope, there is a threat that
+evaluators or users may compare it unfairly against full-scale
+enterprise controllers unless its intended scope is stated clearly.
+\end{quote}
+
+\textbf{3.3 Development Methodology---Hybrid SDLC (Waterfall +}
+
+\begin{quote}
+\textbf{Agile)}
+\end{quote}
+
+\includegraphics[width=4.25in,height=2.55278in]{vertopal_ecf677e2c67e42e3980383773f2ef664/media/image6.png}
+
+\begin{quote}
+The CogniShield project adopts a \textbf{Hybrid Software Development
+Life Cycle (SDLC)} that combines Waterfall and Agile practices. This
+approach is more suitable than a pure Waterfall or pure Agile model
+because the project contains two different development characteristics.
+On one hand, it requires a structured academic foundation, including
+literature review, scope definition, requirements analysis,
+architectural planning, risk assessment and formal documentation. On the
+other hand, several parts of the implemented system, especially the
+frontend workflows, LLM-assisted playbook generation flow, topology
+presentation and Ansible-based approval workflow, required iterative
+refinement during development. For this reason, Waterfall elements were
+used to define the overall project direction and system boundaries while
+Agile elements were used to incrementally build, test and improve the
+implemented modules. (GeeksforGeeks, 2025).
+
+The Waterfall aspect of the methodology was applied mainly during the
+early and control-oriented stages of the project. These include defining
+the research problem, identifying the project scope, studying relevant
+background materials, determining the module structure, documenting
+system requirements, planning the Work Breakdown Structure (WBS) and
+preparing the Gantt chart. This structured approach was important
+because CogniShield deals with network automation workflows that must be
+governed carefully. Even though the current implementation is not a full
+SDN controller, not a strict full intent-based networking platform and
+not a fully autonomous closed-loop system, it still handles
+configuration-related workflows that require clear scope control,
+validation logic and
+
+approval-based execution. As a result, the project benefited from having
+stable planning and clear stage boundaries before large-scale
+implementation work began. (Gazala, 2025).
+
+The Agile aspect of the methodology was applied during implementation
+and refinement. In practice, the system was developed in module-oriented
+iterations, where each major capability was designed, implemented,
+tested, reviewed and adjusted based on the behavior of the integrated
+platform. This was especially necessary for the current frontend-visible
+\end{quote}
+
+\begin{longtable}[]{@{}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 8\tabcolsep) * \real{0.2000}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 8\tabcolsep) * \real{0.2000}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 8\tabcolsep) * \real{0.2000}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 8\tabcolsep) * \real{0.2000}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 8\tabcolsep) * \real{0.2000}}@{}}
+\toprule()
+\begin{minipage}[b]{\linewidth}\raggedright
+modules:
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Network
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Topology
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Visualization,
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+\begin{quote}
+Knowledge-Grounded LLM Playbook
+\end{quote}
+\end{minipage} \\
+\midrule()
+\endhead
+\bottomrule()
+\end{longtable}
+
+\begin{quote}
+Generation, Playbook Validation and Execution and Performance Metric
+Monitoring. These modules could not be implemented effectively through a
+purely linear one-pass workflow because their final behavior depended on
+real integration outcomes, such as how prompt interpretation behaved in
+Ansible Studio, how planned and live topology data could actually be
+surfaced, how approval and dry-run workflows interacted in practice and
+how the monitoring pages could present usable operational context.
+
+This hybrid methodology also reflects the realities of the project
+environment. CogniShield is developed as an individual Final Year
+Project in a lab-oriented setting, with limited hardware resources,
+mixed-vendor and legacy-oriented assumptions and EVE-NG-based testing
+constraints. Under these conditions, iterative implementation was
+necessary to adapt the design to what could be demonstrated reliably
+while structured documentation remained necessary for supervision,
+reporting and evaluation. Therefore, the chosen Hybrid SDLC provides a
+balanced development model: it preserves the discipline of formal
+planning while allowing controlled iteration where the actual
+implementation required refinement.
+
+Overall, the Hybrid SDLC supports CogniShield more accurately than a
+pure Waterfall model. It reflects how the project was actually
+developed: first through structured planning and documentation, then
+through incremental implementation, integration, testing and revision of
+the system's visible operational workflows.
+
+\textbf{3.3.1 Planning}
+
+The Planning phase forms the foundation of the CogniShield project by
+defining the project direction, implementation scope, technical
+boundaries and practical constraints. Since the
+\end{quote}
+
+\begin{longtable}[]{@{}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 14\tabcolsep) * \real{0.1250}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 14\tabcolsep) * \real{0.1250}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 14\tabcolsep) * \real{0.1250}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 14\tabcolsep) * \real{0.1250}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 14\tabcolsep) * \real{0.1250}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 14\tabcolsep) * \real{0.1250}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 14\tabcolsep) * \real{0.1250}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 14\tabcolsep) * \real{0.1250}}@{}}
+\toprule()
+\begin{minipage}[b]{\linewidth}\raggedright
+system
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+involves
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+network
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+visibility,
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+LLM-assisted
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Ansible
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+playbook
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+\begin{quote}
+generation,
+\end{quote}
+\end{minipage} \\
+\midrule()
+\endhead
+\bottomrule()
+\end{longtable}
+
+\begin{quote}
+approval-governed execution and monitoring support, careful planning was
+necessary to ensure that the project remained realistic, demonstrable
+and suitable for a student project environment.
+
+The first activity in this phase involved reviewing academic literature,
+technical documentation and platform references related to campus-style
+networks, SME network constraints, multi-vendor operations, open-source
+network automation, LLM-assisted workflows, Ansible-based orchestration,
+topology and inventory visibility and performance monitoring. This
+review was important for establishing the technical background of the
+project and for positioning CogniShield correctly. In particular, it
+helped distinguish the project from full SDN controllers and strict
+intent-based networking platforms and instead define it more accurately
+as an LLM-assisted, Ansible-centered, approval-governed network
+automation and operations platform.
+
+The planning stage also examined the tools and environments that would
+shape the implementation, including planned inventory records, live
+topology discovery workflows, Ansible automation, knowledge-base support
+and EVE-NG laboratory testing. Special attention was given to
+mixed-vendor and legacy-oriented environments, since these better
+reflect the conditions faced by students, researchers and SMEs. This
+helped ensure that the project scope remained practical and did not
+assume uniform controller-driven automation across all devices.
+
+Another key planning activity was defining the main implementation
+modules. The system was organized around four practical and demonstrable
+areas: Network Topology Visualization, Knowledge-Grounded LLM Playbook
+Generation, Playbook Validation, Approval and Execution and Performance
+Metric Monitoring. This module-based structure helped keep the
+development manageable while ensuring that each part contributed
+directly to the visible platform.
+
+Risk assessment was also carried out during this phase. Important
+concerns included ambiguous prompts, incorrect generated playbooks,
+incomplete context, mixed-vendor inconsistencies, partial dry-run
+coverage, credential handling and the limitations of the EVE-NG test
+environment. These considerations influenced the scope of the project
+and helped avoid overstating capabilities such as full Day-0 autonomy or
+fully autonomous network control.
+
+After clarifying the scope and constraints, a Work Breakdown Structure
+(WBS) and Gantt chart were prepared to organize the development process
+into planning, analysis, design, implementation, integration and testing
+phases. Finally, practical success criteria were defined based on
+whether the system could reliably support its intended visible
+workflows, including playbook generation, clarification, checking,
+approval, deployment, topology viewing and performance monitoring.
+Through this planning process, the project was able to proceed with a
+clearer, more realistic and more defensible implementation direction.
+
+\textbf{3.3.2 Analysis}
+
+The Analysis phase converts the planning outcomes into clear, testable
+and traceable system requirements. For CogniShield, this stage was used
+to transform findings from literature, technical references and early
+planning into a formal Software Requirements Specification (SRS) and a
+prioritised feature set that fits the available time, hardware resources
+and laboratory constraints (TutorialsCampus, n.d.).
+
+The first activity in this phase was to identify the functional
+requirements based on the actual scope of the current implementation.
+Rather than analysing the system as a fully autonomous controller, the
+requirements were defined around the platform's delivered workflows.
+These include submitting a scoped natural-language configuration request
+in Ansible Studio, reviewing parsed requests and clarification prompts,
+generating a reviewable Ansible playbook, running a check-mode or
+dry-run process where supported, submitting a playbook for approval,
+deploying an approved playbook, viewing planned and live topology,
+inspecting inventory-linked device information and reviewing
+performance-related monitoring pages. These requirements were then
+formalised into use cases and functional requirement entries for later
+testing and evaluation (Letaw, 2024).
+
+Non-functional requirements were also analysed because performance,
+usability, reliability, safety and auditability are important for a
+network automation platform, even in a student lab
+\end{quote}
+
+\begin{longtable}[]{@{}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 14\tabcolsep) * \real{0.1250}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 14\tabcolsep) * \real{0.1250}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 14\tabcolsep) * \real{0.1250}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 14\tabcolsep) * \real{0.1250}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 14\tabcolsep) * \real{0.1250}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 14\tabcolsep) * \real{0.1250}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 14\tabcolsep) * \real{0.1250}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 14\tabcolsep) * \real{0.1250}}@{}}
+\toprule()
+\begin{minipage}[b]{\linewidth}\raggedright
+environment.
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Practical
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+targets
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+were
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+defined
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+for
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+prompt-response
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+\begin{quote}
+usability,
+\end{quote}
+\end{minipage} \\
+\midrule()
+\endhead
+\bottomrule()
+\end{longtable}
+
+\begin{quote}
+playbook-generation turnaround, responsiveness of topology and
+monitoring views and visibility of approval and execution records.
+Minimum audit information such as generated playbook artefacts, approval
+status, execution-related logs and timestamps was also identified so
+that system actions remain reviewable and traceable (GeeksforGeeks,
+2025c).
+
+The analysis phase also identified the technical interfaces and data
+relationships that the system must support. Because CogniShield is
+designed for mixed-vendor and legacy-oriented environments, the analysis
+did not assume a uniform controller-driven management model across all
+devices. Instead, the requirements were defined around practical
+interfaces such as planned inventory records, topology and
+discovery-derived data, knowledge-base content, monitoring-related
+inputs and Ansible-centered execution workflows. UML artefacts such as
+use case diagrams, activity diagrams, sequence diagrams and a
+lightweight data model were
+
+prepared to describe these workflows and system records more clearly
+(What Is Unified Modeling Language (UML)?, n.d.).
+
+Because the project uses LLM-assisted generation, the analysis also
+identified the contextual sources that support playbook generation.
+These include planned inventory records, device and interface data,
+schema definitions, stored reference playbooks and knowledge-base
+content. In the current implementation, this context is treated as
+bounded support for improving playbook quality rather than as a fully
+autonomous knowledge layer. Security and threat considerations were also
+analysed, including ambiguous prompts, unsafe generated output,
+incomplete context, credential misuse and the risks of applying changes
+too quickly in mixed-vendor environments. To reduce these risks, the
+analysis defined requirements for clarification, constrained generation
+where applicable, schema and context checking, dry-run support,
+approval-based deployment and audit logging (Chauhan \& Chauhan, 2025).
+
+Practical constraints and assumptions were also recorded explicitly in
+this phase so that the later design remained realistic. These included
+the hardware limitations of the EVE-NG test environment, the use of
+hosted LLM APIs or lightweight local models instead of large
+GPU-dependent models and the limited hardware resources available in a
+student-lab setting. The analysis also acknowledged that many lab
+devices are virtualized images with only partial hardware fidelity. As a
+result, some real Day-0 behaviors, such as legacy AutoInstall-style
+provisioning, DHCP-based bootstrap behavior and ASIC-dependent
+forwarding characteristics, cannot be reproduced fully in the testing
+environment. For this reason, the project scope was analysed around
+demonstrable and governable workflows rather than full end-to-end
+autonomous lifecycle control. Recording these assumptions early helped
+keep the later design and implementation aligned with what could be
+implemented and defended reliably within the project environment.
+
+Finally, a requirements-to-test traceability matrix was prepared to link
+each requirement to its related module and acceptance test. Practical
+constraints were also recorded, including the limited hardware resources
+of the EVE-NG environment, the use of hosted LLM APIs or lightweight
+local models and the partial hardware fidelity of virtualized devices.
+This helped keep the later design and implementation aligned with what
+could be implemented and defended reliably within the project
+environment (Requirements Traceability Matrix: Definition, Benefits and
+Examples \textbar{} Perforce Software, n.d.).
+
+\textbf{3.3.2.1 Functional Requirement Analysis - Use Case Diagram}
+
+\textbf{1. Network Topology Visualization Module}
+\end{quote}
+
+\includegraphics[width=4.79167in,height=5.42778in]{vertopal_ecf677e2c67e42e3980383773f2ef664/media/image7.png}
+
+\emph{Figure 4: Network Topology Visualization Module Diagram}
+
+\begin{quote}
+\textbf{2. Knowledge-Grounded LLM Playbook Generation Module}
+\end{quote}
+
+\includegraphics[width=5.5625in,height=5.61389in]{vertopal_ecf677e2c67e42e3980383773f2ef664/media/image8.png}
+
+\emph{Figure 5: LLM Playbook Generation Module Diagram}
+
+\begin{quote}
+\textbf{3. Playbook Validation, Approval \& Execution Module}
+\end{quote}
+
+\includegraphics[width=6.27083in,height=5.86389in]{vertopal_ecf677e2c67e42e3980383773f2ef664/media/image9.png}
+
+\emph{Figure 6: Playbook Validation, Approval \& Execution Module
+Diagram}
+
+\begin{quote}
+\textbf{4. Performance Metric Monitoring}
+\end{quote}
+
+\includegraphics[width=4.67639in,height=5.11389in]{vertopal_ecf677e2c67e42e3980383773f2ef664/media/image10.png}
+
+\emph{Figure 7: Performance Metric Monitoring Module Diagram}
+
+\begin{quote}
+\textbf{3.3.2.2 Functional Requirement - Use Case List}\\
+\textbf{Module 1: Network Topology Visualization}\\
+\textbf{UC01 -- View Planned Network Topology}
+\end{quote}
+
+\begin{longtable}[]{@{}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 2\tabcolsep) * \real{0.5000}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 2\tabcolsep) * \real{0.5000}}@{}}
+\toprule()
+\begin{minipage}[b]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Use Case ID}
+\end{quote}
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+\begin{quote}
+UC01
+\end{quote}
+\end{minipage} \\
+\midrule()
+\endhead
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Use Case Name}
+\end{quote}
+\end{minipage} & \begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+View Planned Network Topology
+\end{quote}
+\end{minipage} \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Description}
+\end{quote}
+\end{minipage} & \begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+Engineer views the planned network topology based on the system's
+planned inventory and stored topology records.
+\end{quote}
+\end{minipage} \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Actor}
+\end{quote}
+\end{minipage} & \begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+Engineer
+\end{quote}
+\end{minipage} \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Preconditions}
+\end{quote}
+\end{minipage} & \begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+User is authenticated; planned topology data is available.
+\end{quote}
+\end{minipage} \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Main Flow}
+\end{quote}
+\end{minipage} & \begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+1.\hspace{0pt} Engineer opens the topology page.
+
+2.\hspace{0pt} Engineer selects the planned topology view.
+
+3.\hspace{0pt} System retrieves the planned topology data.
+
+4.\hspace{0pt} System displays the planned devices and links in the
+interface
+\end{quote}
+\end{minipage} \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Alternative Flows}
+\end{quote}
+\end{minipage} & \begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+If planned topology data is unavailable, the system displays an
+explanatory message.
+\end{quote}
+\end{minipage} \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Postconditions}
+\end{quote}
+\end{minipage} & \begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+The planned topology is displayed for reference.
+\end{quote}
+\end{minipage} \\
+\bottomrule()
+\end{longtable}
+
+\begin{quote}
+\textbf{UC02 - View Live Network Topology}
+\end{quote}
+
+\begin{longtable}[]{@{}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 2\tabcolsep) * \real{0.5000}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 2\tabcolsep) * \real{0.5000}}@{}}
+\toprule()
+\begin{minipage}[b]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Use Case ID}
+\end{quote}
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+\begin{quote}
+UC02
+\end{quote}
+\end{minipage} \\
+\midrule()
+\endhead
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Use Case Name}
+\end{quote}
+\end{minipage} & \begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+View Live Network Topology
+\end{quote}
+\end{minipage} \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Description}
+\end{quote}
+\end{minipage} & \begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+Engineer views the live or discovered network topology based on
+currently available discovery and live-state data.
+\end{quote}
+\end{minipage} \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Actor}
+\end{quote}
+\end{minipage} & \begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+Engineer
+\end{quote}
+\end{minipage} \\
+\bottomrule()
+\end{longtable}
+
+\begin{longtable}[]{@{}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 2\tabcolsep) * \real{0.5000}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 2\tabcolsep) * \real{0.5000}}@{}}
+\toprule()
+\begin{minipage}[b]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Preconditions}
+\end{quote}
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+\begin{quote}
+User is authenticated; live topology data is available or can be
+refreshed.
+\end{quote}
+\end{minipage} \\
+\midrule()
+\endhead
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Main Flow}
+\end{quote}
+\end{minipage} & \begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+1.\hspace{0pt} Engineer opens the topology page.
+
+2.\hspace{0pt} Engineer selects the live topology view.
+
+3.\hspace{0pt} System loads the live topology data.
+\end{quote}
+
+4.\hspace{0pt} System renders the discovered topology in the interface.
+\end{minipage} \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Alternative Flows}
+\end{quote}
+\end{minipage} & \begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+If live data is incomplete or unavailable, the system displays partial
+topology with a warning.
+\end{quote}
+\end{minipage} \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Postconditions}
+\end{quote}
+\end{minipage} & \begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+The live topology is displayed for monitoring and comparison.
+\end{quote}
+\end{minipage} \\
+\bottomrule()
+\end{longtable}
+
+\begin{quote}
+\textbf{UC03 - Compare Planned and Live Topology}
+\end{quote}
+
+\begin{longtable}[]{@{}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 2\tabcolsep) * \real{0.5000}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 2\tabcolsep) * \real{0.5000}}@{}}
+\toprule()
+\begin{minipage}[b]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Use Case ID}
+\end{quote}
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+\begin{quote}
+UC03
+\end{quote}
+\end{minipage} \\
+\midrule()
+\endhead
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Use Case Name}
+\end{quote}
+\end{minipage} & \begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+Compare Planned and Live Topology
+\end{quote}
+\end{minipage} \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Description}
+\end{quote}
+\end{minipage} & \begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+Engineer compares the planned topology with the live topology to
+identify visible differences between documented design and discovered
+state.
+\end{quote}
+\end{minipage} \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Actor}
+\end{quote}
+\end{minipage} & \begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+Engineer
+\end{quote}
+\end{minipage} \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Preconditions}
+\end{quote}
+\end{minipage} & \begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+Planned and live topology data are available.
+\end{quote}
+\end{minipage} \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Main Flow}
+\end{quote}
+\end{minipage} & \begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+1.\hspace{0pt} Engineer selects the topology comparison or diff view.
+2.\hspace{0pt} System loads both planned and live topology data.
+
+3.\hspace{0pt} System computes visible differences between the two
+views.
+
+4.\hspace{0pt} System displays the resulting comparison in the
+interface.
+\end{quote}
+\end{minipage} \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Alternative Flows}
+\end{quote}
+\end{minipage} & \begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+If one topology source is missing, comparison is disabled and the system
+explains why.
+\end{quote}
+\end{minipage} \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Postconditions}
+\end{quote}
+\end{minipage} & \begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+Topology differences are visible to the Engineer.
+\end{quote}
+\end{minipage} \\
+\bottomrule()
+\end{longtable}
+
+\begin{quote}
+\textbf{UC04 - Inspect Topology-Linked Device and Connection Details}
+\end{quote}
+
+\begin{longtable}[]{@{}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 2\tabcolsep) * \real{0.5000}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 2\tabcolsep) * \real{0.5000}}@{}}
+\toprule()
+\begin{minipage}[b]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Use Case ID}
+\end{quote}
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+\begin{quote}
+UC04
+\end{quote}
+\end{minipage} \\
+\midrule()
+\endhead
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Use Case Name}
+\end{quote}
+\end{minipage} & \begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+Inspect Topology-Linked Device and Connection Details
+\end{quote}
+\end{minipage} \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Description}
+\end{quote}
+\end{minipage} & \begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+Engineer inspects device and connection details associated with topology
+nodes and links.
+\end{quote}
+\end{minipage} \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Actor}
+\end{quote}
+\end{minipage} & \begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+Engineer
+\end{quote}
+\end{minipage} \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Preconditions}
+\end{quote}
+\end{minipage} & \begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+Topology data is displayed.
+\end{quote}
+\end{minipage} \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Main Flow}
+\end{quote}
+\end{minipage} & \begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+1.\hspace{0pt} Engineer selects a node or link in the topology view.
+
+2.\hspace{0pt} System displays the related device or connection details.
+3.\hspace{0pt} Engineer reviews the information for analysis or
+follow-up action.
+\end{quote}
+\end{minipage} \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Alternative Flows}
+\end{quote}
+\end{minipage} & \begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+If detailed data is incomplete, the system displays only the available
+fields.
+\end{quote}
+\end{minipage} \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Postconditions}
+\end{quote}
+\end{minipage} & \begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+The Engineer can inspect topology-linked device and connection details
+directly from the visualization view.
+\end{quote}
+\end{minipage} \\
+\bottomrule()
+\end{longtable}
+
+\begin{quote}
+\textbf{Module 2: Knowledge-Grounded LLM Playbook Generation UC05 --
+Submit Natural-Language Configuration Request}
+\end{quote}
+
+\begin{longtable}[]{@{}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 2\tabcolsep) * \real{0.5000}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 2\tabcolsep) * \real{0.5000}}@{}}
+\toprule()
+\begin{minipage}[b]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Use Case ID}
+\end{quote}
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+\begin{quote}
+UC05
+\end{quote}
+\end{minipage} \\
+\midrule()
+\endhead
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Use Case Name}
+\end{quote}
+\end{minipage} & \begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+Submit Natural-Language Configuration Request
+\end{quote}
+\end{minipage} \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Description}
+\end{quote}
+\end{minipage} & \begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+Engineer submits a natural-language network configuration request
+through Ansible Studio.
+\end{quote}
+\end{minipage} \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Actor}
+\end{quote}
+\end{minipage} & \begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+Engineer
+\end{quote}
+\end{minipage} \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Preconditions}
+\end{quote}
+\end{minipage} & \begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+User is authenticated; Ansible Studio is available.
+\end{quote}
+\end{minipage} \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Main Flow}
+\end{quote}
+\end{minipage} & \begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+1.\hspace{0pt} Engineer opens Ansible Studio.
+
+2.\hspace{0pt} Engineer enters a natural-language request describing the
+intended network change.
+
+3.\hspace{0pt} Engineer may select or confirm target devices from
+planned inventory where applicable.
+
+4.\hspace{0pt} System performs basic input validation.
+
+5.\hspace{0pt} System accepts the request and passes it to the preview
+and parsing workflow.
+\end{quote}
+\end{minipage} \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Alternative Flows}
+\end{quote}
+\end{minipage} & \begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+●\hspace{0pt} If the request is empty or invalid, the system displays an
+error.
+
+●\hspace{0pt} If the backend is unavailable, the system displays a retry
+message.
+\end{quote}
+\end{minipage} \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Postconditions}
+\end{quote}
+\end{minipage} & \begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+The request enters the preview and generation workflow.
+\end{quote}
+\end{minipage} \\
+\bottomrule()
+\end{longtable}
+
+\begin{quote}
+\textbf{UC06 -- Review Parsed Request}
+\end{quote}
+
+\begin{longtable}[]{@{}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 2\tabcolsep) * \real{0.5000}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 2\tabcolsep) * \real{0.5000}}@{}}
+\toprule()
+\begin{minipage}[b]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Use Case ID}
+\end{quote}
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+\begin{quote}
+UC06
+\end{quote}
+\end{minipage} \\
+\midrule()
+\endhead
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Use Case Name}
+\end{quote}
+\end{minipage} & \begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+Review Parsed Request
+\end{quote}
+\end{minipage} \\
+\bottomrule()
+\end{longtable}
+
+\begin{longtable}[]{@{}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 2\tabcolsep) * \real{0.5000}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 2\tabcolsep) * \real{0.5000}}@{}}
+\toprule()
+\begin{minipage}[b]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Description}
+\end{quote}
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+\begin{quote}
+Engineer reviews the system's parsed interpretation of the submitted
+natural-language request before playbook generation proceeds
+\end{quote}
+\end{minipage} \\
+\midrule()
+\endhead
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Actor}
+\end{quote}
+\end{minipage} & \begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+Engineer
+\end{quote}
+\end{minipage} \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Preconditions}
+\end{quote}
+\end{minipage} & \begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+A request has been submitted and parsed by the system.
+\end{quote}
+\end{minipage} \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Main Flow}
+\end{quote}
+\end{minipage} & \begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+1.\hspace{0pt} System parses the submitted request.
+
+2.\hspace{0pt} System identifies the likely action, target devices, and
+key parameters.
+
+3.\hspace{0pt} System displays the parsed request scope to the engineer.
+4.\hspace{0pt} Engineer reviews whether the parsed interpretation
+matches the intended network change.
+\end{quote}
+\end{minipage} \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Alternative Flows}
+\end{quote}
+\end{minipage} & \begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+●\hspace{0pt} If the parsed request is unclear, the system highlights
+the fields that require confirmation or correction.
+
+●\hspace{0pt} If no meaningful parsing result can be produced, the
+system asks the engineer to revise the request.
+\end{quote}
+\end{minipage} \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Postconditions}
+\end{quote}
+\end{minipage} & \begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+The parsed request has been reviewed and is either accepted as correct
+or flagged for clarification.
+\end{quote}
+\end{minipage} \\
+\bottomrule()
+\end{longtable}
+
+\begin{quote}
+\textbf{UC07 -- Clarify Request Parameters}
+\end{quote}
+
+\begin{longtable}[]{@{}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 2\tabcolsep) * \real{0.5000}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 2\tabcolsep) * \real{0.5000}}@{}}
+\toprule()
+\begin{minipage}[b]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Use Case ID}
+\end{quote}
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+\begin{quote}
+UC07
+\end{quote}
+\end{minipage} \\
+\midrule()
+\endhead
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Use Case Name}
+\end{quote}
+\end{minipage} & \begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+Review Parsed Request
+\end{quote}
+\end{minipage} \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Description}
+\end{quote}
+\end{minipage} & \begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+Engineer provides clarification when the parsed request contains
+missing, misparsed, ambiguous, or incomplete parameters.
+\end{quote}
+\end{minipage} \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Actor}
+\end{quote}
+\end{minipage} & \begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+Engineer
+\end{quote}
+\end{minipage} \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Preconditions}
+\end{quote}
+\end{minipage} & \begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+A request has been submitted and parsed by the system.
+\end{quote}
+\end{minipage} \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Main Flow}
+\end{quote}
+\end{minipage} & \begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+1.\hspace{0pt} System identifies missing, misparsed, ambiguous, or
+incomplete parameters in the parsed request.
+\end{quote}
+\end{minipage} \\
+\bottomrule()
+\end{longtable}
+
+\begin{longtable}[]{@{}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 2\tabcolsep) * \real{0.5000}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 2\tabcolsep) * \real{0.5000}}@{}}
+\toprule()
+\begin{minipage}[b]{\linewidth}\raggedright
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+\begin{quote}
+2.\hspace{0pt} System displays clarification prompts or selection
+controls to the engineer.
+
+3.\hspace{0pt} Engineer provides the missing or corrected information.
+4.\hspace{0pt} System updates the parsed request with the clarified
+values. 5.\hspace{0pt} System confirms that the request now contains
+sufficient information for playbook generation.
+\end{quote}
+\end{minipage} \\
+\midrule()
+\endhead
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Alternative Flows}
+\end{quote}
+\end{minipage} & \begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+●\hspace{0pt} If target devices cannot be resolved confidently, the
+system asks the engineer to select them from planned inventory.
+
+●\hspace{0pt} If the clarification provided is still incomplete or
+inconsistent, the system continues requesting correction.
+
+●\hspace{0pt} If the engineer stops the process, the request does not
+proceed to generation.
+\end{quote}
+\end{minipage} \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Postconditions}
+\end{quote}
+\end{minipage} & \begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+The request contains sufficient and corrected information for playbook
+generation.
+\end{quote}
+\end{minipage} \\
+\bottomrule()
+\end{longtable}
+
+\begin{quote}
+\textbf{UC08 -- Generate Ansible Playbook}
+\end{quote}
+
+\begin{longtable}[]{@{}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 2\tabcolsep) * \real{0.5000}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 2\tabcolsep) * \real{0.5000}}@{}}
+\toprule()
+\begin{minipage}[b]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Use Case ID}
+\end{quote}
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+\begin{quote}
+UC08
+\end{quote}
+\end{minipage} \\
+\midrule()
+\endhead
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Use Case Name}
+\end{quote}
+\end{minipage} & \begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+Generate Ansible Playbook
+\end{quote}
+\end{minipage} \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Description}
+\end{quote}
+\end{minipage} & \begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+The system generates a reviewable Ansible playbook from the clarified
+request and available supporting context.
+\end{quote}
+\end{minipage} \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Actor}
+\end{quote}
+\end{minipage} & \begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+Engineer
+\end{quote}
+\end{minipage} \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Preconditions}
+\end{quote}
+\end{minipage} & \begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+The request has been parsed; required clarification is complete.
+\end{quote}
+\end{minipage} \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Main Flow}
+\end{quote}
+\end{minipage} & \begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+1.\hspace{0pt} Engineer confirms continuation of the request.
+
+2.\hspace{0pt} System prepares the request together with available
+planned inventory and supporting reference context.
+
+3.\hspace{0pt} System generates the Ansible playbook using the supported
+generation workflow.
+
+4.\hspace{0pt} System performs basic structure or format checks.
+\end{quote}
+\end{minipage} \\
+\bottomrule()
+\end{longtable}
+
+\begin{longtable}[]{@{}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 2\tabcolsep) * \real{0.5000}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 2\tabcolsep) * \real{0.5000}}@{}}
+\toprule()
+\begin{minipage}[b]{\linewidth}\raggedright
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+5.\hspace{0pt} System surfaces the generated playbook in the interface.
+\end{minipage} \\
+\midrule()
+\endhead
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Alternative Flows}
+\end{quote}
+\end{minipage} & \begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+●\hspace{0pt} If required information is still missing, the system
+returns to clarification.
+
+●\hspace{0pt} If generation fails, the system displays an error and
+allows another attempt.
+\end{quote}
+\end{minipage} \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Postconditions}
+\end{quote}
+\end{minipage} & \begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+A generated playbook is available for review.
+\end{quote}
+\end{minipage} \\
+\bottomrule()
+\end{longtable}
+
+\begin{quote}
+\textbf{UC09 -- Review Generated Playbook}
+\end{quote}
+
+\begin{longtable}[]{@{}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 2\tabcolsep) * \real{0.5000}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 2\tabcolsep) * \real{0.5000}}@{}}
+\toprule()
+\begin{minipage}[b]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Use Case ID}
+\end{quote}
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+\begin{quote}
+UC09
+\end{quote}
+\end{minipage} \\
+\midrule()
+\endhead
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Use Case Name}
+\end{quote}
+\end{minipage} & \begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+Review Generated Playbook
+\end{quote}
+\end{minipage} \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Description}
+\end{quote}
+\end{minipage} & \begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+Engineer reviews the generated playbook and the associated request
+interpretation before continuing to the validation workflow.
+\end{quote}
+\end{minipage} \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Actor}
+\end{quote}
+\end{minipage} & \begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+Engineer
+\end{quote}
+\end{minipage} \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Preconditions}
+\end{quote}
+\end{minipage} & \begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+A generated playbook exists.
+\end{quote}
+\end{minipage} \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Main Flow}
+\end{quote}
+\end{minipage} & \begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+1.\hspace{0pt} Engineer opens the generated playbook result.
+
+2.\hspace{0pt} System displays the playbook content.
+
+3.\hspace{0pt} System shows related request interpretation details such
+as resolved targets and parameters.
+
+4.\hspace{0pt} Engineer reviews whether the generated playbook matches
+the intended change.
+\end{quote}
+\end{minipage} \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Alternative Flows}
+\end{quote}
+\end{minipage} & \begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+●\hspace{0pt} If the playbook does not match the intended change, the
+Engineer may refine.
+
+●\hspace{0pt} If the playbook is acceptable, the Engineer proceeds to
+the check workflow.
+\end{quote}
+\end{minipage} \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Postconditions}
+\end{quote}
+\end{minipage} & \begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+The playbook is either accepted for the next stage or sent for
+refinement.
+\end{quote}
+\end{minipage} \\
+\bottomrule()
+\end{longtable}
+
+\begin{quote}
+\textbf{UC10 -- Refine Playbook}
+\end{quote}
+
+\begin{longtable}[]{@{}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 2\tabcolsep) * \real{0.5000}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 2\tabcolsep) * \real{0.5000}}@{}}
+\toprule()
+\begin{minipage}[b]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Use Case ID}
+\end{quote}
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+\begin{quote}
+UC10
+\end{quote}
+\end{minipage} \\
+\midrule()
+\endhead
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Use Case Name}
+\end{quote}
+\end{minipage} & \begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+Refine Playbook
+\end{quote}
+\end{minipage} \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Description}
+\end{quote}
+\end{minipage} & \begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+Engineer has the ability to refine the generated playbook after
+reviewing it before continuing to the dry-run stage.
+\end{quote}
+\end{minipage} \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Actor}
+\end{quote}
+\end{minipage} & \begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+Engineer
+\end{quote}
+\end{minipage} \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Preconditions}
+\end{quote}
+\end{minipage} & \begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+A generated playbook already exists.
+\end{quote}
+\end{minipage} \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Main Flow}
+\end{quote}
+\end{minipage} & \begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+1.\hspace{0pt} Engineer opens the generated playbook for refinement.
+
+2.\hspace{0pt} Engineer edits or adjusts the playbook content as needed.
+3.\hspace{0pt} System updates the playbook with the refined content.
+
+4.\hspace{0pt} System presents the refined playbook for further review
+or continuation to the validation workflow.
+\end{quote}
+\end{minipage} \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Alternative Flows}
+\end{quote}
+\end{minipage} & \begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+If the refined playbook contains invalid or incomplete content, the
+system displays an error or warning for correction during the dry-run
+stage.
+\end{quote}
+\end{minipage} \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Postconditions}
+\end{quote}
+\end{minipage} & \begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+A refined version of the generated playbook is available for review and
+possible continuation to the next workflow stage.
+\end{quote}
+\end{minipage} \\
+\bottomrule()
+\end{longtable}
+
+\begin{quote}
+\textbf{Module 3: Playbook Validation, Approval \& Execution UC11 -- Run
+Playbook Check}
+\end{quote}
+
+\begin{longtable}[]{@{}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 2\tabcolsep) * \real{0.5000}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 2\tabcolsep) * \real{0.5000}}@{}}
+\toprule()
+\begin{minipage}[b]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Use Case ID}
+\end{quote}
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+\begin{quote}
+UC11
+\end{quote}
+\end{minipage} \\
+\midrule()
+\endhead
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Use Case Name}
+\end{quote}
+\end{minipage} & \begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+Run Playbook Check
+\end{quote}
+\end{minipage} \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Description}
+\end{quote}
+\end{minipage} & \begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+Engineer runs the playbook check or dry-run process before approval or
+deployment.
+\end{quote}
+\end{minipage} \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Actor}
+\end{quote}
+\end{minipage} & \begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+Engineer
+\end{quote}
+\end{minipage} \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Preconditions}
+\end{quote}
+\end{minipage} & \begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+A generated playbook exists and is selected.
+\end{quote}
+\end{minipage} \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Main Flow}
+\end{quote}
+\end{minipage} & \begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+1.\hspace{0pt} Engineer selects the Check action.
+
+2.\hspace{0pt} System runs the playbook using the available check or
+dry-run workflow.
+
+3.\hspace{0pt} System collects the resulting summary and diff output.
+4.\hspace{0pt} System displays the result in the interface.
+\end{quote}
+\end{minipage} \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Alternative Flows}
+\end{quote}
+\end{minipage} & \begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+If check support is incomplete for a specific task, the system still
+returns the available results and warnings.
+\end{quote}
+\end{minipage} \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Postconditions}
+\end{quote}
+\end{minipage} & \begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+A check result is available for review.
+\end{quote}
+\end{minipage} \\
+\bottomrule()
+\end{longtable}
+
+\begin{quote}
+\textbf{UC12 - Review Dry-Run Check Results}
+\end{quote}
+
+\begin{longtable}[]{@{}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 2\tabcolsep) * \real{0.5000}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 2\tabcolsep) * \real{0.5000}}@{}}
+\toprule()
+\begin{minipage}[b]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Use Case ID}
+\end{quote}
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+\begin{quote}
+UC12
+\end{quote}
+\end{minipage} \\
+\midrule()
+\endhead
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Use Case Name}
+\end{quote}
+\end{minipage} & \begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+Review Dry-Run Check Results
+\end{quote}
+\end{minipage} \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Description}
+\end{quote}
+\end{minipage} & \begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+Engineer reviews the check output and expected change summary before
+deciding whether to continue.
+\end{quote}
+\end{minipage} \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Actor}
+\end{quote}
+\end{minipage} & \begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+Engineer
+\end{quote}
+\end{minipage} \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Preconditions}
+\end{quote}
+\end{minipage} & \begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+A playbook check has been completed.
+\end{quote}
+\end{minipage} \\
+\bottomrule()
+\end{longtable}
+
+\begin{longtable}[]{@{}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 2\tabcolsep) * \real{0.5000}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 2\tabcolsep) * \real{0.5000}}@{}}
+\toprule()
+\begin{minipage}[b]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Main Flow}
+\end{quote}
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+\begin{quote}
+1.\hspace{0pt} Engineeropens the check result.
+
+2.\hspace{0pt} System displays the dry-run summary and diff output.
+3.\hspace{0pt} Engineer reviews the expected effect of the playbook.
+\end{quote}
+\end{minipage} \\
+\midrule()
+\endhead
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Alternative Flows}
+\end{quote}
+\end{minipage} & \begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+If no meaningful changes are detected, the system indicates that the
+result is unchanged or no-op.
+\end{quote}
+\end{minipage} \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Postconditions}
+\end{quote}
+\end{minipage} & \begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+Engineer understands the expected impact of the playbook before approval
+or deployment.
+\end{quote}
+\end{minipage} \\
+\bottomrule()
+\end{longtable}
+
+\begin{quote}
+\textbf{UC13 -- Submit Playbook for Approval}
+\end{quote}
+
+\begin{longtable}[]{@{}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 2\tabcolsep) * \real{0.5000}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 2\tabcolsep) * \real{0.5000}}@{}}
+\toprule()
+\begin{minipage}[b]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Use Case ID}
+\end{quote}
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+\begin{quote}
+UC13
+\end{quote}
+\end{minipage} \\
+\midrule()
+\endhead
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Use Case Name}
+\end{quote}
+\end{minipage} & \begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+Submit Playbook for Approval
+\end{quote}
+\end{minipage} \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Description}
+\end{quote}
+\end{minipage} & \begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+Engineer sends a checked playbook into the approval workflow.
+\end{quote}
+\end{minipage} \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Actor}
+\end{quote}
+\end{minipage} & \begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+Engineer
+\end{quote}
+\end{minipage} \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Preconditions}
+\end{quote}
+\end{minipage} & \begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+The playbook has passed the required check stage.
+\end{quote}
+\end{minipage} \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Main Flow}
+\end{quote}
+\end{minipage} & \begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+1.\hspace{0pt} Engineer selects the submit-for-approval action.
+
+2.\hspace{0pt} System verifies that the required check has been
+completed successfully.
+
+3.\hspace{0pt} System updates the playbook job status to pending
+approval. 4.\hspace{0pt} System places the item in the approval queue.
+\end{quote}
+\end{minipage} \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Alternative Flows}
+\end{quote}
+\end{minipage} & \begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+If the playbook has not been checked successfully, the system blocks
+submission and requests that the Engineer run Check first.
+\end{quote}
+\end{minipage} \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Postconditions}
+\end{quote}
+\end{minipage} & \begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+The playbook is placed in the approval workflow.
+\end{quote}
+\end{minipage} \\
+\bottomrule()
+\end{longtable}
+
+\begin{quote}
+\textbf{UC14 - Approve or Reject Playbook}
+\end{quote}
+
+\begin{longtable}[]{@{}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 2\tabcolsep) * \real{0.5000}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 2\tabcolsep) * \real{0.5000}}@{}}
+\toprule()
+\begin{minipage}[b]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Use Case ID}
+\end{quote}
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+\begin{quote}
+UC14
+\end{quote}
+\end{minipage} \\
+\midrule()
+\endhead
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Use Case Name}
+\end{quote}
+\end{minipage} & \begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+Approve or Reject Playbook
+\end{quote}
+\end{minipage} \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Description}
+\end{quote}
+\end{minipage} & \begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+The administrator approves or rejects a submitted playbook through the
+approval queue.
+\end{quote}
+\end{minipage} \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Actor}
+\end{quote}
+\end{minipage} & \begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+Administrator
+\end{quote}
+\end{minipage} \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Preconditions}
+\end{quote}
+\end{minipage} & \begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+A playbook is pending approval; Administrator has permission to act on
+the queue.
+\end{quote}
+\end{minipage} \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Main Flow}
+\end{quote}
+\end{minipage} & \begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+1.\hspace{0pt} Administrator opens the Approval Queue.
+
+2.\hspace{0pt} Administrator selects a pending playbook item.
+
+3.\hspace{0pt} Administrator reviews the available playbook information.
+4.\hspace{0pt} Administrator approves or rejects the playbook.
+
+5.\hspace{0pt} System records the review decision and updates the
+status.
+\end{quote}
+\end{minipage} \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Alternative Flows}
+\end{quote}
+\end{minipage} & \begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+If the playbook is rejected, the system records the rejection state and
+prevents deployment.
+\end{quote}
+\end{minipage} \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Postconditions}
+\end{quote}
+\end{minipage} & \begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+The playbook is marked as approved or rejected.
+\end{quote}
+\end{minipage} \\
+\bottomrule()
+\end{longtable}
+
+\begin{quote}
+\textbf{UC15 -- Deploy Approved Playbook}
+\end{quote}
+
+\begin{longtable}[]{@{}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 2\tabcolsep) * \real{0.5000}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 2\tabcolsep) * \real{0.5000}}@{}}
+\toprule()
+\begin{minipage}[b]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Use Case ID}
+\end{quote}
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+\begin{quote}
+UC15
+\end{quote}
+\end{minipage} \\
+\midrule()
+\endhead
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Use Case Name}
+\end{quote}
+\end{minipage} & \begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+Deploy Approved Playbook
+\end{quote}
+\end{minipage} \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Description}
+\end{quote}
+\end{minipage} & \begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+Engineer deploys an approved playbook through the controlled execution
+workflow.
+\end{quote}
+\end{minipage} \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Actor}
+\end{quote}
+\end{minipage} & \begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+Engineer
+\end{quote}
+\end{minipage} \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Preconditions}
+\end{quote}
+\end{minipage} & \begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+The playbook has been approved and is ready for execution.
+\end{quote}
+\end{minipage} \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Main Flow}
+\end{quote}
+\end{minipage} & \begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+1.\hspace{0pt} Engineer selects the deploy or execute action.
+\end{quote}
+\end{minipage} \\
+\bottomrule()
+\end{longtable}
+
+\begin{longtable}[]{@{}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 2\tabcolsep) * \real{0.5000}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 2\tabcolsep) * \real{0.5000}}@{}}
+\toprule()
+\begin{minipage}[b]{\linewidth}\raggedright
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+\begin{quote}
+2.\hspace{0pt} System starts the playbook execution workflow.
+
+3.\hspace{0pt} System applies the playbook to the target devices.
+4.\hspace{0pt} System updates execution status as the job progresses.
+\end{quote}
+\end{minipage} \\
+\midrule()
+\endhead
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Alternative Flows}
+\end{quote}
+\end{minipage} & \begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+If execution fails partially, the system records the failure and returns
+the available job result.
+\end{quote}
+\end{minipage} \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Postconditions}
+\end{quote}
+\end{minipage} & \begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+The approved playbook is executed and its status is updated.
+\end{quote}
+\end{minipage} \\
+\bottomrule()
+\end{longtable}
+
+\begin{quote}
+\textbf{UC16 -- View Deployment Logs and Results}
+\end{quote}
+
+\begin{longtable}[]{@{}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 2\tabcolsep) * \real{0.5000}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 2\tabcolsep) * \real{0.5000}}@{}}
+\toprule()
+\begin{minipage}[b]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Use Case ID}
+\end{quote}
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+\begin{quote}
+UC16
+\end{quote}
+\end{minipage} \\
+\midrule()
+\endhead
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Use Case Name}
+\end{quote}
+\end{minipage} & \begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+View Deployment Logs and Results
+\end{quote}
+\end{minipage} \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Description}
+\end{quote}
+\end{minipage} & \begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+Administrator views deployment logs, job status and execution results
+after or during playbook deployment.
+\end{quote}
+\end{minipage} \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Actor}
+\end{quote}
+\end{minipage} & \begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+Engineer
+\end{quote}
+\end{minipage} \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Preconditions}
+\end{quote}
+\end{minipage} & \begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+A deployment job exists.
+\end{quote}
+\end{minipage} \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Main Flow}
+\end{quote}
+\end{minipage} & \begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+1.\hspace{0pt} Engineer opens the job output or deployment result view.
+2.\hspace{0pt} System displays execution logs and status information.
+3.\hspace{0pt} Engineer reviews the deployment outcome.
+\end{quote}
+\end{minipage} \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Alternative Flows}
+\end{quote}
+\end{minipage} & \begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+If streaming output is interrupted, the system still shows the available
+recorded result and status.
+\end{quote}
+\end{minipage} \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Postconditions}
+\end{quote}
+\end{minipage} & \begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+Deployment logs and results are visible for review and audit.
+\end{quote}
+\end{minipage} \\
+\bottomrule()
+\end{longtable}
+
+\begin{quote}
+\textbf{Module 4: Performance Metric Monitoring}
+
+\textbf{UC17 - View Device Performance Summary}
+\end{quote}
+
+\begin{longtable}[]{@{}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 2\tabcolsep) * \real{0.5000}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 2\tabcolsep) * \real{0.5000}}@{}}
+\toprule()
+\begin{minipage}[b]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Use Case ID}
+\end{quote}
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+\begin{quote}
+UC17
+\end{quote}
+\end{minipage} \\
+\midrule()
+\endhead
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Use Case Name}
+\end{quote}
+\end{minipage} & \begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+View Device Performance Summary
+\end{quote}
+\end{minipage} \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Description}
+\end{quote}
+\end{minipage} & \begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+Engineer views device-level performance summaries through the monitoring
+dashboard.
+\end{quote}
+\end{minipage} \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Actor}
+\end{quote}
+\end{minipage} & \begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+Engineer
+\end{quote}
+\end{minipage} \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Preconditions}
+\end{quote}
+\end{minipage} & \begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+Monitoring data is available.
+\end{quote}
+\end{minipage} \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Main Flow}
+\end{quote}
+\end{minipage} & \begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+1.\hspace{0pt} Administrator opens the Performance page.
+
+2.\hspace{0pt} System loads summary metrics for monitored devices.
+
+3.\hspace{0pt} System displays device-level health and performance
+summary information.
+\end{quote}
+\end{minipage} \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Alternative Flows}
+\end{quote}
+\end{minipage} & \begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+If some devices have missing data, the system displays the available
+summary with partial coverage.
+\end{quote}
+\end{minipage} \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Postconditions}
+\end{quote}
+\end{minipage} & \begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+Device performance summaries are visible in the dashboard.
+\end{quote}
+\end{minipage} \\
+\bottomrule()
+\end{longtable}
+
+\begin{quote}
+\textbf{UC18 - View Interface Health and Traffic Metrics}
+\end{quote}
+
+\begin{longtable}[]{@{}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 2\tabcolsep) * \real{0.5000}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 2\tabcolsep) * \real{0.5000}}@{}}
+\toprule()
+\begin{minipage}[b]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Use Case ID}
+\end{quote}
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+\begin{quote}
+UC18
+\end{quote}
+\end{minipage} \\
+\midrule()
+\endhead
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Use Case Name}
+\end{quote}
+\end{minipage} & \begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+View Interface Health and Traffic Metrics
+\end{quote}
+\end{minipage} \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Description}
+\end{quote}
+\end{minipage} & \begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+Engineer views interface-level health and traffic-related metrics for a
+selected device.
+\end{quote}
+\end{minipage} \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Actor}
+\end{quote}
+\end{minipage} & \begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+Engineer
+\end{quote}
+\end{minipage} \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Preconditions}
+\end{quote}
+\end{minipage} & \begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+Monitoring data for device interfaces is available.
+\end{quote}
+\end{minipage} \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Main Flow}
+\end{quote}
+\end{minipage} & \begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+1.\hspace{0pt} Engineer selects a device in the Performance page.
+\end{quote}
+\end{minipage} \\
+\bottomrule()
+\end{longtable}
+
+\begin{longtable}[]{@{}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 2\tabcolsep) * \real{0.5000}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 2\tabcolsep) * \real{0.5000}}@{}}
+\toprule()
+\begin{minipage}[b]{\linewidth}\raggedright
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+\begin{quote}
+2.\hspace{0pt} System loads interface-level metrics and snapshots.
+3.\hspace{0pt} System displays interface health and traffic information.
+\end{quote}
+\end{minipage} \\
+\midrule()
+\endhead
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Alternative Flows}
+\end{quote}
+\end{minipage} & \begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+If interface data is unavailable for the selected device, the system
+displays an empty or partial result.
+\end{quote}
+\end{minipage} \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Postconditions}
+\end{quote}
+\end{minipage} & \begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+Interface-level health and traffic metrics are visible.
+\end{quote}
+\end{minipage} \\
+\bottomrule()
+\end{longtable}
+
+\begin{quote}
+\textbf{UC19 -- View Active Alerts and Threshold Status}
+\end{quote}
+
+\begin{longtable}[]{@{}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 2\tabcolsep) * \real{0.5000}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 2\tabcolsep) * \real{0.5000}}@{}}
+\toprule()
+\begin{minipage}[b]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Use Case ID}
+\end{quote}
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+\begin{quote}
+UC19
+\end{quote}
+\end{minipage} \\
+\midrule()
+\endhead
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Use Case Name}
+\end{quote}
+\end{minipage} & \begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+View Active Alerts and Threshold Status
+\end{quote}
+\end{minipage} \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Description}
+\end{quote}
+\end{minipage} & \begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+Engineer views active monitoring alerts and threshold-related status
+information.
+\end{quote}
+\end{minipage} \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Actor}
+\end{quote}
+\end{minipage} & \begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+Engineer
+\end{quote}
+\end{minipage} \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Preconditions}
+\end{quote}
+\end{minipage} & \begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+Alert or threshold evaluation data is available.
+\end{quote}
+\end{minipage} \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Main Flow}
+\end{quote}
+\end{minipage} & \begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+1.\hspace{0pt} Engineer opens the monitoring dashboard.
+
+2.\hspace{0pt} System loads active alerts and threshold status
+information.
+\end{quote}
+
+\begin{longtable}[]{@{}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 10\tabcolsep) * \real{0.1667}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 10\tabcolsep) * \real{0.1667}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 10\tabcolsep) * \real{0.1667}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 10\tabcolsep) * \real{0.1667}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 10\tabcolsep) * \real{0.1667}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 10\tabcolsep) * \real{0.1667}}@{}}
+\toprule()
+\begin{minipage}[b]{\linewidth}\raggedright
+\begin{quote}
+3.\hspace{0pt} System
+\end{quote}
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+displays
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+alert
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+summaries
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+and
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+\begin{quote}
+current
+\end{quote}
+\end{minipage} \\
+\midrule()
+\endhead
+\bottomrule()
+\end{longtable}
+
+\begin{quote}
+threshold-related conditions.
+\end{quote}
+\end{minipage} \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Alternative Flows}
+\end{quote}
+\end{minipage} & \begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+If no active alerts exist, the system displays a normal or empty alert
+state.
+\end{quote}
+\end{minipage} \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Postconditions}
+\end{quote}
+\end{minipage} & \begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+Active alerts and threshold status are visible to the engineer.
+\end{quote}
+\end{minipage} \\
+\bottomrule()
+\end{longtable}
+
+\begin{quote}
+\textbf{UC20 - Inspect Time-Series Performance Trends}
+\end{quote}
+
+\begin{longtable}[]{@{}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 2\tabcolsep) * \real{0.5000}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 2\tabcolsep) * \real{0.5000}}@{}}
+\toprule()
+\begin{minipage}[b]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Use Case ID}
+\end{quote}
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+\begin{quote}
+UC20
+\end{quote}
+\end{minipage} \\
+\midrule()
+\endhead
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Use Case Name}
+\end{quote}
+\end{minipage} & \begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+Inspect Time-Series Performance Trends
+\end{quote}
+\end{minipage} \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Description}
+\end{quote}
+\end{minipage} & \begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+Engineer inspects time-series performance trends through charts and
+historical metric views.
+\end{quote}
+\end{minipage} \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Actor}
+\end{quote}
+\end{minipage} & \begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+Engineer
+\end{quote}
+\end{minipage} \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Preconditions}
+\end{quote}
+\end{minipage} & \begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+Historical monitoring data is available.
+\end{quote}
+\end{minipage} \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Main Flow}
+\end{quote}
+\end{minipage} & \begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+1.\hspace{0pt} Engineer selects a device, interface or chart area in the
+Performance page.
+
+2.\hspace{0pt} System loads historical metric data for the selected
+context. 3.\hspace{0pt} System displays time-series charts and trend
+views.
+\end{quote}
+\end{minipage} \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Alternative Flows}
+\end{quote}
+\end{minipage} & \begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+If historical data is unavailable, the system displays the available
+current-state view only.
+\end{quote}
+\end{minipage} \\
+\begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+\textbf{Postconditions}
+\end{quote}
+\end{minipage} & \begin{minipage}[t]{\linewidth}\raggedright
+\begin{quote}
+Time-series performance trends are visible for monitoring and analysis.
+\end{quote}
+\end{minipage} \\
+\bottomrule()
+\end{longtable}
+
+\begin{quote}
+\textbf{3.3.2.3 Non-Functional Requirements}
+
+Non-functional requirements define the quality attributes, operational
+constraints and performance expectations of CogniShield beyond its
+functional capabilities. These requirements are important because the
+system works with network configuration workflows, planned and live
+topology data, approval-governed automation and LLM-assisted playbook
+generation, where reliability, safety, usability and traceability must
+be considered carefully within the scope of a student laboratory
+environment (GeeksforGeeks, 2025a). The following non-functional
+requirements are defined to remain measurable, practical and aligned
+with the current existing implementation.
+
+1. \textbf{Performance}
+
+\textbf{●\hspace{0pt} Request and Playbook Workflow Responsiveness:} The
+system should respond to typical natural-language requests within a
+practical interactive time under normal laboratory conditions, so that
+users can preview, generate and review playbooks without excessive
+delay.
+
+\textbf{●\hspace{0pt} Topology View Responsiveness:} Planned, live and
+comparison topology views should load and update in a usable time frame
+for lab-scale topologies, with manual refresh and available live update
+support where applicable.
+
+\textbf{●\hspace{0pt} Monitoring View Responsiveness:} The Performance
+page should load device summaries, interface metrics and alert
+information in a reasonable time for normal lab usage.
+
+\textbf{●\hspace{0pt} Check Workflow Responsiveness:} The playbook check
+or dry-run workflow should return results within a practical time frame
+suitable for review before approval or deployment.
+
+2. \textbf{Security and Governance}
+
+●\hspace{0pt} \textbf{Credential Handling:} Device credentials, API
+tokens and related sensitive values should be handled through protected
+credential-management mechanisms and should not be exposed directly
+through normal user workflows.
+
+●\hspace{0pt} \textbf{Access Control:} Authentication and role-based
+access control should be enforced so that only authorized users can
+submit, approve, reject or deploy configuration changes.
+
+●\hspace{0pt} \textbf{Approval-Governed Execution:} The system should
+require explicit review and approval before executing controlled
+configuration changes through the playbook deployment workflow.
+
+●\hspace{0pt} \textbf{LLM Output Safety Controls:} Generated playbooks
+should pass through clarification, supporting-context checks, check-mode
+review where supported and approval workflow before live deployment,
+reducing the risk of unsafe or unsuitable model output being applied
+directly to devices.
+
+●\hspace{0pt} \textbf{Auditability:} Generated playbooks, approval
+decisions, execution-related results and timestamps should remain
+reviewable through the platform so that configuration actions can be
+traced during testing and evaluation.
+
+3. \textbf{Maintainability}
+
+●\hspace{0pt} \textbf{Modular Structure:} The main platform workflows,
+including topology visualization, LLM-assisted playbook generation,
+playbook validation and execution and performance monitoring, should
+remain sufficiently modular so that they can be updated and debugged
+without requiring major redesign.
+
+●\hspace{0pt} \textbf{Documentation:} The project should include clear
+module descriptions, report-level documentation and code comments where
+necessary so that future students or researchers can understand and
+extend the system.
+
+●\hspace{0pt} \textbf{Version Control:} Source code, maintained
+templates and core project artefacts should be managed in a Git
+repository to support change tracking and controlled development.
+
+4. \textbf{Usability and Operator Experience}
+
+●\hspace{0pt} \textbf{Guided Workflow Usability:} The interface should
+provide clear workflow guidance for major tasks such as request
+submission, clarification, playbook review, checking, approval,
+deployment, topology viewing and performance monitoring.
+
+●\hspace{0pt} \textbf{Readable Feedback:} Validation results, check
+outputs, warnings, approval states and execution results should be
+presented in a clear and understandable way so that users can interpret
+the workflow without unnecessary confusion.
+
+●\hspace{0pt} \textbf{Learnability:} A new operator in a laboratory
+setting should be able to perform basic tasks such as submitting a
+request, reviewing a generated playbook, running a check and viewing
+topology or monitoring pages after brief guided instruction.
+
+●\hspace{0pt} \textbf{Interface Consistency:} The main frontend views
+should maintain consistent navigation and labeling so that users can
+move between Ansible Studio, the topology view, the approval queue and
+the monitoring pages with minimal relearning.
+
+\textbf{3.3.3 Design}
+
+The design of CogniShield focuses on building a reliable and
+well-structured workflow that supports natural-language request
+submission, LLM-assisted Ansible playbook generation, playbook checking,
+approval-governed execution, topology visibility, and performance
+monitoring. Since the goal of the project is to support network
+automation in a controlled and practical way, the design emphasizes
+clear process flow, validation and review steps, and sufficient
+traceability throughout the workflow. Rather than acting as a fully
+autonomous controller, the current implementation is designed around
+human-governed automation, where generated playbooks are reviewed,
+checked, approved, and then deployed through a controlled execution
+process. The system should therefore be understood as an LLM-assisted,
+Ansible-centered operations platform, not as a full SDN controller, a
+strict Intent-Based Networking platform, or a closed-loop autonomous
+remediation system.
+
+Before describing the detailed flows for request submission, playbook
+generation, checking, approval, deployment, topology viewing, and
+monitoring support, it is helpful to first present the overall system
+workflow. By understanding this overall interaction, it becomes easier
+to see how the main components of the platform, such as request input,
+supporting context, playbook generation, topology data, approval
+handling, and execution-related views, work together. The overall design
+is then elaborated through sequence diagrams, activity diagrams, use
+case diagrams, and related design artefacts that describe the major
+operational scenarios of the current implementation. Figure 8 focuses on
+the core operational workflows of the platform, while supporting
+capabilities such as Device Inventory, Knowledge Base management,
+Onboarding, Template Studio, Global Service Profiles, and Configuration
+Backup are treated as auxiliary platform functions rather than separate
+core modules in this design flow.
+
+Figure 8 below illustrates the overall workflow of CogniShield as an
+integrated platform and provides a clearer picture of how its main
+visible components interact in the current implementation.
+
+\includegraphics[width=7.21944in,height=7.46805in]{vertopal_ecf677e2c67e42e3980383773f2ef664/media/image11.png}
+\end{quote}
+
+\emph{Figure 8: Overall Workflow of CogniShield}
+
+\begin{quote}
+The system flow begins when an engineer submits a natural-language
+network change request through Ansible Studio. Once received, the system
+parses the request and attempts to identify the intended operation,
+target devices, and key parameters. If important information is missing,
+ambiguous, or misinterpreted, the system requests clarification, for
+example by asking the user to confirm target devices from the planned
+inventory or to provide missing interface- or configuration-related
+values. This makes the workflow more controlled than direct free-form
+prompt-to-device execution.
+
+After the request is clarified, the system prepares the supporting
+context used for playbook generation. In the current implementation,
+this context is based mainly on planned inventory records, device and
+interface information, intent schemas, stored reference playbooks, and
+curated knowledge-base content where applicable. Planned inventory is
+managed through the application's local inventory layer and can be
+synchronized with NetBox where configured. Using this information, the
+platform generates a reviewable Ansible playbook through a constrained
+workflow that may combine reference-based generation and LLM-assisted
+drafting, depending on the request type and available support. This
+means the design does not rely on unrestricted free-form LLM output for
+every operation.
+
+Once a playbook is generated, the engineer reviews it in the interface
+before continuing. The next stage is the Check workflow, where the
+system runs Ansible check mode or dry-run handling where supported and
+returns the resulting summary and diff output. This allows the engineer
+to inspect the expected effect of the playbook before submitting it for
+approval. After that, the playbook can be sent into the approval
+workflow, reviewed in the Approval Queue, and either approved or
+rejected by an authorized reviewer. If approved, the playbook can then
+be deployed through the controlled execution workflow, where execution
+logs and job results are recorded and made visible to the user. In the
+lab environment, actual playbook execution may be delegated to a remote
+Linux Ansible runner, but the user-facing workflow remains the same.
+
+In addition to this playbook workflow, the platform includes supporting
+operational views that help the user work with the network more
+effectively. These include planned and live topology visualization,
+comparison between both views, device and connection detail inspection,
+and performance monitoring pages that show device summaries, interface
+health, alert status, and time-series trends. Together, these views
+provide additional operational context for understanding the network
+before and after configuration changes. Supporting
+
+platform capabilities such as Device Inventory, Knowledge Base,
+Onboarding, Template Studio, Global Service Profiles, and Configuration
+Backup further strengthen the usability of the platform, even though
+they are treated as auxiliary capabilities rather than the four main
+core modules in the present design structure.
+
+The user interface is designed to keep the main workflows clear and
+manageable. Ansible Studio serves as the main workspace for request
+submission, parsed-request review, clarification, generated playbook
+review, refinement, checking, and deployment preparation. The topology
+page supports planned, live, and comparison views, while the Performance
+page presents monitoring information in a more readable dashboard form.
+The Approval Queue provides a dedicated place for review decisions, and
+the Knowledge Base supports the document and reference layer used by the
+platform. In addition, the Device Inventory page supports planned device
+and interface management, while the other supporting pages provide
+onboarding, template, and backup-related functionality that complements
+the core workflow.
+
+From a data perspective, the design keeps a practical separation between
+planned network records, generated playbook artefacts, job-related
+workflow data, knowledge-support data, and monitoring data. Planned
+inventory and topology information provide the design-side reference
+used in multiple workflows, while generated playbooks, approval states,
+and execution records support traceability across the automation
+pipeline. Monitoring-related data is handled separately so that
+performance pages can retrieve current and historical metrics without
+being mixed directly into the playbook workflow. Knowledge-base
+documents and reference materials are also maintained separately to
+support bounded retrieval during playbook generation. This structure
+helps maintain a clear distinction between planning context, automation
+artefacts, supporting knowledge, and operational observations.
+
+Overall, the design ensures that CogniShield behaves in a controlled and
+understandable way within its current scope. Rather than operating as a
+fully autonomous controller, the platform is designed around
+LLM-assisted, approval-governed network automation, supported by
+topology visibility, planned inventory context, knowledge-base
+assistance and monitoring views. This makes it suitable for laboratory
+demonstration, guided experimentation, and practical mixed-vendor
+network automation workflows without overstating capabilities that are
+outside the current implementation.
+\end{quote}
+
+\includegraphics[width=7.44861in,height=5.55278in]{vertopal_ecf677e2c67e42e3980383773f2ef664/media/image12.png}
+
+\emph{Figure 9: Request Submission and Playbook Generation Sequence
+Diagram}
+
+\includegraphics[width=7.15694in,height=5.53194in]{vertopal_ecf677e2c67e42e3980383773f2ef664/media/image13.png}
+
+\emph{Figure 10: Check, Approval, Validation and Execution Sequence
+Diagram}
+
+\includegraphics[width=7.13472in,height=5.36528in]{vertopal_ecf677e2c67e42e3980383773f2ef664/media/image14.png}
+
+\emph{Figure 11: Topology and Performance Monitoring Sequence Diagram}
+
+\begin{quote}
+\textbf{GUI Behaviour}
+
+The GUI is designed to keep the main workflows clear and manageable by
+showing only the information needed for the current task. The platform
+provides a dashboard-style entry point together with dedicated pages for
+topology viewing, device inventory, performance monitoring, Ansible
+Studio, the approval queue, knowledge-base management, onboarding
+support, template handling and configuration backup. In the current
+implementation, Ansible Studio serves as the main workspace for
+natural-language request submission, request preview, clarification,
+generated playbook review, playbook checking, approval submission and
+deployment preparation. The topology page supports planned, live and
+comparison views while the Performance page presents device summaries,
+interface health, alert information and time-series charts in a readable
+format. The Approval Queue provides a separate review workflow for
+approving or rejecting playbooks and the Knowledge Base supports
+document and reference management for the LLM-assisted workflow.
+Overall, the interface is designed to support guided, approval-governed
+network automation rather than unrestricted direct execution.
+
+\textbf{Database Schema and Data Stores}
+
+CogniShield keeps different types of data in separate storage layers so
+that planning context, automation artefacts and monitoring information
+remain organized. In the current implementation, SQLite serves as the
+main relational data store for application and workflow data. This
+relational layer is used to support records related to planned
+inventory, generated playbooks, approval states, execution-related
+workflow information, user-facing operational data and other persistent
+platform artefacts that need to remain queryable and traceable across
+the system.
+
+Planned inventory and topology data are maintained through the
+inventory-related system components, with NetBox used as a primary
+reference source where applicable. Monitoring and time-series data are
+handled separately through the monitoring stack for efficient retrieval
+of device and interface metrics. Knowledge-base documents and related
+retrieval-support artefacts are also managed separately to support the
+LLM-assisted workflow. This separation helps the system maintain a clear
+distinction between planned network records, generated automation
+outputs, relational workflow data and operational monitoring data while
+keeping the current implementation practical for a student laboratory
+environment.
+\end{quote}
+
+\includegraphics[width=5.875in,height=9.15694in]{vertopal_ecf677e2c67e42e3980383773f2ef664/media/image15.png}
+
+\emph{Figure 12: Entity-Relationship Diagram}
+
+\begin{quote}
+\textbf{3.3.4 Implementation}
+
+The implementation phase translates the design into a working and
+reproducible platform that can be demonstrated in a student laboratory
+and extended in future work. In the current implementation, CogniShield
+uses a Python-first backend built with FastAPI and Uvicorn, together
+with a React + TypeScript + Vite frontend, because this combination
+supports rapid development, network-oriented integration and responsive
+user interaction (The Python Standard Library, n.d.; FastAPI, n.d.;
+Quick Start - React, n.d.). The backend provides the main API, workflow
+logic and live update endpoints while the frontend provides a
+single-page workspace for topology viewing, device inventory, Ansible
+Studio, approval handling, knowledge-base support, onboarding, template
+management, configuration backup and performance monitoring.
+
+To connect the high-level design with a demonstrable lab deployment, the
+low-level implementation is arranged as a small set of practical runtime
+components. These include the main application, planned inventory and
+topology support, the monitoring stack, the knowledge-base layer, the
+Ansible execution environment and the EVE-NG network simulator. In the
+student laboratory, these components are distributed across multiple
+virtual machines hosted on Proxmox. For example, the lab layout
+separates the EVE-NG environment, NetBox and monitoring services and the
+Linux-based Ansible runner or optional Ollama service into different VMs
+while the main CogniShield application can run on the host machine or a
+dedicated VM. Docker Compose is used where practical to make local
+deployment more repeatable, but the overall setup is intended as a
+manageable laboratory environment rather than a production-scale
+orchestration platform.
+
+\includegraphics[width=9.69722in,height=5.72917in]{vertopal_ecf677e2c67e42e3980383773f2ef664/media/image16.png}
+\end{quote}
+
+\emph{Figure 13: Low-Level CogniShield Architecture Diagram}
+
+\begin{quote}
+At the center of the current implementation is the LLM-assisted Ansible
+workflow. The process begins in Ansible Studio, where a user submits a
+natural-language network change request. The backend then parses the
+request, identifies the likely action and targets and asks for
+clarification when important information is missing or ambiguous. After
+that, the system prepares the supporting context used for playbook
+generation. In the current implementation, this context is based mainly
+on planned inventory records, device and interface data, stored
+reference playbooks, intent schemas and curated knowledge-base content
+where applicable. This keeps the workflow bounded and practical, rather
+than depending on unrestricted retrieval or a full SDN-state model for
+every request.
+
+Playbook generation is implemented as a constrained and reviewable
+workflow rather than unrestricted direct model output. The system
+supports Gemini and Ollama as LLM providers while knowledge retrieval is
+supported through ChromaDB for curated reference material and uploaded
+documents. Once a playbook is generated, it is shown to the user for
+review. The system then supports a Check workflow using Ansible check
+mode or dry-run handling where supported. After that, the playbook can
+be submitted to the Approval Queue, reviewed and either approved or
+rejected. If approved, it can be deployed through the controlled
+execution workflow. Because Ansible control-node support is limited on
+Windows, the current implementation also supports a remote Linux Ansible
+runner VM, allowing the main application to keep the same user workflow
+while delegating playbook execution to a more suitable environment.
+
+The implementation also includes both planned and live topology
+visualization. Planned topology is derived from planned inventory and
+topology-related records, including NetBox-synchronized information
+where available. Live topology is built through the discovery pipeline,
+which uses vendor-aware SSH drivers and LLDP/CDP-style neighbor
+collection to construct the current topology view. The topology page
+supports planned, live and comparison modes so that users can inspect
+network structure and observe visible differences between documented and
+discovered state. In parallel, the Performance page provides device
+summaries, interface health, active alert status and time-series trends
+using the monitoring stack.
+
+From the frontend perspective, the interface is implemented with tools
+that match these workflows directly. D3.js is used for topology
+visualization, Monaco Editor is used for playbook and template editing
+and Recharts is used for performance charts. WebSocket
+
+support is used for live notifications, telemetry updates and
+execution-related status visibility where applicable. This allows the
+interface to remain interactive while the backend continues handling
+longer-running network operations.
+
+For persistent data, the current implementation uses SQLite as the main
+relational data store. This local relational layer is used for
+application and workflow records such as inventory-linked data, playbook
+jobs, approvals, logs and other persistent artefacts. Monitoring and
+time-series data are handled separately through InfluxDB, with Telegraf
+used for SNMP-based metric collection and Prometheus/Grafana integrated
+where available in the wider lab environment. Knowledge-base vector data
+is stored separately through the ChromaDB persistence layer. This
+separation keeps planned records, automation artefacts and monitoring
+data organized while remaining suitable for a student laboratory
+deployment.
+
+The frontend is designed to be simple and easy to use. Network
+topologies are shown using D3.js to make the connections and layout
+clear (Holtz, n.d.). The playbook editor uses Monaco Editor or Ace
+Editor so YAML and CLI commands are highlighted and checked for errors
+(\emph{Monaco Editor}, n.d.). Live telemetry and execution logs are
+streamed in real time using WebSockets, allowing operators to follow
+playbook execution and quickly see verification results (\emph{The
+WebSocket API (WebSockets) - Web APIs \textbar{} MDN}, n.d.).
+
+Finally, safety and governance are built into the implementation.
+Generated playbooks are treated as suggestions for review rather than
+directly trusted output. In the current workflow, they pass through
+clarification, review, check-mode handling where supported, approval and
+only then controlled deployment. Credentials are handled through device
+inventory records and Ansible Vault support while execution results and
+approval decisions remain visible through the platform. Overall, the
+implementation is designed as an LLM-assisted, Ansible-centered,
+approval-governed network automation and operations platform that is
+demonstrable in a laboratory setting without overstating capabilities
+such as full autonomous remediation or full controller-driven network
+management as the current existing vendor platforms.
+
+\textbf{3.3.4 Testing}
+
+The testing phase of CogniShield is intended to verify that the current
+implementation behaves safely and predictably before configuration
+changes are sent to network devices. Because the platform combines
+LLM-assisted playbook generation, approval-governed automation, topology
+handling and monitoring support, the testing approach is layered rather
+than relying on a single end-to-end check (Stojanov, 2025).
+
+The first layer is unit testing. In the current implementation, pytest
+is used to test important backend functions in isolation, including
+intent parsing and clarification logic, context preparation,
+NetBox-related processing, monitoring API behavior, dashboard-related
+functions, onboarding flows and Ansible playbook generation helpers.
+Where practical, these tests use mocked or stubbed dependencies so that
+external systems such as NetBox, monitoring services or LLM providers do
+not have to be live for every test run. This helps verify error handling
+for cases such as missing parameters, ambiguous requests, incomplete
+inventory data or invalid generated output.
+
+The next layer is integration testing, which checks how multiple
+subsystems work together. For the current project, this is done using
+the application stack and supporting lab services that are actually used
+in development, such as the FastAPI backend, the React frontend, the
+SQLite-based application data layer, the ChromaDB-backed knowledge store
+and the InfluxDB/Telegraf monitoring path. NetBox, the remote Linux
+Ansible runner and EVE-NG are then connected as external lab services
+where required. Integration testing focuses on realistic workflows such
+as inventory synchronization, planned-versus-live topology handling,
+knowledge-base rebuild, prompt preview and clarification, playbook
+generation, check-mode execution, approval submission and deployment job
+handling. Negative testing is also included so that ambiguous requests,
+missing required fields, unsupported combinations and unavailable
+dependencies can be observed and handled more safely.
+
+The final layer is system and acceptance testing in the laboratory
+environment. In this stage, EVE-NG is used to provide a small
+campus-style network for validating the operator-visible workflows of
+the platform. Typical scenarios include viewing planned and live
+topology, comparing both views, generating a playbook from a
+natural-language request, reviewing the result, running the Check
+workflow, submitting the playbook to the Approval Queue, deploying an
+approved playbook through the execution workflow and reviewing
+monitoring
+
+information through the Performance page. Manual browser-based workflow
+testing is also important in the current implementation because many key
+interactions, such as clarification prompts, inventory selection and
+approval decisions, are UI-driven. Overall, the testing phase is
+designed to confirm that the delivered platform works reliably within
+its current scope as an LLM-assisted, approval-governed network
+automation system rather than as a fully autonomous controller.
+
+\textbf{3.4 Technology Deployed and Hardware}
+
+The implementation of CogniShield is designed to be reproducible in a
+university laboratory while remaining modular enough for future
+extension. In the current implementation, the platform is built around a
+Python-based backend, a React + TypeScript frontend and a set of
+supporting services for monitoring, planned inventory support,
+knowledge-base support and Ansible execution. The system is deployed in
+a lab-oriented distributed environment using Proxmox-hosted virtual
+machines and direct service execution, rather than as a production-scale
+platform. This keeps the project practical for demonstration while
+remaining aligned with its MVP scope.
+
+\textbf{3.4.1 Languages, Frameworks and Core Libraries}
+
+●\hspace{0pt} \textbf{Backend:} The backend is implemented in Python
+using FastAPI and Uvicorn. This provides REST-style APIs, asynchronous
+request handling and WebSocket support for live updates and
+execution-related status visibility.
+
+●\hspace{0pt} \textbf{Frontend:} The frontend is implemented as a React
++ TypeScript + Vite single-page application. Styling and UI composition
+are supported by Tailwind CSS and DaisyUI while the interface is
+organized into dedicated views such as topology, device inventory,
+Ansible Studio, approval queue, onboarding, configuration backup,
+knowledge base and performance monitoring.
+
+●\hspace{0pt} \textbf{Visualization and UI components:} D3.js is used
+for topology visualization, Monaco Editor is used for playbook and
+template editing, Recharts is used for performance charts and xterm.js
+is used for the SSH terminal component.
+
+●\hspace{0pt} \textbf{LLM and knowledge support:} The current
+implementation supports Gemini and Ollama as LLM providers. For
+knowledge-grounded support, the project uses a ChromaDB-backed knowledge
+store together with curated knowledge-base documents and Ansible
+reference material. This is used to support bounded retrieval for
+playbook generation and related workflows.
+
+●\hspace{0pt} \textbf{Automation and execution:} Ansible Core and
+ansible-runner are used for check and deployment workflows. Because
+Ansible control-node support is limited on Windows, the current
+implementation also supports a remote Linux Ansible runner so that the
+
+backend can delegate execution to a Linux VM without changing the
+frontend workflow.
+
+●\hspace{0pt} \textbf{Network integration:} pynetbox is used for NetBox
+integration, Paramiko-based vendor drivers are used for SSH-based
+topology discovery and requests-based API integration is used where
+external HTTP services are involved. Additional Ansible-related
+libraries such as netmiko and selected NETCONF-related tooling are
+included for specific execution or fallback scenarios where applicable.
+
+●\hspace{0pt} \textbf{Monitoring stack:} The current monitoring workflow
+primarily uses InfluxDB for time-series metrics storage and Telegraf for
+SNMP-based collection. Prometheus and Grafana can also be integrated in
+the wider lab environment where available.
+
+●\hspace{0pt} \textbf{Storage:} The current implementation uses SQLite
+as the main relational application data store for local application and
+workflow records. NetBox is used as the planned inventory and topology
+reference source where applicable while ChromaDB provides persistent
+vector-store support for the knowledge layer.
+
+●\hspace{0pt} \textbf{Virtualization and lab environment:} Proxmox is
+used as the virtualization platform for the wider lab setup while EVE-NG
+is used to simulate the campus-style network topology that CogniShield
+interacts with during testing and demonstration.
+
+\textbf{3.4.2 Hardware and Deployment Considerations}
+
+The current implementation is developed as a minimum viable product
+(MVP) for a student laboratory environment. It is not intended to match
+the deployment scale, resilience or operational maturity of enterprise
+platforms such as Cisco Catalyst Center, Huawei iMaster NCE or Juniper
+Mist. Instead, it is designed as a practical and demonstrable research
+prototype that integrates selected automation, topology, monitoring and
+AI-assisted workflow capabilities within a constrained lab setup due to
+limited development hardware resources and development time.
+
+The project is deployed on a Proxmox server hosting four virtual
+machines, with a total of 32 GB RAM shared across all virtual machines.
+In the current setup:
+
+●\hspace{0pt} VM 1 (192.168.1.249) hosts EVE-NG, which provides the
+simulated campus network topology and virtual network devices.
+
+●\hspace{0pt} VM 2 (192.168.1.250) hosts the telemetry-related services,
+including InfluxDB, Telegraf used in the lab environment.
+
+●\hspace{0pt} VM 3 (192.168.1.251) hosts the Linux-based remote Ansible
+runner and the local Ollama runtime, which is configured in the current
+implementation to use Qwen 2.5 Coder 3B by default and can be used for
+other small local models where resources allow.
+
+●\hspace{0pt} VM 4 (192.168.1.252) hosts NetBox, together with
+Prometheus and Grafana for supporting inventory and monitoring-related
+functions.
+
+The main CogniShield application itself is then operated in a direct
+lab-oriented manner from the main machine environment, rather than
+through a more complex deployment model. This matches the current
+implementation more accurately and keeps the MVP easier to run,
+troubleshoot and demonstrate.
+
+From a hardware perspective, the largest resource demand usually comes
+from the EVE-NG virtual network lab and the number of active virtual
+machines rather than from the frontend or backend web application alone.
+The local AI-hosting setup is also constrained by the available
+hardware, with approximately 4 GB VRAM available for the Ollama-based
+local LLM environment. As a result, the current implementation is better
+suited to smaller local models, such as the configured Qwen model,
+rather than large on-premise foundation models. These hardware limits
+are consistent with the MVP nature of the project and help define the
+
+practical scope of the current implementation.
+
+\textbf{3.4.3 Security, Privacy and Safe-By-Design Choices}
+
+The current implementation follows a human-governed and safety-oriented
+approach. Generated playbooks are not treated as commands to be applied
+automatically without review. Instead, the workflow keeps the operator
+involved through request clarification where needed, generated playbook
+review, Check or dry-run handling where supported and approval-based
+deployment before live execution. This is an important boundary in the
+current system and should be stated clearly to avoid overstating the
+level of autonomy.
+
+For access control, the application includes authentication and
+role-based workflow control so that sensitive actions such as approval,
+rejection and deployment are restricted to authorized users. In the
+laboratory setting, device access is intended to use only the
+permissions necessary for testing and controlled configuration tasks.
+
+For secrets and credentials, the current implementation uses a
+combination of environment-based configuration, device inventory
+credentials and Ansible Vault support. This is more accurate than
+describing the system as using a full centralized secrets-management
+platform in its present form. Audit-related information such as
+generated playbooks, approval decisions, execution results and
+timestamps is also retained in the platform so that actions remain
+reviewable during testing and demonstration.
+
+\textbf{3.5 SDG Alignment}
+
+CogniShield is primarily aligned with Sustainable Development Goal 9
+(Industry, Innovation and Infrastructure). In its current form, the
+project demonstrates how a lab-scale, open and modular platform can
+support innovation in network operations through the combination of
+automation, monitoring, planned inventory support and LLM-assisted
+workflow guidance. Rather than targeting enterprise-scale autonomy, the
+current implementation contributes as a practical prototype that
+explores how intelligent and governed automation can be applied in a
+realistic academic environment.
+
+This alignment is especially relevant from an educational and innovation
+perspective. Because the platform is implemented using accessible
+technologies and open development practices, it can support students,
+researchers and educators in learning about network automation, topology
+management, Ansible-based operations and AI-assisted workflows in a more
+hands-on way. In that sense, the project contributes to innovation
+capacity-building rather than only to a finished commercial product.
+
+The project also has potential relevance to smaller organizations such
+as SMEs and startups, particularly in showing how approval-governed
+automation and low-cost virtualized lab infrastructure can be used to
+study more efficient network operations. However, this contribution
+should be understood within the limits of the current implementation.
+CogniShield is best positioned as a research-oriented MVP that supports
+experimentation, learning and future extension, rather than as a direct
+replacement for mature enterprise network management platforms.
+
+\textbf{3.6 Conclusion \& Future Works}
+
+In conclusion, this chapter has presented the requirements, design
+direction, implementation approach, testing strategy and deployment
+considerations for CogniShield in a way that is aligned with the current
+existing implementation. The project is positioned not as a full
+autonomous controller or enterprise-equivalent platform but as an
+LLM-assisted, Ansible-centered, approval-governed network automation and
+operations MVP for a university laboratory setting. This clearer scope
+is important because it keeps the report technically defensible while
+still showing the novelty and practical value of the system.
+
+\textbf{Architecture and Implementation Guidelines}
+
+The architecture described in this chapter also shown that the current
+architecture is built around a practical combination of FastAPI, React,
+NetBox-linked planned inventory support, live topology discovery,
+Ansible execution workflow, knowledge-base-assisted generation and
+monitoring integration within a Proxmox-based virtual lab. The use of
+EVE-NG, separate service virtual machines and a remote Linux Ansible
+runner helps provide a realistic but manageable environment for
+demonstration and testing. This makes the project suitable for
+controlled experimentation without overstating it as a production-ready
+orchestration platform.
+
+\textbf{Testing Strategy and Hardware Recommendations}
+
+The testing and deployment discussions further reinforce the project's
+MVP nature. By combining unit testing, integration testing, manual
+workflow validation and lab-based system testing, the project aims to
+confirm that the main operator-visible workflows behave safely and
+predictably. The hardware and virtualization choices also reflect real
+student-lab constraints, including the use of four Proxmox virtual
+machines, shared memory resources and a small local LLM runtime.
+
+\textbf{Future Works and Project Progression}
+
+For future work, the most meaningful next steps are to improve the
+reliability and speed of the intent parsing and clarification workflow,
+expand multi-vendor reference coverage, strengthen monitoring and
+topology-data consistency and refine the approval and execution pipeline
+based on further testing. Additional work could also improve local-model
+performance under limited hardware, enhance user evaluation of the
+interface and workflow clarity and further mature modules such as
+onboarding, backup or governance-related support where appropriate. By
+progressing in this measured way, CogniShield can continue to develop as
+a useful research and educational platform for governed AI-assisted
+network automation without overstating its current level of maturity.
+\end{quote}
+
+\end{document}
