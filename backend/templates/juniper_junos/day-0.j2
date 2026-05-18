@@ -24,7 +24,7 @@ set snmp trap-group NMS targets {{ snmp_host_ip }}
 {% endif %}
 {% endif %}
 {% if syslog_host_ip %}
-set system syslog host {{ syslog_host_ip }} any notice
+set system syslog host {{ syslog_host_ip }} port {{ syslog_port | default(6514) }} any notice
 {% endif %}
 {% if ntp_server_ip %}
 set system ntp server {{ ntp_server_ip }}

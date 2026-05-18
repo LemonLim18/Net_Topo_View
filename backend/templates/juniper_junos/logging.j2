@@ -1,5 +1,5 @@
 {% for server in syslog_servers %}
-set system syslog host {{ server }} any {{ trap_level | default("info") }}
+set system syslog host {{ server }} port {{ syslog_port | default(6514) }} any {{ trap_level | default("info") }}
 {% if facility is defined and facility %}
 set system syslog host {{ server }} facility-override {{ facility }}
 {% endif %}

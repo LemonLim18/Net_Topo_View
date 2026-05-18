@@ -95,6 +95,9 @@ except ImportError:
 # --- Crawler Logic (refactored BFS engine — replaces legacy mini_nce) ---
 from crawler.bfs_engine import crawl_topology as _bfs_crawl
 from crawler.store import save_crawl_result
+from common_services.service import get_effective_profile
+from security.models import SecurityEvent
+from security.threat.syslog_receiver import SyslogReceiver
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("topo-backend")
@@ -155,6 +158,8 @@ _db: Optional[DatabaseManager] = None
 _agent: Optional[NetworkAgent] = None
 _vault = None  # CredentialVault — set in lifespan
 _state_embedder = None  # NetworkStateEmbedder — Phase 9
+_syslog_receiver: Optional[SyslogReceiver] = None
+_syslog_loop: Optional[asyncio.AbstractEventLoop] = None
 
 # ----------------------
 # WebSocket Connection Manager
@@ -347,9 +352,9 @@ def do_sync_crawl() -> dict:
             else:
                 logger.debug("Subnet discovery scanned %d hosts and found no new SSH targets", len(discovery_targets))
 
-    # Environment overrides remain authoritative; DB credentials are fallback.
-    effective_cred_overrides = dict(db_cred_overrides)
-    effective_cred_overrides.update(_CRAWL_CRED_OVERRIDES)
+    # Prefer DB/NetBox-synced per-device credentials; env overrides are fallback.
+    effective_cred_overrides = dict(_CRAWL_CRED_OVERRIDES)
+    effective_cred_overrides.update(db_cred_overrides)
 
     return _bfs_crawl(
         seeds=effective_seeds,
@@ -414,6 +419,60 @@ def canonical_topology(topo: dict) -> dict:
     sorted_nodes = dict(sorted(cleaned_nodes.items()))
     sorted_links = sorted(links, key=lambda x: (x.get("src", ""), x.get("dst", "")))
     return {"nodes": sorted_nodes, "links": sorted_links}
+
+
+def _save_security_event(db: DatabaseManager, event: SecurityEvent) -> int:
+    with db._connect() as conn:
+        cursor = conn.execute(
+            """INSERT INTO security_events
+               (event_type, severity, source_ip, dest_ip, device_id, description, raw_data, status)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                event.event_type,
+                event.severity,
+                event.source_ip,
+                event.dest_ip,
+                event.device_id,
+                event.description,
+                json.dumps(event.raw_data) if event.raw_data else None,
+                event.status,
+            ),
+        )
+        conn.commit()
+        return cursor.lastrowid  # type: ignore[return-value]
+
+
+async def _ingest_syslog_event(event: SecurityEvent):
+    db = _db or DatabaseManager("db/netauto.db")
+    try:
+        event_id = _save_security_event(db, event)
+        await _telemetry_broadcast(
+            {
+                "event": "security_event",
+                "data": {
+                    "id": event_id,
+                    "event_type": event.event_type,
+                    "severity": event.severity,
+                    "source_ip": event.source_ip,
+                    "dest_ip": event.dest_ip,
+                    "device_id": event.device_id,
+                    "description": event.description,
+                    "status": event.status,
+                    "created_at": event.created_at,
+                },
+            }
+        )
+        logger.info("Syslog event ingested: %s from %s", event.event_type, event.source_ip or "unknown")
+    except Exception as exc:
+        logger.warning("Failed to ingest syslog event: %s", exc)
+
+
+def _handle_syslog_event(event: SecurityEvent):
+    loop = _syslog_loop
+    if not loop or loop.is_closed():
+        logger.warning("Syslog event dropped because the application loop is unavailable")
+        return
+    asyncio.run_coroutine_threadsafe(_ingest_syslog_event(event), loop)
 
 def save_topology_to_file(topo: dict, filepath: str, sort_keys: bool = False):
     try:
@@ -641,6 +700,19 @@ async def lifespan(app: FastAPI):
     _agent = agent
     _vault = vault
     register_refresh_sink("sqlite_context_event_log", db.append_context_event_log)
+    global _syslog_receiver, _syslog_loop
+    _syslog_loop = asyncio.get_running_loop()
+    try:
+        effective_services = get_effective_profile("db/netauto.db")
+        syslog_port = int(effective_services.get("syslog_port") or 6514)
+    except Exception:
+        syslog_port = 6514
+    try:
+        _syslog_receiver = SyslogReceiver(port=syslog_port, callback=_handle_syslog_event)
+        _syslog_receiver.start()
+        logger.info("Syslog receiver initialized (udp/%d)", syslog_port)
+    except Exception as exc:
+        logger.warning("Syslog receiver failed to start: %s", exc)
     try:
         os.makedirs(TOPOLOGY_SAVE_DIR, exist_ok=True)
         if os.path.exists(CURRENT_TOPOLOGY_FILE):
@@ -660,7 +732,12 @@ async def lifespan(app: FastAPI):
         logger.warning(f"Failed to load initial topology: {e}")
 
     # 5. Start M16 Scheduler (replaces old periodic_crawler loop)
-    start_scheduler(run_crawl_and_broadcast, orchestrator=_orchestrator, broadcast_fn=_telemetry_broadcast)
+    start_scheduler(
+        run_crawl_and_broadcast,
+        orchestrator=_orchestrator,
+        broadcast_fn=_telemetry_broadcast,
+        inventory_sync_fn=lambda: DeviceSyncer(db).sync_all_devices(),
+    )
     logger.info("Background scheduler started")
 
     # 5b. Real-time pulse crawl: while dashboard WS clients are connected,
@@ -696,6 +773,8 @@ async def lifespan(app: FastAPI):
     # Cleanup
     reaper_task.cancel()
     realtime_pulse_task.cancel()
+    if _syslog_receiver:
+        _syslog_receiver.stop()
     stop_scheduler()
 
 app = FastAPI(title="CogniShield Backend", lifespan=lifespan)
@@ -711,6 +790,8 @@ _ALLOWED_ORIGINS = [
     "http://localhost:5173",
     "http://127.0.0.1:5173",
     "http://localhost:3000",
+    "http://192.168.1.116:5173",    
+    "http://192.168.1.116:3000",  
 ]
 
 app.add_middleware(

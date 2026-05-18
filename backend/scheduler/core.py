@@ -7,19 +7,21 @@ Intervals are configurable via environment variables.
 
 import logging
 import os
-from typing import Callable, Awaitable
+from typing import Callable, Awaitable, Optional
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 
 from scheduler.jobs import (
     job_crawl,
+    job_inventory_sync,
     job_drift_check,
     job_compliance_scan,
     job_security_audit,
     job_cve_rescan,
     job_anomaly_detect,
     set_crawl_function,
+    set_inventory_sync_function,
     set_orchestrator,
     set_broadcast_fn,
 )
@@ -40,7 +42,12 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
-def start_scheduler(crawl_fn: Callable[..., Awaitable], orchestrator=None, broadcast_fn=None) -> None:
+def start_scheduler(
+    crawl_fn: Callable[..., Awaitable],
+    orchestrator=None,
+    broadcast_fn=None,
+    inventory_sync_fn: Optional[Callable[[], object]] = None,
+) -> None:
     """
     Create, configure, and start the global scheduler.
 
@@ -57,6 +64,8 @@ def start_scheduler(crawl_fn: Callable[..., Awaitable], orchestrator=None, broad
 
     # Inject dependencies into jobs module
     set_crawl_function(crawl_fn)
+    if inventory_sync_fn is not None:
+        set_inventory_sync_function(inventory_sync_fn)
     if orchestrator is not None:
         set_orchestrator(orchestrator)
     if broadcast_fn is not None:
@@ -64,6 +73,7 @@ def start_scheduler(crawl_fn: Callable[..., Awaitable], orchestrator=None, broad
 
     # Read configurable intervals
     crawl_min   = _env_int("SCHED_CRAWL_MINUTES", 15)
+    netbox_sync_min = _env_int("SCHED_NETBOX_SYNC_MINUTES", 10)
     drift_min   = _env_int("SCHED_DRIFT_MINUTES", 30)
     compliance_min = _env_int("SCHED_COMPLIANCE_MINUTES", 30)
     audit_hrs   = _env_int("SCHED_AUDIT_HOURS", 6)
@@ -78,6 +88,13 @@ def start_scheduler(crawl_fn: Callable[..., Awaitable], orchestrator=None, broad
         trigger=IntervalTrigger(minutes=crawl_min),
         id="network_crawl",
         name="Network Crawl",
+        replace_existing=True,
+    )
+    _scheduler.add_job(
+        job_inventory_sync,
+        trigger=IntervalTrigger(minutes=netbox_sync_min),
+        id="inventory_sync",
+        name="Inventory Sync",
         replace_existing=True,
     )
 
@@ -123,8 +140,8 @@ def start_scheduler(crawl_fn: Callable[..., Awaitable], orchestrator=None, broad
 
     _scheduler.start()
     logger.info(
-        "Scheduler started with %d jobs — Crawl: %dm, Drift: %dm, Compliance: %dm, Audit: %dh, CVE: %dh, Anomaly: %dm",
-        len(_scheduler.get_jobs()), crawl_min, drift_min, compliance_min, audit_hrs, cve_hrs, anomaly_min,
+        "Scheduler started with %d jobs — Crawl: %dm, InventorySync: %dm, Drift: %dm, Compliance: %dm, Audit: %dh, CVE: %dh, Anomaly: %dm",
+        len(_scheduler.get_jobs()), crawl_min, netbox_sync_min, drift_min, compliance_min, audit_hrs, cve_hrs, anomaly_min,
     )
 
 

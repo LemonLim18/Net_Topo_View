@@ -4,16 +4,12 @@ import { authApi } from './services/api';
 import Sidebar from '../components/Sidebar';
 import OverviewDashboard from '../views/OverviewDashboard';
 import Dashboard from '../views/Dashboard';
-import GeminiChat from  "../views/AIChat";
 import NetBoxDevices from '../views/NetBoxDevices';
 import KnowledgeBase from '../views/KnowledgeBase';
 import AnsibleStudioView from '../views/AnsibleStudioView';
 import TemplateStudioView from '../views/TemplateStudioView';
 import ConfigBackupView from '../views/ConfigBackupView';
-import ComplianceHubView from '../views/ComplianceHubView';
-import ComplianceDeviceDetail from '../views/ComplianceDeviceDetail';
-import { COMPLIANCE_HUB_TAB_KEY } from '../utils/complianceNavigationKeys';
-import IncidentDashboard from '../views/IncidentDashboard';
+
 import OnboardingView from '../views/OnboardingView';
 import IntentHistoryView from '../views/IntentHistoryView';
 import IntentParserView from '../views/IntentParserView';
@@ -25,9 +21,7 @@ import FloatingInventoryOverlay from '../components/FloatingInventoryOverlay';
 
 import Login from '../views/Login';
 import NetworkPerformance from '../views/NetworkPerformance';
-import SecurityEvents from '../views/SecurityEvents';
-import SecurityAnalysis from '../views/SecurityAnalysis';
-import SecurityDashboard from '../views/SecurityDashboard';
+
 import { NotificationProvider } from '../contexts/NotificationContext';
 import { DeviceProvider } from '../contexts/DeviceContext';
 import { Bot } from 'lucide-react';
@@ -46,20 +40,10 @@ const isViewId = (value: string | null): value is ViewId => {
     'dashboard',
     'topology',
     'netbox_devices',
-    'drift',
-    'policy_builder',
-    'compliance_hub',
-    'compliance_device_detail',
     'net_perf',
-    'net_chat',
     'knowledge_base',
     'ansible_studio',
     'device_detail',
-    'sec_dashboard',
-    'sec_events',
-    'sec_analysis',
-    'sec_chat',
-    'incidents',
     'onboarding',
     'common_services',
     'intent_history',
@@ -198,68 +182,14 @@ const App: React.FC = () => {
         return <Dashboard />;
       case 'netbox_devices':
         return <NetBoxDevices />;
-      case 'drift': {
-        try {
-          sessionStorage.setItem(COMPLIANCE_HUB_TAB_KEY, 'results');
-        } catch {
-          /* ignore */
-        }
-        return (
-          <ComplianceHubView
-            key="compliance-hub-drift"
-            setView={setView}
-            setSelectedDeviceId={setSelectedDeviceId}
-          />
-        );
-      }
-      case 'policy_builder': {
-        try {
-          sessionStorage.setItem(COMPLIANCE_HUB_TAB_KEY, 'policies');
-        } catch {
-          /* ignore */
-        }
-        return (
-          <ComplianceHubView
-            key="compliance-hub-policies"
-            setView={setView}
-            setSelectedDeviceId={setSelectedDeviceId}
-          />
-        );
-      }
-      case 'compliance_hub':
-        return <ComplianceHubView setView={setView} setSelectedDeviceId={setSelectedDeviceId} />;
-      case 'compliance_device_detail':
-        return (
-          <ComplianceDeviceDetail
-            deviceId={selectedDeviceId}
-            setView={setView}
-            setSelectedDeviceId={setSelectedDeviceId}
-          />
-        );
       case 'device_detail':
         return <div className="p-6"><h2 className="text-xl font-bold">Device 360 — #{selectedDeviceId ?? '?'}</h2><p className="mt-2 opacity-60">Device detail view — Phase 2.</p></div>;
       case 'net_perf':
         return <NetworkPerformance />;
-      case 'net_chat':
-        return <GeminiChat domain="network" />;
       case 'knowledge_base':
         return <KnowledgeBase />;
       case 'ansible_studio':
         return <AnsibleStudioView user={user} />;
-
-      // Security Domain
-      case 'sec_dashboard':
-        return <SecurityDashboard />;
-      case 'sec_events':
-        return <SecurityEvents />;
-      case 'sec_chat':
-        return <GeminiChat domain="security" />;
-      case 'sec_analysis':
-         return <SecurityAnalysis />;
-
-      // Incident Response
-      case 'incidents':
-        return <IncidentDashboard />;
 
       // M0 — Device Onboarding
       case 'onboarding':

@@ -70,26 +70,16 @@ export interface User {
 }
 
 // Domain Types
-export type AppDomain = 'network' | 'security';
+export type AppDomain = 'network';
 export type ViewId = 
   | 'overview'
   | 'dashboard'
   | 'topology'
   | 'netbox_devices'
-  | 'drift'
-  | 'policy_builder'
-  | 'compliance_hub'
-  | 'compliance_device_detail'
   | 'net_perf' 
-  | 'net_chat'
   | 'knowledge_base'
   | 'ansible_studio'
   | 'device_detail'
-  | 'sec_dashboard'
-  | 'sec_events'
-  | 'sec_analysis'
-  | 'sec_chat'
-  | 'incidents'
   | 'onboarding'
   | 'common_services'
   | 'intent_history'

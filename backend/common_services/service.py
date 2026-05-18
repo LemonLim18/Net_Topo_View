@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 ALLOWED_SCOPES = {"global", "site", "role", "device"}
@@ -9,6 +11,21 @@ DEFAULT_DB_PATH = "db/netauto.db"
 
 
 def _connect(db_path: str):
+    # Resolve relative paths against the backend package root so callers
+    # using a relative "db/netauto.db" work regardless of the process cwd.
+    if not os.path.isabs(db_path):
+        backend_root = Path(__file__).resolve().parent.parent
+        db_path = str((backend_root / db_path).resolve())
+
+    # Ensure parent directory exists so sqlite can create the file.
+    parent = os.path.dirname(db_path)
+    if parent and not os.path.exists(parent):
+        try:
+            os.makedirs(parent, exist_ok=True)
+        except Exception:
+            # Let sqlite raise a clearer error if directory creation fails
+            pass
+
     conn = sqlite3.connect(db_path, timeout=10)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
@@ -27,6 +44,7 @@ def ensure_common_services_table(db_path: str = DEFAULT_DB_PATH) -> None:
                 snmp_location       TEXT,
                 snmp_contact        TEXT,
                 snmp_host_ip        TEXT,
+                syslog_port         INTEGER,
                 syslog_servers_json TEXT,
                 ntp_servers_json    TEXT,
                 syslog_host_ip      TEXT,
@@ -42,6 +60,7 @@ def ensure_common_services_table(db_path: str = DEFAULT_DB_PATH) -> None:
             ("snmp_location", "TEXT"),
             ("snmp_contact", "TEXT"),
             ("snmp_host_ip", "TEXT"),
+            ("syslog_port", "INTEGER"),
             ("syslog_host_ip", "TEXT"),
             ("ntp_server_ip", "TEXT"),
         ):
@@ -88,6 +107,7 @@ def _row_to_profile(row: sqlite3.Row) -> Dict[str, Any]:
         "snmp_location": row["snmp_location"] if "snmp_location" in row.keys() else None,
         "snmp_contact": row["snmp_contact"] if "snmp_contact" in row.keys() else None,
         "snmp_host_ip": row["snmp_host_ip"] if "snmp_host_ip" in row.keys() else None,
+        "syslog_port": row["syslog_port"] if "syslog_port" in row.keys() and row["syslog_port"] is not None else 6514,
         "syslog_host_ip": (
             row["syslog_host_ip"] if ("syslog_host_ip" in row.keys() and row["syslog_host_ip"]) else (legacy_syslog[0] if legacy_syslog else None)
         ),
@@ -139,6 +159,7 @@ def upsert_profile(scope_type: str, scope_value: str, payload: Dict[str, Any], d
     snmp_location = payload.get("snmp_location")
     snmp_contact = payload.get("snmp_contact")
     snmp_host_ip = payload.get("snmp_host_ip")
+    syslog_port = payload.get("syslog_port")
     syslog_host_ip = payload.get("syslog_host_ip")
     ntp_server_ip = payload.get("ntp_server_ip")
 
@@ -152,14 +173,15 @@ def upsert_profile(scope_type: str, scope_value: str, payload: Dict[str, Any], d
             INSERT INTO common_service_profiles
                 (
                     scope_type, scope_value, snmp_community, snmp_location, snmp_contact, snmp_host_ip,
-                    syslog_servers_json, ntp_servers_json, syslog_host_ip, ntp_server_ip, updated_at
+                    syslog_port, syslog_servers_json, ntp_servers_json, syslog_host_ip, ntp_server_ip, updated_at
                 )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
             ON CONFLICT(scope_type, scope_value) DO UPDATE SET
                 snmp_community = excluded.snmp_community,
                 snmp_location = excluded.snmp_location,
                 snmp_contact = excluded.snmp_contact,
                 snmp_host_ip = excluded.snmp_host_ip,
+                syslog_port = excluded.syslog_port,
                 syslog_servers_json = excluded.syslog_servers_json,
                 ntp_servers_json = excluded.ntp_servers_json,
                 syslog_host_ip = excluded.syslog_host_ip,
@@ -173,6 +195,7 @@ def upsert_profile(scope_type: str, scope_value: str, payload: Dict[str, Any], d
                 snmp_location,
                 snmp_contact,
                 snmp_host_ip,
+                syslog_port if syslog_port is None or str(syslog_port).strip() == "" else int(syslog_port),
                 syslog_json,
                 ntp_json,
                 syslog_host_ip,
@@ -219,6 +242,7 @@ def get_effective_profile(
         "snmp_location": None,
         "snmp_contact": None,
         "snmp_host_ip": None,
+        "syslog_port": 6514,
         "syslog_host_ip": None,
         "ntp_server_ip": None,
     }
@@ -227,6 +251,7 @@ def get_effective_profile(
         "snmp_location": None,
         "snmp_contact": None,
         "snmp_host_ip": None,
+        "syslog_port": None,
         "syslog_host_ip": None,
         "ntp_server_ip": None,
     }
@@ -253,6 +278,14 @@ def get_effective_profile(
             if "snmp_host_ip" in row.keys() and row["snmp_host_ip"]:
                 merged["snmp_host_ip"] = row["snmp_host_ip"]
                 sources["snmp_host_ip"] = label
+
+            syslog_port = row["syslog_port"] if "syslog_port" in row.keys() else None
+            try:
+                if syslog_port is not None and str(syslog_port).strip() != "":
+                    merged["syslog_port"] = int(syslog_port)
+                    sources["syslog_port"] = label
+            except Exception:
+                pass
 
             syslog_host_ip = row["syslog_host_ip"] if "syslog_host_ip" in row.keys() else None
             if not syslog_host_ip:

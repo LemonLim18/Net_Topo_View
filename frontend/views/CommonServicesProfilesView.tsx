@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
-import { Layers, Save, Trash2, RefreshCw, Download, X } from 'lucide-react';
-import { authApi, commonServicesApi, onboardingApi, type ZtpPublishJob, type ZtpPublishJobItem } from '../src/services/api';
+import { Layers, Save, Trash2, RefreshCw, Download, X, AlertTriangle, Clock } from 'lucide-react';
+import { authApi, commonServicesApi, onboardingApi, securityApi, type ZtpPublishJob, type ZtpPublishJobItem } from '../src/services/api';
 import { Confirm, Toast } from '../src/utils/swal';
 
 const GLOBAL_SCOPE_TYPE = 'global';
@@ -15,6 +15,7 @@ const CommonServicesProfilesView: React.FC = () => {
   const [snmpLocation, setSnmpLocation] = useState('');
   const [snmpContact, setSnmpContact] = useState('');
   const [snmpHostIp, setSnmpHostIp] = useState('');
+  const [syslogPort, setSyslogPort] = useState('6514');
   const [syslogHostIp, setSyslogHostIp] = useState('');
   const [ntpServerIp, setNtpServerIp] = useState('');
 
@@ -38,6 +39,10 @@ const CommonServicesProfilesView: React.FC = () => {
   const [publishJob, setPublishJob] = useState<ZtpPublishJob | null>(null);
   const [publishLoading, setPublishLoading] = useState(false);
   const [manifestLoading, setManifestLoading] = useState(false);
+  const [recentSyslogEvents, setRecentSyslogEvents] = useState<any[]>([]);
+  const [syslogEventsLoading, setSyslogEventsLoading] = useState(false);
+  const [testSyslogLoading, setTestSyslogLoading] = useState(false);
+  const [testNtpLoading, setTestNtpLoading] = useState(false);
 
   const loadProfile = async () => {
     setIsLoading(true);
@@ -47,6 +52,7 @@ const CommonServicesProfilesView: React.FC = () => {
       setSnmpLocation(profile.snmp_location || '');
       setSnmpContact(profile.snmp_contact || '');
       setSnmpHostIp(profile.snmp_host_ip || '');
+      setSyslogPort(profile.syslog_port ? String(profile.syslog_port) : '6514');
       setSyslogHostIp(profile.syslog_host_ip || '');
       setNtpServerIp(profile.ntp_server_ip || '');
     } catch {
@@ -54,6 +60,7 @@ const CommonServicesProfilesView: React.FC = () => {
       setSnmpLocation('');
       setSnmpContact('');
       setSnmpHostIp('');
+      setSyslogPort('6514');
       setSyslogHostIp('');
       setNtpServerIp('');
     } finally {
@@ -78,9 +85,29 @@ const CommonServicesProfilesView: React.FC = () => {
     }
   };
 
+  const loadRecentSyslogEvents = async () => {
+    setSyslogEventsLoading(true);
+    try {
+      const events = await securityApi.listEvents(8);
+      setRecentSyslogEvents(Array.isArray(events) ? events : []);
+    } catch {
+      setRecentSyslogEvents([]);
+    } finally {
+      setSyslogEventsLoading(false);
+    }
+  };
+
   useEffect(() => {
     loadProfile();
     loadLatestPublishJob();
+    loadRecentSyslogEvents();
+  }, []);
+
+  useEffect(() => {
+    const intervalId = window.setInterval(() => {
+      loadRecentSyslogEvents();
+    }, 10000);
+    return () => window.clearInterval(intervalId);
   }, []);
 
   useEffect(() => {
@@ -209,6 +236,7 @@ const CommonServicesProfilesView: React.FC = () => {
         snmp_location: snmpLocation.trim() || null,
         snmp_contact: snmpContact.trim() || null,
         snmp_host_ip: snmpHostIp.trim() || null,
+        syslog_port: syslogPort.trim() ? parseInt(syslogPort.trim(), 10) : null,
         syslog_host_ip: syslogHostIp.trim() || null,
         ntp_server_ip: ntpServerIp.trim() || null,
       };
@@ -237,6 +265,40 @@ const CommonServicesProfilesView: React.FC = () => {
     }
   };
 
+  const handleTestSyslog = async () => {
+    if (!syslogHostIp || !syslogHostIp.trim()) {
+      Toast.error('Test failed', 'Syslog Host IP is not configured');
+      return;
+    }
+    setTestSyslogLoading(true);
+    try {
+      const res: any = await commonServicesApi.testSyslog();
+      Toast.success('Syslog test sent', `Sent to ${res.host}:${res.port}`);
+      // Refresh recent events after a short delay so incoming messages may appear
+      setTimeout(() => loadRecentSyslogEvents(), 1200);
+    } catch (e: any) {
+      Toast.error('Syslog test failed', e?.message || 'Unable to send test syslog');
+    } finally {
+      setTestSyslogLoading(false);
+    }
+  };
+
+  const handleTestNtp = async () => {
+    if (!ntpServerIp || !ntpServerIp.trim()) {
+      Toast.error('Test failed', 'NTP Server IP is not configured');
+      return;
+    }
+    setTestNtpLoading(true);
+    try {
+      const res: any = await commonServicesApi.testNtp();
+      Toast.success('NTP OK', `Server ${res.server} responded — offset ${res.offset_seconds.toFixed(2)}s`);
+    } catch (e: any) {
+      Toast.error('NTP test failed', e?.message || 'Failed to query NTP server');
+    } finally {
+      setTestNtpLoading(false);
+    }
+  };
+
   return (
     <div className="w-full h-full overflow-y-auto p-6">
       <div className="max-w-6xl mx-auto space-y-6">
@@ -245,7 +307,7 @@ const CommonServicesProfilesView: React.FC = () => {
           <div>
             <h1 className="text-xl font-bold">Global Service Profiles</h1>
             <p className="text-sm opacity-70">
-              Define SNMP, TFTP, Syslog, and NTP serversy defaults injected into onboarding and template rendering.
+              Define SNMP, TFTP, Syslog, and NTP servers defaults injected into onboarding and template rendering.
             </p>
           </div>
         </div>
@@ -291,12 +353,34 @@ const CommonServicesProfilesView: React.FC = () => {
                 <div className="label"><span className="label-text">Syslog Host IP</span></div>
                 <input className="input input-bordered w-full" value={syslogHostIp} onChange={(e) => setSyslogHostIp(e.target.value)} placeholder="192.168.1.251" />
               </label>
+              <label className="form-control flex gap-4 mt-2">
+                <div className="label"><span className="label-text">Syslog Port</span></div>
+                <input className="input input-bordered w-full" value={syslogPort} onChange={(e) => setSyslogPort(e.target.value)} placeholder="6514" />
+              </label>
+              <div className="flex justify-end gap-2 mt-2">
+                <button
+                  className="btn btn-outline btn-sm"
+                  onClick={handleTestSyslog}
+                  disabled={!syslogHostIp || testSyslogLoading}
+                >
+                  {testSyslogLoading ? <span className="loading loading-spinner loading-xs" /> : 'Send Test Syslog'}
+                </button>
+              </div>
 
               <div className="divider text-xs opacity-70 my-1">NTP</div>
               <label className="form-control flex gap-4">
                 <div className="label"><span className="label-text">NTP Server IP</span></div>
                 <input className="input input-bordered w-full" value={ntpServerIp} onChange={(e) => setNtpServerIp(e.target.value)} placeholder="192.168.1.252" />
               </label>
+              <div className="flex justify-end gap-2 mt-2">
+                <button
+                  className="btn btn-outline btn-sm"
+                  onClick={handleTestNtp}
+                  disabled={!ntpServerIp || testNtpLoading}
+                >
+                  {testNtpLoading ? <span className="loading loading-spinner loading-xs" /> : 'Test NTP'}
+                </button>
+              </div>
 
               <div className="card-actions justify-end mt-2">
                 <button className="btn btn-outline btn-error btn-sm gap-1" onClick={handleDelete} disabled={isLoading}>
@@ -505,6 +589,49 @@ const CommonServicesProfilesView: React.FC = () => {
                       </div>
                     )}
                   </>
+                )}
+              </div>
+            </div>
+
+            <div className="card bg-base-100 shadow">
+              <div className="card-body gap-3">
+                <div className="flex items-center justify-between">
+                  <h2 className="card-title text-base flex items-center gap-2">
+                    <AlertTriangle className="h-4 w-4 text-warning" />
+                    Recent Syslog Events
+                  </h2>
+                  <button className="btn btn-ghost btn-xs" onClick={loadRecentSyslogEvents} disabled={syslogEventsLoading}>
+                    <RefreshCw className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+
+                {recentSyslogEvents.length === 0 ? (
+                  <div className="text-sm opacity-70">
+                    No syslog events yet. Save the profile, render the device config, then send logs from the Ubuntu syslog host.
+                  </div>
+                ) : (
+                  <div className="space-y-2 max-h-60 overflow-y-auto">
+                    {recentSyslogEvents.map((evt: any) => (
+                      <div key={evt.id} className="rounded border border-base-300 bg-base-200/40 px-3 py-2 text-xs">
+                        <div className="flex items-center justify-between gap-2">
+                          <div className="flex items-center gap-2 min-w-0">
+                            <span className={`badge badge-xs ${String(evt.severity || '').toLowerCase() === 'critical' ? 'badge-error' : String(evt.severity || '').toLowerCase() === 'high' ? 'badge-warning' : String(evt.severity || '').toLowerCase() === 'medium' ? 'badge-info' : 'badge-ghost'}`}>
+                              {evt.severity || 'info'}
+                            </span>
+                            <span className="font-semibold truncate">{evt.event_type || 'syslog'}</span>
+                          </div>
+                          <span className="opacity-50 flex items-center gap-1 shrink-0">
+                            <Clock className="h-3 w-3" />
+                            {evt.created_at || '-'}
+                          </span>
+                        </div>
+                        <div className="mt-1 opacity-70">
+                          {evt.source_ip ? <span className="font-mono">{evt.source_ip}</span> : <span>unknown source</span>}
+                          {evt.description ? <span className="ml-2">{evt.description}</span> : null}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
                 )}
               </div>
             </div>

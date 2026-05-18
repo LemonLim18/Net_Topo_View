@@ -53,7 +53,7 @@ lldp run
 cdp run
 
 {% if syslog_host_ip %}
-logging host {{ syslog_host_ip }} transport udp port 6514
+logging host {{ syslog_host_ip }} transport udp port {{ syslog_port | default(6514) }}
 logging trap informational
 logging source-interface {{ mgmt_interface }}
 !

@@ -2,10 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import {
   Activity,
   Server,
-  ShieldCheck,
-  GitCompareArrows,
   Rocket,
-  AlertTriangle,
   RefreshCw,
   ArrowRight,
   Clock,
@@ -13,11 +10,11 @@ import {
   WifiOff,
   HelpCircle,
 } from 'lucide-react';
-import { dashboardApi, netboxApi, incidentApi, deployApi, proposalApi } from '../src/services/api';
+import { dashboardApi, netboxApi, deployApi, proposalApi } from '../src/services/api';
 import type { DashboardSummary, DeviceRecord } from '../src/services/api';
 import type { ViewId } from '../types';
 import { Toast } from '../src/utils/swal';
-import { COMPLIANCE_HUB_TAB_KEY } from '../utils/complianceNavigationKeys';
+
 
 /* ────────── helpers ────────── */
 const pct = (n: number) => `${n.toFixed(1)}%`;
@@ -40,7 +37,7 @@ interface Props {
 const OverviewDashboard: React.FC<Props> = ({ setView, setSelectedDeviceId }) => {
   const [summary, setSummary] = useState<DashboardSummary | null>(null);
   const [devices, setDevices] = useState<DeviceRecord[]>([]);
-  const [incidents, setIncidents] = useState<any[]>([]);
+
   const [pendingApprovals, setPendingApprovals] = useState<any[]>([]);
   const [recentDeploys, setRecentDeploys] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
@@ -48,16 +45,14 @@ const OverviewDashboard: React.FC<Props> = ({ setView, setSelectedDeviceId }) =>
   const refresh = useCallback(async () => {
     setLoading(true);
     try {
-      const [s, d, inc, proposals, deploys] = await Promise.all([
+      const [s, d, proposals, deploys] = await Promise.all([
         dashboardApi.getSummary(),
         netboxApi.listDevices(),
-        incidentApi.listIncidents().catch(() => []),
         proposalApi.list('pending').catch(() => ({ proposals: [] })),
         deployApi.listJobs().catch(() => []),
       ]);
       setSummary(s);
       setDevices(Array.isArray(d?.devices) ? d.devices : []);
-      setIncidents(Array.isArray(inc) ? inc : []);
       setPendingApprovals(proposals.proposals ?? []);
       setRecentDeploys(Array.isArray(deploys) ? deploys.slice(0, 5) : []);
     } catch (e: any) {
@@ -139,50 +134,7 @@ const OverviewDashboard: React.FC<Props> = ({ setView, setSelectedDeviceId }) =>
           </div>
         </div>
 
-        {/* Security Score */}
-        <div className="card bg-base-100 shadow cursor-pointer hover:shadow-lg transition-shadow"
-             onClick={() => setView('sec_dashboard')}>
-          <div className="card-body p-4">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-xs uppercase font-semibold opacity-60">Security Score</p>
-                <p className={`text-3xl font-bold ${s.security.avg_score >= 80 ? 'text-success' : s.security.avg_score >= 50 ? 'text-warning' : 'text-error'}`}>
-                  {s.security.avg_score > 0 ? pct(s.security.avg_score) : '—'}
-                </p>
-              </div>
-              <ShieldCheck className="h-8 w-8 text-secondary opacity-40" />
-            </div>
-            <p className="text-xs mt-1 opacity-60">
-              {s.security.total_audits} audits · {s.security.critical_events} critical (24h)
-            </p>
-          </div>
-        </div>
 
-        {/* Drift / Compliance */}
-        <div className="card bg-base-100 shadow cursor-pointer hover:shadow-lg transition-shadow"
-             onClick={() => {
-               try {
-                 sessionStorage.setItem(COMPLIANCE_HUB_TAB_KEY, 'results');
-               } catch {
-                 /* ignore */
-               }
-               setView('compliance_hub');
-             }}>
-          <div className="card-body p-4">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-xs uppercase font-semibold opacity-60">Compliance</p>
-                <p className={`text-3xl font-bold ${s.drift.compliance_pct >= 90 ? 'text-success' : s.drift.compliance_pct >= 70 ? 'text-warning' : 'text-error'}`}>
-                  {pct(s.drift.compliance_pct)}
-                </p>
-              </div>
-              <GitCompareArrows className="h-8 w-8 text-accent opacity-40" />
-            </div>
-            <p className="text-xs mt-1 opacity-60">
-              {s.drift.devices_with_drift} device{s.drift.devices_with_drift !== 1 ? 's' : ''} drifted
-            </p>
-          </div>
-        </div>
 
         {/* Deployments */}
         <div className="card bg-base-100 shadow cursor-pointer hover:shadow-lg transition-shadow"
@@ -202,108 +154,49 @@ const OverviewDashboard: React.FC<Props> = ({ setView, setSelectedDeviceId }) =>
           </div>
         </div>
 
-        {/* Incidents */}
-        <div className="card bg-base-100 shadow cursor-pointer hover:shadow-lg transition-shadow"
-             onClick={() => setView('incidents')}>
-          <div className="card-body p-4">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-xs uppercase font-semibold opacity-60">Incidents</p>
-                <p className={`text-3xl font-bold ${incidents.filter(i => i.status === 'open' || i.status === 'investigating').length > 0 ? 'text-error' : 'text-success'}`}>
-                  {incidents.filter(i => i.status === 'open' || i.status === 'investigating').length}
-                </p>
-              </div>
-              <AlertTriangle className="h-8 w-8 text-error opacity-40" />
-            </div>
-            <div className="flex gap-2 mt-1 text-xs flex-wrap">
-              {['critical', 'high', 'medium'].map(sev => {
-                const count = incidents.filter(i => i.severity === sev && (i.status === 'open' || i.status === 'investigating')).length;
-                return count > 0 ? (
-                  <span key={sev} className={`badge badge-xs ${severityColor[sev]}`}>{count} {sev}</span>
-                ) : null;
-              })}
-              {incidents.filter(i => i.status === 'open' || i.status === 'investigating').length === 0 && (
-                <span className="opacity-50">All clear</span>
-              )}
-            </div>
-          </div>
-        </div>
+
       </div>
 
-      {/* ─── Two-Column: Events + Device Table ─── */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Recent Events */}
-        <div className="card bg-base-100 shadow">
-          <div className="card-body p-4">
-            <div className="flex items-center justify-between mb-3">
-              <h2 className="card-title text-sm">Recent Security Events</h2>
-              <button className="btn btn-ghost btn-xs gap-1" onClick={() => setView('sec_events')}>
-                View all <ArrowRight className="h-3 w-3" />
-              </button>
-            </div>
-            {s.recent_events.length === 0 ? (
-              <p className="text-sm opacity-50 text-center py-8">No recent events</p>
-            ) : (
-              <div className="space-y-2 max-h-64 overflow-y-auto">
-                {s.recent_events.map((ev) => (
-                  <div key={ev.id} className="flex items-start gap-3 p-2 rounded-lg hover:bg-base-200">
-                    <AlertTriangle className={`h-4 w-4 mt-0.5 flex-shrink-0 ${ev.severity === 'critical' ? 'text-error' : ev.severity === 'high' ? 'text-warning' : 'text-info'}`} />
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-center gap-2">
-                        <span className={`badge badge-xs ${severityColor[ev.severity] || 'badge-ghost'}`}>{ev.severity}</span>
-                        <span className="text-xs font-medium truncate">{ev.event_type}</span>
-                      </div>
-                      <p className="text-xs opacity-70 truncate">{ev.description}</p>
-                      <p className="text-[10px] opacity-40">{ev.created_at}</p>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
+      {/* ─── Device Inventory ─── */}
+      <div className="card bg-base-100 shadow">
+        <div className="card-body p-4">
+          <div className="flex items-center justify-between mb-3">
+            <h2 className="card-title text-sm">Device Inventory</h2>
+            <button className="btn btn-ghost btn-xs gap-1" onClick={() => setView('netbox_devices')}>
+              Manage <ArrowRight className="h-3 w-3" />
+            </button>
           </div>
-        </div>
-
-        {/* Device Inventory Table */}
-        <div className="card bg-base-100 shadow">
-          <div className="card-body p-4">
-            <div className="flex items-center justify-between mb-3">
-              <h2 className="card-title text-sm">Device Inventory</h2>
-              <button className="btn btn-ghost btn-xs gap-1" onClick={() => setView('netbox_devices')}>
-                Manage <ArrowRight className="h-3 w-3" />
-              </button>
-            </div>
-            <div className="overflow-x-auto max-h-64">
-              <table className="table table-xs table-pin-rows">
-                <thead>
-                  <tr>
-                    <th>Hostname</th>
-                    <th>IP</th>
-                    <th>Vendor</th>
-                    <th>Model</th>
-                    <th>Status</th>
+          <div className="overflow-x-auto max-h-64">
+            <table className="table table-xs table-pin-rows">
+              <thead>
+                <tr>
+                  <th>Hostname</th>
+                  <th>IP</th>
+                  <th>Vendor</th>
+                  <th>Model</th>
+                  <th>Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {devices.slice(0, 15).map((d) => (
+                  <tr key={d.id} className="hover cursor-pointer"
+                      onClick={() => { setSelectedDeviceId?.(d.id); setView('device_detail'); }}>
+                    <td className="font-medium">{d.hostname}</td>
+                    <td className="opacity-70">{d.management_ip || '—'}</td>
+                    <td className="opacity-70">{d.vendor || '—'}</td>
+                    <td className="opacity-70">{d.model || '—'}</td>
+                    <td>
+                      <span className={`badge badge-xs ${d.status === 'active' ? 'badge-success' : d.status === 'down' ? 'badge-error' : 'badge-warning'}`}>
+                        {d.status}
+                      </span>
+                    </td>
                   </tr>
-                </thead>
-                <tbody>
-                  {devices.slice(0, 15).map((d) => (
-                    <tr key={d.id} className="hover cursor-pointer"
-                        onClick={() => { setSelectedDeviceId?.(d.id); setView('device_detail'); }}>
-                      <td className="font-medium">{d.hostname}</td>
-                      <td className="opacity-70">{d.management_ip || '—'}</td>
-                      <td className="opacity-70">{d.vendor || '—'}</td>
-                      <td className="opacity-70">{d.model || '—'}</td>
-                      <td>
-                        <span className={`badge badge-xs ${d.status === 'active' ? 'badge-success' : d.status === 'down' ? 'badge-error' : 'badge-warning'}`}>
-                          {d.status}
-                        </span>
-                      </td>
-                    </tr>
-                  ))}
-                  {devices.length === 0 && (
-                    <tr><td colSpan={5} className="text-center opacity-50 py-8">No devices discovered yet</td></tr>
-                  )}
-                </tbody>
-              </table>
-            </div>
+                ))}
+                {devices.length === 0 && (
+                  <tr><td colSpan={5} className="text-center opacity-50 py-8">No devices discovered yet</td></tr>
+                )}
+              </tbody>
+            </table>
           </div>
         </div>
       </div>
@@ -316,8 +209,8 @@ const OverviewDashboard: React.FC<Props> = ({ setView, setSelectedDeviceId }) =>
           <div className="card-body p-4">
             <div className="flex items-center justify-between mb-3">
               <h2 className="card-title text-sm">Pending Approvals</h2>
-              <button className="btn btn-ghost btn-xs gap-1" onClick={() => setView('ansible_studio')}>
-                Studio <ArrowRight className="h-3 w-3" />
+              <button className="btn btn-ghost btn-xs gap-1" onClick={() => setView('approval_queue')}>
+                Approvals <ArrowRight className="h-3 w-3" />
               </button>
             </div>
             {pendingApprovals.length === 0 ? (
@@ -406,14 +299,8 @@ const OverviewDashboard: React.FC<Props> = ({ setView, setSelectedDeviceId }) =>
               <button className="btn btn-sm btn-outline gap-2" onClick={() => setView('topology')}>
                 <Activity className="h-4 w-4" /> View Topology
               </button>
-              <button className="btn btn-sm btn-outline gap-2" onClick={() => setView('net_chat')}>
-                <ArrowRight className="h-4 w-4" /> AI Copilot
-              </button>
               <button className="btn btn-sm btn-outline gap-2" onClick={() => setView('ansible_studio')}>
                 <ArrowRight className="h-4 w-4" /> Ansible Studio
-              </button>
-              <button className="btn btn-sm btn-outline gap-2" onClick={() => setView('sec_dashboard')}>
-                <ShieldCheck className="h-4 w-4" /> Security Audit
               </button>
             </div>
           </div>

@@ -14,6 +14,6 @@ logging source-interface {{ source_interface }}
 logging facility {{ facility }}
 {% endif %}
 {% for server in syslog_servers %}
-logging host {{ server }}
+logging host {{ server }} transport udp port {{ syslog_port | default(6514) }}
 {% endfor %}
 !

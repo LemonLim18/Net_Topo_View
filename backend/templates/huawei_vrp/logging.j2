@@ -9,6 +9,6 @@ info-center channel 2 name loghost
 info-center loghost channel 2 trap {{ trap_level }}
 {% endif %}
 {% for server in syslog_servers %}
-info-center loghost {{ server }}
+info-center loghost {{ server }} port {{ syslog_port | default(6514) }}
 {% endfor %}
 return

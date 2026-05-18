@@ -172,13 +172,6 @@ const Sidebar: React.FC<SidebarProps> = ({ currentView, setView, user, onLogout,
         >
           <MenuItem id="topology" label="Topology Map" icon={Network} iconColor="text-secondary"/>
           <MenuItem id="net_perf" label="Performance" icon={Activity} iconColor="text-secondary"/>
-          <MenuItem
-            id="compliance_hub"
-            label="Compliance & Governance"
-            icon={ShieldCheck}
-            iconColor="text-secondary"
-            matchViews={['compliance_hub', 'drift', 'policy_builder']}
-          />
           <MenuItem id="config_backup" label="Config Backup" icon={HardDrive} iconColor="text-secondary"/>          
         </SectionHeader>
 

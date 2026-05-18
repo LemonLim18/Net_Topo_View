@@ -89,7 +89,7 @@ def _maybe_inject_common_services(params: Dict[str, Any]) -> Dict[str, Any]:
     site = merged.get("site")
     effective = get_effective_profile(_DB_PATH, site=site, role=role, device_id=device_id)
 
-    for key in ("snmp_community", "snmp_location", "snmp_contact", "snmp_host_ip", "syslog_host_ip", "ntp_server_ip"):
+    for key in ("snmp_community", "snmp_location", "snmp_contact", "snmp_host_ip", "syslog_port", "syslog_host_ip", "ntp_server_ip"):
         if (merged.get(key) is None or str(merged.get(key)).strip() == "") and effective.get(key):
             merged[key] = effective.get(key)
 

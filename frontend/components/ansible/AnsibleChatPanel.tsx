@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import ReactMarkdown from 'react-markdown';
 import { DiffEditor } from '@monaco-editor/react';
 import { Send, Loader2, Bot, Sparkles, AlertCircle, FileCode, ChevronRight, Paperclip, X, TriangleAlert, ChevronDown, Check, Undo2, Square, History, Plus, Trash2, RefreshCw } from 'lucide-react';
+import { v4 as uuidv4 } from 'uuid';
 import { ansibleApi, llmApi, netboxApi, ragApi } from '../../src/services/api';
 import { Toast } from '../../src/utils/swal';
 import {
@@ -29,7 +30,7 @@ type AnsibleChatSessionRecord = ChatSession & { messages: AnsibleMessage[] };
 
 function createWelcomeMessage(): AnsibleMessage {
   return {
-    id: crypto.randomUUID(),
+    id: uuidv4(),
     role: 'assistant',
     content: '**Ansible AI** ready.\n\nDescribe what you want to configure in plain English. For example:\n\n> *Configure VLAN 100 named DATA on all access switches*\n\nOr use **`/template`** to generate from a Config Engine template:\n\n> `/template cisco_ios vlan {"vlan_id":100,"vlan_name":"DATA"}`\n\nI will generate an Ansible playbook, which you can then review, dry-run, and deploy.',
     timestamp: Date.now(),
@@ -49,7 +50,7 @@ function normalizeStoredMessages(raw: unknown): AnsibleMessage[] {
     .filter((msg): msg is Record<string, unknown> => Boolean(msg) && typeof msg === 'object')
     .map((msg) => ({
       ...msg,
-      id: String(msg.id || crypto.randomUUID()),
+      id: String(msg.id || uuidv4()),
       role: (msg.role === 'user' || msg.role === 'assistant' || msg.role === 'system') ? msg.role : 'assistant',
       content: String(msg.content || ''),
       timestamp: Number(msg.timestamp || Date.now()),
@@ -66,7 +67,7 @@ function loadStoredAnsibleSessions(): AnsibleChatSessionRecord[] {
     return parsed
       .filter((entry): entry is Record<string, unknown> => Boolean(entry) && typeof entry === 'object')
       .map((entry) => ({
-        id: String(entry.id || crypto.randomUUID()),
+        id: String(entry.id || uuidv4()),
         title: String(entry.title || 'New Chat'),
         updatedAt: Number(entry.updatedAt || Date.now()),
         messages: normalizeStoredMessages(entry.messages),
@@ -95,7 +96,7 @@ function normalizeSessionRecord(session: {
       ? session.updatedAt
       : Number(session.updatedAt || Date.now());
   return {
-    id: String(session.id || crypto.randomUUID()),
+    id: String(session.id || uuidv4()),
     title: String(session.title || 'New Chat'),
     updatedAt: Number.isFinite(updatedAt) ? updatedAt : Date.now(),
     messages: normalizeStoredMessages(session.messages),
@@ -105,7 +106,7 @@ function normalizeSessionRecord(session: {
 function createSessionRecord(): AnsibleChatSessionRecord {
   const messages = [createWelcomeMessage()];
   return {
-    id: crypto.randomUUID(),
+    id: uuidv4(),
     title: 'New Chat',
     updatedAt: Date.now(),
     messages,
@@ -1452,7 +1453,7 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
     setAttachedFiles(prev => prev.filter((_, i) => i !== idx));
 
   const addMsg = useCallback((msg: Omit<AnsibleMessage, 'id' | 'timestamp'>) => {
-    setMessages(prev => [...prev, { ...msg, id: crypto.randomUUID(), timestamp: Date.now() }]);
+    setMessages(prev => [...prev, { ...msg, id: uuidv4(), timestamp: Date.now() }]);
   }, []);
 
   /**
@@ -1495,7 +1496,7 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
         Array.isArray(devicesDis.candidate_devices) &&
         devicesDis.candidate_devices.length > 0
       ) {
-        const menuMsgId = crypto.randomUUID();
+        const menuMsgId = uuidv4();
         setDeviceDisambiguation({
           messageId: menuMsgId,
           question:
@@ -1528,7 +1529,7 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
 
       const dis = res?.parsed_intent?.disambiguation || res?.disambiguation;
       if (dis && Array.isArray(dis.options) && dis.options.length) {
-        const menuMsgId = crypto.randomUUID();
+        const menuMsgId = uuidv4();
         setDisambiguation({
           messageId: menuMsgId,
           question: dis.question || 'Which devices did you mean?',
@@ -1570,7 +1571,7 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
             (ifaceForSel?.devices ?? []).map((d: any) => String(d.hostname || '').trim()).filter((s: string) => Boolean(s));
 
           if (plannedDevices.length > 0) {
-            const menuMsgId = crypto.randomUUID();
+            const menuMsgId = uuidv4();
             const candidateDevices = Array.from(new Set(plannedDevices));
             setDeviceDisambiguation({
               messageId: menuMsgId,
@@ -1608,7 +1609,7 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
         ) {
           // Do not handle here; fall through to the interface picker branch below.
         } else {
-          const menuMsgId = crypto.randomUUID();
+          const menuMsgId = uuidv4();
           const wizardFields = fieldsList as PreviewParamField[];
           const initVals: Record<string, string | number | string[] | number[]> = {};
           const pParams = (res?.parsed_intent?.parameters || {}) as Record<string, unknown>;
@@ -1665,7 +1666,7 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
           ifaceDis?.question ||
           ifaceForSel?.question ||
           'Please select the interfaces you want to shutdown.';
-        const menuMsgId = crypto.randomUUID();
+        const menuMsgId = uuidv4();
         const vNotice = ifaceDis?.validation_notice as string | undefined;
         setInterfaceDisambiguation({
           messageId: menuMsgId,
@@ -1866,7 +1867,7 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
     setDeviceDisambiguation(null);
     setMessages((prev) => prev.filter((m) => m.id !== msgId));
     setGenerating(true);
-    const progressId = crypto.randomUUID();
+    const progressId = uuidv4();
     setMessages((prev) => [
       ...prev,
       {
@@ -2026,7 +2027,7 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
     setInterfaceDisambiguation(null);
     setMessages(prev => prev.filter(m => m.id !== msgId));
     setGenerating(true);
-    const progressId = crypto.randomUUID();
+    const progressId = uuidv4();
     setMessages(prev => [...prev, {
       id: progressId,
       role: 'assistant',
@@ -2400,7 +2401,7 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
     const templateMatch = baseText.match(/^\/template\s+(\S+)\s+(\S+)(?:\s+(.+))?$/i);
 
     if (templateMatch) {
-      const loadingId = crypto.randomUUID();
+      const loadingId = uuidv4();
       setMessages(prev => [...prev, {
         id: loadingId, role: 'assistant', content: '', isLoading: true, timestamp: Date.now(),
       }]);
@@ -2506,7 +2507,7 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
       // ── Standard flow: run preview first to detect ambiguity ──
       setPreviewLockedTargetHosts([]);
       setPreviewAccumulatedParams({});
-      const loadingId = crypto.randomUUID();
+      const loadingId = uuidv4();
       const loadingPhases = ['Parsing intent…', 'Resolving targets…', 'Almost done…'];
       setMessages(prev => [...prev, {
         id: loadingId,
@@ -2645,7 +2646,7 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
     setDisambiguation(null);
     setMessages(prev => prev.filter(m => m.id !== msgId));
     setGenerating(true);
-    const loadingId = crypto.randomUUID();
+    const loadingId = uuidv4();
     const ac = new AbortController();
     abortControllerRef.current = ac;
     setMessages(prev => [...prev, { id: loadingId, role: 'assistant', content: '', isLoading: true, timestamp: Date.now() }]);
@@ -4236,7 +4237,7 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
                                   setParamsDisambiguationValues({});
                                   setParamsDisambiguationStep(0);
                                   setMessages(prev => prev.filter(m => m.id !== msgId));
-                                  const generatingId = crypto.randomUUID();
+                                  const generatingId = uuidv4();
                                   setMessages(prev => [...prev, {
                                     id: generatingId,
                                     role: 'assistant',

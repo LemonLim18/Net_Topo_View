@@ -196,10 +196,29 @@ const OnboardingView: React.FC<{ setView: (id: ViewId) => void }> = ({ setView }
     URL.revokeObjectURL(url);
   };
  
-  const handleCopy = () => {
-    navigator.clipboard.writeText(config);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+  const handleCopy = async () => {
+    try {
+      if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+        await navigator.clipboard.writeText(config);
+      } else {
+        // Fallback for browsers/contexts without Clipboard API
+        const ta = document.createElement('textarea');
+        ta.value = config;
+        ta.setAttribute('readonly', '');
+        ta.style.position = 'fixed';
+        ta.style.left = '-9999px';
+        document.body.appendChild(ta);
+        ta.select();
+        ta.setSelectionRange(0, ta.value.length);
+        const ok = document.execCommand('copy');
+        document.body.removeChild(ta);
+        if (!ok) throw new Error('copy command failed');
+      }
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch (e: any) {
+      setError(e?.message || 'Copy to clipboard failed');
+    }
   };
 
   const isPublishTerminal = (status: string | undefined) => {

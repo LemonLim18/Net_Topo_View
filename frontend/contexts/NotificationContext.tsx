@@ -101,6 +101,14 @@ export const NotificationProvider: React.FC<{ children: ReactNode }> = ({ childr
                         addNotification('Incident Resolved', msg.data?.id ?? 'incident', 'success');
                     } else if (msg.event === 'incident_updated' && msg.data?.status === 'approved') {
                         addNotification('Incident Approved', `Playbook ready for deployment: ${msg.data?.id ?? ''}`, 'info');
+                    } else if (msg.event === 'security_event') {
+                        const sev = String(msg.data?.severity ?? 'info').toLowerCase();
+                        const notifType: NotificationType = sev === 'critical' ? 'error' : sev === 'high' ? 'warning' : sev === 'medium' ? 'info' : 'success';
+                        addNotification(
+                            'Syslog Event',
+                            `${msg.data?.event_type ?? 'event'} from ${msg.data?.source_ip ?? 'unknown source'}`,
+                            notifType,
+                        );
                     }
 
                     // Phase 13 — Drift detection push events

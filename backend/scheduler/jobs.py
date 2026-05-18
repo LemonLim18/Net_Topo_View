@@ -7,6 +7,7 @@ can call it safely (catches all exceptions, logs errors).
 
 import asyncio
 import logging
+import inspect
 from typing import Callable, Awaitable, Optional
 
 logger = logging.getLogger("scheduler.jobs")
@@ -16,6 +17,7 @@ logger = logging.getLogger("scheduler.jobs")
 # Injected dependencies
 # ────────────────────────────────────────────────────────
 _crawl_fn: Optional[Callable[..., Awaitable]] = None
+_inventory_sync_fn: Optional[Callable[[], object]] = None
 _orchestrator = None  # IncidentOrchestrator — set via set_orchestrator()
 _broadcast_fn: Optional[Callable[..., Awaitable]] = None  # WebSocket broadcast
 
@@ -24,6 +26,12 @@ def set_crawl_function(fn: Callable[..., Awaitable]) -> None:
     """Inject the crawl-and-broadcast coroutine from backend.py."""
     global _crawl_fn
     _crawl_fn = fn
+
+
+def set_inventory_sync_function(fn: Callable[[], object]) -> None:
+    """Inject a callable that syncs inventory from NetBox into local DB."""
+    global _inventory_sync_fn
+    _inventory_sync_fn = fn
 
 
 def set_orchestrator(orch) -> None:
@@ -51,6 +59,21 @@ async def job_crawl() -> None:
         await _crawl_fn(trigger="periodic")
     except Exception:
         logger.exception("[Scheduler] Crawl job failed")
+
+
+async def job_inventory_sync() -> None:
+    """Periodic NetBox -> local DB inventory sync."""
+    if _inventory_sync_fn is None:
+        logger.warning("Inventory sync function not set — skipping")
+        return
+    try:
+        logger.info("[Scheduler] Inventory-sync job triggered")
+        result = _inventory_sync_fn()
+        if inspect.isawaitable(result):
+            await result
+        logger.info("[Scheduler] Inventory-sync complete")
+    except Exception:
+        logger.exception("[Scheduler] Inventory-sync job failed")
 
 
 # ────────────────────────────────────────────────────────

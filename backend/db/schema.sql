@@ -304,6 +304,7 @@ CREATE TABLE IF NOT EXISTS common_service_profiles (
     snmp_location       TEXT,
     snmp_contact        TEXT,
     snmp_host_ip        TEXT,
+    syslog_port         INTEGER,
     syslog_servers_json TEXT,
     ntp_servers_json    TEXT,
     syslog_host_ip      TEXT,

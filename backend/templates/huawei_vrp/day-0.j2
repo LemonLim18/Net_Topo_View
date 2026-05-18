@@ -53,7 +53,7 @@ lldp mdn enable
 
 {% endif %}
 {% if syslog_host_ip %}
-info-center loghost {{ syslog_host_ip }} port 6514 facility local7
+info-center loghost {{ syslog_host_ip }} port {{ syslog_port | default(6514) }} facility local7
 #
 {% endif %}
 {% if ntp_server_ip %}

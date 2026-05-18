@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from typing import List, Optional
+import socket
+import time
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
@@ -27,6 +29,7 @@ class CommonServicesPayload(BaseModel):
     snmp_location: Optional[str] = None
     snmp_contact: Optional[str] = None
     snmp_host_ip: Optional[str] = None
+    syslog_port: Optional[int] = None
     syslog_host_ip: Optional[str] = None
     ntp_server_ip: Optional[str] = None
 
@@ -88,3 +91,59 @@ async def resolve_effective_profile(
         "device_id": device_id,
         "effective": effective,
     }
+
+
+@router.post("/test-syslog")
+async def test_syslog(site: Optional[str] = None, role: Optional[str] = None, device_id: Optional[int] = None):
+    """Send a single UDP syslog test message to the effective syslog host/port."""
+    effective = get_effective_profile(DEFAULT_DB_PATH, site=site, role=role, device_id=device_id)
+    host = effective.get("syslog_host_ip")
+    port = int(effective.get("syslog_port") or 6514)
+    if not host:
+        raise HTTPException(status_code=400, detail="Syslog host not configured in effective profile")
+
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.settimeout(2.0)
+        # Use a Cisco ACL-deny formatted message so the project's syslog parser treats it as a security event
+        msg = "%SEC-6-IPACCESSLOGP: list 101 denied tcp 192.168.1.100(12345) -> 10.0.0.5(80), 1 packet"
+        sock.sendto(msg.encode("utf-8"), (host, port))
+        sock.close()
+        return {"ok": True, "host": host, "port": port}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to send syslog test: {e}")
+
+
+@router.post("/test-ntp")
+async def test_ntp(site: Optional[str] = None, role: Optional[str] = None, device_id: Optional[int] = None):
+    """Perform a simple NTP UDP query against the effective NTP server and return offset info."""
+    effective = get_effective_profile(DEFAULT_DB_PATH, site=site, role=role, device_id=device_id)
+    host = effective.get("ntp_server_ip")
+    if not host:
+        raise HTTPException(status_code=400, detail="NTP server not configured in effective profile")
+
+    try:
+        addr = (host, 123)
+        packet = b"\x1b" + 47 * b"\0"
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.settimeout(3.0)
+        sock.sendto(packet, addr)
+        data, _ = sock.recvfrom(1024)
+        sock.close()
+        if len(data) < 48:
+            raise ValueError("Short NTP response")
+        import struct as _struct
+        unpacked = _struct.unpack("!12I", data[0:48])
+        tx_secs = unpacked[10]
+        tx_frac = unpacked[11]
+        tx = tx_secs + float(tx_frac) / 2**32
+        unix_time = tx - 2208988800
+        offset = unix_time - time.time()
+        return {
+            "ok": True,
+            "server": host,
+            "transmit_time": time.ctime(unix_time),
+            "offset_seconds": offset,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"NTP query failed: {e}")

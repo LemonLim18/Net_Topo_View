@@ -250,119 +250,157 @@ def poll_device(
 
     On failure, returns a dict with ``"down": True``.
     """
-    # --- Per-device credential override ---
+    # --- Build credential attempts: per-device override first, then global default ---
     effective_user = username
     effective_pass = password
+    credential_attempts: List[Tuple[str, str, Optional[str]]] = []
+
     if cred_overrides and host_ip in cred_overrides:
         effective_user, effective_pass = cred_overrides[host_ip]
         logger.info("Using credential override for %s (user=%s)", host_ip, effective_user)
+        credential_attempts.append(("override", effective_user, effective_pass))
+    else:
+        credential_attempts.append(("default", effective_user, effective_pass))
 
-    # --- Auto-detect vendor when driver_type is "auto" ---
-    actual_driver = driver_type
-    if driver_type == "auto":
-        detected = detect_vendor_driver(host_ip, effective_user, effective_pass)
-        if detected is None:
-            logger.warning("Cannot reach %s for vendor detection — marking down", host_ip)
-            return PollResult(hostname=host_ip, down=True).to_dict()
-        actual_driver = detected
-        logger.info("Auto-detected driver for %s: %s", host_ip, actual_driver)
+    if (effective_user, effective_pass) != (username, password):
+        credential_attempts.append(("default", username, password))
 
-    driver: Optional[BaseDriver] = None
-    try:
-        driver = DriverFactory.create(
-            actual_driver,
-            host=host_ip,
-            username=effective_user,
-            password=effective_pass,
-            key_file=key_file,
-            hop_chain=hop_chain,
-            jump_host=jump_host,
-        )
-        driver.connect()
+    last_err: Optional[Exception] = None
+    total_attempts = len(credential_attempts)
 
-        # --- Collect data via M1 driver ---
-        hostname = driver.get_hostname()
-
-        # --- Collect enriched device info (model, version, serial, uptime) ---
-        vendor_str: Optional[str] = None
-        model_str: Optional[str] = None
-        os_version_str: Optional[str] = None
-        serial_str: Optional[str] = None
-        uptime_str: Optional[str] = None
+    for attempt_index, (attempt_source, attempt_user, attempt_pass) in enumerate(credential_attempts, start=1):
+        driver: Optional[BaseDriver] = None
         try:
-            dev_info = driver.get_device_info()
-            if dev_info:
-                vendor_str = dev_info.vendor.value if hasattr(dev_info.vendor, 'value') else str(dev_info.vendor)
-                model_str = dev_info.model or None
-                os_version_str = dev_info.os_version or None
-                serial_str = dev_info.serial or None
-                uptime_str = dev_info.uptime or None
-                if dev_info.hostname and not hostname:
-                    hostname = dev_info.hostname
-        except Exception as e:
-            logger.debug("get_device_info() failed for %s: %s", host_ip, e)
+            # --- Auto-detect vendor when driver_type is "auto" ---
+            actual_driver = driver_type
+            if driver_type == "auto":
+                detected = detect_vendor_driver(host_ip, attempt_user, attempt_pass)
+                if detected is None:
+                    raise RuntimeError("vendor detection failed")
+                actual_driver = detected
+                logger.info("Auto-detected driver for %s: %s", host_ip, actual_driver)
 
-        # Convert M1 Interface objects → legacy {name: ip} dict
-        raw_interfaces: List[Interface] = driver.get_interfaces()
-        ifaces: Dict[str, str] = {}
-        for iface in raw_interfaces:
-            if iface.ip_address:
-                ifaces[iface.name] = iface.ip_address
+            driver = DriverFactory.create(
+                actual_driver,
+                host=host_ip,
+                username=attempt_user,
+                password=attempt_pass,
+                key_file=key_file,
+                hop_chain=hop_chain,
+                jump_host=jump_host,
+            )
+            driver.connect()
 
-        # Convert M1 Neighbor objects → legacy lldp_summary + lldp_detail
-        raw_neighbors: List[Neighbor] = driver.get_neighbors()
-        lldp_summary: List[Dict] = []
-        lldp_detail: List[Dict] = []
-        for n in raw_neighbors:
-            lldp_summary.append({
-                "dev_id": n.remote_device,
-                "local_if": n.local_interface,
-                "remote_port": n.remote_interface,
-            })
-            lldp_detail.append({
-                "local_if": n.local_interface,
-                "chassis": None,
-                "remote_port": n.remote_interface,
-                "system_name": n.remote_device,
-                "remote_mgmt": n.remote_ip if n.remote_ip else None,
-            })
+            # --- Collect data via M1 driver ---
+            hostname = driver.get_hostname()
 
-        # Convert M1 ARPEntry objects → legacy arp dicts
-        raw_arp: List[ARPEntry] = driver.get_arp_table()
-        arp_entries: List[Dict] = []
-        for a in raw_arp:
-            arp_entries.append({
-                "ip": a.ip,
-                "age": a.age,
-                "mac": a.mac,
-                "intf": a.interface,
-            })
-
-        result = PollResult(
-            hostname=hostname or host_ip,
-            interfaces=ifaces,
-            lldp_summary=lldp_summary,
-            lldp_detail=lldp_detail,
-            arp_entries=arp_entries,
-            vendor=vendor_str,
-            model=model_str,
-            os_version=os_version_str,
-            serial=serial_str,
-            uptime=uptime_str,
-        )
-        logger.info("Polled %s (%s) — %d ifaces, %d neighbors, %d ARP, vendor=%s model=%s",
-                     hostname, host_ip, len(ifaces),
-                     len(lldp_summary), len(arp_entries),
-                     vendor_str or "?", model_str or "?")
-        return result.to_dict()
-
-    except Exception as e:
-        logger.warning("poll_device %s failed: %s", host_ip, e)
-        return PollResult(hostname=host_ip, down=True).to_dict()
-
-    finally:
-        if driver is not None:
+            # --- Collect enriched device info (model, version, serial, uptime) ---
+            vendor_str: Optional[str] = None
+            model_str: Optional[str] = None
+            os_version_str: Optional[str] = None
+            serial_str: Optional[str] = None
+            uptime_str: Optional[str] = None
             try:
-                driver.disconnect()
-            except Exception:
-                pass
+                dev_info = driver.get_device_info()
+                if dev_info:
+                    vendor_str = dev_info.vendor.value if hasattr(dev_info.vendor, "value") else str(dev_info.vendor)
+                    model_str = dev_info.model or None
+                    os_version_str = dev_info.os_version or None
+                    serial_str = dev_info.serial or None
+                    uptime_str = dev_info.uptime or None
+                    if dev_info.hostname and not hostname:
+                        hostname = dev_info.hostname
+            except Exception as e:
+                logger.debug("get_device_info() failed for %s: %s", host_ip, e)
+
+            # Convert M1 Interface objects -> legacy {name: ip} dict
+            raw_interfaces: List[Interface] = driver.get_interfaces()
+            ifaces: Dict[str, str] = {}
+            for iface in raw_interfaces:
+                if iface.ip_address:
+                    ifaces[iface.name] = iface.ip_address
+
+            # Convert M1 Neighbor objects -> legacy lldp_summary + lldp_detail
+            raw_neighbors: List[Neighbor] = driver.get_neighbors()
+            lldp_summary: List[Dict] = []
+            lldp_detail: List[Dict] = []
+            for n in raw_neighbors:
+                lldp_summary.append({
+                    "dev_id": n.remote_device,
+                    "local_if": n.local_interface,
+                    "remote_port": n.remote_interface,
+                })
+                lldp_detail.append({
+                    "local_if": n.local_interface,
+                    "chassis": None,
+                    "remote_port": n.remote_interface,
+                    "system_name": n.remote_device,
+                    "remote_mgmt": n.remote_ip if n.remote_ip else None,
+                })
+
+            # Convert M1 ARPEntry objects -> legacy arp dicts
+            raw_arp: List[ARPEntry] = driver.get_arp_table()
+            arp_entries: List[Dict] = []
+            for a in raw_arp:
+                arp_entries.append({
+                    "ip": a.ip,
+                    "age": a.age,
+                    "mac": a.mac,
+                    "intf": a.interface,
+                })
+
+            result = PollResult(
+                hostname=hostname or host_ip,
+                interfaces=ifaces,
+                lldp_summary=lldp_summary,
+                lldp_detail=lldp_detail,
+                arp_entries=arp_entries,
+                vendor=vendor_str,
+                model=model_str,
+                os_version=os_version_str,
+                serial=serial_str,
+                uptime=uptime_str,
+            )
+            logger.info(
+                "Polled %s (%s) — %d ifaces, %d neighbors, %d ARP, vendor=%s model=%s",
+                hostname,
+                host_ip,
+                len(ifaces),
+                len(lldp_summary),
+                len(arp_entries),
+                vendor_str or "?",
+                model_str or "?",
+            )
+            return result.to_dict()
+
+        except Exception as e:
+            last_err = e
+            if attempt_index < total_attempts:
+                logger.warning(
+                    "poll_device %s attempt %d/%d failed (source=%s user=%s): %s; trying fallback credential",
+                    host_ip,
+                    attempt_index,
+                    total_attempts,
+                    attempt_source,
+                    attempt_user,
+                    e,
+                )
+            else:
+                logger.warning(
+                    "poll_device %s failed after %d credential attempt(s): %s",
+                    host_ip,
+                    total_attempts,
+                    e,
+                )
+        finally:
+            if driver is not None:
+                try:
+                    driver.disconnect()
+                except Exception:
+                    pass
+
+    if driver_type == "auto":
+        logger.warning("Cannot reach %s for vendor detection — marking down", host_ip)
+    elif last_err is not None:
+        logger.warning("poll_device %s failed: %s", host_ip, last_err)
+    return PollResult(hostname=host_ip, down=True).to_dict()

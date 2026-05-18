@@ -695,6 +695,7 @@ export interface CommonServicesProfile {
   snmp_location: string | null;
   snmp_contact: string | null;
   snmp_host_ip: string | null;
+  syslog_port: number | null;
   syslog_host_ip: string | null;
   ntp_server_ip: string | null;
   created_at?: string | null;
@@ -715,6 +716,7 @@ export const commonServicesApi = {
       snmp_location?: string | null;
       snmp_contact?: string | null;
       snmp_host_ip?: string | null;
+      syslog_port?: number | null;
       syslog_host_ip?: string | null;
       ntp_server_ip?: string | null;
     },
@@ -728,6 +730,12 @@ export const commonServicesApi = {
     request<{ deleted: boolean }>(`/common-services/profiles/${encodeURIComponent(scopeType)}/${encodeURIComponent(scopeValue)}`, {
       method: 'DELETE',
     }),
+
+  testSyslog: () =>
+    request<{ ok: boolean; host: string; port: number }>('/common-services/test-syslog', { method: 'POST' }),
+
+  testNtp: () =>
+    request<{ ok: boolean; server: string; transmit_time: string; offset_seconds: number }>('/common-services/test-ntp', { method: 'POST' }),
 
   getEffective: (params?: { device_id?: number; role?: string; site?: string }) => {
     const qp = new URLSearchParams();
@@ -744,6 +752,7 @@ export const commonServicesApi = {
         snmp_location: string | null;
         snmp_contact: string | null;
         snmp_host_ip: string | null;
+        syslog_port: number | null;
         syslog_host_ip: string | null;
         ntp_server_ip: string | null;
         sources: Record<string, string | null>;
