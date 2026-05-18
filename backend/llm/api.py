@@ -670,11 +670,55 @@ async def ollama_context_query(request: OllamaPlaygroundRequest):
         netbox_records = network_tools._inventory_records_from_netbox()
         local_records = network_tools._inventory_records_from_local_db()
         
-        merged = { r["hostname"]: r for r in local_records }
+        merged = {str(r.get("hostname", "")).strip().lower(): r for r in local_records if str(r.get("hostname", "")).strip()}
         for r in netbox_records:
-            merged[r["hostname"]] = r
+            h = str(r.get("hostname", "")).strip().lower()
+            if h:
+                merged[h] = r
         
         devices = list(merged.values())
+        prompt_text = str(request.prompt or "")
+        prompt_lower = prompt_text.lower()
+
+        # Identify likely target devices from the question so we always enrich them.
+        ranked_targets = network_tools._rank_inventory_records(devices, prompt_text, limit=6) if prompt_text else []
+        target_hostnames = {
+            str(r.get("hostname", "")).strip()
+            for r in ranked_targets
+            if str(r.get("hostname", "")).strip()
+        }
+
+        def _norm_host(hostname: str) -> str:
+            return re.sub(r"[^a-z0-9]+", "", str(hostname or "").lower())
+
+        def _append_link_fact(
+            out: List[Dict[str, str]],
+            seen: set,
+            src_host: str,
+            src_if: str,
+            dst_host: str,
+            dst_if: str,
+            source: str,
+        ) -> None:
+            a = str(src_host or "").strip()
+            b = str(dst_host or "").strip()
+            if not a or not b:
+                return
+            ai = str(src_if or "").strip() or "unknown-if"
+            bi = str(dst_if or "").strip() or "unknown-if"
+            key = tuple(sorted((a.lower(), b.lower()))) + tuple(sorted((ai.lower(), bi.lower())))
+            if key in seen:
+                return
+            seen.add(key)
+            out.append(
+                {
+                    "src": a,
+                    "src_if": ai,
+                    "dst": b,
+                    "dst_if": bi,
+                    "source": source,
+                }
+            )
         
         # 2. Format context
         total_count = len(devices)
@@ -696,6 +740,8 @@ async def ollama_context_query(request: OllamaPlaygroundRequest):
         inventory_text += "DEVICE SNAPSHOT LIST:\n"
         
         enrich_limit = 8 # Limit to avoid excessive API latency
+        discovered_links: List[Dict[str, str]] = []
+        seen_links = set()
         
         for i, d in enumerate(devices):
             # Detailed enrichment for smaller inventories
@@ -703,8 +749,12 @@ async def ollama_context_query(request: OllamaPlaygroundRequest):
             links_summary = ""
             
             # Prioritize current prompt mention if possible, or just first few
-            hostname = d['hostname']
-            should_enrich = i < enrich_limit or (request.prompt and hostname.lower() in request.prompt.lower())
+            hostname = str(d.get("hostname", ""))
+            should_enrich = (
+                i < enrich_limit
+                or hostname in target_hostnames
+                or (_norm_host(hostname) and _norm_host(hostname) in _norm_host(prompt_lower))
+            )
             
             if should_enrich:
                 try:
@@ -714,8 +764,21 @@ async def ollama_context_query(request: OllamaPlaygroundRequest):
                         ifaces = [f"{iface['name']} ({iface['ip_address'] or 'no-ip'})" for iface in enriched["interfaces"][:15]]
                         interfaces_summary = f", Interfaces: [{', '.join(ifaces)}]"
                     if enriched.get("links"):
-                        links = [f"{l['local_interface']}->{l['peer_hostname']}" for l in enriched["links"]]
+                        links = [
+                            f"{l.get('local_interface') or '?'}->{l.get('peer_hostname') or '?'}:{l.get('peer_interface') or '?'}"
+                            for l in enriched["links"]
+                        ]
                         links_summary = f", Connections: [{', '.join(links)}]"
+                        for l in enriched["links"]:
+                            _append_link_fact(
+                                discovered_links,
+                                seen_links,
+                                hostname,
+                                str(l.get("local_interface") or ""),
+                                str(l.get("peer_hostname") or ""),
+                                str(l.get("peer_interface") or ""),
+                                source="inventory_enrichment",
+                            )
                 except Exception:
                     pass # Skip enrichment on failure
 
@@ -724,12 +787,74 @@ async def ollama_context_query(request: OllamaPlaygroundRequest):
         if total_count > enrich_limit:
             inventory_text += f"\n(Note: Detailed enrichment skipped for {total_count - enrich_limit} devices.)\n"
 
+        # Add explicit topology link facts (live + planned) so pairwise interface questions are answerable.
+        try:
+            if agent._db:
+                topo = agent._db.get_topology() or {}
+                live_nodes = topo.get("nodes", {}) if isinstance(topo, dict) else {}
+                for src_host, node_data in live_nodes.items():
+                    if not isinstance(node_data, dict):
+                        continue
+                    for src_if, edge in (node_data.get("edgeLink") or {}).items():
+                        if not isinstance(edge, dict):
+                            continue
+                        _append_link_fact(
+                            discovered_links,
+                            seen_links,
+                            str(src_host),
+                            str(src_if or ""),
+                            str(edge.get("remote_node") or ""),
+                            str(edge.get("remote_interface") or ""),
+                            source="live_topology",
+                        )
+        except Exception:
+            pass
+
+        try:
+            planned = network_tools._get_planned_topology_data()
+            for link in planned.get("links", []) or []:
+                if not isinstance(link, dict):
+                    continue
+                _append_link_fact(
+                    discovered_links,
+                    seen_links,
+                    str(link.get("src_hostname") or ""),
+                    str(link.get("src_interface") or ""),
+                    str(link.get("dst_hostname") or ""),
+                    str(link.get("dst_interface") or ""),
+                    source="planned_topology",
+                )
+        except Exception:
+            pass
+
+        relevant_links = [
+            lf
+            for lf in discovered_links
+            if not target_hostnames
+            or lf["src"] in target_hostnames
+            or lf["dst"] in target_hostnames
+        ]
+        if len(relevant_links) < 10:
+            relevant_links = discovered_links
+        relevant_links = relevant_links[:120]
+
+        inventory_text += "\nLINK FACTS (interface-to-interface):\n"
+        if relevant_links:
+            for lf in relevant_links:
+                inventory_text += (
+                    f"- {lf['src']}:{lf['src_if']} <-> {lf['dst']}:{lf['dst_if']} "
+                    f"[source={lf['source']}]\n"
+                )
+        else:
+            inventory_text += "- No link facts available.\n"
+
         # 3. Build prompt
         system_prompt = (
             "You are a Network Inventory Assistant. "
             f"There are exactly {total_count} devices in the inventory. "
             "Use the metadata and snapshot below for accurate counts. "
-            "If asked 'how many', always refer to the 'Total Inventory Count' metadata.\n\n"
+            "If asked 'how many', always refer to the 'Total Inventory Count' metadata. "
+            "When asked about connections between two devices, prioritize LINK FACTS and quote both local and peer interfaces.\n\n"
             f"{inventory_text}"
         )
         

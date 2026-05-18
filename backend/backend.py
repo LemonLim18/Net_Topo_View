@@ -112,7 +112,7 @@ NEW_FETCH_FILE = os.path.join(TOPOLOGY_SAVE_DIR, "new_fetch.json")
 
 CRAWL_INTERVAL_SECONDS = 300  # 5 minutes
 CRAWL_WORKERS = int(os.getenv("CRAWL_WORKERS", "6"))
-REALTIME_PULSE_SECONDS = max(5, int(os.getenv("REALTIME_PULSE_SECONDS", "30")))
+REALTIME_PULSE_SECONDS = max(5, int(os.getenv("REALTIME_PULSE_SECONDS", "20")))
 
 # Seeds & credentials from environment (no hardcoded secrets)
 CRAWL_SEEDS: List[str] = [

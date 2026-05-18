@@ -16,7 +16,7 @@ import { useWebSocket } from '../src/hooks/useWebSocket';
 import { API_CONFIG } from '../src/config';
 import { topologyApi, netboxApi, type DeviceRecord, type InterfaceRecord, type LinkRecord } from '../src/services/api';
 import { useDeviceContext } from '../contexts/DeviceContext';
-import { Terminal, Info, RefreshCw, Cable, AlertTriangle } from 'lucide-react';
+import { Terminal, Info, RefreshCw, Cable, AlertTriangle, Loader2 } from 'lucide-react';
 import { Toast } from '../src/utils/swal';
 import { sshApi } from '../src/services/api';
 import { validateLinkInterfaceCompatibility } from '../src/utils/linkValidation';
@@ -33,9 +33,53 @@ const DASHBOARD_PLANNED_CACHE_KEY = 'dashboard.plannedTopologyCache';
 
 // Helper to convert abbreviated interface names to full names
 const expandInterfaceName = (abbr: string): string => {
-  if (abbr.startsWith('Et')) return abbr.replace('Et', 'Ethernet');
-  if (abbr.startsWith('Lo')) return abbr.replace('Lo', 'Loopback');
-  return abbr;
+  const raw = String(abbr || '').trim();
+  if (!raw) return raw;
+  if (/^GigabitEthernet/i.test(raw)) return raw;
+  if (/^FastEthernet/i.test(raw)) return raw;
+  if (/^TenGigabitEthernet/i.test(raw)) return raw;
+  if (/^TwentyFiveGigE/i.test(raw)) return raw;
+  if (/^FortyGigabitEthernet/i.test(raw)) return raw;
+  if (/^HundredGigE/i.test(raw)) return raw;
+  if (/^Port-Channel/i.test(raw)) return raw;
+  if (/^Loopback/i.test(raw)) return raw;
+  if (/^Tunnel/i.test(raw)) return raw;
+  if (/^Serial/i.test(raw)) return raw;
+  if (/^Vlan/i.test(raw)) return raw;
+  if (/^Ethernet/i.test(raw)) return raw;
+
+  if (/^Eth/i.test(raw)) return raw.replace(/^Eth/i, 'Ethernet');
+  if (/^Et/i.test(raw)) return raw.replace(/^Et/i, 'Ethernet');
+  if (/^Gi/i.test(raw)) return raw.replace(/^Gi/i, 'GigabitEthernet');
+  if (/^Fa/i.test(raw)) return raw.replace(/^Fa/i, 'FastEthernet');
+  if (/^Te/i.test(raw)) return raw.replace(/^Te/i, 'TenGigabitEthernet');
+  if (/^Twe/i.test(raw)) return raw.replace(/^Twe/i, 'TwentyFiveGigE');
+  if (/^Fo/i.test(raw)) return raw.replace(/^Fo/i, 'FortyGigabitEthernet');
+  if (/^Hu/i.test(raw)) return raw.replace(/^Hu/i, 'HundredGigE');
+  if (/^Po/i.test(raw)) return raw.replace(/^Po/i, 'Port-Channel');
+  if (/^Lo/i.test(raw)) return raw.replace(/^Lo/i, 'Loopback');
+  if (/^Tu/i.test(raw)) return raw.replace(/^Tu/i, 'Tunnel');
+  if (/^Se/i.test(raw)) return raw.replace(/^Se/i, 'Serial');
+  if (/^Vl/i.test(raw)) return raw.replace(/^Vl/i, 'Vlan');
+  return raw;
+};
+
+const normalizeInterfaceName = (name: string): string => {
+  return expandInterfaceName(name).replace(/\s+/g, '').toLowerCase();
+};
+
+const resolveInterfaceIp = (interfaceList: Array<Record<string, string>> | undefined, ifaceName: string): string => {
+  if (!Array.isArray(interfaceList) || interfaceList.length === 0) return '';
+  const wanted = normalizeInterfaceName(ifaceName);
+  if (!wanted) return '';
+
+  for (const row of interfaceList) {
+    for (const [key, value] of Object.entries(row || {})) {
+      const actual = normalizeInterfaceName(key);
+      if (actual === wanted) return String(value || '').trim();
+    }
+  }
+  return '';
 };
 
 /** Map hostname → device id (exact + lowercase) for inventory / NetBox rows. */
@@ -115,8 +159,13 @@ const mergeInventoryLinksIntoTopologyLinks = (
       target: cb,
       sourceInterface: dl.src_interface_name || '—',
       targetInterface: dl.dst_interface_name || '—',
-      sourceIp: 'N/A',
-      targetIp: 'N/A',
+      sourceIp: '',
+      targetIp: '',
+      info: {
+        remote_node: cb,
+        remote_interface: dl.dst_interface_name || '',
+        remote_ip: '',
+      },
       netboxLinkId: dl.id,
     });
   }
@@ -328,12 +377,8 @@ const processTopologyData = (
                 if (!linkSet.has(linkKey1) && !linkSet.has(linkKey2)) {
                     const localIfaceFull = expandInterfaceName(localIfaceAbbr);
                     const remoteIfaceFull = expandInterfaceName(linkInfo.remote_interface);
-                    
-                    const sourceEntry = sourceDetails.interfaceList.find(iface => Object.prototype.hasOwnProperty.call(iface, localIfaceFull));
-                    const sourceIp = sourceEntry ? sourceEntry[localIfaceFull] : 'N/A';
-
-                    const targetEntry = targetDetails.interfaceList.find(iface => Object.prototype.hasOwnProperty.call(iface, remoteIfaceFull));
-                    const targetIp = targetEntry ? targetEntry[remoteIfaceFull] : 'N/A';
+                    const sourceIp = resolveInterfaceIp(sourceDetails.interfaceList, localIfaceAbbr);
+                    const targetIp = resolveInterfaceIp(targetDetails.interfaceList, linkInfo.remote_interface);
 
                     // Match inventory link for delete: prefer exact iface names, then any link between the pair.
                     const srcDevId = resolveDeviceId(hostnameToId, sourceId);
@@ -570,6 +615,8 @@ const Dashboard: React.FC = () => {
 
     // --- Refresh / Manual Crawl state ---
     const [isRefreshing, setIsRefreshing] = useState(false);
+    const [isNetboxOpLoading, setIsNetboxOpLoading] = useState(false);
+    const [netboxOpMessage, setNetboxOpMessage] = useState('Syncing with NetBox...');
 
     const handleRefreshTopology = useCallback(async () => {
         setIsRefreshing(true);
@@ -713,6 +760,8 @@ const Dashboard: React.FC = () => {
     const closeContextMenu = useCallback(() => setContextMenu(null), []);
 
     const openLinkModal = useCallback(async (sourceNodeId: string) => {
+        setIsNetboxOpLoading(true);
+        setNetboxOpMessage('Loading devices and interfaces from NetBox...');
         try {
             await refreshConnectData();
             const srcDev = connectDevices.find((d: DeviceRecord) => d.hostname === sourceNodeId);
@@ -735,6 +784,8 @@ const Dashboard: React.FC = () => {
             setShowLinkModal(true);
         } catch (err: any) {
             Toast.error('Connect Failed', err?.message || 'Unable to open connection modal');
+        } finally {
+            setIsNetboxOpLoading(false);
         }
     }, [refreshConnectData]);
 
@@ -760,6 +811,8 @@ const Dashboard: React.FC = () => {
             return;
         }
         setLinkFormError(null);
+        setIsNetboxOpLoading(true);
+        setNetboxOpMessage('Creating link in NetBox and refreshing topology...');
         try {
             await netboxApi.createLink({
                 src_device_id: linkForm.src_device_id,
@@ -796,10 +849,14 @@ const Dashboard: React.FC = () => {
             setShowLinkModal(false);
         } catch (e: any) {
             setLinkFormError(e.message || 'Failed to create link');
+        } finally {
+            setIsNetboxOpLoading(false);
         }
     };
 
     const handleDeleteLink = useCallback(async (linkId: number) => {
+        setIsNetboxOpLoading(true);
+        setNetboxOpMessage('Deleting link from NetBox...');
         try {
             await netboxApi.deleteLink(linkId);
             Toast.success('Link Deleted', 'Connection removed from NetBox.');
@@ -814,6 +871,8 @@ const Dashboard: React.FC = () => {
             if (linkForm.dst_device_id) loadIfacesForLink(linkForm.dst_device_id, 'dst');
         } catch (e: any) {
             Toast.error('Delete Failed', e.message || 'Unable to delete link');
+        } finally {
+            setIsNetboxOpLoading(false);
         }
     }, [refreshConnectData]);
 
@@ -830,6 +889,8 @@ const Dashboard: React.FC = () => {
         }
 
         try {
+            setIsNetboxOpLoading(true);
+            setNetboxOpMessage('Creating interface in NetBox...');
             const iface = await netboxApi.createInterface(targetDeviceId, {
                 ...ifaceForm,
                 status: 'planned'
@@ -852,6 +913,8 @@ const Dashboard: React.FC = () => {
             setShowIfaceModal(false);
         } catch (e: any) {
             setIfaceFormError(e.message || 'Failed to create interface');
+        } finally {
+            setIsNetboxOpLoading(false);
         }
     };
 
@@ -873,6 +936,8 @@ const Dashboard: React.FC = () => {
         }
 
         try {
+            setIsNetboxOpLoading(true);
+            setNetboxOpMessage('Loading interface details from NetBox...');
             // Fetch interfaces to get the ID
             const res = await netboxApi.listInterfaces(dev.id);
             // Match name exactly or abbreviated form
@@ -890,6 +955,8 @@ const Dashboard: React.FC = () => {
             openEditIfaceModal(iface);
         } catch (err: any) {
             Toast.error('Failed to load interface', err.message);
+        } finally {
+            setIsNetboxOpLoading(false);
         }
     }, [selectedNodeId, connectDevices]);
 
@@ -897,6 +964,8 @@ const Dashboard: React.FC = () => {
       if (!editingIface) return;
       
       try {
+        setIsNetboxOpLoading(true);
+        setNetboxOpMessage('Updating interface in NetBox...');
         await netboxApi.updateInterface(editingIface.device_id, editingIface.id, {
           ip_address: editIfaceForm.ip_address,
         });
@@ -914,6 +983,8 @@ const Dashboard: React.FC = () => {
         setShowEditIfaceModal(false);
       } catch (e: any) {
         setEditIfaceFormError(e.message || 'Failed to update interface');
+      } finally {
+        setIsNetboxOpLoading(false);
       }
     };
 
@@ -1082,6 +1153,14 @@ const Dashboard: React.FC = () => {
                     <div className="text-center">
                         <span className="loading loading-spinner loading-lg text-primary"></span>
                         <p className="mt-2 text-base-content/80">Loading Real-Time Topology...</p>
+                    </div>
+                </div>
+            )}
+            {isNetboxOpLoading && (
+                <div className="absolute inset-0 bg-base-300/45 backdrop-blur-[1px] flex items-center justify-center z-20" role="status" aria-label="Syncing NetBox data">
+                    <div className="text-center px-6">
+                        <Loader2 className="w-8 h-8 mx-auto text-primary animate-spin" />
+                        <p className="mt-2 text-base-content/85 text-sm">{netboxOpMessage}</p>
                     </div>
                 </div>
             )}
@@ -1309,9 +1388,10 @@ const Dashboard: React.FC = () => {
                             <button 
                                 className="btn btn-primary btn-sm w-full gap-2 text-xs" 
                                 onClick={handleSaveLink}
-                                disabled={!linkForm.src_device_id || !linkForm.src_interface_id || !linkForm.dst_device_id || !linkForm.dst_interface_id}
+                                disabled={isNetboxOpLoading || !linkForm.src_device_id || !linkForm.src_interface_id || !linkForm.dst_device_id || !linkForm.dst_interface_id}
                             >
-                                <Cable className="w-4 h-4" /> Create Link
+                                {isNetboxOpLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Cable className="w-4 h-4" />}
+                                {isNetboxOpLoading ? 'Working...' : 'Create Link'}
                             </button>
                         </div>
                     </div>
@@ -1392,8 +1472,11 @@ const Dashboard: React.FC = () => {
                             <button 
                                 className="btn btn-primary btn-sm text-xs px-6 h-9" 
                                 onClick={handleSaveInterface}
+                                disabled={isNetboxOpLoading}
                             >
-                                Add Interface
+                                {isNetboxOpLoading ? (
+                                    <span className="inline-flex items-center gap-2"><Loader2 className="w-4 h-4 animate-spin" /> Saving...</span>
+                                ) : 'Add Interface'}
                             </button>
                         </div>
                     </div>
@@ -1433,7 +1516,11 @@ const Dashboard: React.FC = () => {
 
                         <div className="bg-base-300/30 p-4 flex justify-end gap-3 border-t border-base-content/5">
                             <button className="btn btn-ghost btn-sm text-xs" onClick={() => setShowEditIfaceModal(false)}>Cancel</button>
-                            <button className="btn btn-primary btn-sm text-xs px-6" onClick={handleUpdateInterface}>Update IP</button>
+                            <button className="btn btn-primary btn-sm text-xs px-6" onClick={handleUpdateInterface} disabled={isNetboxOpLoading}>
+                                {isNetboxOpLoading ? (
+                                    <span className="inline-flex items-center gap-2"><Loader2 className="w-4 h-4 animate-spin" /> Updating...</span>
+                                ) : 'Update IP'}
+                            </button>
                         </div>
                     </div>
                 </div>

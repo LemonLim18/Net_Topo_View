@@ -288,11 +288,23 @@ const NetworkGraph: React.FC<NetworkGraphProps> = ({ nodes, links, onNodeClick, 
           return g;
       });
 
+    const hasIpLabel = (ip: unknown): boolean => String(ip ?? '').trim().length > 0;
+
     // Update labels and ensure link stroke classes reflect diffStatus for existing links
     linkG.select('.source-interface').text(d => d.sourceInterface);
-    linkG.select('.source-ip').text(d => d.sourceIp).attr('dy', '0.85em').attr('class', 'source-ip text-[9px] opacity-80');
+    linkG
+      .select('.source-ip')
+      .text(d => (hasIpLabel(d.sourceIp) ? String(d.sourceIp) : ''))
+      .attr('dy', d => (hasIpLabel(d.sourceIp) ? '0.85em' : '0'))
+      .style('display', d => (hasIpLabel(d.sourceIp) ? null : 'none'))
+      .attr('class', 'source-ip text-[9px] opacity-80');
     linkG.select('.target-interface').text(d => d.targetInterface);
-    linkG.select('.target-ip').text(d => d.targetIp).attr('dy', '0.85em').attr('class', 'target-ip text-[9px] opacity-80');
+    linkG
+      .select('.target-ip')
+      .text(d => (hasIpLabel(d.targetIp) ? String(d.targetIp) : ''))
+      .attr('dy', d => (hasIpLabel(d.targetIp) ? '0.85em' : '0'))
+      .style('display', d => (hasIpLabel(d.targetIp) ? null : 'none'))
+      .attr('class', 'target-ip text-[9px] opacity-80');
     linkG.select('line').attr('class', (d: any) => {
       if (topologyView === 'diff') {
         const status = d.diffStatus || 'unchanged';
@@ -622,7 +634,8 @@ const NetworkGraph: React.FC<NetworkGraphProps> = ({ nodes, links, onNodeClick, 
                 <path strokeLinecap="round" strokeLinejoin="round" d="M4 12h16" />
            </svg>
         </button>
-        <button
+        {/* Reset Layout Button */}
+        {/* <button
           onClick={handleResetLayout}
           className="btn btn-sm"
           aria-label="Reset layout"
@@ -631,7 +644,7 @@ const NetworkGraph: React.FC<NetworkGraphProps> = ({ nodes, links, onNodeClick, 
           <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
             <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
           </svg>
-        </button>
+        </button> */}
       </div>
     </div>
   );
