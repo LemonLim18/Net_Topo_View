@@ -1,10 +1,12 @@
 import React, { createContext, useContext, useState, useCallback, useEffect, useRef } from 'react';
 import type { ReactNode } from 'react';
 import type { AppNotification, NotificationType } from '../types';
-import { ENABLE_DRIFT_NOTIFICATIONS } from '../src/config';
+import { ENABLE_DRIFT_NOTIFICATIONS, API_CONFIG } from '../src/config';
 
 /* ── Telemetry WS listener (incident push events) ───────────── */
-const TELEMETRY_WS = `ws://${window.location.hostname}:8000/api/telemetry`;
+// Use configured backend URL when available so frontend works across networks.
+const _wsBase = (API_CONFIG?.API_URL || `http://${window.location.hostname}:8000`).replace(/^http/, 'ws').replace(/\/$/, '');
+const TELEMETRY_WS = `${_wsBase}/api/telemetry`;
 
 interface NotificationContextType {
     notifications: AppNotification[];
@@ -107,6 +109,14 @@ export const NotificationProvider: React.FC<{ children: ReactNode }> = ({ childr
                         addNotification(
                             'Syslog Event',
                             `${msg.data?.event_type ?? 'event'} from ${msg.data?.source_ip ?? 'unknown source'}`,
+                            notifType,
+                        );
+                    } else if (msg.event === 'device_syslog_event') {
+                        const sev = String(msg.data?.severity ?? 'info').toLowerCase();
+                        const notifType: NotificationType = sev === 'critical' ? 'error' : sev === 'high' ? 'warning' : sev === 'medium' ? 'info' : 'success';
+                        addNotification(
+                            'Device Syslog',
+                            `${msg.data?.mnemonic ?? msg.data?.facility ?? 'syslog'} from ${msg.data?.source_host ?? msg.data?.source_ip ?? 'unknown source'}`,
                             notifType,
                         );
                     }

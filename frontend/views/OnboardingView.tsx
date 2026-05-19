@@ -523,7 +523,7 @@ const OnboardingView: React.FC<{ setView: (id: ViewId) => void }> = ({ setView }
 
       {publishJob && (
         <div className="card bg-base-100 shadow border border-base-300">
-          <div className="card-body gap-3">
+          <div className="card-body gap-3 h-full max-h-full overflow-y-auto">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div className="text-sm">
                 <span className="font-semibold">ZTP Publish Job #{publishJob.id}</span>

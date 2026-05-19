@@ -171,6 +171,12 @@ class SyslogHandler(socketserver.BaseRequestHandler):
             return
 
         source_addr = self.client_address[0]
+        if hasattr(self.server, "raw_callback"):
+            try:
+                self.server.raw_callback(source_addr, raw_message)
+            except Exception as e:
+                logger.error("Syslog raw callback error: %s", e)
+
         parser = SyslogMessageParser()
         event = parser.parse(raw_message, source_addr)
 
@@ -194,9 +200,15 @@ class SyslogReceiver:
         receiver.start()
     """
 
-    def __init__(self, port: int = 5514, callback: Optional[Callable] = None):
+    def __init__(
+        self,
+        port: int = 5514,
+        callback: Optional[Callable] = None,
+        raw_callback: Optional[Callable[[str, str], None]] = None,
+    ):
         self._port = port
         self._callback = callback
+        self._raw_callback = raw_callback
         self._server: Optional[socketserver.UDPServer] = None
         self._thread: Optional[threading.Thread] = None
 
@@ -205,6 +217,7 @@ class SyslogReceiver:
         try:
             self._server = socketserver.UDPServer(("0.0.0.0", self._port), SyslogHandler)
             self._server.event_callback = self._callback  # type: ignore[attr-defined]
+            self._server.raw_callback = self._raw_callback  # type: ignore[attr-defined]
             self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
             self._thread.start()
             logger.info("Syslog receiver started on UDP port %d", self._port)

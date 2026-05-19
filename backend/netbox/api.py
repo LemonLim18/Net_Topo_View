@@ -6,6 +6,8 @@ from db.manager import DatabaseManager
 from db.models import Device
 from llm.context_contract import CONTEXT_DOMAIN_INVENTORY, CONTEXT_DOMAIN_PLANNED_TOPOLOGY
 from llm.refresh_fabric import publish_context_refresh_event
+from device_syslog.service import sync_syslog_server_inventory
+from monitor.telegraf_sync import sync_telegraf_config
 from netbox.sync_devices import DeviceSyncer
 from netbox.sync_topology import TopologySyncer
 from netbox.client import NetBoxClient
@@ -117,6 +119,41 @@ def _sync_deleted_device_to_netbox(hostname: str) -> None:
         logger.info("Background NetBox delete completed for '%s'", hostname)
     except Exception as exc:
         logger.warning("Background NetBox delete failed for '%s': %s", hostname, exc)
+
+
+def _sync_telegraf_targets_after_inventory_change(trigger: str) -> None:
+    """Regenerate Telegraf config and optionally deploy/restart remote service."""
+    try:
+        db = _db()
+        details = sync_telegraf_config(db, local_path="telegraf.conf", deploy_remote=None)
+        logger.info(
+            "Telegraf target sync (%s): devices=%s desired=%s deployed=%s validated=%s restarted=%s",
+            trigger,
+            details.get("inventory_device_count"),
+            details.get("desired_target_count"),
+            details.get("deployed"),
+            details.get("validated"),
+            details.get("restarted"),
+        )
+    except Exception as exc:
+        logger.warning("Telegraf target sync failed (%s): %s", trigger, exc)
+
+
+def _sync_syslog_targets_after_inventory_change(trigger: str) -> None:
+    """Sync /etc/hosts + rsyslog dynamic fan-out on remote syslog server."""
+    try:
+        db = _db()
+        details = sync_syslog_server_inventory(db, mode=None)
+        logger.info(
+            "Syslog server sync (%s): enabled=%s synced=%s devices=%s mode=%s",
+            trigger,
+            details.get("enabled"),
+            details.get("synced"),
+            details.get("inventory_device_count"),
+            details.get("mode"),
+        )
+    except Exception as exc:
+        logger.warning("Syslog server sync failed (%s): %s", trigger, exc)
 
 
 # ---------------------------------------------------------------------------
@@ -360,6 +397,8 @@ async def create_device(body: DeviceCreate, background_tasks: BackgroundTasks):
     )
     device_id = db.upsert_device(device)
     background_tasks.add_task(_sync_created_device_to_netbox, device_id)
+    background_tasks.add_task(_sync_telegraf_targets_after_inventory_change, f"create:{body.hostname}")
+    background_tasks.add_task(_sync_syslog_targets_after_inventory_change, f"create:{body.hostname}")
     created = db.get_device_by_id(device_id)
     _invalidate_inventory_context(
         source="netbox_api",
@@ -413,6 +452,8 @@ async def update_device(device_id: int, body: DeviceUpdate, background_tasks: Ba
     )
     db.upsert_device(device)
     background_tasks.add_task(_sync_updated_device_to_netbox, device_id, existing.hostname)
+    background_tasks.add_task(_sync_telegraf_targets_after_inventory_change, f"update:{hostname}")
+    background_tasks.add_task(_sync_syslog_targets_after_inventory_change, f"update:{hostname}")
     updated = db.get_device_by_id(device_id)
     _invalidate_inventory_context(
         source="netbox_api",
@@ -436,6 +477,8 @@ async def delete_device(device_id: int, background_tasks: BackgroundTasks):
 
     db.delete_device(device_id)
     background_tasks.add_task(_sync_deleted_device_to_netbox, existing.hostname)
+    background_tasks.add_task(_sync_telegraf_targets_after_inventory_change, f"delete:{existing.hostname}")
+    background_tasks.add_task(_sync_syslog_targets_after_inventory_change, f"delete:{existing.hostname}")
     _invalidate_inventory_context(
         source="netbox_api",
         summary=f"device deleted: {existing.hostname}",
@@ -1007,7 +1050,7 @@ async def push_all_to_netbox():
 # ---------------------------------------------------------------------------
 
 @router.post("/sync/devices")
-async def sync_devices():
+async def sync_devices(background_tasks: BackgroundTasks):
     """
     Sync all devices from NetBox into the local inventory.
     Runs in a thread pool so it doesn't block the event loop,
@@ -1019,6 +1062,8 @@ async def sync_devices():
         return syncer.sync_all_devices()
 
     result = await run_in_threadpool(_run)
+    background_tasks.add_task(_sync_telegraf_targets_after_inventory_change, "sync_devices")
+    background_tasks.add_task(_sync_syslog_targets_after_inventory_change, "sync_devices")
     return result or {"status": "success", "synced_count": 0}
 
 @router.post("/sync/topology")

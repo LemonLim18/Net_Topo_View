@@ -11,7 +11,7 @@ import logging
 import urllib.request
 import json
 from db.manager import DatabaseManager
-from monitor.telegraf_gen import TelegrafConfigGenerator
+from monitor.telegraf_sync import sync_telegraf_config
 from monitor.prometheus import (
     get_health as prom_health,
     query_device_metrics as prom_device_metrics,
@@ -1585,13 +1585,24 @@ from(bucket: "{INFLUXDB_BUCKET}")
 
 
 @router.post("/update-config", response_model=StatusResponse)
-async def update_telegraf_config():
-    """Regenerate Telegraf configuration based on current inventory."""
+async def update_telegraf_config(deploy_remote: Optional[bool] = None):
+    """Regenerate Telegraf config and optionally deploy/restart remote Telegraf."""
     try:
         db = DatabaseManager("db/netauto.db")
-        gen = TelegrafConfigGenerator(db)
-        gen.regenerate_config("telegraf.conf")
-        return StatusResponse(status="success", message="Telegraf configuration regenerated.")
+        details = sync_telegraf_config(
+            db,
+            local_path="telegraf.conf",
+            deploy_remote=deploy_remote,
+        )
+        ok = bool(details.get("deployed")) if details.get("remote_sync_enabled") else True
+        validated = bool(details.get("validated")) if details.get("remote_sync_enabled") else True
+        restarted = bool(details.get("restarted")) if details.get("remote_sync_enabled") else True
+        status = "success" if (ok and validated and restarted) else "partial"
+        return StatusResponse(
+            status=status,
+            message=str(details.get("message") or "Telegraf config sync finished."),
+            details=details,
+        )
     except Exception as e:
         logger.error(f"Error updating config: {e}")
         raise HTTPException(status_code=500, detail=str(e))

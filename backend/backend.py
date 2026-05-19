@@ -54,6 +54,7 @@ from llm.retriever import KnowledgeRetriever
 from llm.ingestion import DocumentIngester
 from rag.api import router as rag_router, setup_rag, setup_context_bundle
 from dashboard.api import router as dashboard_router, setup_dashboard
+from device_syslog.api import router as device_syslog_router
 
 # M22 — Ansible-first automation (optional: graceful no-op if ansible-runner absent)
 try:
@@ -96,6 +97,7 @@ except ImportError:
 from crawler.bfs_engine import crawl_topology as _bfs_crawl
 from crawler.store import save_crawl_result
 from common_services.service import get_effective_profile
+from device_syslog.service import parse_syslog_metadata
 from security.models import SecurityEvent
 from security.threat.syslog_receiver import SyslogReceiver
 
@@ -474,6 +476,64 @@ def _handle_syslog_event(event: SecurityEvent):
         return
     asyncio.run_coroutine_threadsafe(_ingest_syslog_event(event), loop)
 
+
+async def _ingest_raw_syslog(source_ip: str, raw_message: str):
+    db = _db or DatabaseManager("db/netauto.db")
+    try:
+        parsed = parse_syslog_metadata(raw_message)
+        resolved_source_ip = source_ip
+        resolved_source_host = parsed.get("source_host")
+
+        # When syslog is relayed (e.g., via a syslog server), transport source IP
+        # can be the relay itself. Prefer embedded identifier and resolve it
+        # against inventory to recover the true originating device.
+        if resolved_source_host:
+            ident = str(resolved_source_host).strip()
+            with db._connect() as conn:
+                row = conn.execute(
+                    "SELECT id, hostname, management_ip FROM devices "
+                    "WHERE lower(hostname) = lower(?) OR management_ip = ? "
+                    "ORDER BY id ASC LIMIT 1",
+                    (ident, ident),
+                ).fetchone()
+            if row:
+                resolved_source_host = str(row["hostname"] or ident)
+                resolved_source_ip = str(row["management_ip"] or resolved_source_ip)
+
+        row_id = db.insert_device_syslog_event(
+            source_ip=resolved_source_ip,
+            source_host=resolved_source_host,
+            raw_message=raw_message,
+            severity=parsed.get("severity"),
+            facility=parsed.get("facility"),
+            mnemonic=parsed.get("mnemonic"),
+            message=parsed.get("message"),
+        )
+        await _telemetry_broadcast(
+            {
+                "event": "device_syslog_event",
+                "data": {
+                    "id": row_id,
+                    "source_ip": resolved_source_ip,
+                    "source_host": resolved_source_host,
+                    "severity": parsed.get("severity"),
+                    "facility": parsed.get("facility"),
+                    "mnemonic": parsed.get("mnemonic"),
+                    "message": parsed.get("message"),
+                },
+            }
+        )
+    except Exception as exc:
+        logger.warning("Failed to ingest raw syslog line: %s", exc)
+
+
+def _handle_raw_syslog(source_ip: str, raw_message: str):
+    loop = _syslog_loop
+    if not loop or loop.is_closed():
+        logger.warning("Raw syslog line dropped because the application loop is unavailable")
+        return
+    asyncio.run_coroutine_threadsafe(_ingest_raw_syslog(source_ip, raw_message), loop)
+
 def save_topology_to_file(topo: dict, filepath: str, sort_keys: bool = False):
     try:
         os.makedirs(os.path.dirname(filepath), exist_ok=True)
@@ -704,13 +764,24 @@ async def lifespan(app: FastAPI):
     _syslog_loop = asyncio.get_running_loop()
     try:
         effective_services = get_effective_profile("db/netauto.db")
-        syslog_port = int(effective_services.get("syslog_port") or 6514)
+        profile_port = int(effective_services.get("syslog_port") or 6514)
     except Exception:
-        syslog_port = 6514
+        profile_port = 6514
+    env_receiver_port = str(os.getenv("BACKEND_SYSLOG_RECEIVER_PORT", "")).strip()
+    if env_receiver_port.isdigit():
+        syslog_port = int(env_receiver_port)
+        port_source = "BACKEND_SYSLOG_RECEIVER_PORT"
+    else:
+        syslog_port = profile_port
+        port_source = "common_services.syslog_port"
     try:
-        _syslog_receiver = SyslogReceiver(port=syslog_port, callback=_handle_syslog_event)
+        _syslog_receiver = SyslogReceiver(
+            port=syslog_port,
+            callback=_handle_syslog_event,
+            raw_callback=_handle_raw_syslog,
+        )
         _syslog_receiver.start()
-        logger.info("Syslog receiver initialized (udp/%d)", syslog_port)
+        logger.info("Syslog receiver initialized (udp/%d, source=%s)", syslog_port, port_source)
     except Exception as exc:
         logger.warning("Syslog receiver failed to start: %s", exc)
     try:
@@ -786,18 +857,27 @@ app = FastAPI(title="CogniShield Backend", lifespan=lifespan)
 # 2) A catch-all middleware that guarantees CORS headers even on unhandled
 #    500 errors (which can bypass CORSMiddleware in some Starlette versions).
 
-_ALLOWED_ORIGINS = [
-    "http://localhost:5173",
-    "http://127.0.0.1:5173",
-    "http://localhost:3000",
-    "http://192.168.1.116:5173",    
-    "http://192.168.1.116:3000",  
-]
+# Allow configuring CORS origins via environment for flexible dev/network setups.
+# Set CORS_ALLOWED_ORIGINS to a comma-separated list of origins, or set CORS_ALLOW_ALL=true
+# to allow all origins (not recommended for production when credentials are used).
+_cors_allow_all = os.getenv("CORS_ALLOW_ALL", "false").strip().lower() in {"1", "true", "yes"}
+_cors_env = os.getenv("CORS_ALLOWED_ORIGINS", "").strip()
+if _cors_allow_all:
+    _ALLOWED_ORIGINS = ["*"]
+elif _cors_env:
+    _ALLOWED_ORIGINS = [s.strip() for s in _cors_env.split(",") if s.strip()]
+else:
+    _ALLOWED_ORIGINS = [
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "http://localhost:3000",
+        ""
+    ]
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_ALLOWED_ORIGINS,
-    allow_credentials=True,
+    allow_credentials=not _cors_allow_all,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -823,8 +903,14 @@ class CORSErrorCatchMiddleware(BaseHTTPMiddleware):
                 status_code=500,
                 content={"detail": str(exc) or "Internal Server Error"},
             )
-        # Guarantee CORS header on every response (including errors)
-        if origin in _ALLOWED_ORIGINS and "access-control-allow-origin" not in response.headers:
+        # Guarantee CORS header on every response (including errors).
+        # If wildcard origins are enabled, echo the incoming Origin.
+        if _cors_allow_all:
+            allowed_origin = origin or "*"
+        else:
+            allowed_origin = origin if origin in _ALLOWED_ORIGINS else None
+
+        if allowed_origin and "access-control-allow-origin" not in response.headers:
             response.headers["access-control-allow-origin"] = origin
             response.headers["access-control-allow-credentials"] = "true"
         return response
@@ -862,6 +948,7 @@ app.include_router(agent_router, prefix="/api/v1", tags=["Autonomous Agent (M25)
 # M0 — Onboarding
 app.include_router(onboarding_router, prefix="/api/v1", tags=["Onboarding (M0)"])
 app.include_router(common_services_router, prefix="/api/v1", tags=["Common Services"])
+app.include_router(device_syslog_router, prefix="/api/v1", tags=["Syslog"])
 
 # Phase 1 — Intent Lifecycle
 app.include_router(intent_router, prefix="/api/v1", tags=["Intent Lifecycle"])

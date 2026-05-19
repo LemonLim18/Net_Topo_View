@@ -1056,6 +1056,50 @@ export const securityApi = {
     request<{ total_cves: number; by_severity: Record<string, number>; by_vendor: Record<string, number> }>('/security/cve'),
 };
 
+export const syslogApi = {
+  listEvents: (limit = 100, device?: string, sourceIp?: string, q?: string) => {
+    const params = new URLSearchParams();
+    params.set('limit', String(limit));
+    if (device) params.set('device', device);
+    if (sourceIp) params.set('source_ip', sourceIp);
+    if (q) params.set('q', q);
+    return request<Array<{
+      id: number;
+      source_ip: string;
+      source_host?: string | null;
+      device_id?: number | null;
+      device_hostname?: string | null;
+      severity?: string | null;
+      facility?: string | null;
+      mnemonic?: string | null;
+      message?: string | null;
+      raw_message: string;
+      created_at?: string | null;
+    }>>(`/syslog/events?${params.toString()}`);
+  },
+
+  listSources: (limit = 200) =>
+    request<{
+      items: Array<{
+        source_ip: string;
+        source_host?: string | null;
+        device_id?: number | null;
+        device_hostname?: string | null;
+        event_count: number;
+        last_seen?: string | null;
+      }>;
+    }>(`/syslog/sources?limit=${limit}`),
+
+  syncServer: (mode?: 'hostname' | 'ip') =>
+    request<{
+      enabled: boolean;
+      synced: boolean;
+      mode: string;
+      message: string;
+      inventory_device_count: number;
+    }>(`/syslog/sync-server${mode ? `?mode=${mode}` : ''}`, { method: 'POST' }),
+};
+
 // --- M15: Auth API ---
 export const authApi = {
   login: (username: string, password: string) =>

@@ -390,6 +390,28 @@ class DatabaseManager:
             except Exception as e:
                 logger.warning("Migration error creating ztp_dhcp_mappings: %s", e)
 
+            # Device syslog stream store (raw + parsed fields for UI aggregation).
+            try:
+                conn.execute(
+                    """CREATE TABLE IF NOT EXISTS device_syslog_events (
+                        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                        source_ip       TEXT,
+                        source_host     TEXT,
+                        device_id       INTEGER REFERENCES devices(id) ON DELETE SET NULL,
+                        severity        TEXT,
+                        facility        TEXT,
+                        mnemonic        TEXT,
+                        message         TEXT,
+                        raw_message     TEXT NOT NULL,
+                        created_at      TEXT DEFAULT (datetime('now'))
+                    )"""
+                )
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_device_syslog_created ON device_syslog_events(created_at DESC)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_device_syslog_source_ip ON device_syslog_events(source_ip, created_at DESC)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_device_syslog_device ON device_syslog_events(device_id, created_at DESC)")
+            except Exception as e:
+                logger.warning("Migration error creating device_syslog_events: %s", e)
+
     # =============================================================
     # Initialisation
     # =============================================================
@@ -1457,6 +1479,52 @@ class DatabaseManager:
             },
         )
         return event_id
+
+    def insert_device_syslog_event(
+        self,
+        *,
+        source_ip: Optional[str],
+        source_host: Optional[str],
+        raw_message: str,
+        severity: Optional[str] = None,
+        facility: Optional[str] = None,
+        mnemonic: Optional[str] = None,
+        message: Optional[str] = None,
+    ) -> int:
+        """Persist a device syslog line for aggregate/per-device UI rendering."""
+        now = datetime.now(tz=TZ_UTC8).isoformat(timespec="seconds")
+        normalized_ip = (source_ip or "").strip() or None
+        normalized_host = (source_host or "").strip() or None
+        device_id: Optional[int] = None
+
+        if normalized_ip:
+            with self._connect() as conn:
+                row = conn.execute(
+                    "SELECT id FROM devices WHERE management_ip = ? ORDER BY id ASC LIMIT 1",
+                    (normalized_ip,),
+                ).fetchone()
+                if row:
+                    device_id = int(row["id"])
+
+        with self._connect() as conn:
+            cur = conn.execute(
+                """INSERT INTO device_syslog_events
+                   (source_ip, source_host, device_id, severity, facility, mnemonic, message, raw_message, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    normalized_ip,
+                    normalized_host,
+                    device_id,
+                    (severity or "").strip() or None,
+                    (facility or "").strip() or None,
+                    (mnemonic or "").strip() or None,
+                    (message or "").strip() or None,
+                    raw_message,
+                    now,
+                ),
+            )
+            syslog_id = int(cur.lastrowid)
+        return syslog_id
 
     # =============================================================
     # Utility
