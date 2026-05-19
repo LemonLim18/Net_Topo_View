@@ -6,6 +6,7 @@ import {
   X, Save, Download, Play, ShieldCheck, RefreshCw, FlaskConical, Lock, FileText, Check, Loader2
 } from 'lucide-react';
 import type { AnsibleTab, AnsibleJob, AnsibleCheckResult } from '../../typesLLM';
+import { useMonacoTheme } from '../../src/utils/monacoTheme';
 
 interface PlaybookEditorProps {
   tabs:            AnsibleTab[];
@@ -44,6 +45,7 @@ const PlaybookEditor: React.FC<PlaybookEditorProps> = ({
   userRole,   onTabSelect, onTabClose, onChange, onSave,
   onCheck, onApprove, onDeploy, onRegenerate,
 }) => {
+  const { themeName } = useMonacoTheme();
   const activeTabRef = useRef<HTMLDivElement>(null);
   const activeTab = tabs.find(t => t.id === activeTabId) ?? null;
   const isMarkdownActiveTab = Boolean(activeTab?.name.toLowerCase().endsWith('.md'));
@@ -327,7 +329,7 @@ const PlaybookEditor: React.FC<PlaybookEditorProps> = ({
                 activeTab.name.endsWith('.cfg') ? 'ini' :
                 'yaml'
               }
-              theme="vs-dark"
+              theme={themeName}
               value={activeTab.content}
               onChange={val => {
                 if (!activeTab.isReadOnly) onChange(activeTab.id, val ?? '');

@@ -1,8 +1,9 @@
 @import "tailwindcss";
 @plugin "daisyui" {
   themes:
-    light --default,
-    dark --prefersdark,
+    night --default,
+    light,
+    dark,
     cupcake,
     emerald,
     corporate,
@@ -20,7 +21,6 @@
     dracula,
     autumn,
     business,
-    night,
     coffee,
     winter,
     dim,

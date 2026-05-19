@@ -9,6 +9,8 @@ import KnowledgeBase from '../views/KnowledgeBase';
 import AnsibleStudioView from '../views/AnsibleStudioView';
 import TemplateStudioView from '../views/TemplateStudioView';
 import ConfigBackupView from '../views/ConfigBackupView';
+import ComplianceHubView from '../views/ComplianceHubView';
+import ComplianceDeviceDetail from '../views/ComplianceDeviceDetail';
 
 import OnboardingView from '../views/OnboardingView';
 import IntentHistoryView from '../views/IntentHistoryView';
@@ -41,6 +43,8 @@ const isViewId = (value: string | null): value is ViewId => {
     'topology',
     'netbox_devices',
     'net_perf',
+    'compliance_hub',
+    'compliance_device_detail',
     'knowledge_base',
     'ansible_studio',
     'device_detail',
@@ -58,7 +62,10 @@ const isViewId = (value: string | null): value is ViewId => {
 
 
 const App: React.FC = () => {
-  const [theme, setTheme] = useState(() => localStorage.getItem('theme') || 'night');
+  const [theme, setTheme] = useState(() => {
+    const saved = localStorage.getItem('theme');
+    return (saved && saved !== 'dark') ? saved : 'night';
+  });
   const [view, setView] = useState<ViewId>(() => {
     const saved = localStorage.getItem(CURRENT_VIEW_KEY);
     return isViewId(saved) ? saved : 'overview';
@@ -186,6 +193,10 @@ const App: React.FC = () => {
         return <div className="p-6"><h2 className="text-xl font-bold">Device 360 — #{selectedDeviceId ?? '?'}</h2><p className="mt-2 opacity-60">Device detail view — Phase 2.</p></div>;
       case 'net_perf':
         return <NetworkPerformance />;
+      case 'compliance_hub':
+        return <ComplianceHubView setView={setView} setSelectedDeviceId={setSelectedDeviceId} />;
+      // case 'compliance_device_detail':
+      //   return <ComplianceDeviceDetail setView={setView} setSelectedDeviceId={setSelectedDeviceId} />;
       case 'knowledge_base':
         return <KnowledgeBase />;
       case 'ansible_studio':

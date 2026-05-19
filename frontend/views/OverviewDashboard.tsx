@@ -14,6 +14,8 @@ import {
   Settings,
   GitBranch,
   Radio,
+  CheckSquare,
+  Zap,
 } from 'lucide-react';
 import { dashboardApi, netboxApi, deployApi, proposalApi, telemetryWs, syslogApi } from '../src/services/api';
 import type { DashboardSummary, DeviceRecord } from '../src/services/api';
@@ -215,7 +217,8 @@ const OverviewDashboard: React.FC<Props> = ({ setView, setSelectedDeviceId }) =>
         <div className="card-body p-0">
           <div className="px-4 py-3 border-b border-base-300/70 flex items-center justify-between">
             <div className="flex items-center gap-2">
-              <span className="inline-flex h-8 w-8 items-center justify-center rounded-lg bg-warning/15 text-warning">
+              {/* <span className="inline-flex h-8 w-8 items-center justify-center rounded-lg bg-warning/15 text-warning"> */}
+              <span className="inline-flex h-8 w-8 items-center justify-center text-warning">
                 <AlertTriangle className="h-4 w-4" />
               </span>
               <div>
@@ -323,7 +326,10 @@ const OverviewDashboard: React.FC<Props> = ({ setView, setSelectedDeviceId }) =>
       <div className="card border border-base-300 bg-gradient-to-br from-base-100 to-base-200/70 shadow-lg">
         <div className="card-body p-4">
           <div className="flex items-center justify-between mb-3">
-            <h2 className="card-title text-sm">Device Inventory</h2>
+            <h2 className="card-title text-sm flex items-center gap-2">
+              <Server className="h-4 w-4 text-info" />
+              Device Inventory
+            </h2>
             <button className="btn btn-ghost btn-xs gap-1" onClick={() => setView('netbox_devices')}>
               Manage <ArrowRight className="h-3 w-3" />
             </button>
@@ -364,13 +370,16 @@ const OverviewDashboard: React.FC<Props> = ({ setView, setSelectedDeviceId }) =>
       </div>
 
       {/* ─── Two-Column: Approvals + Deployments ─── */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-5 items-stretch">
 
         {/* Pending Approvals */}
-        <div className="card border border-base-300 bg-gradient-to-br from-base-100 to-base-200/70 shadow-lg">
+        <div className="card h-full border border-base-300 bg-gradient-to-br from-base-100 to-base-200/70 shadow-lg">
           <div className="card-body p-4">
             <div className="flex items-center justify-between mb-3">
-              <h2 className="card-title text-sm">Pending Approvals</h2>
+              <h2 className="card-title text-sm flex items-center gap-2">
+                <CheckSquare className="h-4 w-4 text-warning" />
+                Pending Approvals
+              </h2>
               <button className="btn btn-ghost btn-xs gap-1" onClick={() => setView('approval_queue')}>
                 Approvals <ArrowRight className="h-3 w-3" />
               </button>
@@ -395,10 +404,13 @@ const OverviewDashboard: React.FC<Props> = ({ setView, setSelectedDeviceId }) =>
         </div>
 
         {/* Recent Deployments */}
-        <div className="card border border-base-300 bg-gradient-to-br from-base-100 to-base-200/70 shadow-lg">
+        <div className="card h-full border border-base-300 bg-gradient-to-br from-base-100 to-base-200/70 shadow-lg">
           <div className="card-body p-4">
             <div className="flex items-center justify-between mb-3">
-              <h2 className="card-title text-sm">Recent Deployments</h2>
+              <h2 className="card-title text-sm flex items-center gap-2">
+                <Rocket className="h-4 w-4 text-primary" />
+                Recent Deployments
+              </h2>
               <button className="btn btn-ghost btn-xs gap-1" onClick={() => setView('ansible_studio')}>
                 View all <ArrowRight className="h-3 w-3" />
               </button>
@@ -429,11 +441,14 @@ const OverviewDashboard: React.FC<Props> = ({ setView, setSelectedDeviceId }) =>
       </div>
 
       {/* ─── Two-Column: Audit Log + Quick Actions ─── */}
-      <div className="grid grid-cols-1 lg:grid-cols-5 gap-5">
+      <div className="grid grid-cols-1 lg:grid-cols-5 gap-5 items-stretch">
         {/* Recent Audit Log */}
-        <div className="lg:col-span-3 card border border-base-300 bg-gradient-to-br from-base-100 to-base-200/70 shadow-lg">
+        <div className="lg:col-span-3 card h-full border border-base-300 bg-gradient-to-br from-base-100 to-base-200/70 shadow-lg">
           <div className="card-body p-4">
-            <h2 className="card-title text-sm mb-2">Audit Log</h2>
+            <h2 className="card-title text-sm mb-2 flex items-center gap-2">
+              <Clock className="h-4 w-4 text-info" />
+              Audit Log
+            </h2>
             {s.recent_audit_log.length === 0 ? (
               <p className="text-sm opacity-50 text-center py-6">No recent actions</p>
             ) : (
@@ -452,9 +467,12 @@ const OverviewDashboard: React.FC<Props> = ({ setView, setSelectedDeviceId }) =>
         </div>
 
         {/* Quick Actions */}
-        <div className="lg:col-span-2 card border border-base-300 bg-gradient-to-br from-base-100 to-base-200/70 shadow-lg">
+        <div className="lg:col-span-2 card h-full border border-base-300 bg-gradient-to-br from-base-100 to-base-200/70 shadow-lg">
           <div className="card-body p-4">
-            <h2 className="card-title text-sm mb-2">Quick Actions</h2>
+            <h2 className="card-title text-sm mb-2 flex items-center gap-2">
+              <Zap className="h-4 w-4 text-warning" />
+              Quick Actions
+            </h2>
             <div className="grid grid-cols-2 gap-2">
               <button className="btn btn-sm btn-outline gap-2" onClick={() => setView('topology')}>
                 <Activity className="h-3.5 w-3.5" /> Topology
@@ -468,10 +486,10 @@ const OverviewDashboard: React.FC<Props> = ({ setView, setSelectedDeviceId }) =>
               <button className="btn btn-sm btn-outline gap-2" onClick={() => setView('config_backup')}>
                 <GitBranch className="h-3.5 w-3.5" /> Config Backup
               </button>
-              <button className="btn btn-sm btn-outline gap-2" onClick={() => setView('drift')}>
+              {/* <button className="btn btn-sm btn-outline gap-2 justify-start" onClick={() => setView('compliance_hub')}>
                 <Shield className="h-3.5 w-3.5" /> Compliance
-              </button>
-              <button className="btn btn-sm btn-outline gap-2" onClick={() => setView('performance')}>
+              </button> */}
+              <button className="btn btn-sm btn-outline gap-2" onClick={() => setView('net_perf')}>
                 <Radio className="h-3.5 w-3.5" /> Performance
               </button>
             </div>

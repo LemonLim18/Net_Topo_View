@@ -77,6 +77,8 @@ export type ViewId =
   | 'topology'
   | 'netbox_devices'
   | 'net_perf' 
+  | 'compliance_hub'
+  | 'compliance_device_detail'
   | 'knowledge_base'
   | 'ansible_studio'
   | 'device_detail'

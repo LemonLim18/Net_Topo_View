@@ -349,8 +349,8 @@ const CommonServicesProfilesView: React.FC = () => {
           </div>
         </div>
 
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">
-          <div className="card shadow-xl border border-base-300 bg-gradient-to-br from-base-100 via-base-100 to-base-200/70">
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-stretch">
+          <div className="card h-full shadow-xl border border-base-300 bg-gradient-to-br from-base-100 via-base-100 to-base-200/70">
             <div className="card-body gap-4">
               <div className="flex items-center justify-between">
                 <h2 className="card-title text-base flex items-center gap-2">
@@ -437,7 +437,7 @@ const CommonServicesProfilesView: React.FC = () => {
             </div>
           </div>
 
-          <div className="space-y-6 self-start">
+          <div className="flex flex-col gap-6 h-full">
             <div className="card shadow-xl border border-base-300 bg-gradient-to-br from-base-100 via-base-100 to-base-200/70">
               <div className="card-body gap-4">
                 <div className="flex items-center justify-between gap-2 border-b border-base-300 pb-2">
@@ -546,7 +546,7 @@ const CommonServicesProfilesView: React.FC = () => {
               </div>
             </div>
 
-            <div className="card shadow-xl border border-base-300 bg-gradient-to-br from-base-100 via-base-100 to-base-200/70">
+            <div className="card flex-1 shadow-xl border border-base-300 bg-gradient-to-br from-base-100 via-base-100 to-base-200/70">
               <div className="card-body gap-4">
                 <div className="flex items-center justify-between">
                 <h2 className="card-title text-base flex items-center gap-2">

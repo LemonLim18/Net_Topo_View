@@ -244,11 +244,14 @@ interface TemplateGitStatus {
   github_username?: string | null;
 }
 
+import { useMonacoTheme } from '../src/utils/monacoTheme';
+
 // ---------------------------------------------------------------------------
 //  Template Studio Component
 // ---------------------------------------------------------------------------
 
 const TemplateStudioView: React.FC = () => {
+  const { themeName } = useMonacoTheme();
   const getStoredTabs = (): OpenTab[] => {
     try {
       const raw = localStorage.getItem(TEMPLATE_TABS_KEY);
@@ -979,7 +982,7 @@ const TemplateStudioView: React.FC = () => {
                 height="100%"
                 beforeMount={ensureTemplateEditorLanguage}
                 language={TEMPLATE_EDITOR_LANGUAGE}
-                theme="nettopo-jinja-dark"
+                theme={themeName}
                 path={`${activeTab.vendor}/${activeTab.feature}.j2`}
                 value={activeTab.content}
                 onChange={(value) => updateContent(value ?? '')}
