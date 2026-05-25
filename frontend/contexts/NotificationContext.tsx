@@ -66,8 +66,9 @@ export const NotificationProvider: React.FC<{ children: ReactNode }> = ({ childr
     /* ── Telemetry WebSocket bridge ───────────────────────────── */
     useEffect(() => {
         let retryDelay = 2000;
-        let timer: ReturnType<typeof setTimeout>;
+        let timer: ReturnType<typeof setTimeout> | null = null;
         let alive = true;
+        let intentionallyClosing = false;
 
         // Request browser notification permission once
         if (Notification.permission === 'default') {
@@ -80,6 +81,10 @@ export const NotificationProvider: React.FC<{ children: ReactNode }> = ({ childr
             wsRef.current = ws;
 
             ws.onopen = () => { retryDelay = 2000; };
+            ws.onerror = () => {
+                // Suppress noisy browser error logs during expected teardown/reconnect races.
+                if (intentionallyClosing || !alive) return;
+            };
 
             ws.onmessage = (ev) => {
                 try {
@@ -145,7 +150,15 @@ export const NotificationProvider: React.FC<{ children: ReactNode }> = ({ childr
         }
 
         connect();
-        return () => { alive = false; clearTimeout(timer); wsRef.current?.close(); };
+        return () => {
+            alive = false;
+            intentionallyClosing = true;
+            if (timer) clearTimeout(timer);
+            if (wsRef.current && wsRef.current.readyState < WebSocket.CLOSING) {
+                wsRef.current.close(1000, 'Notification provider unmount');
+            }
+            wsRef.current = null;
+        };
     }, [addNotification]);
 
     const markAsRead = useCallback((id: string) => {

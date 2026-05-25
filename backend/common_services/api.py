@@ -30,6 +30,7 @@ class CommonServicesPayload(BaseModel):
     snmp_contact: Optional[str] = None
     snmp_host_ip: Optional[str] = None
     syslog_port: Optional[int] = None
+    syslog_device_port: Optional[int] = None
     syslog_host_ip: Optional[str] = None
     ntp_server_ip: Optional[str] = None
 

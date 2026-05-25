@@ -345,7 +345,7 @@ const NetworkGraph: React.FC<NetworkGraphProps> = ({ nodes, links, onNodeClick, 
 
           const iconSize = 30;
           g.append('svg:foreignObject').attr('width', iconSize).attr('height', iconSize).attr('x', -iconSize / 2).attr('y', -iconSize / 2)
-            .append('xhtml:div').attr('class', 'w-[30px] h-[30px]').html(d => d.id === CONTROLLER_NODE_ID ? ServerIcon : RouterIcon);
+            .append('xhtml:div').attr('class', 'w-[30px] h-[30px] text-primary').html(d => d.id === CONTROLLER_NODE_ID ? ServerIcon : RouterIcon);
 
           g.append('text').attr('dy', '3.1em').attr('text-anchor', 'middle').attr('class', 'fill-current text-base-content text-sm font-semibold select-none').text(d => d.id);
           
@@ -555,20 +555,20 @@ const NetworkGraph: React.FC<NetworkGraphProps> = ({ nodes, links, onNodeClick, 
       const div = d3.select(this);
       const isSelected = d.id === selectedNodeId;
 
-      // Priority: selected > diffStatus coloring (only in Diff view) > default accent
+      // Priority: selected > diffStatus coloring (only in Diff view) > default primary
       if (isSelected) {
-        div.classed('text-primary', true).classed('text-accent text-warning text-error', false);
+        div.classed('text-secondary', true).classed('text-primary text-accent text-warning text-error', false);
       } else if (topologyView === 'diff') {
         const status = d.diffStatus || 'unchanged';
         if (status === 'added') {
-          div.classed('text-warning', true).classed('text-accent text-primary text-error', false);
+          div.classed('text-warning', true).classed('text-secondary text-accent text-primary text-error', false);
         } else if (status === 'removed') {
-          div.classed('text-error', true).classed('text-accent text-primary text-warning', false);
+          div.classed('text-error', true).classed('text-secondary text-accent text-primary text-warning', false);
         } else {
-          div.classed('text-accent', true).classed('text-primary text-warning text-error', false);
+          div.classed('text-primary', true).classed('text-secondary text-accent text-warning text-error', false);
         }
       } else {
-        div.classed('text-accent', true).classed('text-primary text-warning text-error', false);
+        div.classed('text-primary', true).classed('text-secondary text-accent text-warning text-error', false);
       }
     });
 

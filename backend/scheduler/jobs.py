@@ -18,6 +18,7 @@ logger = logging.getLogger("scheduler.jobs")
 # ────────────────────────────────────────────────────────
 _crawl_fn: Optional[Callable[..., Awaitable]] = None
 _inventory_sync_fn: Optional[Callable[[], object]] = None
+_local_to_netbox_sync_fn: Optional[Callable[[], object]] = None
 _orchestrator = None  # IncidentOrchestrator — set via set_orchestrator()
 _broadcast_fn: Optional[Callable[..., Awaitable]] = None  # WebSocket broadcast
 
@@ -32,6 +33,12 @@ def set_inventory_sync_function(fn: Callable[[], object]) -> None:
     """Inject a callable that syncs inventory from NetBox into local DB."""
     global _inventory_sync_fn
     _inventory_sync_fn = fn
+
+
+def set_local_to_netbox_sync_function(fn: Callable[[], object]) -> None:
+    """Inject a callable that pushes local inventory changes to NetBox."""
+    global _local_to_netbox_sync_fn
+    _local_to_netbox_sync_fn = fn
 
 
 def set_orchestrator(orch) -> None:
@@ -74,6 +81,21 @@ async def job_inventory_sync() -> None:
         logger.info("[Scheduler] Inventory-sync complete")
     except Exception:
         logger.exception("[Scheduler] Inventory-sync job failed")
+
+
+async def job_local_to_netbox_sync() -> None:
+    """Periodic local DB -> NetBox inventory sync."""
+    if _local_to_netbox_sync_fn is None:
+        logger.warning("Local-to-NetBox sync function not set — skipping")
+        return
+    try:
+        logger.info("[Scheduler] Local-to-NetBox sync job triggered")
+        result = _local_to_netbox_sync_fn()
+        if inspect.isawaitable(result):
+            await result
+        logger.info("[Scheduler] Local-to-NetBox sync complete")
+    except Exception:
+        logger.exception("[Scheduler] Local-to-NetBox sync job failed")
 
 
 # ────────────────────────────────────────────────────────

@@ -14,15 +14,111 @@ from netbox.client import NetBoxClient
 import logging
 import sqlite3
 import ipaddress
+import json
+from datetime import datetime, timedelta
 
 logger = logging.getLogger("netbox.api")
 
 router = APIRouter()
 
 DB_PATH = "db/netauto.db"
+_NETBOX_RETRY_INTERVAL_SEC = 30
+_NETBOX_RETRY_MAX_ATTEMPTS = 60
 
 def _db() -> DatabaseManager:
     return DatabaseManager(DB_PATH)
+
+
+def _ensure_netbox_retry_table() -> None:
+    conn = sqlite3.connect(DB_PATH, timeout=10)
+    try:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS netbox_sync_retry_queue (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                action TEXT NOT NULL,
+                payload_json TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                attempts INTEGER NOT NULL DEFAULT 0,
+                last_error TEXT,
+                next_retry_at TEXT DEFAULT (datetime('now')),
+                created_at TEXT DEFAULT (datetime('now')),
+                updated_at TEXT DEFAULT (datetime('now'))
+            )
+            """
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_netbox_retry_status_next ON netbox_sync_retry_queue(status, next_retry_at)")
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _enqueue_netbox_retry(action: str, payload: dict, error: Optional[str] = None) -> None:
+    _ensure_netbox_retry_table()
+    conn = sqlite3.connect(DB_PATH, timeout=10)
+    try:
+        conn.execute(
+            """
+            INSERT INTO netbox_sync_retry_queue (action, payload_json, status, attempts, last_error, next_retry_at, updated_at)
+            VALUES (?, ?, 'pending', 0, ?, datetime('now'), datetime('now'))
+            """,
+            (action, json.dumps(payload), (error or "")[:2000]),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def process_pending_netbox_retries(limit: int = 20) -> dict:
+    _ensure_netbox_retry_table()
+    conn = sqlite3.connect(DB_PATH, timeout=10)
+    conn.row_factory = sqlite3.Row
+    processed = succeeded = failed = 0
+    try:
+        rows = conn.execute(
+            """
+            SELECT * FROM netbox_sync_retry_queue
+            WHERE status = 'pending' AND datetime(next_retry_at) <= datetime('now')
+            ORDER BY id ASC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+        for row in rows:
+            processed += 1
+            job_id = row["id"]
+            attempts = int(row["attempts"] or 0)
+            action = str(row["action"] or "")
+            payload = json.loads(row["payload_json"] or "{}")
+            try:
+                if action == "create_device":
+                    _sync_created_device_to_netbox(int(payload["device_id"]))
+                elif action == "update_device":
+                    _sync_updated_device_to_netbox(int(payload["device_id"]), str(payload.get("original_hostname") or ""))
+                elif action == "delete_device":
+                    _sync_deleted_device_to_netbox(str(payload["hostname"]))
+                else:
+                    raise RuntimeError(f"Unknown retry action: {action}")
+                conn.execute("UPDATE netbox_sync_retry_queue SET status='done', updated_at=datetime('now') WHERE id=?", (job_id,))
+                succeeded += 1
+            except Exception as exc:
+                attempts += 1
+                if attempts >= _NETBOX_RETRY_MAX_ATTEMPTS:
+                    conn.execute(
+                        "UPDATE netbox_sync_retry_queue SET status='failed', attempts=?, last_error=?, updated_at=datetime('now') WHERE id=?",
+                        (attempts, str(exc)[:2000], job_id),
+                    )
+                    failed += 1
+                else:
+                    next_at = datetime.utcnow() + timedelta(seconds=_NETBOX_RETRY_INTERVAL_SEC)
+                    conn.execute(
+                        "UPDATE netbox_sync_retry_queue SET attempts=?, last_error=?, next_retry_at=?, updated_at=datetime('now') WHERE id=?",
+                        (attempts, str(exc)[:2000], next_at.strftime("%Y-%m-%d %H:%M:%S"), job_id),
+                    )
+        conn.commit()
+        return {"processed": processed, "succeeded": succeeded, "failed": failed}
+    finally:
+        conn.close()
 
 
 def _invalidate_inventory_context(source: str, summary: str, metadata: Optional[dict] = None) -> None:
@@ -72,6 +168,7 @@ def _sync_created_device_to_netbox(device_id: int) -> None:
         logger.info("Background NetBox create completed for '%s'", device.hostname)
     except Exception as exc:
         logger.warning("Background NetBox create failed for '%s': %s", device.hostname, exc)
+        _enqueue_netbox_retry("create_device", {"device_id": device_id}, str(exc))
 
 
 def _sync_updated_device_to_netbox(device_id: int, original_hostname: str) -> None:
@@ -107,6 +204,7 @@ def _sync_updated_device_to_netbox(device_id: int, original_hostname: str) -> No
         logger.info("Background NetBox update completed for '%s'", device.hostname)
     except Exception as exc:
         logger.warning("Background NetBox update failed for '%s': %s", device.hostname, exc)
+        _enqueue_netbox_retry("update_device", {"device_id": device_id, "original_hostname": original_hostname}, str(exc))
 
 
 def _sync_deleted_device_to_netbox(hostname: str) -> None:
@@ -119,13 +217,14 @@ def _sync_deleted_device_to_netbox(hostname: str) -> None:
         logger.info("Background NetBox delete completed for '%s'", hostname)
     except Exception as exc:
         logger.warning("Background NetBox delete failed for '%s': %s", hostname, exc)
+        _enqueue_netbox_retry("delete_device", {"hostname": hostname}, str(exc))
 
 
 def _sync_telegraf_targets_after_inventory_change(trigger: str) -> None:
     """Regenerate Telegraf config and optionally deploy/restart remote service."""
     try:
         db = _db()
-        details = sync_telegraf_config(db, local_path="telegraf.conf", deploy_remote=None)
+        details = sync_telegraf_config(db, local_path="telegraf_devices_generated.conf", deploy_remote=None)
         logger.info(
             "Telegraf target sync (%s): devices=%s desired=%s deployed=%s validated=%s restarted=%s",
             trigger,
@@ -154,6 +253,41 @@ def _sync_syslog_targets_after_inventory_change(trigger: str) -> None:
         )
     except Exception as exc:
         logger.warning("Syslog server sync failed (%s): %s", trigger, exc)
+
+
+def sync_local_inventory_to_netbox() -> dict:
+    """
+    Periodic reconciliation: push local DB device inventory to NetBox.
+    This is best-effort and works together with the retry queue.
+    """
+    db = _db()
+    devices = db.get_all_devices()
+    considered = 0
+    pushed = 0
+    failed = 0
+
+    for dev in devices:
+        if (dev.source or "").strip().lower() == "crawler":
+            continue
+        considered += 1
+        try:
+            if dev.netbox_id:
+                _sync_updated_device_to_netbox(dev.id, dev.hostname)
+            else:
+                _sync_created_device_to_netbox(dev.id)
+            pushed += 1
+        except Exception as exc:
+            failed += 1
+            logger.warning("Periodic local->NetBox sync failed for %s: %s", dev.hostname, exc)
+
+    retry_stats = process_pending_netbox_retries(limit=100)
+    return {
+        "status": "success",
+        "considered": considered,
+        "pushed": pushed,
+        "failed": failed,
+        "retry": retry_stats,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -563,7 +697,7 @@ async def list_interfaces(device_id: int):
 
 
 @router.post("/devices/{device_id}/interfaces")
-async def create_interface(device_id: int, body: InterfaceCreate):
+async def create_interface(device_id: int, body: InterfaceCreate, background_tasks: BackgroundTasks):
     """Add an interface to a device."""
     db = _db()
     d = db.get_device_by_id(device_id)
@@ -612,6 +746,10 @@ async def create_interface(device_id: int, body: InterfaceCreate):
             summary=f"interface created: {d.hostname}:{body.name}",
             metadata={"hostname": d.hostname, "interface": body.name, "operation": "create_interface"},
         )
+        background_tasks.add_task(
+            _sync_telegraf_targets_after_inventory_change,
+            f"create_interface:{d.hostname}:{body.name}",
+        )
         return dict(row)
     except sqlite3.IntegrityError:
         raise HTTPException(409, f"Interface '{body.name}' already exists on this device")
@@ -620,7 +758,7 @@ async def create_interface(device_id: int, body: InterfaceCreate):
 
 
 @router.put("/devices/{device_id}/interfaces/{iface_id}")
-async def update_interface(device_id: int, iface_id: int, body: InterfaceUpdate):
+async def update_interface(device_id: int, iface_id: int, body: InterfaceUpdate, background_tasks: BackgroundTasks):
     """Update an interface."""
     db = _db()
     conn = _raw_conn()
@@ -701,13 +839,17 @@ async def update_interface(device_id: int, iface_id: int, body: InterfaceUpdate)
                 "operation": "update_interface",
             },
         )
+        background_tasks.add_task(
+            _sync_telegraf_targets_after_inventory_change,
+            f"update_interface:{(device.hostname if device else device_id)}:{row['name']}",
+        )
         return dict(row)
     finally:
         conn.close()
 
 
 @router.delete("/devices/{device_id}/interfaces/{iface_id}")
-async def delete_interface(device_id: int, iface_id: int):
+async def delete_interface(device_id: int, iface_id: int, background_tasks: BackgroundTasks):
     """Remove an interface from the local inventory and NetBox."""
     db = _db()
     device = db.get_device_by_id(device_id)
@@ -740,6 +882,10 @@ async def delete_interface(device_id: int, iface_id: int):
                 "interface": existing["name"],
                 "operation": "delete_interface",
             },
+        )
+        background_tasks.add_task(
+            _sync_telegraf_targets_after_inventory_change,
+            f"delete_interface:{(device.hostname if device else device_id)}:{existing['name']}",
         )
         return {"deleted": True, "id": iface_id}
     finally:

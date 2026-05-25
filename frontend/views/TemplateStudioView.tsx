@@ -939,35 +939,39 @@ const TemplateStudioView: React.FC = () => {
         {/* ─── Center: Editor + Git CLI ─── */}
         <div className="flex flex-col grow min-w-0 overflow-hidden">
           {/* Tab bar */}
-          <div className="flex items-center border-b border-base-300 bg-base-200/50 shrink-0 overflow-x-auto">
-            {tabs.map(t => (
-              <div
-                key={t.id}
-                className={`flex items-center gap-1 px-3 py-2 text-xs cursor-pointer border-r border-base-300 shrink-0 transition-colors
-                  ${activeTabId === t.id ? 'bg-base-100 font-semibold' : 'hover:bg-base-200 opacity-70'}
-                `}
-                onClick={() => setActiveTabId(t.id)}
-              >
-                <FileCode2 className="w-3 h-3" />
-                <span>{t.feature}.j2</span>
-                {t.isDirty && <span className="w-1.5 h-1.5 rounded-full bg-warning" />}
-                <button
-                  className="btn btn-ghost btn-xs p-0 ml-1 opacity-50 hover:opacity-100"
-                  onClick={(e) => { e.stopPropagation(); closeTab(t.id); }}
+          <div className="flex items-center border-b border-base-300 bg-base-200/50 shrink-0">
+            <div className="flex items-center overflow-x-auto grow min-w-0">
+              {tabs.map(t => (
+                <div
+                  key={t.id}
+                  className={`flex items-center gap-1 px-3 py-2 text-xs cursor-pointer border-r border-base-300 shrink-0 transition-colors
+                    ${activeTabId === t.id ? 'bg-base-100 font-semibold' : 'hover:bg-base-200 opacity-70'}
+                  `}
+                  onClick={() => setActiveTabId(t.id)}
                 >
-                  <X className="w-3 h-3" />
-                </button>
-              </div>
-            ))}
-            {tabs.length === 0 && (
-              <div className="px-3 py-2 text-xs opacity-40">No files open</div>
-            )}
+                  <FileCode2 className="w-3 h-3" />
+                  <span>{t.feature}.j2</span>
+                  {t.isDirty && <span className="w-1.5 h-1.5 rounded-full bg-warning" />}
+                  <button
+                    className="btn btn-ghost btn-xs p-0 ml-1 opacity-50 hover:opacity-100"
+                    onClick={(e) => { e.stopPropagation(); closeTab(t.id); }}
+                  >
+                    <X className="w-3 h-3" />
+                  </button>
+                </div>
+              ))}
+              {tabs.length === 0 && (
+                <div className="px-3 py-2 text-xs opacity-40">No files open</div>
+              )}
+            </div>
             {activeTab && (
-              <div className="ml-auto flex items-center gap-1 px-2 shrink-0">
+              <div className="flex items-center gap-2 px-4 py-2 shrink-0 border-l border-base-300">
+                {activeTab.isDirty && <span className="text-[11px] opacity-60">Unsaved changes</span>}
                 <button
-                  className="btn btn-ghost btn-xs gap-1"
+                  className="btn btn-primary btn-xs gap-1"
                   onClick={saveTemplate}
                   disabled={!activeTab.isDirty}
+                  title={activeTab.isDirty ? 'Save (Ctrl+S)' : 'No unsaved changes'}
                 >
                   <Save className="w-3.5 h-3.5" /> Save
                 </button>

@@ -1,4 +1,5 @@
 # ===== Day-0 Bootstrap: {{ hostname }} (Juniper JunOS) =====
+cli
 configure
 #
 set system host-name {{ hostname }}
@@ -10,6 +11,12 @@ set system services ssh protocol-version v2
 #
 set interfaces {{ mgmt_interface }} unit 0 family inet address {{ mgmt_ip }}/{{ mgmt_prefix_len if mgmt_prefix_len is defined else 24 }}
 set routing-options static route 0.0.0.0/0 next-hop {{ gateway }}
+#
+# ===== Security Zones & Inbound Host Services =====
+set security zones security-zone trust interfaces {{ mgmt_interface }}.0 host-inbound-traffic system-services ping
+set security zones security-zone trust interfaces {{ mgmt_interface }}.0 host-inbound-traffic system-services ssh
+set security zones security-zone trust interfaces {{ mgmt_interface }}.0 host-inbound-traffic system-services http
+set security zones security-zone trust interfaces {{ mgmt_interface }}.0 host-inbound-traffic system-services https
 #
 {% if snmp_community %}
 set snmp community {{ snmp_community }} authorization read-only
@@ -24,7 +31,7 @@ set snmp trap-group NMS targets {{ snmp_host_ip }}
 {% endif %}
 {% endif %}
 {% if syslog_host_ip %}
-set system syslog host {{ syslog_host_ip }} port {{ syslog_port | default(6514) }} any notice
+set system syslog host {{ syslog_host_ip }} port {{ syslog_device_port | default(syslog_port | default(514)) }} any notice
 {% endif %}
 {% if ntp_server_ip %}
 set system ntp server {{ ntp_server_ip }}

@@ -1591,7 +1591,7 @@ async def update_telegraf_config(deploy_remote: Optional[bool] = None):
         db = DatabaseManager("db/netauto.db")
         details = sync_telegraf_config(
             db,
-            local_path="telegraf.conf",
+            local_path="telegraf_devices_generated.conf",
             deploy_remote=deploy_remote,
         )
         ok = bool(details.get("deployed")) if details.get("remote_sync_enabled") else True

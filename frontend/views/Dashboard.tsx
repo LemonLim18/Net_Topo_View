@@ -1169,9 +1169,10 @@ const Dashboard: React.FC = () => {
                    {statusIndicator[status]}
                 </div>
                 <div className="join">
-                    <button className={`btn join-item btn-sm ${topologyView === 'planned' ? 'btn-active' : ''}`} onClick={() => setTopologyView('planned')}>Planned</button>
-                    <button className={`btn join-item btn-sm ${topologyView === 'actual' ? 'btn-active' : ''}`} onClick={() => setTopologyView('actual')}>Real-Time</button>
-                    <button className={`btn join-item btn-sm ${topologyView === 'diff' ? 'btn-active' : ''}`} onClick={() => setTopologyView('diff')}>Diff</button>
+                    {/* info, accent, primary, secondary */}
+                    <button className={`btn join-item btn-sm ${topologyView === 'planned' ? 'btn-active text-accent' : ''}`} onClick={() => setTopologyView('planned')}>Planned</button>
+                    <button className={`btn join-item btn-sm ${topologyView === 'actual' ? 'btn-active text-accent' : ''}`} onClick={() => setTopologyView('actual')}>Real-Time</button>
+                    <button className={`btn join-item btn-sm ${topologyView === 'diff' ? 'btn-active text-accent' : ''}`} onClick={() => setTopologyView('diff')}>Diff</button>
                 </div>
                 {/* D3/Cytoscape engine toggle — temporarily hidden
                 <div className="join">

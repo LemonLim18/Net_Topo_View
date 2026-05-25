@@ -135,26 +135,38 @@ class NetBoxClient:
             return []
         try:
             ifaces = list(self.api.dcim.interfaces.filter(device_id=nb_device_id))
+            ip_map = {}
+            try:
+                ips = list(self.api.ipam.ip_addresses.filter(device_id=nb_device_id))
+                for ip_obj in ips:
+                    assigned = getattr(ip_obj, "assigned_object", None)
+                    iface_id = None
+                    if assigned is not None:
+                        iface_id = getattr(assigned, "id", None)
+                    if iface_id is None:
+                        iface_id = getattr(ip_obj, "assigned_object_id", None)
+                    if iface_id is None:
+                        continue
+                    address_str = str(getattr(ip_obj, "address", "") or "")
+                    ip_address = None
+                    subnet_mask = None
+                    if "/" in address_str:
+                        ip_address, prefix = address_str.split("/")
+                        subnet_mask = self._cidr_to_mask(int(prefix))
+                    elif address_str:
+                        ip_address = address_str
+                    existing = ip_map.get(iface_id)
+                    if existing is None or (not existing.get("ip_address") and ip_address):
+                        ip_map[iface_id] = {"ip_address": ip_address, "subnet_mask": subnet_mask}
+            except Exception:
+                ip_map = {}
+
             result = []
             for iface in ifaces:
-                # Use detail object when possible so primary_mac_address is fully available.
-                iface_detail = self.api.dcim.interfaces.get(iface.id) if getattr(iface, "id", None) else iface
-                iface_obj = iface_detail or iface
-                ip_address = None
-                subnet_mask = None
-                # Fetch IPs assigned to this interface
-                try:
-                    ips = list(self.api.ipam.ip_addresses.filter(interface_id=iface_obj.id))
-                    if ips:
-                        # Parse CIDR notation (e.g. "10.0.1.1/24")
-                        address_str = str(ips[0].address)
-                        if "/" in address_str:
-                            ip_address, prefix = address_str.split("/")
-                            subnet_mask = self._cidr_to_mask(int(prefix))
-                        else:
-                            ip_address = address_str
-                except Exception:
-                    pass
+                iface_obj = iface
+                iface_ip = ip_map.get(getattr(iface_obj, "id", None), {})
+                ip_address = iface_ip.get("ip_address")
+                subnet_mask = iface_ip.get("subnet_mask")
 
                 # Fetch link connectivity details
                 connected_endpoint = None

@@ -479,8 +479,8 @@ export const proposalApi = {
 
 // --- M17: Network Monitor API ---
 export const monitorApi = {
-  updateConfig: () =>
-    request<{ status: string; message: string }>('/monitor/update-config', {
+  updateConfig: (deployRemote?: boolean) =>
+    request<{ status: string; message: string; details?: any }>(`/monitor/update-config${deployRemote ? '?deploy_remote=true' : ''}`, {
       method: 'POST',
     }),
     
@@ -696,6 +696,7 @@ export interface CommonServicesProfile {
   snmp_contact: string | null;
   snmp_host_ip: string | null;
   syslog_port: number | null;
+  syslog_device_port: number | null;
   syslog_host_ip: string | null;
   ntp_server_ip: string | null;
   created_at?: string | null;
@@ -717,6 +718,7 @@ export const commonServicesApi = {
       snmp_contact?: string | null;
       snmp_host_ip?: string | null;
       syslog_port?: number | null;
+      syslog_device_port?: number | null;
       syslog_host_ip?: string | null;
       ntp_server_ip?: string | null;
     },
@@ -753,6 +755,7 @@ export const commonServicesApi = {
         snmp_contact: string | null;
         snmp_host_ip: string | null;
         syslog_port: number | null;
+        syslog_device_port: number | null;
         syslog_host_ip: string | null;
         ntp_server_ip: string | null;
         sources: Record<string, string | null>;

@@ -45,6 +45,7 @@ def ensure_common_services_table(db_path: str = DEFAULT_DB_PATH) -> None:
                 snmp_contact        TEXT,
                 snmp_host_ip        TEXT,
                 syslog_port         INTEGER,
+                syslog_device_port  INTEGER,
                 syslog_servers_json TEXT,
                 ntp_servers_json    TEXT,
                 syslog_host_ip      TEXT,
@@ -61,6 +62,7 @@ def ensure_common_services_table(db_path: str = DEFAULT_DB_PATH) -> None:
             ("snmp_contact", "TEXT"),
             ("snmp_host_ip", "TEXT"),
             ("syslog_port", "INTEGER"),
+            ("syslog_device_port", "INTEGER"),
             ("syslog_host_ip", "TEXT"),
             ("ntp_server_ip", "TEXT"),
         ):
@@ -108,6 +110,7 @@ def _row_to_profile(row: sqlite3.Row) -> Dict[str, Any]:
         "snmp_contact": row["snmp_contact"] if "snmp_contact" in row.keys() else None,
         "snmp_host_ip": row["snmp_host_ip"] if "snmp_host_ip" in row.keys() else None,
         "syslog_port": row["syslog_port"] if "syslog_port" in row.keys() and row["syslog_port"] is not None else 6514,
+        "syslog_device_port": row["syslog_device_port"] if "syslog_device_port" in row.keys() and row["syslog_device_port"] is not None else 514,
         "syslog_host_ip": (
             row["syslog_host_ip"] if ("syslog_host_ip" in row.keys() and row["syslog_host_ip"]) else (legacy_syslog[0] if legacy_syslog else None)
         ),
@@ -160,6 +163,7 @@ def upsert_profile(scope_type: str, scope_value: str, payload: Dict[str, Any], d
     snmp_contact = payload.get("snmp_contact")
     snmp_host_ip = payload.get("snmp_host_ip")
     syslog_port = payload.get("syslog_port")
+    syslog_device_port = payload.get("syslog_device_port")
     syslog_host_ip = payload.get("syslog_host_ip")
     ntp_server_ip = payload.get("ntp_server_ip")
 
@@ -173,7 +177,7 @@ def upsert_profile(scope_type: str, scope_value: str, payload: Dict[str, Any], d
             INSERT INTO common_service_profiles
                 (
                     scope_type, scope_value, snmp_community, snmp_location, snmp_contact, snmp_host_ip,
-                    syslog_port, syslog_servers_json, ntp_servers_json, syslog_host_ip, ntp_server_ip, updated_at
+                    syslog_port, syslog_device_port, syslog_servers_json, ntp_servers_json, syslog_host_ip, ntp_server_ip, updated_at
                 )
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
             ON CONFLICT(scope_type, scope_value) DO UPDATE SET
@@ -182,6 +186,7 @@ def upsert_profile(scope_type: str, scope_value: str, payload: Dict[str, Any], d
                 snmp_contact = excluded.snmp_contact,
                 snmp_host_ip = excluded.snmp_host_ip,
                 syslog_port = excluded.syslog_port,
+                syslog_device_port = excluded.syslog_device_port,
                 syslog_servers_json = excluded.syslog_servers_json,
                 ntp_servers_json = excluded.ntp_servers_json,
                 syslog_host_ip = excluded.syslog_host_ip,
@@ -196,6 +201,7 @@ def upsert_profile(scope_type: str, scope_value: str, payload: Dict[str, Any], d
                 snmp_contact,
                 snmp_host_ip,
                 syslog_port if syslog_port is None or str(syslog_port).strip() == "" else int(syslog_port),
+                syslog_device_port if syslog_device_port is None or str(syslog_device_port).strip() == "" else int(syslog_device_port),
                 syslog_json,
                 ntp_json,
                 syslog_host_ip,
@@ -243,6 +249,7 @@ def get_effective_profile(
         "snmp_contact": None,
         "snmp_host_ip": None,
         "syslog_port": 6514,
+        "syslog_device_port": 514,
         "syslog_host_ip": None,
         "ntp_server_ip": None,
     }
@@ -252,6 +259,7 @@ def get_effective_profile(
         "snmp_contact": None,
         "snmp_host_ip": None,
         "syslog_port": None,
+        "syslog_device_port": None,
         "syslog_host_ip": None,
         "ntp_server_ip": None,
     }
@@ -284,6 +292,13 @@ def get_effective_profile(
                 if syslog_port is not None and str(syslog_port).strip() != "":
                     merged["syslog_port"] = int(syslog_port)
                     sources["syslog_port"] = label
+            except Exception:
+                pass
+            syslog_device_port = row["syslog_device_port"] if "syslog_device_port" in row.keys() else None
+            try:
+                if syslog_device_port is not None and str(syslog_device_port).strip() != "":
+                    merged["syslog_device_port"] = int(syslog_device_port)
+                    sources["syslog_device_port"] = label
             except Exception:
                 pass
 

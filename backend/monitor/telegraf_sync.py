@@ -15,9 +15,93 @@ except Exception:  # pragma: no cover - optional dependency in some dev envs
     paramiko = None
 
 from db.manager import DatabaseManager
-from monitor.telegraf_gen import TelegrafConfigGenerator
+from monitor.telegraf_gen import TelegrafConfigGenerator, classify_vendor
 
 logger = logging.getLogger("monitor.telegraf_sync")
+
+
+def _normalize_local_vendor(vendor_raw: str) -> Optional[str]:
+    v = str(vendor_raw or "").strip().lower()
+    if not v:
+        return None
+    if "cisco" in v:
+        return "cisco"
+    if "huawei" in v:
+        return "huawei"
+    if "juniper" in v or "junos" in v:
+        return "juniper"
+    return None
+
+
+def _group_vendor_agents(devices: List[Dict[str, str]]) -> Dict[str, List[str]]:
+    groups: Dict[str, List[str]] = {"cisco": [], "huawei": [], "juniper": []}
+    seen: Set[str] = set()
+    for dev in devices:
+        ip = str(dev.get("management_ip") or dev.get("ip") or "").strip()
+        if not ip or ip in seen:
+            continue
+        seen.add(ip)
+        try:
+            ipaddress.ip_address(ip)
+        except ValueError:
+            continue
+        # Trust local inventory vendor first; fallback to classifier only if absent/unknown.
+        vendor = _normalize_local_vendor(str(dev.get("vendor") or ""))
+        if vendor is None:
+            vendor = classify_vendor(ip, str(dev.get("sys_descr") or ""))
+        if vendor in groups:
+            groups[vendor].append(ip)
+    for k in groups:
+        groups[k] = sorted(groups[k])
+    return groups
+
+
+def _format_agents_list(agents: List[str]) -> str:
+    return "[" + ", ".join(f'"{ip}"' for ip in agents) + "]"
+
+
+def _patch_named_snmp_block_agents(config_text: str, block_name: str, agents: List[str]) -> tuple[str, bool]:
+    # Normalize CRLF so multiline regex and line anchors remain deterministic.
+    normalized = (config_text or "").replace("\r\n", "\n")
+
+    block_start_re = re.compile(r"(?m)^\s*\[\[inputs\.snmp\]\]\s*$")
+    starts = [m.start() for m in block_start_re.finditer(normalized)]
+    if not starts:
+        return normalized, False
+
+    updated = False
+    out_parts: List[str] = []
+    for idx, start in enumerate(starts):
+        end = starts[idx + 1] if idx + 1 < len(starts) else len(normalized)
+        block = normalized[start:end]
+
+        if re.search(rf'(?m)^\s*name\s*=\s*"{re.escape(block_name)}"\s*$', block):
+            agents_line = f"  agents = {_format_agents_list(agents)}"
+            if re.search(r"(?m)^\s*agents\s*=\s*\[[^\]]*\]\s*$", block):
+                block = re.sub(r"(?m)^\s*agents\s*=\s*\[[^\]]*\]\s*$", agents_line, block, count=1)
+            else:
+                # Prefer inserting after the `name =` line in the matched block.
+                name_line_re = re.compile(rf'(?m)^(\s*name\s*=\s*"{re.escape(block_name)}"\s*)$')
+                if name_line_re.search(block):
+                    block = name_line_re.sub(rf"\1\n{agents_line}", block, count=1)
+                else:
+                    block = re.sub(r"(?m)^\s*\[\[inputs\.snmp\]\]\s*$", f"[[inputs.snmp]]\n{agents_line}", block, count=1)
+            updated = True
+
+        out_parts.append(block)
+
+    # Preserve any leading preamble before first block.
+    preamble = normalized[: starts[0]]
+    return preamble + "".join(out_parts), updated
+
+
+def patch_telegraf_main_agents_only(config_text: str, vendor_agents: Dict[str, List[str]]) -> tuple[str, Dict[str, bool]]:
+    updated = {"snmp_cisco": False, "snmp_huawei": False, "snmp_juniper": False}
+    out = config_text
+    out, updated["snmp_cisco"] = _patch_named_snmp_block_agents(out, "snmp_cisco", vendor_agents.get("cisco", []))
+    out, updated["snmp_huawei"] = _patch_named_snmp_block_agents(out, "snmp_huawei", vendor_agents.get("huawei", []))
+    out, updated["snmp_juniper"] = _patch_named_snmp_block_agents(out, "snmp_juniper", vendor_agents.get("juniper", []))
+    return out, updated
 
 
 def _env_bool(name: str, default: bool) -> bool:
@@ -95,6 +179,7 @@ def _inventory_devices_for_telegraf(db: DatabaseManager) -> List[Dict[str, str]]
             {
                 "management_ip": ip,
                 "sys_descr": sys_descr,
+                "vendor": str(dev.vendor or "").strip(),
             }
         )
 
@@ -258,11 +343,16 @@ def sync_telegraf_config(
     deploy = deploy_default if deploy_remote is None else bool(deploy_remote)
 
     inventory_devices = _inventory_devices_for_telegraf(db)
-    generator = TelegrafConfigGenerator()
-    rendered = generator.generate(inventory_devices)
-    generator.write(rendered, local_path)
-
-    desired_targets = extract_snmp_targets(rendered)
+    vendor_agents = _group_vendor_agents(inventory_devices)
+    desired_targets = sorted(set(vendor_agents.get("cisco", []) + vendor_agents.get("huawei", []) + vendor_agents.get("juniper", [])))
+    # Local artifact for observability: comments-only summary of managed vendor agents
+    rendered = (
+        "# NetTopoView managed vendor agent lists (source-of-truth from local DB)\n"
+        f"# snmp_cisco: {vendor_agents.get('cisco', [])}\n"
+        f"# snmp_huawei: {vendor_agents.get('huawei', [])}\n"
+        f"# snmp_juniper: {vendor_agents.get('juniper', [])}\n"
+    )
+    TelegrafConfigGenerator().write(rendered, local_path)
     result: Dict[str, Any] = {
         "local_config_path": local_path,
         "inventory_device_count": len(inventory_devices),
@@ -277,7 +367,7 @@ def sync_telegraf_config(
     }
 
     if not deploy:
-        result["message"] = "Local telegraf.conf regenerated. Remote deploy is disabled."
+        result["message"] = "Local managed Telegraf vendor-agent snapshot regenerated. Remote deploy is disabled."
         return result
     if paramiko is None:
         result["message"] = "Remote deploy skipped: paramiko is not installed in backend runtime."
@@ -289,13 +379,20 @@ def sync_telegraf_config(
     remote_pass = os.getenv("TELEGRAF_REMOTE_PASSWORD", "")
     remote_key = os.getenv("TELEGRAF_REMOTE_KEY_PATH", "").strip()
     remote_config_path = os.getenv("TELEGRAF_REMOTE_CONFIG_PATH", "/etc/telegraf/telegraf.conf").strip()
+    remote_include_path = os.getenv(
+        "TELEGRAF_REMOTE_MANAGED_INCLUDE_PATH",
+        "/etc/telegraf/telegraf.d/20-nettopoview-devices-snmp.conf",
+    ).strip()
+    remote_config_dir = os.getenv("TELEGRAF_REMOTE_CONFIG_DIR", "/etc/telegraf/telegraf.d").strip()
     test_cmd = os.getenv(
         "TELEGRAF_REMOTE_TEST_CMD",
-        f"telegraf --config {shlex.quote(remote_config_path)} --test",
+        f"telegraf --config {shlex.quote(remote_config_path)} --config-directory {shlex.quote(remote_config_dir)} --test",
     ).strip()
-    restart_cmd = os.getenv("TELEGRAF_REMOTE_RESTART_CMD", "systemctl restart telegraf").strip()
+    restart_cmd = os.getenv("TELEGRAF_REMOTE_RESTART_CMD", "systemctl reload telegraf").strip()
     status_cmd = os.getenv("TELEGRAF_REMOTE_STATUS_CMD", "systemctl is-active telegraf").strip()
     use_sudo = _env_bool("TELEGRAF_REMOTE_USE_SUDO", True)
+    validate_on_sync = _env_bool("TELEGRAF_REMOTE_VALIDATE_ON_SYNC", True)
+    restart_on_sync = _env_bool("TELEGRAF_REMOTE_RESTART_ON_SYNC", True)
 
     if not remote_user:
         result["message"] = "Remote deploy skipped: TELEGRAF_REMOTE_USER is empty."
@@ -345,66 +442,104 @@ def sync_telegraf_config(
         if not backup_res.get("ok"):
             result["backup_error"] = backup_res.get("stderr") or backup_res.get("stdout")
 
+        patched_main, updated_blocks = patch_telegraf_main_agents_only(remote_existing_text or "", vendor_agents)
+        result["patched_blocks"] = updated_blocks
+        result["mode"] = "agents_only_main_config"
+        if not any(updated_blocks.values()):
+            result["message"] = (
+                "No vendor SNMP blocks were matched in telegraf.conf. "
+                "Expected block names: snmp_cisco, snmp_huawei, snmp_juniper."
+            )
+            result["deployed"] = False
+            return result
+
         write_res = _write_remote_file(
             client,
             remote_config_path,
-            rendered,
+            patched_main,
             allow_sudo=use_sudo,
             sudo_password=remote_pass,
         )
         if not write_res.get("ok"):
             raise RuntimeError(write_res.get("stderr") or write_res.get("message") or "Remote config write failed")
+        # Keep managed include path in sync with current mode to avoid stale confusion.
+        include_note = (
+            "# NetTopoView managed mode: agents-only patching in /etc/telegraf/telegraf.conf\n"
+            "# This file is intentionally not used for SNMP blocks.\n"
+            "# Vendor agents are updated in named blocks: snmp_cisco, snmp_huawei, snmp_juniper.\n"
+        )
+        include_write_res = _write_remote_file(
+            client,
+            remote_include_path,
+            include_note,
+            allow_sudo=use_sudo,
+            sudo_password=remote_pass,
+        )
+        result["include_note_written"] = bool(include_write_res.get("ok"))
+        if not include_write_res.get("ok"):
+            result["include_note_error"] = include_write_res.get("stderr") or include_write_res.get("message")
         result["deployed"] = True
 
-        validate_res = _run_ssh_command(
-            client,
-            test_cmd,
-            use_sudo=use_sudo,
-            sudo_password=remote_pass,
-            timeout=120,
-        )
-        result["validation_exit_code"] = validate_res.get("exit_code")
-        if not validate_res.get("ok"):
-            result["validation_error"] = (validate_res.get("stderr") or validate_res.get("stdout") or "").strip()
-            if backup_path:
-                rollback_cmd = (
-                    f"if [ -f {shlex.quote(backup_path)} ]; then cp {shlex.quote(backup_path)} "
-                    f"{shlex.quote(remote_config_path)}; fi"
-                )
-                rollback_res = _run_ssh_command(
-                    client,
-                    rollback_cmd,
-                    use_sudo=use_sudo,
-                    sudo_password=remote_pass,
-                )
-                result["rollback_applied"] = bool(rollback_res.get("ok"))
-            raise RuntimeError("Remote telegraf config validation failed")
-        result["validated"] = True
+        if validate_on_sync:
+            validate_res = _run_ssh_command(
+                client,
+                test_cmd,
+                use_sudo=use_sudo,
+                sudo_password=remote_pass,
+                timeout=120,
+            )
+            result["validation_exit_code"] = validate_res.get("exit_code")
+            if not validate_res.get("ok"):
+                result["validation_error"] = (validate_res.get("stderr") or validate_res.get("stdout") or "").strip()
+                if backup_path:
+                    rollback_cmd = (
+                        f"if [ -f {shlex.quote(backup_path)} ]; then cp {shlex.quote(backup_path)} "
+                        f"{shlex.quote(remote_config_path)}; fi"
+                    )
+                    rollback_res = _run_ssh_command(
+                        client,
+                        rollback_cmd,
+                        use_sudo=use_sudo,
+                        sudo_password=remote_pass,
+                    )
+                    result["rollback_applied"] = bool(rollback_res.get("ok"))
+                raise RuntimeError("Remote telegraf config validation failed")
+            result["validated"] = True
+        else:
+            result["validated"] = True
+            result["validation_skipped"] = True
 
-        restart_res = _run_ssh_command(
-            client,
-            restart_cmd,
-            use_sudo=use_sudo,
-            sudo_password=remote_pass,
-            timeout=90,
-        )
-        result["restart_exit_code"] = restart_res.get("exit_code")
-        if not restart_res.get("ok"):
-            raise RuntimeError(restart_res.get("stderr") or restart_res.get("stdout") or "Failed to restart telegraf")
-        result["restarted"] = True
+        if restart_on_sync:
+            restart_res = _run_ssh_command(
+                client,
+                restart_cmd,
+                use_sudo=use_sudo,
+                sudo_password=remote_pass,
+                timeout=90,
+            )
+            result["restart_exit_code"] = restart_res.get("exit_code")
+            if not restart_res.get("ok"):
+                raise RuntimeError(restart_res.get("stderr") or restart_res.get("stdout") or "Failed to restart telegraf")
+            result["restarted"] = True
+        else:
+            result["restarted"] = True
+            result["restart_skipped"] = True
 
-        status_res = _run_ssh_command(
-            client,
-            status_cmd,
-            use_sudo=use_sudo,
-            sudo_password=remote_pass,
-            timeout=30,
-        )
-        result["service_status"] = (status_res.get("stdout") or "").strip()
-        if not status_res.get("ok"):
-            result["service_status_error"] = (status_res.get("stderr") or "").strip()
+        if restart_on_sync:
+            status_res = _run_ssh_command(
+                client,
+                status_cmd,
+                use_sudo=use_sudo,
+                sudo_password=remote_pass,
+                timeout=30,
+            )
+            result["service_status"] = (status_res.get("stdout") or "").strip()
+            if not status_res.get("ok"):
+                result["service_status_error"] = (status_res.get("stderr") or "").strip()
 
-        result["message"] = f"Telegraf remote sync completed on {remote_host}."
+        result["remote_main_config_path"] = remote_config_path
+        result["remote_managed_include_path"] = remote_include_path
+        result["message"] = f"Telegraf remote main-config agents patch completed on {remote_host}."
         return result
     except Exception as exc:
         result["error"] = str(exc)

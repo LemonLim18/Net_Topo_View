@@ -1,5 +1,6 @@
 from datetime import datetime
 import logging
+import os
 from db.manager import DatabaseManager
 from db.models import Device, Interface
 from llm.context_contract import CONTEXT_DOMAIN_INVENTORY, CONTEXT_DOMAIN_PLANNED_TOPOLOGY
@@ -60,10 +61,12 @@ class DeviceSyncer:
         synced_count = 0
         iface_count = 0
         
+        fetch_device_details = str(os.getenv("NETBOX_SYNC_FETCH_DEVICE_DETAILS", "false")).strip().lower() in {"1", "true", "yes", "on"}
+
         for nb_dev in nb_devices:
             try:
                 # Fetch full device by ID so we get custom_fields (list endpoint often omits them)
-                full_dev = self.nb_client.get_device_by_id(nb_dev.id) if getattr(nb_dev, "id", None) else None
+                full_dev = self.nb_client.get_device_by_id(nb_dev.id) if (fetch_device_details and getattr(nb_dev, "id", None)) else None
                 nb_dev = full_dev if full_dev is not None else nb_dev
 
                 hostname = nb_dev.name

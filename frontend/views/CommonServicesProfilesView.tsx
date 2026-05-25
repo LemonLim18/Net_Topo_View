@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
-import { Layers, Save, Trash2, RefreshCw, Download, X, AlertTriangle, Clock, Server, Upload, Rocket } from 'lucide-react';
-import { authApi, commonServicesApi, onboardingApi, syslogApi, type ZtpPublishJob, type ZtpPublishJobItem } from '../src/services/api';
+import { Layers, Save, Trash2, RefreshCw, Download, X, AlertTriangle, Clock, Server, Upload, Rocket, Eye } from 'lucide-react';
+import { authApi, commonServicesApi, onboardingApi, syslogApi, monitorApi, type ZtpPublishJob } from '../src/services/api';
 import { Confirm, Toast } from '../src/utils/swal';
 
 const GLOBAL_SCOPE_TYPE = 'global';
@@ -16,6 +16,7 @@ const CommonServicesProfilesView: React.FC = () => {
   const [snmpContact, setSnmpContact] = useState('');
   const [snmpHostIp, setSnmpHostIp] = useState('');
   const [syslogPort, setSyslogPort] = useState('6514');
+  const [syslogDevicePort, setSyslogDevicePort] = useState('514');
   const [syslogHostIp, setSyslogHostIp] = useState('');
   const [ntpServerIp, setNtpServerIp] = useState('');
 
@@ -37,6 +38,10 @@ const CommonServicesProfilesView: React.FC = () => {
   const [serverConnectionResult, setServerConnectionResult] = useState<{ ok: boolean; message: string; details?: string } | null>(null);
 
   const [publishJob, setPublishJob] = useState<ZtpPublishJob | null>(null);
+  const [publishJobs, setPublishJobs] = useState<ZtpPublishJob[]>([]);
+  const [selectedPublishJob, setSelectedPublishJob] = useState<ZtpPublishJob | null>(null);
+  const [selectedManifest, setSelectedManifest] = useState<any | null>(null);
+  const [manifestModalOpen, setManifestModalOpen] = useState(false);
   const [publishLoading, setPublishLoading] = useState(false);
   const [manifestLoading, setManifestLoading] = useState(false);
   const [recentSyslogEvents, setRecentSyslogEvents] = useState<any[]>([]);
@@ -44,6 +49,7 @@ const CommonServicesProfilesView: React.FC = () => {
   const [selectedSyslogDevice, setSelectedSyslogDevice] = useState('');
   const [syslogEventsLoading, setSyslogEventsLoading] = useState(false);
   const [syslogSyncLoading, setSyslogSyncLoading] = useState(false);
+  const [telegrafSyncLoading, setTelegrafSyncLoading] = useState(false);
   const [testSyslogLoading, setTestSyslogLoading] = useState(false);
   const [testNtpLoading, setTestNtpLoading] = useState(false);
 
@@ -56,6 +62,7 @@ const CommonServicesProfilesView: React.FC = () => {
       setSnmpContact(profile.snmp_contact || '');
       setSnmpHostIp(profile.snmp_host_ip || '');
       setSyslogPort(profile.syslog_port ? String(profile.syslog_port) : '6514');
+      setSyslogDevicePort(profile.syslog_device_port ? String(profile.syslog_device_port) : '514');
       setSyslogHostIp(profile.syslog_host_ip || '');
       setNtpServerIp(profile.ntp_server_ip || '');
     } catch {
@@ -64,6 +71,7 @@ const CommonServicesProfilesView: React.FC = () => {
       setSnmpContact('');
       setSnmpHostIp('');
       setSyslogPort('6514');
+      setSyslogDevicePort('514');
       setSyslogHostIp('');
       setNtpServerIp('');
     } finally {
@@ -79,10 +87,13 @@ const CommonServicesProfilesView: React.FC = () => {
   const loadLatestPublishJob = async () => {
     try {
       setPublishLoading(true);
-      const res = await onboardingApi.listPublishJobs(1);
-      setPublishJob(res.items?.[0] || null);
+      const res = await onboardingApi.listPublishJobs(50);
+      const items = res.items || [];
+      setPublishJobs(items);
+      setPublishJob(items[0] || null);
     } catch {
       setPublishJob(null);
+      setPublishJobs([]);
     } finally {
       setPublishLoading(false);
     }
@@ -243,17 +254,18 @@ const CommonServicesProfilesView: React.FC = () => {
     }
   };
 
-  const handleDownloadManifest = async () => {
-    if (!publishJob?.id) return;
+  const handleDownloadManifest = async (job?: ZtpPublishJob | null) => {
+    const targetJob = job || publishJob;
+    if (!targetJob?.id) return;
     setManifestLoading(true);
     try {
-      const manifest = await onboardingApi.getPublishManifest(publishJob.id);
+      const manifest = await onboardingApi.getPublishManifest(targetJob.id);
       const content = JSON.stringify(manifest, null, 2);
       const blob = new Blob([content], { type: 'application/json' });
       const url = URL.createObjectURL(blob);
       const anchor = document.createElement('a');
       anchor.href = url;
-      anchor.download = `ztp_manifest_job_${publishJob.id}.json`;
+      anchor.download = `ztp_manifest_job_${targetJob.id}.json`;
       anchor.click();
       URL.revokeObjectURL(url);
     } catch (e: any) {
@@ -272,6 +284,7 @@ const CommonServicesProfilesView: React.FC = () => {
         snmp_contact: snmpContact.trim() || null,
         snmp_host_ip: snmpHostIp.trim() || null,
         syslog_port: syslogPort.trim() ? parseInt(syslogPort.trim(), 10) : null,
+        syslog_device_port: syslogDevicePort.trim() ? parseInt(syslogDevicePort.trim(), 10) : null,
         syslog_host_ip: syslogHostIp.trim() || null,
         ntp_server_ip: ntpServerIp.trim() || null,
       };
@@ -331,6 +344,32 @@ const CommonServicesProfilesView: React.FC = () => {
       Toast.error('NTP test failed', e?.message || 'Failed to query NTP server');
     } finally {
       setTestNtpLoading(false);
+    }
+  };
+
+  const handleViewManifest = async (job: ZtpPublishJob) => {
+    setManifestLoading(true);
+    try {
+      const manifest = await onboardingApi.getPublishManifest(job.id);
+      setSelectedPublishJob(job);
+      setSelectedManifest(manifest);
+      setManifestModalOpen(true);
+    } catch (e: any) {
+      Toast.error('View manifest failed', e.message || 'Failed to load manifest');
+    } finally {
+      setManifestLoading(false);
+    }
+  };
+
+  const handleSyncTelegraf = async () => {
+    setTelegrafSyncLoading(true);
+    try {
+      const res: any = await monitorApi.updateConfig(true);
+      Toast.success('Telegraf sync', res?.message || 'Telegraf sync completed');
+    } catch (e: any) {
+      Toast.error('Telegraf sync failed', e?.message || 'Unable to sync Telegraf config');
+    } finally {
+      setTelegrafSyncLoading(false);
     }
   };
 
@@ -395,8 +434,12 @@ const CommonServicesProfilesView: React.FC = () => {
                   <input className="input input-bordered input-sm" value={syslogHostIp} onChange={(e) => setSyslogHostIp(e.target.value)} placeholder="192.168.1.251" />
                 </label>
                 <label className="form-control flex flex-col gap-1">
-                  <div className="label"><span className="label-text">Syslog Port</span></div>
+                  <div className="label"><span className="label-text">Backend Syslog Port (App ↔ Server)</span></div>
                   <input className="input input-bordered input-sm" value={syslogPort} onChange={(e) => setSyslogPort(e.target.value)} placeholder="6514" />
+                </label>
+                <label className="form-control flex flex-col gap-1">
+                  <div className="label"><span className="label-text">Device Syslog Port (Device ↔ Server)</span></div>
+                  <input className="input input-bordered input-sm" value={syslogDevicePort} onChange={(e) => setSyslogDevicePort(e.target.value)} placeholder="514" />
                 </label>
               </div>
               <div className="flex justify-end gap-2 mt-1">
@@ -558,84 +601,51 @@ const CommonServicesProfilesView: React.FC = () => {
                   </button>
                 </div>
 
-                {!publishJob ? (
+                {publishJobs.length === 0 ? (
                   <div className="text-sm opacity-70">No publish jobs found yet.</div>
                 ) : (
                   <>
-                    <div className="flex flex-wrap items-center justify-between gap-2">
-                      <div className="text-sm">
-                        <span className="font-semibold">Job #{publishJob.id}</span>
-                        <span className="opacity-70 ml-2">target {publishJob.target_server_ip}</span>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <span className={`badge badge-sm ${
-                          publishJob.status === 'success' ? 'badge-success' :
-                          publishJob.status === 'partial' ? 'badge-warning' :
-                          publishJob.status === 'failed' ? 'badge-error' :
-                          'badge-info'
-                        }`}>
-                          {publishJob.status}
-                        </span>
-                        {publishLoading && !isPublishTerminal(publishJob.status) && (
-                          <span className="loading loading-spinner loading-xs" />
-                        )}
-                      </div>
+                    <div className="max-h-56 overflow-y-auto space-y-2 pr-1">
+                      {publishJobs.map((job) => (
+                        <div key={job.id} className="rounded border border-base-300 bg-base-200/40 px-3 py-2 text-xs">
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="min-w-0">
+                              <div className="text-sm">
+                                <span className="font-semibold">Job #{job.id}</span>
+                                <span className="opacity-70 ml-2">target {job.target_server_ip}</span>
+                              </div>
+                              <div className="opacity-80 mt-0.5">
+                                {job.success_items ?? 0} succeeded / {job.failed_items ?? 0} failed / {job.total_items ?? 0} total
+                              </div>
+                            </div>
+                            <div className="flex items-center gap-1 shrink-0">
+                              <span className={`badge badge-sm ${
+                                job.status === 'success' ? 'badge-success' :
+                                job.status === 'partial' ? 'badge-warning' :
+                                job.status === 'failed' ? 'badge-error' :
+                                'badge-info'
+                              }`}>
+                                {job.status}
+                              </span>
+                              <button className="btn btn-ghost btn-xs" title="View manifest details" onClick={() => handleViewManifest(job)} disabled={manifestLoading}>
+                                <Eye className="h-3.5 w-3.5" />
+                              </button>
+                              <button className="btn btn-ghost btn-xs" title="Download manifest" onClick={() => handleDownloadManifest(job)} disabled={manifestLoading}>
+                                <Download className="h-3.5 w-3.5" />
+                              </button>
+                            </div>
+                          </div>
+                          {job.error_text ? (
+                            <div className="mt-1 text-error truncate">{job.error_text}</div>
+                          ) : null}
+                        </div>
+                      ))}
                     </div>
 
-                    <div className="text-xs opacity-80">
-                      {publishJob.success_items ?? 0} succeeded / {publishJob.failed_items ?? 0} failed / {publishJob.total_items ?? 0} total
-                    </div>
-
-                    <div className="flex justify-end">
-                      <button
-                        className="btn btn-ghost btn-xs gap-1"
-                        onClick={handleDownloadManifest}
-                        disabled={manifestLoading}
-                      >
-                        {manifestLoading ? <span className="loading loading-spinner loading-xs" /> : <Download className="h-3.5 w-3.5" />}
-                        Download Manifest
-                      </button>
-                    </div>
-
-                    {publishJob.error_text && (
-                      <div className="alert alert-warning text-xs py-2">
-                        <span>{publishJob.error_text}</span>
-                      </div>
-                    )}
-
-                    {Array.isArray(publishJob.items) && publishJob.items.length > 0 && (
-                      <div className="overflow-x-auto max-h-52 rounded border border-base-300">
-                        <table className="table table-xs w-full">
-                          <thead className="bg-base-200">
-                            <tr>
-                              <th>Device</th>
-                              <th>Status</th>
-                              <th>Stage</th>
-                              <th>Filename</th>
-                              <th>Error</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {publishJob.items.map((item: ZtpPublishJobItem) => (
-                              <tr key={item.id}>
-                                <td className="font-mono">{item.hostname}</td>
-                                <td>
-                                  <span className={`badge badge-xs ${
-                                    item.status === 'success' ? 'badge-success' :
-                                    item.status === 'failed' ? 'badge-error' :
-                                    item.status === 'running' ? 'badge-info' :
-                                    'badge-ghost'
-                                  }`}>
-                                    {item.status}
-                                  </span>
-                                </td>
-                                <td className="text-xs">{item.stage || '-'}</td>
-                                <td className="font-mono text-xs">{item.filename || '-'}</td>
-                                <td className="text-xs text-error max-w-[18rem] truncate">{item.error_text || '-'}</td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
+                    {publishLoading && publishJob && !isPublishTerminal(publishJob.status) && (
+                      <div className="flex items-center gap-2 text-xs opacity-70">
+                        <span className="loading loading-spinner loading-xs" />
+                        Refreshing running job...
                       </div>
                     )}
                   </>
@@ -644,6 +654,27 @@ const CommonServicesProfilesView: React.FC = () => {
             </div>
           </div>
         </div>
+        {manifestModalOpen && (
+          <div className="modal modal-open">
+            <div className="modal-box max-w-5xl">
+              <div className="flex items-center justify-between">
+                <h3 className="font-bold text-lg">Publish Job Manifest - Job #{selectedPublishJob?.id}</h3>
+                <div className="flex items-center gap-2">
+                  <button className="btn btn-ghost btn-sm" onClick={() => handleDownloadManifest(selectedPublishJob)}>
+                    <Download className="h-4 w-4" />
+                  </button>
+                  <button className="btn btn-ghost btn-sm" onClick={() => setManifestModalOpen(false)}>
+                    <X className="h-4 w-4" />
+                  </button>
+                </div>
+              </div>
+              <div className="mt-3 max-h-[70vh] overflow-auto rounded border border-base-300 bg-base-200/40 p-3">
+                <pre className="text-xs whitespace-pre-wrap break-words">{selectedManifest ? JSON.stringify(selectedManifest, null, 2) : 'No manifest data.'}</pre>
+              </div>
+            </div>
+            <div className="modal-backdrop" onClick={() => setManifestModalOpen(false)} />
+          </div>
+        )}
 
         {/* ─── Full-width: Recent Syslog Events ─── */}
         <div className="card shadow-xl border border-base-300 bg-gradient-to-br from-base-100 via-base-100 to-base-200/70">
@@ -656,6 +687,10 @@ const CommonServicesProfilesView: React.FC = () => {
                   <div className="flex items-center gap-2">
                     <button className="btn btn-ghost btn-sm" onClick={loadRecentSyslogEvents} disabled={syslogEventsLoading}>
                       <RefreshCw className="w-3.5 h-3.5" />
+                    </button>
+                    <button className="btn btn-outline btn-sm" onClick={handleSyncTelegraf} disabled={telegrafSyncLoading}>
+                      {telegrafSyncLoading ? <span className="loading loading-spinner loading-xs" /> : null}
+                      Sync Telegraf
                     </button>
                     <button className="btn btn-outline btn-sm" onClick={handleSyncSyslogServer} disabled={syslogSyncLoading}>
                       {syslogSyncLoading ? <span className="loading loading-spinner loading-xs" /> : null}

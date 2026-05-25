@@ -33,7 +33,7 @@ from crawler.api import router as crawler_router, set_crawl_runner
 from deploy.api import router as deploy_router, setup_pipeline
 from llm.api import router as llm_router, setup_agent
 from monitor.api import router as monitor_router
-from netbox.api import router as netbox_api_router
+from netbox.api import router as netbox_api_router, process_pending_netbox_retries, sync_local_inventory_to_netbox
 from network.api import router as network_router, set_db_manager as set_network_db
 from netbox.sync_devices import DeviceSyncer
 from netbox.sync_topology import TopologySyncer
@@ -808,6 +808,7 @@ async def lifespan(app: FastAPI):
         orchestrator=_orchestrator,
         broadcast_fn=_telemetry_broadcast,
         inventory_sync_fn=lambda: DeviceSyncer(db).sync_all_devices(),
+        local_to_netbox_sync_fn=sync_local_inventory_to_netbox,
     )
     logger.info("Background scheduler started")
 
@@ -828,6 +829,25 @@ async def lifespan(app: FastAPI):
     realtime_pulse_task = asyncio.create_task(_realtime_crawl_pulse())
     logger.info("Realtime crawl pulse started (interval=%ss)", REALTIME_PULSE_SECONDS)
 
+    # NetBox retry worker: periodically retries failed remote NetBox syncs
+    async def _netbox_retry_worker():
+        while True:
+            await asyncio.sleep(30)
+            try:
+                stats = process_pending_netbox_retries(limit=20)
+                if (stats.get("processed") or 0) > 0:
+                    logger.info(
+                        "NetBox retry worker: processed=%s succeeded=%s failed=%s",
+                        stats.get("processed"),
+                        stats.get("succeeded"),
+                        stats.get("failed"),
+                    )
+            except Exception as exc:
+                logger.warning("NetBox retry worker failed: %s", exc)
+
+    netbox_retry_task = asyncio.create_task(_netbox_retry_worker())
+    logger.info("NetBox retry worker started (interval=30s)")
+
     # 6. SSH idle-session reaper (every 2 minutes)
     async def _ssh_reaper():
         while True:
@@ -844,6 +864,7 @@ async def lifespan(app: FastAPI):
     # Cleanup
     reaper_task.cancel()
     realtime_pulse_task.cancel()
+    netbox_retry_task.cancel()
     if _syslog_receiver:
         _syslog_receiver.stop()
     stop_scheduler()
