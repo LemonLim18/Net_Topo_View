@@ -39,6 +39,7 @@ class SnapshotManager:
         device_id: int,
         label: str = "pre",
         fetched_config: Optional[str] = None,
+        description: Optional[str] = None,
     ) -> Optional[int]:
         """
         Fetch the running configuration and store it in DB.
@@ -82,7 +83,9 @@ class SnapshotManager:
         snapshot = ConfigSnapshot(
             device_id=device_id,
             config_text=fetched_config,
-            captured_at=datetime.utcnow().isoformat(),
+            captured_at=datetime.utcnow().isoformat() + "Z",
+            description=(str(description).strip() if description is not None else None) or None,
+            source_type=("manual" if label == "backup" else "deploy_pipeline"),
         )
         snapshot_id = self.db.save_config_snapshot(snapshot)
         logger.info(

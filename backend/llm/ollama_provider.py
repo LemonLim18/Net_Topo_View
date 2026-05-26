@@ -126,7 +126,11 @@ class OllamaProvider(LLMProvider):
             "model":    self._model,
             "messages": [{"role": "user", "content": prompt}],
             "stream":   False,
-            "options":  {"temperature": temperature},
+            "options":  {
+                "temperature": temperature,
+                "num_ctx": 16384,
+                "num_predict": 1024,
+            },
         }
 
         try:
@@ -209,7 +213,11 @@ class OllamaProvider(LLMProvider):
             "model":    self._model,
             "messages": ollama_messages,
             "stream":   False,
-            "options":  {"temperature": temperature},
+            "options":  {
+                "temperature": temperature,
+                "num_ctx": 16384,
+                "num_predict": 2048,
+            },
         }
 
         if tools:

@@ -84,6 +84,7 @@ class ConfigSnapshot:
     config_text: str
     config_hash: Optional[str] = None
     captured_at: Optional[str] = None
+    description: Optional[str] = None
     # M26: Compliance/baseline metadata (optional; keeps old callers working)
     snapshot_type: str = "snapshot"              # snapshot | baseline | rollback | golden | actual
     source_type: Optional[str] = None            # deploy_pipeline | manual | import | scan

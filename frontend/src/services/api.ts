@@ -820,6 +820,7 @@ export interface ConfigBackupSnapshot {
   id: number;
   device_id: number;
   captured_at?: string;
+  description?: string | null;
   config_preview: string;
   config_size: number;
 }
@@ -830,19 +831,34 @@ export interface ConfigBackupCaptureResponse {
   captured_at: string;
   message: string;
 }
+export interface ConfigBackupExplainResponse {
+  snapshot_id: number;
+  model: string;
+  summary: string;
+}
 export const networkConfigBackupApi = {
   listDevices: () =>
     request<ConfigBackupDevice[]>('/network/config-backup/devices'),
   listSnapshots: (deviceId: number, limit = 20) =>
     request<ConfigBackupSnapshot[]>(`/network/config-backup/snapshots?device_id=${deviceId}&limit=${limit}`),
-  captureSnapshot: (deviceId: number) =>
+  captureSnapshot: (deviceId: number, description?: string) =>
     request<ConfigBackupCaptureResponse>('/network/config-backup/capture', {
       method: 'POST',
-      body: JSON.stringify({ device_id: deviceId }),
+      body: JSON.stringify({ device_id: deviceId, description: description || null }),
     }),
-  /** Get full config text for display in modal. */
+  explainSnapshot: (snapshotId: number) =>
+    request<ConfigBackupExplainResponse>(`/network/config-backup/snapshots/${snapshotId}/explain`, { method: 'POST' }),
   getSnapshotContent: (snapshotId: number) =>
     request<{ id: number; config_text: string }>(`/network/config-backup/snapshots/${snapshotId}/content`),
+  getSnapshotDiff: (snapshotId: number) =>
+    request<{
+      snapshot_id: number;
+      has_previous: boolean;
+      previous_snapshot_id: number | null;
+      additions: number;
+      deletions: number;
+      diff_text: string;
+    }>(`/network/config-backup/snapshots/${snapshotId}/diff`),
   /** Download snapshot as text file (triggers browser save). */
   async downloadSnapshot(snapshotId: number, filename?: string): Promise<void> {
     const url = `${API_CONFIG.API_URL}/api/v1/network/config-backup/snapshots/${snapshotId}/download`;
@@ -859,6 +875,17 @@ export const networkConfigBackupApi = {
     a.click();
     URL.revokeObjectURL(a.href);
   },
+  /** Update a snapshot's description after capture. */
+  updateSnapshotDescription: (snapshotId: number, description: string) =>
+    request<{ snapshot_id: number; description: string }>(`/network/config-backup/snapshots/${snapshotId}/description`, {
+      method: 'PATCH',
+      body: JSON.stringify({ description }),
+    }),
+  /** AI-suggest a short description based on the captured config. */
+  suggestDescription: (snapshotId: number) =>
+    request<{ description: string }>(`/network/config-backup/snapshots/${snapshotId}/suggest-description`, {
+      method: 'POST',
+    }),
 };
 
 export const netboxApi = {

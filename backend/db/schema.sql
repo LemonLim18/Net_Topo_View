@@ -78,6 +78,7 @@ CREATE TABLE IF NOT EXISTS config_snapshots (
     config_text     TEXT    NOT NULL,
     config_hash     TEXT,                       -- SHA-256 for deduplication
     captured_at     TEXT    DEFAULT (datetime('now')),
+    description     TEXT,                       -- user-provided description / purpose
     -- M26: Compliance & baseline metadata (added via manager migration; kept here for new DBs)
     snapshot_type   TEXT    DEFAULT 'snapshot', -- snapshot | baseline | rollback | golden | actual
     source_type     TEXT,                       -- deploy_pipeline | manual | import | scan

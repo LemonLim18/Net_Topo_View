@@ -185,6 +185,7 @@ class DatabaseManager:
                 ("config_snapshots", "source_type", "TEXT"),
                 ("config_snapshots", "normalized_config", "TEXT"),
                 ("config_snapshots", "checksum", "TEXT"),
+                ("config_snapshots", "description", "TEXT"),
                 ("config_snapshots", "policy_version", "INTEGER"),
                 ("config_snapshots", "intent_id", "TEXT"),
                 ("config_snapshots", "execution_id", "INTEGER"),
@@ -994,15 +995,16 @@ class DatabaseManager:
         with self._connect() as conn:
             cur = conn.execute(
                 """INSERT INTO config_snapshots
-                   (device_id, config_text, config_hash, captured_at,
+                   (device_id, config_text, config_hash, captured_at, description,
                     snapshot_type, source_type, normalized_config, checksum,
                     policy_version, intent_id, execution_id,
                     approved_by, verified_by, verified_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     snapshot.device_id, snapshot.config_text,
                     snapshot.config_hash,
                     captured_at,
+                    getattr(snapshot, "description", None),
                     getattr(snapshot, "snapshot_type", None) or "snapshot",
                     getattr(snapshot, "source_type", None),
                     getattr(snapshot, "normalized_config", None),
@@ -1047,6 +1049,7 @@ class DatabaseManager:
             config_text=row["config_text"],
             config_hash=row["config_hash"],
             captured_at=row["captured_at"],
+            description=row["description"] if "description" in keys else None,
             snapshot_type=row["snapshot_type"] if "snapshot_type" in keys else "snapshot",
             source_type=row["source_type"] if "source_type" in keys else None,
             normalized_config=row["normalized_config"] if "normalized_config" in keys else None,
@@ -1074,6 +1077,7 @@ class DatabaseManager:
                 config_text=r["config_text"],
                 config_hash=r["config_hash"],
                 captured_at=r["captured_at"],
+                description=r["description"] if "description" in r.keys() else None,
                 snapshot_type=r["snapshot_type"] if "snapshot_type" in r.keys() else "snapshot",
                 source_type=r["source_type"] if "source_type" in r.keys() else None,
                 normalized_config=r["normalized_config"] if "normalized_config" in r.keys() else None,
@@ -1087,6 +1091,15 @@ class DatabaseManager:
             )
             for r in rows
         ]
+
+    def update_snapshot_description(self, snapshot_id: int, description: Optional[str]) -> bool:
+        """Update the description column of a config snapshot. Returns True if a row was updated."""
+        with self._connect() as conn:
+            cur = conn.execute(
+                "UPDATE config_snapshots SET description = ? WHERE id = ?",
+                (description, snapshot_id),
+            )
+            return cur.rowcount > 0
 
     # =============================================================
     # COMPLIANCE: Policies, audit, results, jobs  (persistent)

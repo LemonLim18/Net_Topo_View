@@ -39,7 +39,7 @@ const DeviceSelect: React.FC<DeviceSelectProps> = ({
   }, []);
 
   return (
-    <div className="relative w-full max-w-md" ref={dropdownRef}>
+    <div className="relative w-full" ref={dropdownRef}>
       <button
         type="button"
         onClick={() => !loading && setIsOpen(!isOpen)}

@@ -11,6 +11,9 @@ import {
   Eye,
   FileText,
   X,
+  Edit2,
+  Check,
+  Sparkles,
 } from 'lucide-react';
 import {
   networkConfigBackupApi,
@@ -19,6 +22,7 @@ import {
 } from '../src/services/api';
 import { Toast } from '../src/utils/swal';
 import DeviceSelect from '../components/DeviceSelect';
+import CaptureSnapshotModal from '../components/CaptureSnapshotModal';
 
 // ---------------------------------------------------------------------------
 // Component
@@ -31,10 +35,10 @@ const ConfigBackupView: React.FC = () => {
   const [loadingDevices, setLoadingDevices] = useState(true);
   const [loadingSnapshots, setLoadingSnapshots] = useState(false);
   const [capturing, setCapturing] = useState(false);
+  const [showCaptureModal, setShowCaptureModal] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [viewingSnapshot, setViewingSnapshot] = useState<ConfigBackupSnapshot | null>(null);
-  const [fullConfig, setFullConfig] = useState<string | null>(null);
-  const [loadingConfig, setLoadingConfig] = useState(false);
+
 
   const fetchDevices = useCallback(async (showLoading = true) => {
     if (showLoading) setLoadingDevices(true);
@@ -88,21 +92,9 @@ const ConfigBackupView: React.FC = () => {
     fetchSnapshots();
   }, [fetchSnapshots]);
 
-  const handleCapture = async () => {
+  const handleCapture = () => {
     if (!selectedDevice) return;
-    setCapturing(true);
-    setError(null);
-    try {
-      const res = await networkConfigBackupApi.captureSnapshot(selectedDevice.id);
-      Toast.success('Snapshot stored', res.message);
-      await fetchSnapshots();
-    } catch (e: any) {
-      const msg = e?.message ?? 'Capture failed';
-      setError(msg);
-      Toast.error('Capture failed', msg);
-    } finally {
-      setCapturing(false);
-    }
+    setShowCaptureModal(true);
   };
 
   const handleDownload = async (snapshotId: number, capturedAt?: string) => {
@@ -117,19 +109,14 @@ const ConfigBackupView: React.FC = () => {
     }
   };
 
-  const openViewModal = async (snapshot: ConfigBackupSnapshot) => {
+  const openViewModal = (snapshot: ConfigBackupSnapshot) => {
     setViewingSnapshot(snapshot);
-    setFullConfig(null);
-    setLoadingConfig(true);
-    try {
-      const data = await networkConfigBackupApi.getSnapshotContent(snapshot.id);
-      setFullConfig(data.config_text);
-    } catch (e: any) {
-      Toast.error('View failed', e?.message);
-    } finally {
-      setLoadingConfig(false);
-    }
   };
+
+  const handleCloseViewModal = () => {
+    setViewingSnapshot(null);
+  };
+
 
   const formatSize = (bytes: number) => {
     if (bytes === 0) return '0 B';
@@ -142,7 +129,11 @@ const ConfigBackupView: React.FC = () => {
   const formatCapturedAt = (capturedAt?: string) => {
     if (!capturedAt) return null;
     try {
-      const d = new Date(capturedAt);
+      let normalized = capturedAt;
+      if (!capturedAt.endsWith('Z') && !/[+-]\d{2}:\d{2}$/.test(capturedAt)) {
+        normalized = capturedAt + 'Z';
+      }
+      const d = new Date(normalized);
       return d.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
     } catch {
       return capturedAt;
@@ -170,61 +161,48 @@ const ConfigBackupView: React.FC = () => {
         </div>
       )}
 
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
-        {/* Sidebar: Controls */}
-        <aside className="lg:col-span-4 space-y-6">
-          {/* Select device */}
-          <section className="card bg-base-200/60 shadow-sm border border-base-300">
-            <div className="card-body p-6">
-              <h2 className="flex items-center gap-2 text-lg font-semibold mb-1">
-                <Server className="h-5 w-5 text-primary/80" />
-                Select Device
-              </h2>
-              <p className="text-xs text-base-content/50 mb-4">
-                Choose a device to manage backups.
-              </p>
-              {loadingDevices ? (
-                <div className="flex items-center gap-2 text-base-content/70 py-2">
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                  Loading devices…
-                </div>
-              ) : (
-                <div className="w-full">
+      <div className="flex flex-col gap-2">
+        {/* Row 1: Select Device & Actions */}
+        <section className="card bg-base-200/60 shadow-sm border border-base-300">
+          <div className="card-body p-6">
+            <div className="flex flex-col md:flex-row md:items-end justify-between gap-6">
+              {/* Select Device (Left - Long/Growing) */}
+              <div className="grow w-full">
+                {/* flex items-center gap-2 text-lg font-semibold text-base-content */}
+                <label className="flex items-center gap-2 text-lg font-semibold text-base-content mb-2">
+                  <Server className="h-5 w-5 text-primary" />
+                  Select Device
+                </label>
+                {loadingDevices ? (
+                  <div className="flex items-center gap-2 text-base-content/50 py-2.5 text-sm">
+                    <Loader2 className="h-4 w-4 animate-spin text-primary" />
+                    Loading devices…
+                  </div>
+                ) : (
                   <DeviceSelect
                     devices={devices}
                     selectedId={selectedDevice?.id ?? null}
                     onChange={(dev: ConfigBackupDevice | null) => setSelectedDevice(dev)}
                     loading={loadingDevices}
                   />
-                </div>
-              )}
-            </div>
-          </section>
+                )}
+              </div>
 
-          {selectedDevice && (
-            <section className="card bg-base-200/50 shadow-sm border border-base-300">
-              <div className="card-body p-6">
-                <h2 className="flex items-center gap-2 text-lg font-semibold mb-1">
-                  <Save className="h-5 w-5 text-primary/80" />
-                  Actions
-                </h2>
-                <div className="space-y-4 mt-2">
+              {/* Actions (Right - Inline smaller buttons) */}
+              {selectedDevice && (
+                <div className="flex flex-wrap items-center gap-3 w-full md:w-auto shrink-0 md:mb-[1px]">
                   <button
                     type="button"
-                    className="btn btn-primary btn-block gap-2"
+                    className="btn btn-primary btn-sm gap-2 shadow-sm font-medium"
                     onClick={handleCapture}
-                    disabled={capturing || loadingDevices}
+                    disabled={loadingDevices}
                   >
-                    {capturing ? (
-                      <Loader2 className="h-4 w-4 animate-spin" />
-                    ) : (
-                      <Save className="h-4 w-4" />
-                    )}
-                    {capturing ? 'Capturing…' : 'Capture Snapshot'}
+                    <Save className="h-4 w-4" />
+                    Capture Snapshot
                   </button>
                   <button
                     type="button"
-                    className="btn btn-outline btn-block gap-2"
+                    className="btn btn-outline btn-sm gap-2 font-medium"
                     onClick={() => { fetchSnapshots(); fetchDevices(); }}
                     disabled={loadingSnapshots || loadingDevices}
                   >
@@ -232,17 +210,13 @@ const ConfigBackupView: React.FC = () => {
                     Refresh Data
                   </button>
                 </div>
-                <div className="divider opacity-10"></div>
-                <p className="text-xs text-base-content/60 leading-relaxed italic">
-                  Captures <code className="bg-base-300 px-1 rounded">running-config</code> from <strong>{selectedDevice.hostname}</strong>.
-                </p>
-              </div>
-            </section>
-          )}
-        </aside>
+              )}
+            </div>
+          </div>
+        </section>
 
-        {/* Main: Snapshot List */}
-        <main className="lg:col-span-8">
+        {/* Row 2: Snapshot List */}
+        <main className="w-full">
           <section className="card bg-base-100 rounded-xl shadow-md border border-base-300 overflow-hidden">
             <div className="card-body p-0">
               <div className="p-6 border-b border-base-300 bg-base-200/30 flex items-center justify-between">
@@ -264,7 +238,7 @@ const ConfigBackupView: React.FC = () => {
                   <div className="p-4 rounded-full bg-base-200">
                     <Server className="h-10 w-10 text-primary/40" />
                   </div>
-                  <p className="text-center italic">Please select a device from the sidebar to view stored snapshots.</p>
+                  <p className="text-center italic">Please select a device above to view stored snapshots.</p>
                 </div>
               ) : loadingSnapshots ? (
                 <div className="flex flex-col items-center justify-center py-24 gap-3 text-base-content/70">
@@ -279,11 +253,12 @@ const ConfigBackupView: React.FC = () => {
                   <p className="text-center italic">No snapshots stored yet for this device.</p>
                 </div>
               ) : (
-                <div className="overflow-x-auto">
-                  <table className="table table-zebra w-full">
+                <div className="overflow-x-auto overflow-y-auto max-h-[400px] custom-scrollbar">
+                  <table className="table table-zebra table-pin-rows w-full">
                     <thead>
-                      <tr className="bg-base-200/50 text-base-content/70">
+                      <tr className="bg-base-200 text-base-content/70">
                         <th className="font-bold pl-6">Snapshot</th>
+                        <th className="font-bold">Description</th>
                         <th className="font-bold">Status</th>
                         <th className="font-bold">Captured At</th>
                         <th className="text-right font-bold pr-6">Actions</th>
@@ -303,6 +278,11 @@ const ConfigBackupView: React.FC = () => {
                                   {formatSize(s.config_size)}
                                 </span>
                               </div>
+                            </div>
+                          </td>
+                          <td className="py-4 text-sm opacity-80 max-w-[260px]">
+                            <div className="truncate" title={s.description ?? ''}>
+                              {s.description ? s.description : <span className="opacity-40 italic">No description</span>}
                             </div>
                           </td>
                           <td className="py-4">
@@ -346,63 +326,22 @@ const ConfigBackupView: React.FC = () => {
       </div>
 
       {/* View Modal */}
-      {viewingSnapshot && (
-        <div className="modal modal-open">
-          <div className="modal-box max-w-4xl max-h-[85vh] flex flex-col p-0 overflow-hidden">
-            <div className="flex items-center justify-between p-4 border-b border-base-content/10 bg-base-200">
-              <div className="flex items-center gap-3">
-                <FileText className="h-5 w-5 text-primary" />
-                <h3 className="font-bold text-lg">
-                  Snapshot #{viewingSnapshot.id} — {selectedDevice?.hostname}
-                </h3>
-                <span className="badge badge-sm badge-outline opacity-60">
-                  {formatSize(viewingSnapshot.config_size)}
-                </span>
-                <span className="text-xs opacity-50">
-                  {formatCapturedAt(viewingSnapshot.captured_at)}
-                </span>
-              </div>
-              <button 
-                className="btn btn-sm btn-circle btn-ghost" 
-                onClick={() => { setViewingSnapshot(null); setFullConfig(null); }}
-              >
-                <X className="h-5 w-5" />
-              </button>
-            </div>
-            
-            <div className="grow overflow-y-auto p-4 bg-neutral text-neutral-content font-mono text-sm custom-scrollbar">
-              {loadingConfig ? (
-                <div className="flex flex-col items-center justify-center py-20 gap-3 opacity-50">
-                  <Loader2 className="h-8 w-8 animate-spin" />
-                  <p>Loading configuration...</p>
-                </div>
-              ) : fullConfig ? (
-                <pre className="whitespace-pre-wrap">{fullConfig}</pre>
-              ) : (
-                <div className="text-center py-20 opacity-40 italic">
-                  No configuration content available.
-                </div>
-              )}
-            </div>
+      {viewingSnapshot && selectedDevice && (
+        <CaptureSnapshotModal
+          device={selectedDevice}
+          snapshot={viewingSnapshot}
+          onClose={handleCloseViewModal}
+          onComplete={fetchSnapshots}
+        />
+      )}
 
-            <div className="p-4 border-t border-base-content/10 bg-base-200 flex justify-end gap-2">
-              <button 
-                className="btn btn-primary"
-                onClick={() => handleDownload(viewingSnapshot.id, viewingSnapshot.captured_at)}
-              >
-                <Download className="h-4 w-4 mr-2" />
-                Download
-              </button>
-              <button 
-                className="btn" 
-                onClick={() => { setViewingSnapshot(null); setFullConfig(null); }}
-              >
-                Close
-              </button>
-            </div>
-          </div>
-          <div className="modal-backdrop bg-black/60" onClick={() => { setViewingSnapshot(null); setFullConfig(null); }}></div>
-        </div>
+      {/* Capture Snapshot Modal */}
+      {showCaptureModal && selectedDevice && (
+        <CaptureSnapshotModal
+          device={selectedDevice}
+          onClose={() => setShowCaptureModal(false)}
+          onComplete={() => fetchSnapshots()}
+        />
       )}
     </div>
   );

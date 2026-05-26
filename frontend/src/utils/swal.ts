@@ -242,6 +242,53 @@ export const Confirm = {
 //  SweetAlert2's cleanup (removing the container, restoring body overflow)
 //  never fires — producing the "sticks until resize" bug.
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+//  Prompt - centered dialog that returns a string (or null if cancelled)
+// ---------------------------------------------------------------------------
+export const Prompt = {
+  /** Optional textarea prompt. Returns null if cancelled; otherwise trimmed string (may be empty). */
+  textarea: async (
+    title: string,
+    opts?: {
+      text?: string;
+      placeholder?: string;
+      confirmText?: string;
+      cancelText?: string;
+      initialValue?: string;
+    },
+  ): Promise<string | null> => {
+    // Clear any lingering toasts/modals that may block this dialog
+    try { Swal.close(); } catch { /* ignore */ }
+    forceSwalCleanup();
+    await new Promise((r) => setTimeout(r, 50));
+
+    const result = await baseMixin.fire({
+      icon: 'info',
+      title,
+      text: opts?.text,
+      input: 'textarea',
+      inputValue: opts?.initialValue ?? '',
+      inputPlaceholder: opts?.placeholder ?? '',
+      inputAttributes: {
+        'aria-label': title,
+        autocapitalize: 'off',
+        autocorrect: 'off',
+        spellcheck: 'false',
+        maxlength: '500',
+      },
+      showCancelButton: true,
+      confirmButtonText: opts?.confirmText ?? 'Save',
+      cancelButtonText: opts?.cancelText ?? 'Cancel',
+      reverseButtons: true,
+      preConfirm: (value) => (typeof value === 'string' ? value : ''),
+    });
+
+    if (!result.isConfirmed) return null;
+    const val = typeof result.value === 'string' ? result.value : '';
+    return val.trim();
+  },
+};
+
 const LoginToastBase = Swal.mixin({
   toast: true,
   position: 'top-end',
