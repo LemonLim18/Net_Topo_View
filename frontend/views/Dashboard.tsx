@@ -19,6 +19,7 @@ import { useDeviceContext } from '../contexts/DeviceContext';
 import { Terminal, Info, RefreshCw, Cable, AlertTriangle, Loader2 } from 'lucide-react';
 import { Toast } from '../src/utils/swal';
 import { sshApi } from '../src/services/api';
+import PremiumLoaderOverlay from '../components/PremiumLoaderOverlay';
 import { validateLinkInterfaceCompatibility } from '../src/utils/linkValidation';
 import {
   formatIpInput,
@@ -1178,12 +1179,18 @@ const Dashboard: React.FC = () => {
                 </div>
             )}
             {isNetboxOpLoading && (
-                <div className="absolute inset-0 bg-base-300/45 backdrop-blur-[1px] flex items-center justify-center z-20" role="status" aria-label="Syncing NetBox data">
-                    <div className="text-center px-6">
-                        <Loader2 className="w-8 h-8 mx-auto text-primary animate-spin" />
-                        <p className="mt-2 text-base-content/85 text-sm">{netboxOpMessage}</p>
-                    </div>
-                </div>
+                <PremiumLoaderOverlay
+                    type="sync"
+                    message="Syncing NetBox data"
+                    subtitle={netboxOpMessage}
+                />
+            )}
+            {isRefreshing && (
+                <PremiumLoaderOverlay
+                    type="refresh"
+                    message="Refreshing Network Topology"
+                    subtitle="Performing live network crawl over SSH and discovering links…"
+                />
             )}
             <div className="p-2 bg-base-300/80 backdrop-blur-sm shrink-0 z-10 flex items-center justify-between px-4">
                 <div className="flex items-center gap-2 text-sm text-base-content/70" aria-live="polite">

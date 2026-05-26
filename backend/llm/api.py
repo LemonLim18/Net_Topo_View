@@ -1564,3 +1564,123 @@ async def rollback_proposal(
         "rollback_intent": rollback_intent,
         "proposal": proposal.model_dump(),
     }
+
+
+# -----------------------------------------------------------------------
+# Playbook Review & Q&A APIs
+# -----------------------------------------------------------------------
+
+class PlaybookAnalysisRequest(BaseModel):
+    playbook_content: str
+
+
+class PlaybookAnalysisResponse(BaseModel):
+    explanation: str
+    rating: int
+    safety_level: str
+    findings: List[str]
+
+
+class PlaybookQARequest(BaseModel):
+    playbook_content: str
+    question: str
+    history: List[Dict[str, str]] = Field(default_factory=list)
+
+
+@router.post("/playbook/analyze", response_model=PlaybookAnalysisResponse)
+async def analyze_playbook(request: PlaybookAnalysisRequest):
+    """
+    Analyzes an Ansible playbook, giving a plain English explanation,
+    a safety rating (0-10), a safety level, and specific risk findings.
+    """
+    agent = _get_agent()
+    provider = agent._provider
+
+    system_prompt = (
+        "You are an expert network security auditor. Analyze the following Ansible Playbook.\n"
+        "Provide your response in raw JSON format with exactly the following keys:\n"
+        "- 'explanation': A concise, plain-English summary of what the playbook does, suitable for a non-technical reviewer (as a string, bullet points allowed).\n"
+        "- 'rating': An integer safety rating between 0 and 10, where 10 is completely safe and 0 is extremely dangerous/destructive.\n"
+        "- 'safety_level': A string, either 'Safe', 'Warning', or 'Danger'.\n"
+        "- 'findings': A list of strings detailing specific safety findings, observations, or warnings.\n"
+        "Do not include any formatting, markdown markers, or backticks around the JSON. Output only the pure JSON text."
+    )
+    user_prompt = f"Ansible Playbook:\n```yaml\n{request.playbook_content}\n```"
+
+    from llm.provider import LLMMessage
+    messages = [
+        LLMMessage(role="system", content=system_prompt),
+        LLMMessage(role="user", content=user_prompt)
+    ]
+
+    try:
+        response = await provider.generate(messages=messages, temperature=0.2)
+        content = (response.content or "").strip()
+        
+        # Clean up any potential markdown wrapper
+        if content.startswith("```"):
+            lines = content.splitlines()
+            if lines[0].startswith("```"):
+                lines = lines[1:]
+            if lines and lines[-1].startswith("```"):
+                lines = lines[:-1]
+            content = "\n".join(lines).strip()
+
+        data = json.loads(content)
+        
+        rating_val = data.get("rating", 5)
+        try:
+            rating_val = int(rating_val)
+        except Exception:
+            rating_val = 5
+
+        return PlaybookAnalysisResponse(
+            explanation=data.get("explanation", "Could not analyze the playbook content."),
+            rating=rating_val,
+            safety_level=data.get("safety_level", "Warning"),
+            findings=data.get("findings", ["Manual review required."])
+        )
+    except Exception as e:
+        logger.error("Playbook analysis failed: %s", e)
+        return PlaybookAnalysisResponse(
+            explanation="AI analysis failed or returned invalid format. Please review the raw playbook manually.",
+            rating=5,
+            safety_level="Warning",
+            findings=[f"Auditor analysis error: {str(e)}", "Please check the playbook content for potential destructive commands manually."]
+        )
+
+
+@router.post("/playbook/qa")
+async def qa_playbook(request: PlaybookQARequest):
+    """
+    Answers user questions about the specific Ansible playbook in the context of review.
+    """
+    agent = _get_agent()
+    provider = agent._provider
+
+    system_prompt = (
+        "You are a network automation assistant helping an administrator review an Ansible Playbook.\n"
+        f"Ansible Playbook under review:\n```yaml\n{request.playbook_content}\n```\n\n"
+        "Answer the user's questions about this playbook accurately, clearly, and concisely. "
+        "Highlight potential risks, which hosts/devices are affected, and what changes are being made if asked."
+    )
+
+    from llm.provider import LLMMessage
+    messages = [LLMMessage(role="system", content=system_prompt)]
+
+    # Add history
+    for msg in request.history:
+        role = msg.get("role")
+        content = msg.get("content")
+        if role in ["user", "assistant"] and content:
+            messages.append(LLMMessage(role=role, content=content))
+
+    # Add current question
+    messages.append(LLMMessage(role="user", content=request.question))
+
+    try:
+        response = await provider.generate(messages=messages, temperature=0.3)
+        return {"answer": response.content or "I couldn't generate an answer."}
+    except Exception as e:
+        logger.error("Playbook QA failed: %s", e)
+        raise HTTPException(status_code=500, detail=f"QA failed: {str(e)}")

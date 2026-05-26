@@ -1,8 +1,9 @@
-﻿import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import ReactMarkdown from 'react-markdown';
 import { DiffEditor } from '@monaco-editor/react';
 import { Send, Loader2, Bot, Sparkles, AlertCircle, FileCode, ChevronRight, Paperclip, X, TriangleAlert, ChevronDown, Check, Undo2, Square, History, Plus, Trash2, RefreshCw } from 'lucide-react';
+import PremiumLoaderOverlay from '../PremiumLoaderOverlay';
 import { v4 as uuidv4 } from 'uuid';
 import { ansibleApi, llmApi, netboxApi, ragApi } from '../../src/services/api';
 import { Toast } from '../../src/utils/swal';
@@ -2863,6 +2864,13 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
       onDragOver={e => e.preventDefault()}
       onDrop={handlePanelDrop}
     >
+      {isGenerating && (
+        <PremiumLoaderOverlay
+          type="ai"
+          message="Synthesizing Playbook"
+          subtitle="AI model is compiling Ansible task definitions…"
+        />
+      )}
       {/* Playbook Studio overlay: intent categories → RAG templates → confirm → dual editor */}
       <PlaybookStudioOverlay
         open={studioOpen}

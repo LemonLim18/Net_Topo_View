@@ -19,6 +19,7 @@ import {
   type ConfigBackupSnapshot,
 } from '../src/services/api';
 import { Toast } from '../src/utils/swal';
+import PremiumLoaderOverlay from './PremiumLoaderOverlay';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -256,35 +257,11 @@ const CaptureSnapshotModal: React.FC<CaptureSnapshotModalProps> = ({
   // ── Render: Phase 1 — Capturing ───────────────────────────────
   if (phase === 'capturing') {
     return (
-      <div className="modal modal-open" id="capture-snapshot-modal">
-        <div className="modal-box max-w-lg bg-base-100 border border-base-300 shadow-2xl p-0 overflow-hidden">
-          <div className="flex flex-col items-center justify-center py-16 px-8 gap-5">
-            {/* Pulsing ring animation */}
-            <div className="relative">
-              <div className="absolute inset-0 rounded-full border-2 border-primary/30 animate-ping" />
-              <div className="relative p-4 rounded-full bg-primary/10 border border-primary/20">
-                <Loader2 className="h-8 w-8 text-primary animate-spin" />
-              </div>
-            </div>
-            <div className="text-center space-y-2">
-              <h3 className="text-base font-semibold text-base-content">
-                Capturing Configuration
-              </h3>
-              <p className="text-xs text-base-content/60 leading-relaxed max-w-xs">
-                Connecting to <strong className="text-primary">{device.hostname}</strong> via SSH
-                and retrieving the running configuration…
-              </p>
-            </div>
-            {/* Subtle progress dots */}
-            <div className="flex gap-1.5">
-              <span className="w-1.5 h-1.5 rounded-full bg-primary animate-bounce" style={{ animationDelay: '0ms' }} />
-              <span className="w-1.5 h-1.5 rounded-full bg-primary animate-bounce" style={{ animationDelay: '150ms' }} />
-              <span className="w-1.5 h-1.5 rounded-full bg-primary animate-bounce" style={{ animationDelay: '300ms' }} />
-            </div>
-          </div>
-        </div>
-        <div className="modal-backdrop bg-black/60" />
-      </div>
+      <PremiumLoaderOverlay
+        type="capture"
+        message="Capturing Configuration"
+        subtitle={`Connecting to ${device.hostname} via SSH and retrieving the running configuration…`}
+      />
     );
   }
 

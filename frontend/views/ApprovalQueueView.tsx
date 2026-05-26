@@ -3,7 +3,7 @@ import {
   CheckCircle, Clock, Eye, ListChecks, RefreshCw, User, XCircle,
 } from 'lucide-react';
 
-import { ansibleApi, deployApi } from '../src/services/api';
+import { ansibleApi, deployApi, llmApi, type PlaybookAnalysisResponse } from '../src/services/api';
 import { Confirm, Toast } from '../src/utils/swal';
 import type { ViewId } from '../types';
 
@@ -102,6 +102,14 @@ const ApprovalQueueView: React.FC<Props> = ({ setView: _setView }) => {
   const [previewContent, setPreviewContent] = useState('Loading playbook preview...');
   const [previewLoading, setPreviewLoading] = useState(false);
 
+  // Playbook AI Review states
+  const [aiTab, setAiTab] = useState<'audit' | 'chat'>('audit');
+  const [analysis, setAnalysis] = useState<PlaybookAnalysisResponse | null>(null);
+  const [analysisLoading, setAnalysisLoading] = useState(false);
+  const [qaHistory, setQaHistory] = useState<{ role: 'user' | 'assistant'; content: string }[]>([]);
+  const [qaInput, setQaInput] = useState('');
+  const [qaSending, setQaSending] = useState(false);
+
   const loadTab = useCallback(async (tab: QueueTab) => {
     setLoading((prev) => ({ ...prev, [tab]: true }));
     try {
@@ -184,21 +192,48 @@ const ApprovalQueueView: React.FC<Props> = ({ setView: _setView }) => {
     }
   }, [activeTab, refreshAllTabs]);
 
-  const loadPlaybookPreviewForJob = useCallback(async (jobId: number, entryHint?: string | null) => {
-    let path = (entryHint || '').trim();
-    if (!path) {
-      const result = await ansibleApi.getResult(jobId);
-      path = (result.entrypoint_path || '').trim();
+  const triggerAnalysis = useCallback(async (content: string) => {
+    setAnalysis(null);
+    setQaHistory([]);
+    setQaInput('');
+    setAiTab('audit');
+
+    const invalidContent = 
+      !content || 
+      content.startsWith('Loading playbook preview') || 
+      content.startsWith('No Ansible playbook job') || 
+      content.startsWith('Unable to load preview') ||
+      content.startsWith('This job has no entrypoint');
+      
+    if (invalidContent) return;
+
+    setAnalysisLoading(true);
+    try {
+      const res = await llmApi.analyzePlaybook(content);
+      setAnalysis(res);
+    } catch (e) {
+      console.error("Failed to analyze playbook:", e);
+    } finally {
+      setAnalysisLoading(false);
     }
-    if (!path) {
-      setPreviewContent(
-        'This job has no entrypoint path recorded yet. Open **Ansible Studio** from the queue to inspect generated files.'
-      );
-      return;
-    }
-    const file = await ansibleApi.readFile(path);
-    setPreviewContent(file.content || '# Empty playbook');
   }, []);
+
+  const handleSendQa = async () => {
+    if (!qaInput.trim() || qaSending || !previewContent) return;
+    const userMsg = qaInput.trim();
+    setQaInput('');
+    setQaHistory((prev) => [...prev, { role: 'user', content: userMsg }]);
+    setQaSending(true);
+    try {
+      const res = await llmApi.qaPlaybook(previewContent, userMsg, qaHistory);
+      setQaHistory((prev) => [...prev, { role: 'assistant', content: res.answer }]);
+    } catch (e: any) {
+      Toast.error("Failed to get AI answer", e.message || String(e));
+      setQaHistory((prev) => [...prev, { role: 'assistant', content: `❌ Error: ${e.message || 'Failed to communicate with AI review assistant.'}` }]);
+    } finally {
+      setQaSending(false);
+    }
+  };
 
   const openPreview = useCallback(
     async (item: QueueItem) => {
@@ -206,27 +241,53 @@ const ApprovalQueueView: React.FC<Props> = ({ setView: _setView }) => {
       setPreviewTitle(item.title);
       setPreviewContent('Loading playbook preview...');
       setPreviewLoading(true);
+      setAnalysis(null);
+      setAnalysisLoading(false);
+      setQaHistory([]);
+      setQaInput('');
+      setAiTab('audit');
+
+      let loadedContent = '';
       try {
         if (item.type === 'ansible_job') {
-          await loadPlaybookPreviewForJob(item.id, item.entrypoint_path);
+          let path = (item.entrypoint_path || '').trim();
+          if (!path) {
+            const result = await ansibleApi.getResult(item.id);
+            path = (result.entrypoint_path || '').trim();
+          }
+          if (!path) {
+            loadedContent = 'This job has no entrypoint path recorded yet. Open Ansible Studio from the queue to inspect generated files.';
+          } else {
+            const file = await ansibleApi.readFile(path);
+            loadedContent = file.content || '# Empty playbook';
+          }
         } else {
           try {
             const link = await ansibleApi.getJobForRequest(item.request_id);
-            await loadPlaybookPreviewForJob(link.job_id, link.entrypoint_path);
+            let path = (link.entrypoint_path || '').trim();
+            if (!path) {
+              const result = await ansibleApi.getResult(link.job_id);
+              path = (result.entrypoint_path || '').trim();
+            }
+            if (!path) {
+              loadedContent = 'This job has no entrypoint path recorded yet.';
+            } else {
+              const file = await ansibleApi.readFile(path);
+              loadedContent = file.content || '# Empty playbook';
+            }
           } catch {
-            setPreviewContent(
-              'No Ansible playbook job is linked to this change request, so there is nothing to preview. ' +
-                'If this was submitted outside Ansible Studio, YAML preview may not be available.'
-            );
+            loadedContent = 'No Ansible playbook job is linked to this change request, so there is nothing to preview. If this was submitted outside Ansible Studio, YAML preview may not be available.';
           }
         }
       } catch (err: any) {
-        setPreviewContent(`Unable to load preview.\n\n${err.message || 'Unknown error'}`);
+        loadedContent = `Unable to load preview.\n\n${err.message || 'Unknown error'}`;
       } finally {
+        setPreviewContent(loadedContent);
         setPreviewLoading(false);
+        void triggerAnalysis(loadedContent);
       }
     },
-    [loadPlaybookPreviewForJob]
+    [triggerAnalysis]
   );
 
   const tabItems = items[activeTab];
@@ -413,25 +474,194 @@ const ApprovalQueueView: React.FC<Props> = ({ setView: _setView }) => {
 
       {previewOpen && (
         <dialog className="modal modal-open">
-          <div className="modal-box max-w-5xl">
-            <h3 className="font-bold text-lg">Preview: {previewTitle}</h3>
-            <p className="text-sm opacity-60 mt-1">
-              Read-only YAML preview for this request.
-            </p>
-            <div className="mt-4 rounded-lg border border-base-300 bg-base-300/60 overflow-hidden">
-              {previewLoading ? (
-                <div className="flex items-center justify-center py-12">
-                  <span className="loading loading-spinner loading-md" />
-                </div>
-              ) : (
-                <pre className="p-4 text-xs overflow-auto max-h-[70vh] whitespace-pre-wrap">{previewContent}</pre>
-              )}
+          <div className="modal-box max-w-7xl w-11/12 p-5 flex flex-col overflow-hidden max-h-[90vh]">
+            <div className="flex items-center justify-between border-b pb-3 mb-4 shrink-0">
+              <div>
+                <h3 className="font-bold text-lg text-base-content">Preview: {previewTitle}</h3>
+                <p className="text-xs text-base-content/50">Review playbook YAML and consult AI safety insights before approving.</p>
+              </div>
+              <button className="btn btn-sm btn-circle btn-ghost" onClick={() => setPreviewOpen(false)}>✕</button>
             </div>
-            <div className="modal-action">
-              <button className="btn" onClick={() => setPreviewOpen(false)}>Close</button>
+
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 min-h-[60vh] max-h-[68vh] overflow-hidden flex-1">
+              {/* Left: Playbook Preview (YAML) */}
+              <div className="lg:col-span-7 flex flex-col min-h-0 border border-base-300 rounded-xl overflow-hidden bg-base-300/30">
+                <div className="p-3 bg-base-200 border-b border-base-300 flex items-center justify-between font-mono text-xs shrink-0 select-none">
+                  <span className="font-bold text-base-content/70">playbook_entrypoint.yml</span>
+                  <span className="badge badge-sm badge-outline">YAML</span>
+                </div>
+                <div className="flex-1 overflow-auto p-4 custom-scrollbar bg-neutral text-neutral-content">
+                  {previewLoading ? (
+                    <div className="flex flex-col items-center justify-center h-full gap-2 py-24 opacity-60">
+                      <span className="loading loading-spinner loading-md text-primary" />
+                      <p className="text-xs">Loading playbook content…</p>
+                    </div>
+                  ) : (
+                    <pre className="text-xs font-mono whitespace-pre-wrap leading-relaxed select-text">{previewContent}</pre>
+                  )}
+                </div>
+              </div>
+
+              {/* Right: AI Assistant (Audit / QA) */}
+              <div className="lg:col-span-5 flex flex-col min-h-0 border border-base-300 rounded-xl bg-base-100 overflow-hidden">
+                {/* AI Assistant Tabs */}
+                <div className="flex border-b border-base-300 bg-base-200/50 shrink-0 select-none">
+                  <button
+                    type="button"
+                    onClick={() => setAiTab('audit')}
+                    className={`flex-1 py-3 text-xs font-bold uppercase tracking-wider border-b-2 text-center transition-all ${
+                      aiTab === 'audit'
+                        ? 'border-primary text-primary bg-primary/5'
+                        : 'border-transparent text-base-content/60 hover:text-base-content/90'
+                    }`}
+                  >
+                    Safety Audit
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setAiTab('chat')}
+                    className={`flex-1 py-3 text-xs font-bold uppercase tracking-wider border-b-2 text-center transition-all ${
+                      aiTab === 'chat'
+                        ? 'border-primary text-primary bg-primary/5'
+                        : 'border-transparent text-base-content/60 hover:text-base-content/90'
+                    }`}
+                  >
+                    AI Review Q&A
+                  </button>
+                </div>
+
+                {/* Tab Contents */}
+                <div className="flex-1 overflow-y-auto p-4 min-h-0 custom-scrollbar">
+                  {analysisLoading ? (
+                    <div className="flex flex-col items-center justify-center h-full gap-3 py-16 opacity-75 select-none">
+                      <div className="relative w-16 h-16 flex items-center justify-center">
+                        <div className="absolute inset-0 rounded-full border-2 border-cyan-500/30 border-t-cyan-500 animate-spin" />
+                        <div className="absolute w-10 h-10 rounded-full border-2 border-violet-500/20 border-b-violet-500 animate-spin" style={{ animationDirection: 'reverse' }} />
+                        <span className="loading loading-spinner loading-xs text-primary relative z-10" />
+                      </div>
+                      <p className="text-xs font-semibold text-base-content/70">AI is auditing & rating safety…</p>
+                    </div>
+                  ) : aiTab === 'audit' ? (
+                    /* AUDIT TAB */
+                    <div className="space-y-4">
+                      {/* Safety Rating Section */}
+                      {analysis ? (
+                        <>
+                          <div className="p-4 rounded-xl border border-base-300 bg-base-200/40 flex items-center justify-between gap-4 select-none">
+                            <div>
+                              <span className="text-[10px] uppercase font-bold tracking-wider text-base-content/40">Safety Reference Rating</span>
+                              <div className="flex items-baseline gap-1 mt-0.5">
+                                <span className="text-3xl font-extrabold tracking-tight text-base-content">{analysis.rating}</span>
+                                <span className="text-xs opacity-50 font-medium">/ 10</span>
+                              </div>
+                            </div>
+                            <div className={`badge py-3 px-4 font-bold border-none text-black/75 shadow-sm text-xs ${
+                              analysis.safety_level === 'Safe' ? 'bg-success' : analysis.safety_level === 'Danger' ? 'bg-error' : 'bg-warning'
+                            }`}>
+                              {analysis.safety_level === 'Safe' ? '🟢 Safe' : analysis.safety_level === 'Danger' ? '🔴 Danger' : '🟡 Warning'}
+                            </div>
+                          </div>
+
+                          {/* Explanation */}
+                          <div className="space-y-1.5">
+                            <h4 className="text-[10px] font-bold uppercase tracking-wider text-base-content/45 select-none">Playbook Explanation</h4>
+                            <div className="text-xs leading-relaxed text-base-content/85 p-3 rounded-lg border bg-base-200/20 whitespace-pre-wrap font-sans select-text">
+                              {analysis.explanation}
+                            </div>
+                          </div>
+
+                          {/* Findings Checklist */}
+                          <div className="space-y-2">
+                            <h4 className="text-[10px] font-bold uppercase tracking-wider text-base-content/45 select-none">Security Checklist Findings</h4>
+                            <div className="flex flex-col gap-2 select-text">
+                              {analysis.findings.map((finding, idx) => (
+                                <div key={idx} className="flex items-start gap-2.5 text-xs text-base-content/85 p-2.5 rounded-lg border border-base-200 bg-base-200/10">
+                                  {analysis.safety_level === 'Safe' ? (
+                                    <span className="text-success font-bold shrink-0 mt-0.5">✓</span>
+                                  ) : analysis.safety_level === 'Danger' ? (
+                                    <span className="text-error font-bold shrink-0 mt-0.5">⚠</span>
+                                  ) : (
+                                    <span className="text-warning font-bold shrink-0 mt-0.5">⚠</span>
+                                  )}
+                                  <span className="leading-normal">{finding}</span>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        </>
+                      ) : (
+                        <div className="text-center py-16 opacity-50 italic text-xs select-none">
+                          No playbook content loaded to audit. Ensure a valid Ansible playbook job is previewed.
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                    /* Q&A CHAT TAB */
+                    <div className="flex flex-col h-full min-h-[300px]">
+                      {/* Messages history */}
+                      <div className="flex-1 space-y-3 overflow-y-auto mb-3 pr-1 text-xs custom-scrollbar">
+                        {qaHistory.length === 0 ? (
+                          <div className="text-center py-12 text-base-content/50 space-y-2 select-none">
+                            <p className="italic">No questions asked yet.</p>
+                            <p className="text-[11px] max-w-xs mx-auto leading-relaxed">
+                              Ask the AI Review Assistant questions like "What configurations will change?", "Are there credentials in plain text?", or "Is rollback supported?"
+                            </p>
+                          </div>
+                        ) : (
+                          qaHistory.map((msg, idx) => (
+                            <div key={idx} className={`chat ${msg.role === 'user' ? 'chat-end' : 'chat-start'}`}>
+                              <div className={`chat-bubble py-2 px-3 rounded-xl leading-normal text-xs font-sans ${msg.role === 'user' ? 'chat-bubble-primary text-primary-content' : 'chat-bubble-neutral text-neutral-content'}`}>
+                                {msg.content}
+                              </div>
+                            </div>
+                          ))
+                        )}
+                        {qaSending && (
+                          <div className="chat chat-start">
+                            <div className="chat-bubble py-2 px-3 rounded-xl bg-neutral/50 text-neutral-content text-xs flex items-center gap-1.5">
+                              <span className="loading loading-dots loading-xs" />
+                              Thinking…
+                            </div>
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Input box */}
+                      <div className="mt-auto border-t pt-3 flex gap-2 shrink-0 select-none">
+                        <input
+                          type="text"
+                          className="input input-sm input-bordered flex-1 text-xs focus:border-primary/50"
+                          placeholder="Ask about this playbook…"
+                          value={qaInput}
+                          onChange={(e) => setQaInput(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') void handleSendQa();
+                          }}
+                          disabled={qaSending || !previewContent}
+                        />
+                        <button
+                          type="button"
+                          className="btn btn-sm btn-primary text-xs"
+                          onClick={handleSendQa}
+                          disabled={qaSending || !qaInput.trim() || !previewContent}
+                        >
+                          Send
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+            
+            <div className="modal-action shrink-0 border-t pt-3 mt-4 flex justify-between select-none">
+              <span className="text-[10px] uppercase font-bold tracking-wider text-base-content/40 flex items-center">
+                AI Rating Reference Only — Reviews are Subject to Manual Approval Policy
+              </span>
+              <button className="btn btn-sm btn-outline" onClick={() => setPreviewOpen(false)}>Close Preview</button>
             </div>
           </div>
-          <div className="modal-backdrop" onClick={() => setPreviewOpen(false)} />
+          <div className="modal-backdrop bg-black/60" onClick={() => setPreviewOpen(false)} />
         </dialog>
       )}
     </div>

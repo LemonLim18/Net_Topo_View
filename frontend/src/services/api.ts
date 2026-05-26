@@ -338,6 +338,17 @@ export interface LlmRuntimeUpdatePayload {
   clear_history?: boolean;
 }
 
+export interface PlaybookAnalysisResponse {
+  explanation: string;
+  rating: number;
+  safety_level: string;
+  findings: string[];
+}
+
+export interface PlaybookQAResponse {
+  answer: string;
+}
+
 export const llmApi = {
   chat: (message: string) =>
     request<{ role: string; content: string; model: string; type: string; proposal: any | null; intent_meta: any | null }>('/llm/chat', {
@@ -444,6 +455,22 @@ export const llmApi = {
     
   getHistory: () =>
     request<{ history: any[] }>('/llm/chat/history'),
+
+  analyzePlaybook: (playbookContent: string) =>
+    request<PlaybookAnalysisResponse>('/llm/chat/playbook/analyze', {
+      method: 'POST',
+      body: JSON.stringify({ playbook_content: playbookContent }),
+    }),
+
+  qaPlaybook: (playbookContent: string, question: string, history: { role: string; content: string }[]) =>
+    request<PlaybookQAResponse>('/llm/chat/playbook/qa', {
+      method: 'POST',
+      body: JSON.stringify({
+        playbook_content: playbookContent,
+        question,
+        history,
+      }),
+    }),
 };
 
 // --- M19: Proposal API (Agentic Workflow) ---

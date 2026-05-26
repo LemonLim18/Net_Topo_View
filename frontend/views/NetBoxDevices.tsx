@@ -23,6 +23,7 @@ import {
 import { netboxApi, type DeviceRecord, type InterfaceRecord, type LinkRecord } from '../src/services/api';
 import { useDeviceContext } from '../contexts/DeviceContext';
 import { Toast, Confirm } from '../src/utils/swal';
+import PremiumLoaderOverlay from '../components/PremiumLoaderOverlay';
 import { validateLinkInterfaceCompatibility } from '../src/utils/linkValidation';
 import {
   formatIpInput,
@@ -855,7 +856,14 @@ const NetBoxDevices: React.FC = () => {
   // -----------------------------------------------------------------------
 
   return (
-    <div className="p-6 h-full flex flex-col overflow-hidden">
+    <div className="p-6 h-full flex flex-col overflow-hidden relative">
+      {isSyncing && (
+        <PremiumLoaderOverlay
+          type="sync"
+          message="Syncing Device Inventory"
+          subtitle="Fetching fresh endpoints and interfaces from NetBox server…"
+        />
+      )}
       {/* Header */}
       <div className="flex items-center justify-between mb-6 shrink-0">
         <div className="flex items-center gap-3">

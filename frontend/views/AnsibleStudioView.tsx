@@ -7,6 +7,7 @@ import SSHConnectModal                              from '../components/SSHConne
 import type { SSHTab }                              from '../components/SSHTerminalPanel';
 import { ansibleApi, configApi, sshApi }            from '../src/services/api';
 import { Toast }                                    from '../src/utils/swal';
+import PremiumLoaderOverlay                         from '../components/PremiumLoaderOverlay';
 import type {
   AnsibleTab, AnsibleJob, AnsibleCheckResult, AnsibleGeneratedArtifactFile, AnsibleOutputSession,
 } from '../typesLLM';
@@ -663,7 +664,14 @@ const AnsibleStudioView: React.FC<AnsibleStudioViewProps> = ({ user }) => {
   }, []);
 
   return (
-    <div className="flex flex-col h-full overflow-hidden select-none">
+    <div className="flex flex-col h-full overflow-hidden select-none relative">
+      {isChecking && (
+        <PremiumLoaderOverlay
+          type="check"
+          message="Running Dry-Run Check"
+          subtitle="Executing Ansible dry-run (check mode) validation over SSH…"
+        />
+      )}
       {/* ── Main three-column area ── */}
       <div className="flex grow min-h-0 overflow-hidden">
 
