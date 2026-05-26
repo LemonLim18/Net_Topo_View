@@ -104,10 +104,13 @@ const PlaybookEditor: React.FC<PlaybookEditorProps> = ({
   const isDeploying = normalizedStatus === 'running';
   const isDone      = normalizedStatus === 'success' || normalizedStatus === 'failed';
   const hasExecutedBefore = isDone;
-  const canRunCheck = hasPlaybook && !isChecking && !isDeploying && !isMarkdownActiveTab;
+  const isEngineer  = userRole === 'engineer';
+  const canRunCheck = hasPlaybook && !isChecking && !isDeploying && !isMarkdownActiveTab && (!isEngineer || isApproved || isDone);
   const checkTitle = isMarkdownActiveTab
     ? 'Check is only available for playbook YAML files'
-    : 'Dry-run (--check --diff) — results appear in Output tab';
+    : (isEngineer && !isApproved && !isDone
+        ? 'Playbook must be approved by an administrator before it can be dry-run (checked)'
+        : 'Dry-run (--check --diff) — results appear in Output tab');
   // Terminal states for the primary "Send" flow (but pending queue still allows Resend).
   const approveDone = isApproved || isDeploying || isDone;
   // Allow re-deploy when a job was already approved at least once.
@@ -117,14 +120,18 @@ const PlaybookEditor: React.FC<PlaybookEditorProps> = ({
   const canSubmitToQueue =
     canEdit &&
     hasPlaybook &&
-    approvalReady &&
+    (isEngineer ? true : approvalReady) &&
     !isApproved &&
     !isDeploying;
   const approveTitle = isPendingApproval
-    ? (approvalReady
-        ? 'Submit again to refresh the queue entry and audit trail (same playbook must still pass Check)'
-        : 'Run Check (rc=0) before resending to the Approval Queue')
-    : (!approvalReady ? 'Run Check (rc=0) to enable Send for Approval' : 'Send this playbook to Approval Queue');
+    ? (isEngineer
+        ? 'Resend this playbook to the Approval Queue'
+        : (approvalReady
+            ? 'Submit again to refresh the queue entry and audit trail (same playbook must still pass Check)'
+            : 'Run Check (rc=0) before resending to the Approval Queue'))
+    : (isEngineer
+        ? 'Send this playbook to the Approval Queue'
+        : (!approvalReady ? 'Run Check (rc=0) to enable Send for Approval' : 'Send this playbook to Approval Queue'));
   const deployTitle = !canDeploy
     ? 'Job must be approved by an admin first'
     : 'Deploy to all target devices';
@@ -228,12 +235,12 @@ const PlaybookEditor: React.FC<PlaybookEditorProps> = ({
         <button
           className={`btn btn-xs gap-1 ${
             isPendingApproval
-              ? approvalReady
+              ? (isEngineer || approvalReady)
                 ? 'btn-outline btn-warning'
                 : 'btn-success'
               : approveDone
                 ? 'btn-success'
-                : approvalReady
+                : (isEngineer || approvalReady)
                   ? 'btn-warning'
                   : 'btn-ghost opacity-60'
           }`}
@@ -242,14 +249,14 @@ const PlaybookEditor: React.FC<PlaybookEditorProps> = ({
           title={approveTitle}
         >
           {isPendingApproval ? (
-            approvalReady ? <RefreshCw className="h-3 w-3" /> : <Check className="h-3 w-3" />
+            (isEngineer || approvalReady) ? <RefreshCw className="h-3 w-3" /> : <Check className="h-3 w-3" />
           ) : approveDone ? (
             <Check className="h-3 w-3" />
           ) : (
             <ShieldCheck className="h-3 w-3" />
           )}
           {isPendingApproval
-            ? approvalReady
+            ? (isEngineer || approvalReady)
               ? 'Resend to Queue'
               : 'Sent for Approval'
             : approveDone

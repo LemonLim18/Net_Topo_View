@@ -187,7 +187,9 @@ const Sidebar: React.FC<SidebarProps> = ({ currentView, setView, user, onLogout,
           {/* <MenuItem id="intent_parser" label="Intent Parser" icon={BotMessageSquare} iconColor="text-accent"/> */}
           {/* <MenuItem id="intent_history" label="Intent History" icon={History} iconColor="text-accent"/> */}
           {/* <MenuItem id="playbook_comparison" label="Playbook Compare" icon={Columns} /> */}
-          <MenuItem id="approval_queue" label="Approval Queue" icon={ListChecks} iconColor="text-accent"/>
+          {normalizedRole === 'admin' && (
+            <MenuItem id="approval_queue" label="Approval Queue" icon={ListChecks} iconColor="text-accent"/>
+          )}
           {SHOW_SDN_CONTROLLER && (
             <MenuItem id="sdn_dashboard" label="SDN Controllers" icon={Network} iconColor="text-accent"/>
           )}

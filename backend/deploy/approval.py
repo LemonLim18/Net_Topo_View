@@ -10,7 +10,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, status as http_status
 from pydantic import BaseModel
 
-from auth.rbac import require_any, require_engineer
+from auth.rbac import require_admin, require_any
 from db.manager import DatabaseManager
 from deploy.audit import AuditLogger
 from deploy.change_request import ChangeRequestService
@@ -129,7 +129,7 @@ async def approve_request(
     request_id: int,
     body: ApprovalBody,
     db: DatabaseManager = Depends(_get_db),
-    user: dict = Depends(require_engineer),
+    user: dict = Depends(require_admin),
 ):
     """Approve a change request that is in PENDING_APPROVAL state."""
     svc = ChangeRequestService(db)
@@ -163,7 +163,7 @@ async def reject_request(
     request_id: int,
     body: ApprovalBody,
     db: DatabaseManager = Depends(_get_db),
-    user: dict = Depends(require_engineer),
+    user: dict = Depends(require_admin),
 ):
     """Reject a pending change request."""
     svc = ChangeRequestService(db)
@@ -216,7 +216,7 @@ async def list_approval_queue(
     status_filter: str = "pending",
     limit: int = 50,
     db: DatabaseManager = Depends(_get_db),
-    user: dict = Depends(require_any),
+    user: dict = Depends(require_admin),
 ):
     """Approval queue with Pending, Approved, and Rejected tabs."""
     request_where, job_where = _queue_status_where(status_filter)
@@ -263,7 +263,7 @@ async def list_approval_queue(
 async def list_pending_approvals(
     limit: int = 50,
     db: DatabaseManager = Depends(_get_db),
-    user: dict = Depends(require_any),
+    user: dict = Depends(require_admin),
 ):
     """Backward-compatible alias for the Pending queue."""
     return await list_approval_queue("pending", limit, db, user)

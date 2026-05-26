@@ -19,7 +19,8 @@ import {
 } from 'lucide-react';
 import { dashboardApi, netboxApi, deployApi, proposalApi, telemetryWs, syslogApi } from '../src/services/api';
 import type { DashboardSummary, DeviceRecord } from '../src/services/api';
-import type { ViewId } from '../types';
+import type { ViewId, User } from '../types';
+import { normalizeUserRole } from '../types';
 import { Toast } from '../src/utils/swal';
 
 
@@ -38,10 +39,12 @@ const severityColor: Record<string, string> = {
 interface Props {
   setView: (v: ViewId) => void;
   setSelectedDeviceId?: (id: number) => void;
+  user?: User | null;
 }
 
 /* ────────── component ────────── */
-const OverviewDashboard: React.FC<Props> = ({ setView, setSelectedDeviceId }) => {
+const OverviewDashboard: React.FC<Props> = ({ setView, setSelectedDeviceId, user }) => {
+  const normalizedRole = user ? normalizeUserRole(user.role) : 'viewer';
   const [summary, setSummary] = useState<DashboardSummary | null>(null);
   const [devices, setDevices] = useState<DeviceRecord[]>([]);
   const [syslogEvents, setSyslogEvents] = useState<any[]>([]);
@@ -370,38 +373,40 @@ const OverviewDashboard: React.FC<Props> = ({ setView, setSelectedDeviceId }) =>
       </div>
 
       {/* ─── Two-Column: Approvals + Deployments ─── */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-5 items-stretch">
+      <div className={`grid grid-cols-1 ${normalizedRole === 'admin' ? 'lg:grid-cols-2' : 'lg:grid-cols-1'} gap-5 items-stretch`}>
 
         {/* Pending Approvals */}
-        <div className="card h-full border border-base-300 bg-gradient-to-br from-base-100 to-base-200/70 shadow-lg">
-          <div className="card-body p-4">
-            <div className="flex items-center justify-between mb-3">
-              <h2 className="card-title text-sm flex items-center gap-2">
-                <CheckSquare className="h-4 w-4 text-warning" />
-                Pending Approvals
-              </h2>
-              <button className="btn btn-ghost btn-xs gap-1" onClick={() => setView('approval_queue')}>
-                Approvals <ArrowRight className="h-3 w-3" />
-              </button>
-            </div>
-            {pendingApprovals.length === 0 ? (
-              <p className="text-sm opacity-50 text-center py-8">No pending approvals</p>
-            ) : (
-              <div className="space-y-2 max-h-48 overflow-y-auto">
-                {pendingApprovals.map((p: any) => (
-                  <div key={p.id} className="flex items-start gap-3 p-2 rounded-lg hover:bg-base-200">
-                    <Rocket className="h-4 w-4 mt-0.5 flex-shrink-0 text-warning" />
-                    <div className="min-w-0 flex-1">
-                      <p className="text-xs font-medium truncate">{p.title ?? p.description ?? `Proposal ${p.id}`}</p>
-                      <p className="text-[10px] opacity-50">{p.vendor ?? ''} / {p.feature ?? ''}</p>
-                    </div>
-                    <span className="badge badge-xs badge-warning">pending</span>
-                  </div>
-                ))}
+        {normalizedRole === 'admin' && (
+          <div className="card h-full border border-base-300 bg-gradient-to-br from-base-100 to-base-200/70 shadow-lg">
+            <div className="card-body p-4">
+              <div className="flex items-center justify-between mb-3">
+                <h2 className="card-title text-sm flex items-center gap-2">
+                  <CheckSquare className="h-4 w-4 text-warning" />
+                  Pending Approvals
+                </h2>
+                <button className="btn btn-ghost btn-xs gap-1" onClick={() => setView('approval_queue')}>
+                  Approvals <ArrowRight className="h-3 w-3" />
+                </button>
               </div>
-            )}
+              {pendingApprovals.length === 0 ? (
+                <p className="text-sm opacity-50 text-center py-8">No pending approvals</p>
+              ) : (
+                <div className="space-y-2 max-h-48 overflow-y-auto">
+                  {pendingApprovals.map((p: any) => (
+                    <div key={p.id} className="flex items-start gap-3 p-2 rounded-lg hover:bg-base-200">
+                      <Rocket className="h-4 w-4 mt-0.5 flex-shrink-0 text-warning" />
+                      <div className="min-w-0 flex-1">
+                        <p className="text-xs font-medium truncate">{p.title ?? p.description ?? `Proposal ${p.id}`}</p>
+                        <p className="text-[10px] opacity-50">{p.vendor ?? ''} / {p.feature ?? ''}</p>
+                      </div>
+                      <span className="badge badge-xs badge-warning">pending</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
-        </div>
+        )}
 
         {/* Recent Deployments */}
         <div className="card h-full border border-base-300 bg-gradient-to-br from-base-100 to-base-200/70 shadow-lg">

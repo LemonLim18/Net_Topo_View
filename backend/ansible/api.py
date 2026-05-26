@@ -3795,12 +3795,33 @@ async def select_candidate(
 )
 async def check_playbook(
     job_id: int,
-    user:   dict = Depends(get_current_user),
+    user:   dict = Depends(require_role("engineer", "admin")),
 ):
     """
     Run ansible-playbook --check --diff against the stored playbook.
     Returns per-host diff for review.  No changes are applied; any authenticated user may run check.
     """
+    if _db is None:
+        raise HTTPException(503, "Database not initialized")
+
+    with _db._connect() as conn:
+        row = conn.execute(
+            "SELECT status FROM jobs WHERE id = ?",
+            (job_id,)
+        ).fetchone()
+
+    if not row:
+        raise HTTPException(404, f"Job {job_id} not found")
+
+    from auth.auth import normalize_role
+    user_role = normalize_role(user.get("role"))
+    if user_role == "engineer":
+        if row["status"] not in ("approved", "success", "failed"):
+            raise HTTPException(
+                403,
+                f"Playbook must be approved by an administrator before it can be dry-run (checked). Current status: {row['status']}"
+            )
+
     artifact = _load_job_artifact(job_id)
     from ansible.runner import run_playbook
 
@@ -3928,7 +3949,7 @@ async def submit_job_for_approval(
 @router.post("/jobs/{job_id}/approve", summary="Reviewer approves job for execution")
 async def approve_job(
     job_id: int,
-    user:   dict = Depends(require_role("engineer", "admin")),
+    user:   dict = Depends(require_role("admin")),
 ):
     """
     Set job status to 'approved'.  Required before /execute will run.
@@ -3975,7 +3996,7 @@ async def approve_job(
 async def reject_job(
     job_id: int,
     body: ReviewJobRequest,
-    user: dict = Depends(require_role("engineer", "admin")),
+    user: dict = Depends(require_role("admin")),
 ):
     if _db is None:
         raise HTTPException(503, "Database not initialized")

@@ -183,7 +183,7 @@ const App: React.FC = () => {
     switch (view) {
       // Network Domain
       case 'overview':
-        return <OverviewDashboard setView={setView} setSelectedDeviceId={setSelectedDeviceId} />;
+        return <OverviewDashboard setView={setView} setSelectedDeviceId={setSelectedDeviceId} user={user} />;
       case 'dashboard':
       case 'topology':
         return <Dashboard />;
@@ -216,7 +216,7 @@ const App: React.FC = () => {
 
       // Phase 3 — SDN Controller Dashboard
       case 'sdn_dashboard':
-        if (!SHOW_SDN_CONTROLLER) return <OverviewDashboard setView={setView} setSelectedDeviceId={setSelectedDeviceId} />;
+        if (!SHOW_SDN_CONTROLLER) return <OverviewDashboard setView={setView} setSelectedDeviceId={setSelectedDeviceId} user={user} />;
         return <SDNDashboardView setView={setView} />;
 
       // Phase 12 — Playbook Candidate Comparison (UC14)
@@ -225,6 +225,9 @@ const App: React.FC = () => {
 
       // Phase 16 — Approval Queue Dashboard
       case 'approval_queue':
+        if (normalizeUserRole(user?.role) !== 'admin') {
+          return <OverviewDashboard setView={setView} setSelectedDeviceId={setSelectedDeviceId} user={user} />;
+        }
         return <ApprovalQueueView setView={setView} />;
 
       // Template Studio — Jinja2 template editor
@@ -235,7 +238,7 @@ const App: React.FC = () => {
         return <ConfigBackupView />;
 
       default:
-        return <OverviewDashboard setView={setView} setSelectedDeviceId={setSelectedDeviceId} />;
+        return <OverviewDashboard setView={setView} setSelectedDeviceId={setSelectedDeviceId} user={user} />;
     }
   };
 
