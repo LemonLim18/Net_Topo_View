@@ -18,6 +18,16 @@ interface {{ name }}
  switchport mode access
  switchport access vlan {{ vlan }}
 {% endif %}
+{% if mode is defined and mode == 'trunk' %}
+ switchport trunk encapsulation dot1q
+ switchport mode trunk
+{% if trunk_allowed_vlans is defined and trunk_allowed_vlans %}
+ switchport trunk allowed vlan {{ trunk_allowed_vlans }}
+{% endif %}
+{% if trunk_native_vlan is defined and trunk_native_vlan %}
+ switchport trunk native vlan {{ trunk_native_vlan }}
+{% endif %}
+{% endif %}
 {% if shutdown is defined and shutdown %}
  shutdown
 {% else %}

@@ -1588,12 +1588,15 @@ from(bucket: "{INFLUXDB_BUCKET}")
 async def update_telegraf_config(deploy_remote: Optional[bool] = None):
     """Regenerate Telegraf config and optionally deploy/restart remote Telegraf."""
     try:
-        db = DatabaseManager("db/netauto.db")
-        details = sync_telegraf_config(
-            db,
-            local_path="telegraf_devices_generated.conf",
-            deploy_remote=deploy_remote,
-        )
+        def _run_sync():
+            db = DatabaseManager("db/netauto.db")
+            return sync_telegraf_config(
+                db,
+                local_path="telegraf_devices_generated.conf",
+                deploy_remote=deploy_remote,
+            )
+
+        details = await run_in_threadpool(_run_sync)
         ok = bool(details.get("deployed")) if details.get("remote_sync_enabled") else True
         validated = bool(details.get("validated")) if details.get("remote_sync_enabled") else True
         restarted = bool(details.get("restarted")) if details.get("remote_sync_enabled") else True

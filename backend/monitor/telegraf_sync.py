@@ -391,7 +391,7 @@ def sync_telegraf_config(
     restart_cmd = os.getenv("TELEGRAF_REMOTE_RESTART_CMD", "systemctl reload telegraf").strip()
     status_cmd = os.getenv("TELEGRAF_REMOTE_STATUS_CMD", "systemctl is-active telegraf").strip()
     use_sudo = _env_bool("TELEGRAF_REMOTE_USE_SUDO", True)
-    validate_on_sync = _env_bool("TELEGRAF_REMOTE_VALIDATE_ON_SYNC", True)
+    validate_on_sync = _env_bool("TELEGRAF_REMOTE_VALIDATE_ON_SYNC", False)
     restart_on_sync = _env_bool("TELEGRAF_REMOTE_RESTART_ON_SYNC", True)
 
     if not remote_user:
@@ -515,7 +515,7 @@ def sync_telegraf_config(
                 restart_cmd,
                 use_sudo=use_sudo,
                 sudo_password=remote_pass,
-                timeout=90,
+                timeout=30,
             )
             result["restart_exit_code"] = restart_res.get("exit_code")
             if not restart_res.get("ok"):
@@ -531,7 +531,7 @@ def sync_telegraf_config(
                 status_cmd,
                 use_sudo=use_sudo,
                 sudo_password=remote_pass,
-                timeout=30,
+                timeout=10,
             )
             result["service_status"] = (status_res.get("stdout") or "").strip()
             if not status_res.get("ok"):
