@@ -489,6 +489,7 @@ class DatabaseManager:
         nodes = topo_dict.get("nodes") or {}
         if not isinstance(nodes, dict):
             return
+
         by_ip: Dict[str, List[str]] = {}
         for hostname, data in nodes.items():
             if not isinstance(data, dict):
@@ -497,6 +498,7 @@ class DatabaseManager:
             if not ip:
                 continue
             by_ip.setdefault(ip, []).append(hostname)
+
         # For each IP, choose canonical hostname (DB preferred)
         canonical_by_ip: Dict[str, str] = {}
         for ip, hostnames in by_ip.items():
@@ -505,6 +507,7 @@ class DatabaseManager:
                 canonical_by_ip[ip] = dev.hostname.strip()
             else:
                 canonical_by_ip[ip] = hostnames[0]
+
         # Build rename map: old_key -> canonical (when old_key != canonical)
         rename: Dict[str, str] = {}
         to_drop: List[str] = []
@@ -517,6 +520,7 @@ class DatabaseManager:
                     to_drop.append(h)
                 else:
                     rename[h] = canonical
+
         # Apply renames: node under new key, then delete old key
         for old_key, new_key in rename.items():
             if old_key not in nodes or new_key in nodes:
@@ -527,15 +531,18 @@ class DatabaseManager:
             nodes[new_key]["name"] = new_key
             del nodes[old_key]
             to_drop.append(old_key)
+
         # Map dropped hostnames to canonical (for reference updates)
         refs_replace: Dict[str, str] = dict(rename)
         for h in to_drop:
             ip = next((ip for ip, hostnames in by_ip.items() if h in hostnames), None)
             if ip:
                 refs_replace[h] = canonical_by_ip.get(ip) or h
+
         # Drop duplicates (same IP, canonical already present)
         for h in to_drop:
             nodes.pop(h, None)
+
         # Update references in all nodes: connectedNode, edgeLink
         for node_data in nodes.values():
             if not isinstance(node_data, dict):
@@ -551,6 +558,43 @@ class DatabaseManager:
                     for iface, link in list(edge.items()):
                         if isinstance(link, dict) and link.get("remote_node") == old_key:
                             link["remote_node"] = new_key
+
+    # =============================================================
+    # ONBOARDING (M0) — Day-0 config override drafts
+    # =============================================================
+    def get_onboarding_day0_override(self, device_id: int) -> Optional[Dict[str, Any]]:
+        """Return {config_text, filename, updated_at} or None."""
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT config_text, filename, updated_at FROM onboarding_day0_overrides WHERE device_id = ?",
+                (int(device_id),),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def set_onboarding_day0_override(self, device_id: int, config_text: str, filename: str = "") -> None:
+        config_text = str(config_text or "").rstrip() + "\n"
+        filename = str(filename or "").strip()
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO onboarding_day0_overrides (device_id, config_text, filename, updated_at)
+                VALUES (?, ?, ?, datetime('now'))
+                ON CONFLICT(device_id) DO UPDATE SET
+                    config_text = excluded.config_text,
+                    filename    = excluded.filename,
+                    updated_at  = datetime('now')
+                """,
+                (int(device_id), config_text, filename),
+            )
+
+    def clear_onboarding_day0_override(self, device_id: int) -> bool:
+        """Return True if a row was deleted."""
+        with self._connect() as conn:
+            cur = conn.execute(
+                "DELETE FROM onboarding_day0_overrides WHERE device_id = ?",
+                (int(device_id),),
+            )
+            return bool(cur.rowcount and cur.rowcount > 0)
 
     def update_topology(self, topo_dict: Dict[str, Any]) -> None:
         """

@@ -9,6 +9,7 @@ import {
   type ZtpPublishJob,
   type ZtpPublishJobItem,
 } from '../src/services/api';
+import { Confirm, Toast } from '../src/utils/swal';
 
 const ONBOARDING_STEP_KEY = 'onboarding.step';
 const ONBOARDING_SELECTED_DEVICE_KEY = 'onboarding.selectedDeviceId';
@@ -53,6 +54,8 @@ const OnboardingView: React.FC<{ setView: (id: ViewId) => void }> = ({ setView }
   const [filename, setFilename]       = useState(() => localStorage.getItem(ONBOARDING_FILENAME_KEY) || 'day0_config.txt');
   const [loadingConfig, setLoadingConfig] = useState(false);
   const [showEditorModal, setShowEditorModal] = useState(false);
+  const [editorBaseConfig, setEditorBaseConfig] = useState('');
+  const [savingOverride, setSavingOverride] = useState(false);
 
   const [error, setError]             = useState('');
   const [isFullWidth, setIsFullWidth] = useState(() => localStorage.getItem(ONBOARDING_FULL_WIDTH_KEY) === 'true');
@@ -178,11 +181,54 @@ const OnboardingView: React.FC<{ setView: (id: ViewId) => void }> = ({ setView }
       const data = await onboardingApi.generateForDevice(device.id);
       setConfig(data.config);
       setFilename(data.filename);
+      setEditorBaseConfig(data.config);
       setShowEditorModal(true);
     } catch (e: any) {
       setError(e.message ?? 'Failed to generate config');
     } finally {
       setLoadingConfig(false);
+    }
+  };
+
+  const isEditorDirty = Boolean(editorBaseConfig) && config !== editorBaseConfig;
+
+  const handleSaveOverride = async () => {
+    if (!selected) return;
+    if (!isEditorDirty) return;
+    setSavingOverride(true);
+    setError('');
+    try {
+      await onboardingApi.saveDay0Override(selected.id, config, filename);
+      setEditorBaseConfig(config);
+      Toast.success('Saved', `Day-0 config saved for ${selected.hostname}`);
+    } catch (e: any) {
+      setError(e.message ?? 'Failed to save config override');
+    } finally {
+      setSavingOverride(false);
+    }
+  };
+
+  const handleRevertToDefault = async () => {
+    if (!selected) return;
+    const ok = await Confirm.ask(
+      `Revert ${selected.hostname} to default Day-0 config?`,
+      'This will discard the saved override (if any) and reload the generated default configuration.'
+    );
+    if (!ok) return;
+
+    setSavingOverride(true);
+    setError('');
+    try {
+      await onboardingApi.clearDay0Override(selected.id);
+      const fresh = await onboardingApi.generateForDevice(selected.id);
+      setConfig(fresh.config);
+      setFilename(fresh.filename);
+      setEditorBaseConfig(fresh.config);
+      Toast.success('Reverted', `Default Day-0 config reloaded for ${selected.hostname}`);
+    } catch (e: any) {
+      setError(e.message ?? 'Failed to revert config');
+    } finally {
+      setSavingOverride(false);
     }
   };
 
@@ -671,6 +717,22 @@ const OnboardingView: React.FC<{ setView: (id: ViewId) => void }> = ({ setView }
                     Back
                   </button>
                   <div className="flex gap-2">
+                    <button
+                      className="btn btn-outline btn-sm"
+                      onClick={handleRevertToDefault}
+                      disabled={!selected || savingOverride}
+                      title="Restore generated default config"
+                    >
+                      {savingOverride ? <span className="loading loading-spinner loading-xs" /> : 'Revert'}
+                    </button>
+                    <button
+                      className="btn btn-outline btn-sm"
+                      onClick={handleSaveOverride}
+                      disabled={!selected || !isEditorDirty || savingOverride}
+                      title={isEditorDirty ? 'Save edited config for this device' : 'No changes to save'}
+                    >
+                      {savingOverride ? <span className="loading loading-spinner loading-xs" /> : 'Save'}
+                    </button>
                     <button className="btn btn-ghost btn-sm gap-2" onClick={handleCopy}>
                       {copied ? <Check className="h-4 w-4 text-success" /> : <Copy className="h-4 w-4" />}
                       {copied ? 'Copied' : 'Copy All'}

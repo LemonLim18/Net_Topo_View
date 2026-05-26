@@ -54,6 +54,7 @@ export interface OnboardingDeviceSummary {
 export interface OnboardingGenerateResponse {
   config: string;
   filename: string;
+  is_override?: boolean;
 }
 
 export interface ZtpPublishRequestPayload {
@@ -137,6 +138,17 @@ export const onboardingApi = {
   generateForDevice: (deviceId: number) =>
     request<OnboardingGenerateResponse>(`/onboarding/generate/${deviceId}`, {
       method: 'POST',
+    }),
+
+  saveDay0Override: (deviceId: number, config: string, filename?: string) =>
+    request<{ status: string; device_id: number }>(`/onboarding/day0/${deviceId}/override`, {
+      method: 'POST',
+      body: JSON.stringify({ config, filename: filename ?? '' }),
+    }),
+
+  clearDay0Override: (deviceId: number) =>
+    request<{ status: string; device_id: number }>(`/onboarding/day0/${deviceId}/override`, {
+      method: 'DELETE',
     }),
 
   publishToZtp: (payload: ZtpPublishRequestPayload) =>

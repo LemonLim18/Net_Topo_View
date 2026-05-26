@@ -922,6 +922,15 @@ def _generate_day0_config_for_device(db: DatabaseManager, device: Any, config_ov
     if isinstance(config_override, str) and config_override.strip():
         return config_override
 
+    saved_override = None
+    try:
+        saved_override = db.get_onboarding_day0_override(int(device.id))
+    except Exception:
+        saved_override = None
+
+    if saved_override and str(saved_override.get("config_text") or "").strip():
+        return str(saved_override["config_text"])
+
     effective_common = get_effective_profile(
         db._db_path,
         role=device.role,

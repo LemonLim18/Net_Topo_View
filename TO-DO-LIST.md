@@ -4,7 +4,7 @@ High Priority:
 2.  For the VLAN trunk template, please ensure that the "switchport trunk encapsulation dot1q" command is included in the template. This command is necessary for the proper functioning of VLAN trunking, and should be written before the command "switchport mode trunk". This will ensure that the VLAN trunking is properly configured and will work as intended. Please make sure to update the template accordingly to include this command in the correct order.
 
 Moderate Priority:
-1. Allow the Onboarding Device Review Config to have a save button to save the changes if the user modifies the config. Also have the revert button to restore the default configuration with confirmation dialog using sweetalert2 button.
+1. Allow the Onboarding Device Review Config to have a save button to save the changes if the user modifies the config. Also have the revert button to restore the default configuration with confirmation dialog using sweetalert2 button. [/]
 
 2. Add the description feature to the Backup Snapshot template, by allowing/prompting the user to key in the description in a text box when creating the backup snapshot. This will help to provide more context and information about the backup snapshot, making it easier for users to understand the purpose and contents of the snapshot. The description can also be used for future reference when reviewing or managing backup snapshots. Please ensure that the description is properly stored and displayed in the relevant sections of the application for easy access and visibility. Apart from that, please ensure that the AI can also has the access to read the backup snapshot itself, and explain/describe. 
 

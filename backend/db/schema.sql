@@ -431,6 +431,20 @@ CREATE INDEX IF NOT EXISTS idx_ztp_dhcp_mappings_mac    ON ztp_dhcp_mappings(man
 CREATE INDEX IF NOT EXISTS idx_ztp_dhcp_mappings_enable ON ztp_dhcp_mappings(enabled, updated_at DESC);
 
 -- -----------------------------------------------------------
+-- 15b. Onboarding Day-0 Config Overrides (M0 extension)
+-- -----------------------------------------------------------
+-- Stores reviewer-edited Day-0 configs per device so edits persist across reloads
+-- and can be used by publish jobs when no explicit config_overrides payload exists.
+CREATE TABLE IF NOT EXISTS onboarding_day0_overrides (
+    device_id   INTEGER PRIMARY KEY REFERENCES devices(id) ON DELETE CASCADE,
+    config_text TEXT    NOT NULL,
+    filename    TEXT,
+    updated_at  TEXT    DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_onboarding_day0_overrides_updated ON onboarding_day0_overrides(updated_at DESC);
+
+-- -----------------------------------------------------------
 -- 16. Config Proposals (M19 Agentic Workflow)
 -- -----------------------------------------------------------
 CREATE TABLE IF NOT EXISTS config_proposals (

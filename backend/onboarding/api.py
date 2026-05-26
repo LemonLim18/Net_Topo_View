@@ -65,6 +65,12 @@ class DeviceSummary(BaseModel):
 class GenerateResponse(BaseModel):
     config:   str
     filename: str   # suggested download filename
+    is_override: bool = False
+
+
+class Day0OverrideSaveRequest(BaseModel):
+    config: str = Field(..., description="Full Day-0 config text to persist for this device")
+    filename: str = Field("", description="Optional preferred filename for download/publish artifacts")
 
 
 class ZtpPublishRequest(BaseModel):
@@ -134,9 +140,15 @@ async def generate_for_device(device_id: int):
     The device must already have management_ip, vendor, ssh_user, ssh_password
     set in inventory for a full config to be generated.
     """
-    device = _db().get_device_by_id(device_id)
+    db = _db()
+    device = db.get_device_by_id(device_id)
     if not device:
         raise HTTPException(404, f"Device {device_id} not found in inventory")
+
+    override = db.get_onboarding_day0_override(device.id)
+    if override and str(override.get("config_text") or "").strip():
+        filename = str(override.get("filename") or "").strip() or f"{device.hostname}_day0_config.txt"
+        return GenerateResponse(config=str(override["config_text"]), filename=filename, is_override=True)
 
     # Merge inherited common services defaults (global -> site -> role -> device).
     effective_common = get_effective_profile(
@@ -166,7 +178,37 @@ async def generate_for_device(device_id: int):
 
     logger.info("Day-0 config generated for device '%s'", device.hostname)
 
-    return GenerateResponse(config=config, filename=filename)
+    return GenerateResponse(config=config, filename=filename, is_override=False)
+
+
+@router.post("/day0/{device_id}/override")
+async def save_day0_override(
+    device_id: int,
+    body: Day0OverrideSaveRequest,
+    user=Depends(require_any),
+):
+    db = _db()
+    device = db.get_device_by_id(device_id)
+    if not device:
+        raise HTTPException(404, f"Device {device_id} not found in inventory")
+    cfg = str(body.config or "").strip()
+    if not cfg:
+        raise HTTPException(422, "config must not be empty")
+    db.set_onboarding_day0_override(device_id=device.id, config_text=cfg, filename=str(body.filename or ""))
+    return {"status": "saved", "device_id": device.id}
+
+
+@router.delete("/day0/{device_id}/override")
+async def clear_day0_override(
+    device_id: int,
+    user=Depends(require_any),
+):
+    db = _db()
+    device = db.get_device_by_id(device_id)
+    if not device:
+        raise HTTPException(404, f"Device {device_id} not found in inventory")
+    deleted = db.clear_onboarding_day0_override(device.id)
+    return {"status": "cleared" if deleted else "noop", "device_id": device.id}
 
 
 # ---------------------------------------------------------------------------
