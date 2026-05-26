@@ -121,6 +121,7 @@ def _serialize_queue_item(item_type: str, row, db: DatabaseManager) -> dict:
         "review_comment": review.get("comment"),
         "review_actor": review.get("actor"),
         "reviewed_at": review.get("created_at"),
+        "owner_username": row["owner_username"] if "owner_username" in row.keys() else None,
     }
 
 
@@ -203,6 +204,8 @@ async def get_request_status(
     req = svc.get(request_id)
     if req is None:
         raise HTTPException(http_status.HTTP_404_NOT_FOUND, f"Request #{request_id} not found")
+    if user.get("role") != "admin" and req.owner_username != user.get("username"):
+        raise HTTPException(http_status.HTTP_403_FORBIDDEN, "Access to this change request is restricted to its owner and administrators.")
     return {
         "request_id": request_id,
         "title": req.title,
@@ -222,30 +225,35 @@ async def list_approval_queue(
     request_where, job_where = _queue_status_where(status_filter)
     items = []
 
+    is_admin = user.get("role") == "admin"
+    owner_username = user.get("username")
+
     try:
         cr_extra = _change_request_hide_if_ansible_job_exists_sql(status_filter)
+        cr_clause = "owner_username = ? OR owner_username IS NULL" if (owner_username and not is_admin) else "1=1"
         with db._connect() as conn:
             rows = conn.execute(
-                "SELECT id, title, requester, status, created_at "
-                f"FROM change_requests WHERE {request_where}{cr_extra} "
+                "SELECT id, title, requester, status, created_at, owner_username "
+                f"FROM change_requests WHERE {request_where}{cr_extra} AND ({cr_clause}) "
                 "ORDER BY created_at DESC LIMIT ?",
-                (limit,),
+                (owner_username, limit) if (owner_username and not is_admin) else (limit,),
             ).fetchall()
         items.extend(_serialize_queue_item("change_request", row, db) for row in rows)
     except Exception as e:
         logger.debug("Could not fetch %s change_requests: %s", status_filter, e)
 
     try:
+        job_clause = "j.owner_username = ? OR j.owner_username IS NULL" if (owner_username and not is_admin) else "1=1"
         with db._connect() as conn:
             rows = conn.execute(
-                "SELECT j.id, j.request_id, j.status, j.stage, j.created_at, j.ansible_entrypoint_path, "
+                "SELECT j.id, j.request_id, j.status, j.stage, j.created_at, j.ansible_entrypoint_path, j.owner_username, "
                 "       COALESCE(cr.title, 'Ansible Job #' || j.id) AS title, "
                 "       COALESCE(cr.requester, 'system') AS requester "
                 "FROM jobs j "
                 "LEFT JOIN change_requests cr ON j.request_id = cr.id "
-                f"WHERE {job_where} "
+                f"WHERE {job_where} AND ({job_clause}) "
                 "ORDER BY j.created_at DESC LIMIT ?",
-                (limit,),
+                (owner_username, limit) if (owner_username and not is_admin) else (limit,),
             ).fetchall()
         items.extend(_serialize_queue_item("ansible_job", row, db) for row in rows)
     except Exception as e:

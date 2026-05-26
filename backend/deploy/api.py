@@ -76,29 +76,33 @@ class ExecuteJob(BaseModel):
 async def create_request(
     req: CreateRequest,
     pipeline: DeploymentPipeline = Depends(get_pipeline),
-    _user: dict = Depends(require_role("engineer", "admin")),
+    user: dict = Depends(require_role("engineer", "admin")),
 ):
     """Create a new logical Change Request."""
-    req_id = pipeline.create_change_request(req.title, req.requester, req.description)
+    req_id = pipeline.create_change_request(
+        req.title, req.requester, req.description, owner_username=user.get("username")
+    )
     return {"request_id": req_id}
 
 @router.post("/jobs", response_model=Dict[str, int])
 async def add_job(
     job: CreateJob,
     pipeline: DeploymentPipeline = Depends(get_pipeline),
-    _user: dict = Depends(require_role("engineer", "admin")),
+    user: dict = Depends(require_role("engineer", "admin")),
 ):
     """Add a deployment job (target device) to a request."""
-    job_id = pipeline.add_job(job.request_id, job.device_id)
+    job_id = pipeline.add_job(job.request_id, job.device_id, owner_username=user.get("username"))
     return {"job_id": job_id}
 
 @router.get("/jobs", response_model=List[Dict])
 async def list_jobs(
     pipeline: DeploymentPipeline = Depends(get_pipeline),
-    _user: dict = Depends(get_current_user),
+    user: dict = Depends(get_current_user),
 ):
     """List all deployment jobs."""
-    return pipeline.get_all_jobs()
+    is_admin = user.get("role") == "admin"
+    owner_username = user.get("username")
+    return pipeline.get_all_jobs(owner_username=owner_username, is_admin=is_admin)
 
 @router.post("/jobs/{job_id}/plan")
 async def plan_job(

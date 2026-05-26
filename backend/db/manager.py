@@ -164,6 +164,10 @@ class DatabaseManager:
             ("users", "avatar", "TEXT"),
             ("users", "security_question", "TEXT"),
             ("users", "security_answer_hash", "TEXT"),
+            # M15: Resource ownership columns
+            ("config_snapshots", "owner_username", "TEXT"),
+            ("change_requests", "owner_username", "TEXT"),
+            ("jobs", "owner_username", "TEXT"),
         ]
         with self._connect() as conn:
             for table, col, col_def in _new_columns:
@@ -997,14 +1001,15 @@ class DatabaseManager:
             snapshot.captured_at
             or datetime.now(tz=TZ_UTC8).isoformat(timespec="seconds")
         )
+        owner_username = getattr(snapshot, "owner_username", None)
         with self._connect() as conn:
             cur = conn.execute(
                 """INSERT INTO config_snapshots
                    (device_id, config_text, config_hash, captured_at, description,
                     snapshot_type, source_type, normalized_config, checksum,
                     policy_version, intent_id, execution_id,
-                    approved_by, verified_by, verified_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    approved_by, verified_by, verified_at, owner_username)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     snapshot.device_id, snapshot.config_text,
                     snapshot.config_hash,
@@ -1020,6 +1025,7 @@ class DatabaseManager:
                     getattr(snapshot, "approved_by", None),
                     getattr(snapshot, "verified_by", None),
                     getattr(snapshot, "verified_at", None),
+                    owner_username,
                 ),
             )
             snapshot_id = cur.lastrowid
@@ -1065,15 +1071,35 @@ class DatabaseManager:
             approved_by=row["approved_by"] if "approved_by" in keys else None,
             verified_by=row["verified_by"] if "verified_by" in keys else None,
             verified_at=row["verified_at"] if "verified_at" in keys else None,
+            owner_username=row["owner_username"] if "owner_username" in keys else None,
         )
 
-    def get_config_history(self, device_id: int, limit: int = 10) -> List[ConfigSnapshot]:
+    def get_config_history(
+        self,
+        device_id: int,
+        limit: int = 10,
+        owner_username: Optional[str] = None,
+        is_admin: bool = False,
+    ) -> List[ConfigSnapshot]:
+        """Return config snapshots for a device, optionally filtered by ownership.
+
+        - ``is_admin=True``  → all snapshots (no ownership filter).
+        - ``owner_username``  → only snapshots owned by this user OR legacy (NULL owner).
+        - Neither supplied   → all snapshots (backward-compatible default).
+        """
+        clauses = ["device_id = ?"]
+        params: list = [device_id]
+        if owner_username and not is_admin:
+            clauses.append("(owner_username = ? OR owner_username IS NULL)")
+            params.append(owner_username)
+        params.append(limit)
+        where = " AND ".join(clauses)
         with self._connect() as conn:
             rows = conn.execute(
-                """SELECT * FROM config_snapshots
-                   WHERE device_id = ?
+                f"""SELECT * FROM config_snapshots
+                   WHERE {where}
                    ORDER BY captured_at DESC LIMIT ?""",
-                (device_id, limit),
+                tuple(params),
             ).fetchall()
         return [
             ConfigSnapshot(
@@ -1093,6 +1119,7 @@ class DatabaseManager:
                 approved_by=r["approved_by"] if "approved_by" in r.keys() else None,
                 verified_by=r["verified_by"] if "verified_by" in r.keys() else None,
                 verified_at=r["verified_at"] if "verified_at" in r.keys() else None,
+                owner_username=r["owner_username"] if "owner_username" in r.keys() else None,
             )
             for r in rows
         ]

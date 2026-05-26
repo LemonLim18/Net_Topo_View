@@ -96,6 +96,7 @@ class ConfigSnapshot:
     approved_by: Optional[str] = None
     verified_by: Optional[str] = None
     verified_at: Optional[str] = None
+    owner_username: Optional[str] = None     # M15: resource ownership (user who created this snapshot)
     id: Optional[int] = None
 
     def __post_init__(self):

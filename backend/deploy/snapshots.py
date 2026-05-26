@@ -40,6 +40,7 @@ class SnapshotManager:
         label: str = "pre",
         fetched_config: Optional[str] = None,
         description: Optional[str] = None,
+        owner_username: Optional[str] = None,
     ) -> Optional[int]:
         """
         Fetch the running configuration and store it in DB.
@@ -51,6 +52,7 @@ class SnapshotManager:
         fetched_config:  If the caller already has the config text (e.g. from a
                          previous driver call) pass it in to avoid a second
                          connection.  If None, a fresh SSH fetch is performed.
+        owner_username:  Username of the user who initiated the capture (M15 ownership).
 
         Returns
         -------
@@ -86,6 +88,7 @@ class SnapshotManager:
             captured_at=datetime.utcnow().isoformat() + "Z",
             description=(str(description).strip() if description is not None else None) or None,
             source_type=("manual" if label == "backup" else "deploy_pipeline"),
+            owner_username=owner_username,
         )
         snapshot_id = self.db.save_config_snapshot(snapshot)
         logger.info(

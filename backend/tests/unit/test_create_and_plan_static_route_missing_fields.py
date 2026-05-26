@@ -60,15 +60,17 @@ class TestCreateAndPlanStaticRouteMissingFields(unittest.TestCase):
             deploy_models_mod = types.ModuleType("deploy.models")
 
             class ChangeRequest:
-                def __init__(self, title, description, requester):
+                def __init__(self, title, description, requester, owner_username=None, **kwargs):
                     self.title = title
                     self.description = description
                     self.requester = requester
+                    self.owner_username = owner_username
 
             class Job:
-                def __init__(self, request_id, device_id):
+                def __init__(self, request_id, device_id, owner_username=None, **kwargs):
                     self.request_id = request_id
                     self.device_id = device_id
+                    self.owner_username = owner_username
 
             class DeploymentRepository:
                 def __init__(self, db_manager):

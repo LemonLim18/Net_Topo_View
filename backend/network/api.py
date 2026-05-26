@@ -86,13 +86,14 @@ def format_changes_summary(blocks: dict) -> str:
     return "\n".join(lines).strip()
 
 # pyrefly: ignore [missing-import]
-from fastapi import APIRouter, HTTPException, Response
+from fastapi import APIRouter, HTTPException, Response, Depends
 from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel
 
 from db.manager import DatabaseManager
 from db.models import Device
 from deploy.snapshots import SnapshotManager
+from auth.rbac import require_any, require_engineer
 
 logger = logging.getLogger("network.api")
 
@@ -170,7 +171,7 @@ class ExplainResponse(BaseModel):
 
 
 @router.get("/config-backup/devices", response_model=List[DeviceSummary])
-async def list_devices_for_backup():
+async def list_devices_for_backup(user: dict = Depends(require_any)):
     """
     List devices that can be used for config backup.
     Uses the same inventory as Device Inventory (manual + NetBox). Each device
@@ -239,13 +240,24 @@ async def list_devices_for_backup():
 
 
 @router.get("/config-backup/snapshots", response_model=List[SnapshotItem])
-async def list_snapshots(device_id: int, limit: int = 20):
+async def list_snapshots(
+    device_id: int,
+    limit: int = 20,
+    user: dict = Depends(require_any),
+):
     """List stored config snapshots for a device (newest first)."""
     def _run():
         db = _db()
         if db.get_device_by_id(device_id) is None:
             raise HTTPException(404, f"Device id {device_id} not found")
-        history = db.get_config_history(device_id, limit=limit)
+        is_admin = user.get("role") == "admin"
+        owner_username = user.get("username")
+        history = db.get_config_history(
+            device_id,
+            limit=limit,
+            owner_username=owner_username,
+            is_admin=is_admin,
+        )
         return [
             SnapshotItem(
                 id=s.id,
@@ -266,7 +278,7 @@ async def list_snapshots(device_id: int, limit: int = 20):
 
 
 @router.get("/config-backup/snapshots/{snapshot_id}/download")
-async def download_snapshot(snapshot_id: int):
+async def download_snapshot(snapshot_id: int, user: dict = Depends(require_any)):
     """Return the full config text for a snapshot (for download as file)."""
 
 
@@ -275,6 +287,8 @@ async def download_snapshot(snapshot_id: int):
         snap = db.get_config_snapshot(snapshot_id)
         if snap is None:
             raise HTTPException(404, f"Snapshot {snapshot_id} not found")
+        if user.get("role") != "admin" and snap.owner_username != user.get("username"):
+            raise HTTPException(403, "Access to this snapshot is restricted to its owner and administrators.")
         return snap.config_text or ""
 
     try:
@@ -291,13 +305,15 @@ async def download_snapshot(snapshot_id: int):
 
 
 @router.get("/config-backup/snapshots/{snapshot_id}/content")
-async def get_snapshot_content(snapshot_id: int):
+async def get_snapshot_content(snapshot_id: int, user: dict = Depends(require_any)):
     """Return the full config text (JSON) for a snapshot for in-browser viewing."""
     def _run():
         db = _db()
         snap = db.get_config_snapshot(snapshot_id)
         if snap is None:
             raise HTTPException(404, f"Snapshot {snapshot_id} not found")
+        if user.get("role") != "admin" and snap.owner_username != user.get("username"):
+            raise HTTPException(403, "Access to this snapshot is restricted to its owner and administrators.")
         return {"id": snap.id, "config_text": snap.config_text or ""}
 
     try:
@@ -307,7 +323,7 @@ async def get_snapshot_content(snapshot_id: int):
 
 
 @router.get("/config-backup/snapshots/{snapshot_id}/diff")
-async def get_snapshot_diff(snapshot_id: int):
+async def get_snapshot_diff(snapshot_id: int, user: dict = Depends(require_any)):
     """
     Generate a unified diff between the current snapshot and the previous snapshot (if any),
     returning the diff text, plus count of added and deleted lines.
@@ -317,6 +333,8 @@ async def get_snapshot_diff(snapshot_id: int):
         snap = db.get_config_snapshot(snapshot_id)
         if snap is None:
             raise HTTPException(404, f"Snapshot {snapshot_id} not found")
+        if user.get("role") != "admin" and snap.owner_username != user.get("username"):
+            raise HTTPException(403, "Access to this snapshot is restricted to its owner and administrators.")
 
         # Find the previous snapshot for this device
         prev_snap = None
@@ -376,7 +394,7 @@ async def get_snapshot_diff(snapshot_id: int):
 
 
 @router.post("/config-backup/snapshots/{snapshot_id}/explain", response_model=ExplainResponse)
-async def explain_snapshot(snapshot_id: int):
+async def explain_snapshot(snapshot_id: int, user: dict = Depends(require_any)):
     """
     Use the configured LLM provider to summarize a stored backup snapshot.
     Reads the snapshot text from the local DB (not from the live device).
@@ -387,6 +405,8 @@ async def explain_snapshot(snapshot_id: int):
         snap = db.get_config_snapshot(snapshot_id)
         if snap is None:
             raise HTTPException(404, f"Snapshot {snapshot_id} not found")
+        if user.get("role") != "admin" and snap.owner_username != user.get("username"):
+            raise HTTPException(403, "Access to this snapshot is restricted to its owner and administrators.")
 
         from llm.provider import get_llm_provider
         llm = get_llm_provider()
@@ -432,7 +452,7 @@ async def explain_snapshot(snapshot_id: int):
 
 
 @router.post("/config-backup/capture", response_model=CaptureResponse)
-async def capture_snapshot(body: CaptureRequest):
+async def capture_snapshot(body: CaptureRequest, user: dict = Depends(require_engineer)):
     """
     Capture the current running configuration from the **live device**
     and store it as a backup snapshot. Requires the device to be reachable
@@ -469,7 +489,12 @@ async def capture_snapshot(body: CaptureRequest):
     def _run() -> Optional[int]:
         sm = _snapshot_manager()
         # label "backup" for user-initiated backup (vs deploy pre/post)
-        return sm.capture(body.device_id, label="backup", description=body.description)
+        return sm.capture(
+            body.device_id,
+            label="backup",
+            description=body.description,
+            owner_username=user.get("username"),
+        )
 
     try:
         snapshot_id = await run_in_threadpool(_run)
@@ -513,7 +538,11 @@ class DescriptionSuggestion(BaseModel):
 
 
 @router.patch("/config-backup/snapshots/{snapshot_id}/description")
-async def update_snapshot_description(snapshot_id: int, body: DescriptionUpdate):
+async def update_snapshot_description(
+    snapshot_id: int,
+    body: DescriptionUpdate,
+    user: dict = Depends(require_engineer),
+):
     """Update the description of an existing snapshot (e.g. after capture)."""
 
     def _run():
@@ -521,6 +550,8 @@ async def update_snapshot_description(snapshot_id: int, body: DescriptionUpdate)
         snap = db.get_config_snapshot(snapshot_id)
         if snap is None:
             raise HTTPException(404, f"Snapshot {snapshot_id} not found")
+        if user.get("role") != "admin" and snap.owner_username != user.get("username"):
+            raise HTTPException(403, "Access to this snapshot is restricted to its owner and administrators.")
         db.update_snapshot_description(snapshot_id, (body.description or "").strip() or None)
         return {"snapshot_id": snapshot_id, "description": body.description}
 
@@ -534,7 +565,7 @@ async def update_snapshot_description(snapshot_id: int, body: DescriptionUpdate)
     "/config-backup/snapshots/{snapshot_id}/suggest-description",
     response_model=DescriptionSuggestion,
 )
-async def suggest_snapshot_description(snapshot_id: int):
+async def suggest_snapshot_description(snapshot_id: int, user: dict = Depends(require_any)):
     """
     Use the configured LLM to generate a description for a stored config backup snapshot,
     comparing it to the previous snapshot if available to describe the changes.
@@ -545,6 +576,8 @@ async def suggest_snapshot_description(snapshot_id: int):
         snap = db.get_config_snapshot(snapshot_id)
         if snap is None:
             raise HTTPException(404, f"Snapshot {snapshot_id} not found")
+        if user.get("role") != "admin" and snap.owner_username != user.get("username"):
+            raise HTTPException(403, "Access to this snapshot is restricted to its owner and administrators.")
 
         from llm.provider import get_llm_provider
 

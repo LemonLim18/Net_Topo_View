@@ -8850,11 +8850,16 @@ async def create_and_plan(
             title=f"Ansible Studio: {req.intent_description[:60]}",
             description=req.intent_description,
             requester=user.get("username", "ansible_studio"),
+            owner_username=user.get("username"),
         ))
         logger.info("create_and_plan: Created ChangeRequest id=%d", cr_id)
 
         # 2. New Job linked to first device (for bookkeeping)
-        job_id = repo.create_job(Job(request_id=cr_id, device_id=device_id))
+        job_id = repo.create_job(Job(
+            request_id=cr_id,
+            device_id=device_id,
+            owner_username=user.get("username"),
+        ))
         logger.info("create_and_plan: Created Job id=%d linked to device_id=%d", job_id, device_id)
     except Exception as exc:
         logger.error("create_and_plan: Database error during CR/Job creation: %s", exc)
@@ -9021,8 +9026,13 @@ async def create_from_template(
         title=f"Template: {req.vendor}/{req.feature}",
         description=f"Config Engine render of {req.feature} for {hosts_str}",
         requester=user.get("username", "ansible_studio"),
+        owner_username=user.get("username"),
     ))
-    job_id = repo.create_job(Job(request_id=cr_id, device_id=device_id))
+    job_id = repo.create_job(Job(
+        request_id=cr_id,
+        device_id=device_id,
+        owner_username=user.get("username"),
+    ))
 
     # Persist the playbook on the job
     with _db._connect() as conn:

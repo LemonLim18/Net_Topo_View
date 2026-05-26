@@ -50,17 +50,17 @@ class DeploymentPipeline:
         self.repo = DeploymentRepository(db_manager)
 
     def create_change_request(
-        self, title: str, requester: str, description: str = ""
+        self, title: str, requester: str, description: str = "", owner_username: Optional[str] = None
     ) -> int:
         """Step 0: Create the Request container."""
         req = ChangeRequest(
-            title=title, description=description, requester=requester
+            title=title, description=description, requester=requester, owner_username=owner_username
         )
         return self.repo.create_request(req)
 
-    def add_job(self, request_id: int, device_id: int) -> int:
+    def add_job(self, request_id: int, device_id: int, owner_username: Optional[str] = None) -> int:
         """Add a device job to a request."""
-        job = Job(request_id=request_id, device_id=device_id)
+        job = Job(request_id=request_id, device_id=device_id, owner_username=owner_username)
         return self.repo.create_job(job)
 
     def run_plan_stage(
@@ -365,10 +365,10 @@ class DeploymentPipeline:
             if driver:
                 driver.disconnect()
 
-    def get_all_jobs(self) -> List[Dict]:
+    def get_all_jobs(self, owner_username: Optional[str] = None, is_admin: bool = False) -> List[Dict]:
         """List all jobs with their status."""
         # Join with requests to get request title? For now just jobs.
-        return self.repo.list_jobs()
+        return self.repo.list_jobs(owner_username=owner_username, is_admin=is_admin)
 
     def get_job_logs(self, job_id: int) -> List[Dict]:
         """Fetch logs for a job."""

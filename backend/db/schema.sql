@@ -89,7 +89,8 @@ CREATE TABLE IF NOT EXISTS config_snapshots (
     execution_id    INTEGER,                    -- link to jobs.id when applicable
     approved_by     TEXT,
     verified_by     TEXT,
-    verified_at     TEXT
+    verified_at     TEXT,
+    owner_username  TEXT                        -- M15: user who created this snapshot
 );
 
 -- -----------------------------------------------------------
@@ -124,6 +125,7 @@ CREATE TABLE IF NOT EXISTS change_requests (
     description     TEXT,
     status          TEXT    DEFAULT 'draft',    -- draft | pending_approval | approved | rejected | running | completed | failed | rolled_back
     requester       TEXT,                       -- user or 'ai_agent'
+    owner_username  TEXT,                       -- M15: user who created this change request
     created_at      TEXT    DEFAULT (datetime('now')),
     updated_at      TEXT    DEFAULT (datetime('now'))
 );
@@ -149,6 +151,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     ansible_artifact_manifest TEXT,                   -- JSON manifest for generated multi-file bundles
     ansible_entrypoint_path TEXT,                     -- Relative path to generated entry playbook
     -- ---------------------------------------------------------------------
+    owner_username  TEXT,                             -- M15: user who created this job
     created_at      TEXT    DEFAULT (datetime('now')),
     updated_at      TEXT    DEFAULT (datetime('now'))
 );
@@ -173,7 +176,10 @@ CREATE TABLE IF NOT EXISTS job_steps (
 );
 
 CREATE INDEX IF NOT EXISTS idx_jobs_request        ON jobs(request_id);
+CREATE INDEX IF NOT EXISTS idx_jobs_owner          ON jobs(owner_username);
 CREATE INDEX IF NOT EXISTS idx_steps_job           ON job_steps(job_id);
+CREATE INDEX IF NOT EXISTS idx_snapshots_owner     ON config_snapshots(owner_username);
+CREATE INDEX IF NOT EXISTS idx_change_requests_owner ON change_requests(owner_username);
 
 -- -----------------------------------------------------------
 -- 9. Drift Events (M8)

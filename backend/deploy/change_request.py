@@ -47,9 +47,15 @@ class ChangeRequestService:
         title: str,
         requester: str,
         description: str = "",
+        owner_username: Optional[str] = None,
     ) -> ChangeRequest:
         """Create a new change request in DRAFT state and return it."""
-        req = ChangeRequest(title=title, description=description, requester=requester)
+        req = ChangeRequest(
+            title=title,
+            description=description,
+            requester=requester,
+            owner_username=owner_username,
+        )
         req_id = self.repo.create_request(req)
         req.id = req_id
         logger.info("Created ChangeRequest #%d '%s' by %s", req_id, title, requester)
@@ -76,15 +82,60 @@ class ChangeRequestService:
                 status=RequestStatus(r["status"]),
                 requester=r["requester"],
                 created_at=r["created_at"],
+                owner_username=r["owner_username"] if "owner_username" in r.keys() else None,
             )
             for r in rows
         ]
 
-    def list_by_status(self, status: RequestStatus) -> List[ChangeRequest]:
+    def list_for_user(
+        self,
+        username: str,
+        is_admin: bool = False,
+        limit: int = 50,
+    ) -> List[ChangeRequest]:
+        """Return change requests, optionally filtered by user ownership."""
+        clauses = []
+        params = []
+        if username and not is_admin:
+            clauses.append("(owner_username = ? OR owner_username IS NULL)")
+            params.append(username)
+        
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        params.append(limit)
+        
+        query = f"SELECT * FROM change_requests {where} ORDER BY id DESC LIMIT ?"
+        with self.db._connect() as conn:
+            rows = conn.execute(query, tuple(params)).fetchall()
+        return [
+            ChangeRequest(
+                id=r["id"],
+                title=r["title"],
+                description=r["description"],
+                status=RequestStatus(r["status"]),
+                requester=r["requester"],
+                created_at=r["created_at"],
+                owner_username=r["owner_username"] if "owner_username" in r.keys() else None,
+            )
+            for r in rows
+        ]
+
+    def list_by_status(
+        self,
+        status: RequestStatus,
+        owner_username: Optional[str] = None,
+        is_admin: bool = False,
+    ) -> List[ChangeRequest]:
+        clauses = ["status = ?"]
+        params = [status.value]
+        if owner_username and not is_admin:
+            clauses.append("(owner_username = ? OR owner_username IS NULL)")
+            params.append(owner_username)
+            
+        where = " AND ".join(clauses)
         with self.db._connect() as conn:
             rows = conn.execute(
-                "SELECT * FROM change_requests WHERE status = ? ORDER BY id DESC",
-                (status.value,),
+                f"SELECT * FROM change_requests WHERE {where} ORDER BY id DESC",
+                tuple(params),
             ).fetchall()
         return [
             ChangeRequest(
@@ -94,6 +145,7 @@ class ChangeRequestService:
                 status=RequestStatus(r["status"]),
                 requester=r["requester"],
                 created_at=r["created_at"],
+                owner_username=r["owner_username"] if "owner_username" in r.keys() else None,
             )
             for r in rows
         ]

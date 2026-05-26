@@ -82,6 +82,7 @@ class Job(BaseModel):
     ansible_playbook: Optional[str] = None              # LLM-generated YAML stored here
     ansible_artifact_manifest: Optional[str] = None     # JSON manifest for generated Ansible bundles
     ansible_entrypoint_path: Optional[str] = None       # Relative file path of generated entry playbook
+    owner_username: Optional[str] = None                # M15: resource ownership
 
     # Joined fields (for API response)
     hostname: Optional[str] = None
@@ -96,6 +97,7 @@ class ChangeRequest(BaseModel):
     status: RequestStatus = RequestStatus.DRAFT
     requester: str = "unknown"
     created_at: Optional[datetime] = None
+    owner_username: Optional[str] = None               # M15: resource ownership
     
     # Joined fields
     jobs: List[Job] = []
@@ -121,10 +123,16 @@ class DeploymentRepository:
             cur = conn.cursor()
             cur.execute(
                 """
-                INSERT INTO change_requests (title, description, status, requester)
-                VALUES (?, ?, ?, ?)
+                INSERT INTO change_requests (title, description, status, requester, owner_username)
+                VALUES (?, ?, ?, ?, ?)
                 """,
-                (req.title, req.description, req.status.value, req.requester)
+                (
+                    req.title,
+                    req.description,
+                    req.status.value,
+                    req.requester,
+                    getattr(req, "owner_username", None),
+                )
             )
             request_id = cur.lastrowid
         publish_context_refresh_event(
@@ -146,6 +154,7 @@ class DeploymentRepository:
             ).fetchone()
             if not row:
                 return None
+            keys = row.keys()
             return ChangeRequest(
                 id=row["id"],
                 title=row["title"],
@@ -153,6 +162,7 @@ class DeploymentRepository:
                 status=RequestStatus(row["status"]),
                 requester=row["requester"],
                 created_at=row["created_at"],
+                owner_username=row["owner_username"] if "owner_username" in keys else None,
             )
 
     def create_job(self, job: Job) -> int:
@@ -161,10 +171,16 @@ class DeploymentRepository:
             cur = conn.cursor()
             cur.execute(
                 """
-                INSERT INTO jobs (request_id, device_id, status, stage)
-                VALUES (?, ?, ?, ?)
+                INSERT INTO jobs (request_id, device_id, status, stage, owner_username)
+                VALUES (?, ?, ?, ?, ?)
                 """,
-                (job.request_id, job.device_id, job.status.value, job.stage.value)
+                (
+                    job.request_id,
+                    job.device_id,
+                    job.status.value,
+                    job.stage.value,
+                    getattr(job, "owner_username", None),
+                )
             )
             job_id = cur.lastrowid
         publish_context_refresh_event(
@@ -259,22 +275,30 @@ class DeploymentRepository:
             },
         )
             
-    def list_jobs(self) -> List[Dict]:
-        """Return all jobs joined with request title and device hostname."""
+    def list_jobs(self, owner_username: Optional[str] = None, is_admin: bool = False) -> List[Dict]:
+        """Return all jobs joined with request title and device hostname, optionally filtered by ownership."""
+        clauses = []
+        params = []
+        if owner_username and not is_admin:
+            clauses.append("(j.owner_username = ? OR j.owner_username IS NULL)")
+            params.append(owner_username)
+
+        where_clause = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+
+        query = f"""
+            SELECT j.id, j.request_id, j.device_id, j.status, j.stage,
+                   j.error_message, j.execution_engine,
+                   j.created_at, j.updated_at, j.owner_username,
+                   cr.title AS request_title,
+                   d.hostname AS hostname
+            FROM jobs j
+            LEFT JOIN change_requests cr ON cr.id = j.request_id
+            LEFT JOIN devices d ON d.id = j.device_id
+            {where_clause}
+            ORDER BY j.id DESC
+        """
         with self.db._connect() as conn:
-            rows = conn.execute(
-                """
-                SELECT j.id, j.request_id, j.device_id, j.status, j.stage,
-                       j.error_message, j.execution_engine,
-                       j.created_at, j.updated_at,
-                       cr.title AS request_title,
-                       d.hostname AS hostname
-                FROM jobs j
-                LEFT JOIN change_requests cr ON cr.id = j.request_id
-                LEFT JOIN devices d ON d.id = j.device_id
-                ORDER BY j.id DESC
-                """
-            ).fetchall()
+            rows = conn.execute(query, tuple(params)).fetchall()
             return [dict(r) for r in rows]
 
     def update_request_status(self, req_id: int, status: RequestStatus):
