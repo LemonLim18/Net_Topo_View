@@ -24,6 +24,14 @@ import { netboxApi, type DeviceRecord, type InterfaceRecord, type LinkRecord } f
 import { useDeviceContext } from '../contexts/DeviceContext';
 import { Toast, Confirm } from '../src/utils/swal';
 import { validateLinkInterfaceCompatibility } from '../src/utils/linkValidation';
+import {
+  formatIpInput,
+  formatSubnetMaskInput,
+  formatMacInput,
+  isValidIp,
+  isValidSubnetMask,
+  isValidMac,
+} from '../src/utils/validation';
 
 const NETBOX_SELECTED_DEVICE_KEY = 'netbox.selectedDeviceId';
 const NETBOX_DETAIL_TAB_KEY = 'netbox.detailTab';
@@ -192,7 +200,7 @@ interface SortHeaderProps {
 const SortHeader: React.FC<SortHeaderProps> = ({ label, sortKey, currentKey, order, onSort }) => {
   const isActive = currentKey === sortKey;
   return (
-    <th 
+    <th
       className="cursor-pointer hover:bg-base-300 transition-colors select-none group"
       onClick={() => onSort(sortKey)}
     >
@@ -246,13 +254,13 @@ const NetBoxDevices: React.FC = () => {
   });
 
   // Data from Context
-  const { 
-    devices, 
-    links, 
-    isLoading: isGlobalLoading, 
-    refreshDevices, 
-    refreshLinks, 
-    refreshAll 
+  const {
+    devices,
+    links,
+    isLoading: isGlobalLoading,
+    refreshDevices,
+    refreshLinks,
+    refreshAll
   } = useDeviceContext();
 
   const [selected, setSelected] = useState<DeviceRecord | null>(null);
@@ -335,7 +343,7 @@ const NetBoxDevices: React.FC = () => {
   const fetchDevices = useCallback(async (updateCache = false) => {
     try {
       await refreshDevices(updateCache);
-      
+
       if (selected?.id) {
         // We don't have the updated list here yet since setDevices is async,
         // but we can trust the context will update.
@@ -365,12 +373,12 @@ const NetBoxDevices: React.FC = () => {
       setInterfaces([]); // Clear if no cache to avoid showing previous device data
       setLoadingIfaces(true);
     }
-    
+
     try {
       const res = await netboxApi.listInterfaces(deviceId);
       const newIfaces = res.interfaces || [];
       setInterfaces(newIfaces);
-      
+
       // Update persistent cache ONLY if updateCache is true (Sync or Manual Refresh)
       if (updateCache) {
         try {
@@ -380,7 +388,7 @@ const NetBoxDevices: React.FC = () => {
           localStorage.setItem(NETBOX_INTERFACES_CACHE_KEY, JSON.stringify(cacheObj));
         } catch (ce) { /* ignore cache write errors */ }
       }
-      
+
     } catch (e: any) {
       Toast.error('Failed to load interfaces', e.message);
     } finally {
@@ -556,6 +564,18 @@ const NetBoxDevices: React.FC = () => {
       setFormError('Hostname is required');
       return;
     }
+    if (form.management_ip && !isValidIp(form.management_ip)) {
+      setFormError('Management IP address is invalid (must be 4 octets between 0 and 255)');
+      return;
+    }
+    if (form.management_subnet_mask && !isValidSubnetMask(form.management_subnet_mask)) {
+      setFormError('Management Subnet Mask is invalid (must be 0-32 or a valid dot-decimal mask)');
+      return;
+    }
+    if (form.management_mac && !isValidMac(form.management_mac)) {
+      setFormError('Management MAC address is invalid (must be 12 hexadecimal characters, e.g. aa:bb:cc:dd:ee:ff)');
+      return;
+    }
     setFormError(null);
     setIsActionLoading(true);
 
@@ -702,6 +722,18 @@ const NetBoxDevices: React.FC = () => {
       setIfaceFormError('Interface name is required');
       return;
     }
+    if (ifaceForm.ip_address && !isValidIp(ifaceForm.ip_address)) {
+      setIfaceFormError('IP address is invalid (must be 4 octets between 0 and 255)');
+      return;
+    }
+    if (ifaceForm.subnet_mask && !isValidSubnetMask(ifaceForm.subnet_mask)) {
+      setIfaceFormError('Subnet Mask is invalid (must be 0-32 or a valid dot-decimal mask)');
+      return;
+    }
+    if (ifaceForm.mac_address && !isValidMac(ifaceForm.mac_address)) {
+      setIfaceFormError('MAC address is invalid (must be 12 hexadecimal characters, e.g. aa:bb:cc:dd:ee:ff)');
+      return;
+    }
     if (!selected) return;
     setIfaceFormError(null);
     try {
@@ -836,7 +868,7 @@ const NetBoxDevices: React.FC = () => {
             {isSyncing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
             Sync from NetBox
           </button>
-            <button className="btn btn-sm btn-outline gap-1" onClick={() => refreshAll(true)} disabled={isGlobalLoading || isActionLoading}>
+          <button className="btn btn-sm btn-outline gap-1" onClick={() => refreshAll(true)} disabled={isGlobalLoading || isActionLoading}>
             <RefreshCw className={`w-4 h-4 ${(isGlobalLoading || isActionLoading) ? 'animate-spin' : ''}`} />
             Refresh
           </button>
@@ -850,7 +882,7 @@ const NetBoxDevices: React.FC = () => {
       {/* Search + Filters */}
       <div className="flex flex-wrap gap-3 mb-4 shrink-0">
         <div className="relative grow max-w-sm">
-          <Search className="absolute left-3 top-2.5 w-4 h-4 opacity-50" />
+          <Search className="absolute text-primary left-3 top-2.5 w-4 h-4" />
           <input
             type="text"
             placeholder="Search hostname, IP, vendor…"
@@ -923,9 +955,8 @@ const NetBoxDevices: React.FC = () => {
                   sortedDevices.map((d) => (
                     <tr
                       key={d.id}
-                      className={`cursor-pointer hover:bg-base-200 transition-colors ${
-                        selected?.id === d.id ? 'bg-primary/10' : ''
-                      }`}
+                      className={`cursor-pointer hover:bg-base-200 transition-colors ${selected?.id === d.id ? 'bg-primary/10' : ''
+                        }`}
                       onClick={() => setSelected(d)}
                     >
                       <td className="font-mono font-semibold">{d.hostname}</td>
@@ -1139,31 +1170,31 @@ const NetBoxDevices: React.FC = () => {
                                 l.dst_hostname === selected.hostname
                               )
                               .map((link) => (
-                              <tr key={link.id}>
-                                <td className="text-xs">
-                                  <div className="font-mono font-semibold">{link.src_hostname}</div>
-                                  <div className="opacity-60">{link.src_interface_name || '—'}</div>
-                                </td>
-                                <td className="text-center opacity-40">→</td>
-                                <td className="text-xs">
-                                  <div className="font-mono font-semibold">{link.dst_hostname}</div>
-                                  <div className="opacity-60">{link.dst_interface_name || '—'}</div>
-                                </td>
-                                <td>
-                                  <span className="badge badge-xs badge-ghost">
-                                    {link.discovery_protocol || 'manual'}
-                                  </span>
-                                </td>
-                                <td className="text-right">
-                                  <button
-                                    className="btn btn-ghost btn-xs text-error"
-                                    onClick={() => handleDeleteLink(link)}
-                                  >
-                                    <Trash2 className="w-3 h-3" />
-                                  </button>
-                                </td>
-                              </tr>
-                            ))}
+                                <tr key={link.id}>
+                                  <td className="text-xs">
+                                    <div className="font-mono font-semibold">{link.src_hostname}</div>
+                                    <div className="opacity-60">{link.src_interface_name || '—'}</div>
+                                  </td>
+                                  <td className="text-center opacity-40">→</td>
+                                  <td className="text-xs">
+                                    <div className="font-mono font-semibold">{link.dst_hostname}</div>
+                                    <div className="opacity-60">{link.dst_interface_name || '—'}</div>
+                                  </td>
+                                  <td>
+                                    <span className="badge badge-xs badge-ghost">
+                                      {link.discovery_protocol || 'manual'}
+                                    </span>
+                                  </td>
+                                  <td className="text-right">
+                                    <button
+                                      className="btn btn-ghost btn-xs text-error"
+                                      onClick={() => handleDeleteLink(link)}
+                                    >
+                                      <Trash2 className="w-3 h-3" />
+                                    </button>
+                                  </td>
+                                </tr>
+                              ))}
                           </tbody>
                         </table>
                       </div>
@@ -1207,12 +1238,12 @@ const NetBoxDevices: React.FC = () => {
                 <label className="form-control w-full">
                   <div className="label"><span className="label-text">Management IP</span></div>
                   <input type="text" className="input input-bordered w-full" placeholder="e.g. 192.168.1.1"
-                    value={form.management_ip} onChange={(e) => setForm({ ...form, management_ip: e.target.value })} />
+                    value={form.management_ip} onChange={(e) => setForm({ ...form, management_ip: formatIpInput(e.target.value) })} />
                 </label>
                 <label className="form-control w-full">
                   <div className="label"><span className="label-text">Subnet Mask</span></div>
                   <input type="text" className="input input-bordered w-full" placeholder="255.255.255.0"
-                    value={form.management_subnet_mask} onChange={(e) => setForm({ ...form, management_subnet_mask: e.target.value })} />
+                    value={form.management_subnet_mask} onChange={(e) => setForm({ ...form, management_subnet_mask: formatSubnetMaskInput(e.target.value) })} />
                 </label>
               </div>
 
@@ -1277,7 +1308,7 @@ const NetBoxDevices: React.FC = () => {
                   className="input input-bordered w-full"
                   placeholder="e.g. aa:bb:cc:dd:ee:ff"
                   value={form.management_mac}
-                  onChange={(e) => setForm({ ...form, management_mac: e.target.value })}
+                  onChange={(e) => setForm({ ...form, management_mac: formatMacInput(e.target.value) })}
                 />
               </label>
 
@@ -1361,13 +1392,13 @@ const NetBoxDevices: React.FC = () => {
                   <div className="label"><span className="label-text">IP Address</span></div>
                   <input type="text" className="input input-bordered w-full" placeholder="10.0.1.1"
                     value={ifaceForm.ip_address}
-                    onChange={(e) => setIfaceForm({ ...ifaceForm, ip_address: e.target.value })} />
+                    onChange={(e) => setIfaceForm({ ...ifaceForm, ip_address: formatIpInput(e.target.value) })} />
                 </label>
                 <label className="form-control w-full">
                   <div className="label"><span className="label-text">Subnet Mask</span></div>
                   <input type="text" className="input input-bordered w-full" placeholder="255.255.255.252"
                     value={ifaceForm.subnet_mask}
-                    onChange={(e) => setIfaceForm({ ...ifaceForm, subnet_mask: e.target.value })} />
+                    onChange={(e) => setIfaceForm({ ...ifaceForm, subnet_mask: formatSubnetMaskInput(e.target.value) })} />
                 </label>
               </div>
               <div className="grid grid-cols-2 gap-3">

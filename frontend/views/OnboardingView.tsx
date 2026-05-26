@@ -1,4 +1,4 @@
-﻿import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect } from 'react';
 import Editor from '@monaco-editor/react';
 import { PackagePlus, Download, RefreshCw, ChevronLeft, ChevronDown, ChevronUp, Terminal, Maximize2, Minimize2, Copy, Check, Lightbulb, X } from 'lucide-react';
 import type { ViewId } from '../types';
@@ -10,6 +10,7 @@ import {
   type ZtpPublishJobItem,
 } from '../src/services/api';
 import { Confirm, Toast } from '../src/utils/swal';
+import { formatIpInput, isValidIp } from '../src/utils/validation';
 
 const ONBOARDING_STEP_KEY = 'onboarding.step';
 const ONBOARDING_SELECTED_DEVICE_KEY = 'onboarding.selectedDeviceId';
@@ -307,6 +308,10 @@ const OnboardingView: React.FC<{ setView: (id: ViewId) => void }> = ({ setView }
 
   const startPublish = async (deviceIds: number[], configOverrides?: Record<string, string>) => {
     if (!deviceIds.length) return;
+    if (targetServerIp && !isValidIp(targetServerIp)) {
+      setError('ZTP Target Server IP is invalid (must be 4 octets between 0 and 255)');
+      return;
+    }
     setPublishLoading(true);
     setError('');
     try {
@@ -373,6 +378,14 @@ const OnboardingView: React.FC<{ setView: (id: ViewId) => void }> = ({ setView }
   };
 
   const handleTestServerConnection = async () => {
+    if (targetServerIp && !isValidIp(targetServerIp)) {
+      setServerConnectionResult({
+        ok: false,
+        message: 'Validation failed',
+        details: 'ZTP Target Server IP is invalid',
+      });
+      return;
+    }
     setServerConnectionTesting(true);
     setServerConnectionResult(null);
     setError('');
@@ -481,12 +494,6 @@ const OnboardingView: React.FC<{ setView: (id: ViewId) => void }> = ({ setView }
             </div>
           )}
 
-          {/* {!ztpSettingsOpen && (
-            <div className="text-xs opacity-70 rounded border border-base-300 px-3 py-2">
-              Collapsed. Expand to edit server IP, SSH credential, and publish options.
-            </div>
-          )} */}
-
           {ztpSettingsOpen && (
             <>
               <div className={`grid grid-cols-1 gap-2 ${canManageServerCredential ? 'md:grid-cols-3' : 'md:grid-cols-1'}`}>
@@ -495,7 +502,7 @@ const OnboardingView: React.FC<{ setView: (id: ViewId) => void }> = ({ setView }
                   <input
                     className="input input-bordered input-sm"
                     value={targetServerIp}
-                    onChange={(event) => setTargetServerIp(event.target.value)}
+                    onChange={(event) => setTargetServerIp(formatIpInput(event.target.value))}
                     placeholder="192.168.1.240"
                   />
                 </label>
@@ -547,9 +554,6 @@ const OnboardingView: React.FC<{ setView: (id: ViewId) => void }> = ({ setView }
                     <span className="label-text">Reset DHCP lease file</span>
                   </label>
                 </div>
-                {/* <div className="text-xs opacity-70 mt-1">
-                  These options run only when you click <strong>Publish to ZTP</strong> in the Preview/Edit step.
-                  </div> */}
               </div>
                   {canManageServerCredential && (
                     <div className="flex justify-end">
@@ -694,7 +698,7 @@ const OnboardingView: React.FC<{ setView: (id: ViewId) => void }> = ({ setView }
 
                 <div className="rounded-lg overflow-hidden border border-base-300 transition-all duration-300" style={{ height: isFullWidth ? '700px' : '480px' }}>
                   <Editor
-                    height={isFullWidth ? '700px' : '480px'}
+                     height={isFullWidth ? '700px' : '480px'}
                     defaultLanguage="shell"
                     theme="vs-dark"
                     value={config}
@@ -835,7 +839,7 @@ const OnboardingView: React.FC<{ setView: (id: ViewId) => void }> = ({ setView }
                           />
                         </td>
                         <td className="font-mono">{d.hostname}</td>
-                        <td className="font-mono text-xs">{d.management_ip || 'â€”'}</td>
+                        <td className="font-mono text-xs">{d.management_ip || '—'}</td>
                         <td className="text-xs">{vendorLabel(d.vendor)}</td>
                         <td className="font-mono text-xs">{d.ssh_user || <span className="opacity-40 italic">not set</span>}</td>
                         <td>
@@ -872,7 +876,7 @@ const OnboardingView: React.FC<{ setView: (id: ViewId) => void }> = ({ setView }
                   {!selected.management_ip ? 'a Management IP' : ''}
                   {!selected.management_ip && !selected.ssh_user ? ' and ' : ''}
                   {!selected.ssh_user ? 'SSH credentials' : ''}.
-                  The config will use placeholder values â€” edit them in the next step or
+                  The config will use placeholder values — edit them in the next step or
                   <button className="btn btn-link btn-xs px-1" onClick={() => setView('netbox_devices')}>
                     update the device
                   </button>
@@ -907,4 +911,3 @@ const OnboardingView: React.FC<{ setView: (id: ViewId) => void }> = ({ setView }
 };
 
 export default OnboardingView;
-

@@ -20,6 +20,12 @@ import { Terminal, Info, RefreshCw, Cable, AlertTriangle, Loader2 } from 'lucide
 import { Toast } from '../src/utils/swal';
 import { sshApi } from '../src/services/api';
 import { validateLinkInterfaceCompatibility } from '../src/utils/linkValidation';
+import {
+  formatIpInput,
+  formatSubnetMaskInput,
+  isValidIp,
+  isValidSubnetMask,
+} from '../src/utils/validation';
 
 type TopologyView = 'actual' | 'planned' | 'diff';
 
@@ -888,6 +894,16 @@ const Dashboard: React.FC = () => {
             return;
         }
 
+        if (ifaceForm.ip_address && !isValidIp(ifaceForm.ip_address)) {
+            setIfaceFormError('IP address is invalid (must be 4 octets between 0 and 255)');
+            return;
+        }
+
+        if (ifaceForm.subnet_mask && !isValidSubnetMask(ifaceForm.subnet_mask)) {
+            setIfaceFormError('Subnet Mask is invalid (must be 0-32 or a valid dot-decimal mask)');
+            return;
+        }
+
         try {
             setIsNetboxOpLoading(true);
             setNetboxOpMessage('Creating interface in NetBox...');
@@ -962,6 +978,11 @@ const Dashboard: React.FC = () => {
 
     const handleUpdateInterface = async () => {
       if (!editingIface) return;
+
+      if (editIfaceForm.ip_address && !isValidIp(editIfaceForm.ip_address)) {
+        setEditIfaceFormError('IP address is invalid (must be 4 octets between 0 and 255)');
+        return;
+      }
       
       try {
         setIsNetboxOpLoading(true);
@@ -1445,7 +1466,7 @@ const Dashboard: React.FC = () => {
                                         className="input input-bordered input-sm w-full bg-base-100 focus:input-primary text-xs" 
                                         placeholder="10.0.0.1/24"
                                         value={ifaceForm.ip_address}
-                                        onChange={e => setIfaceForm({ ...ifaceForm, ip_address: e.target.value })}
+                                        onChange={e => setIfaceForm({ ...ifaceForm, ip_address: formatIpInput(e.target.value) })}
                                     />
                                 </div>
                                 <div className="form-control">
@@ -1457,7 +1478,7 @@ const Dashboard: React.FC = () => {
                                         className="input input-bordered input-sm w-full bg-base-100 focus:input-primary text-xs" 
                                         placeholder="255.255.255.0"
                                         value={ifaceForm.subnet_mask}
-                                        onChange={e => setIfaceForm({ ...ifaceForm, subnet_mask: e.target.value })}
+                                        onChange={e => setIfaceForm({ ...ifaceForm, subnet_mask: formatSubnetMaskInput(e.target.value) })}
                                     />
                                 </div>
                             </div>
@@ -1510,7 +1531,7 @@ const Dashboard: React.FC = () => {
                                     placeholder="e.g. 192.168.1.1" 
                                     className="input input-bordered w-full bg-base-300/50 text-sm focus:border-primary transition-all"
                                     value={editIfaceForm.ip_address}
-                                    onChange={(e) => setEditIfaceForm(prev => ({ ...prev, ip_address: e.target.value }))}
+                                    onChange={(e) => setEditIfaceForm(prev => ({ ...prev, ip_address: formatIpInput(e.target.value) }))}
                                 />
                             </div>
                         </div>

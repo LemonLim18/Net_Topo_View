@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { Layers, Save, Trash2, RefreshCw, Download, X, AlertTriangle, Clock, Server, Upload, Rocket, Eye } from 'lucide-react';
 import { authApi, commonServicesApi, onboardingApi, syslogApi, monitorApi, type ZtpPublishJob } from '../src/services/api';
 import { Confirm, Toast } from '../src/utils/swal';
+import { formatIpInput, isValidIp } from '../src/utils/validation';
 
 const GLOBAL_SCOPE_TYPE = 'global';
 const GLOBAL_SCOPE_VALUE = 'global';
@@ -231,6 +232,14 @@ const CommonServicesProfilesView: React.FC = () => {
   };
 
   const handleTestServerConnection = async () => {
+    if (targetServerIp && !isValidIp(targetServerIp)) {
+      setServerConnectionResult({
+        ok: false,
+        message: 'Validation failed',
+        details: 'ZTP Target Server IP is invalid',
+      });
+      return;
+    }
     setServerConnectionTesting(true);
     setServerConnectionResult(null);
     try {
@@ -276,6 +285,18 @@ const CommonServicesProfilesView: React.FC = () => {
   };
 
   const handleSave = async () => {
+    if (snmpHostIp && !isValidIp(snmpHostIp)) {
+      Toast.error('Validation failed', 'SNMP Host IP is invalid');
+      return;
+    }
+    if (syslogHostIp && !isValidIp(syslogHostIp)) {
+      Toast.error('Validation failed', 'Syslog Host IP is invalid');
+      return;
+    }
+    if (ntpServerIp && !isValidIp(ntpServerIp)) {
+      Toast.error('Validation failed', 'NTP Server IP is invalid');
+      return;
+    }
     setIsSaving(true);
     try {
       const payload = {
@@ -413,7 +434,7 @@ const CommonServicesProfilesView: React.FC = () => {
                 </label>
                 <label className="form-control flex flex-col gap-1">
                   <div className="label"><span className="label-text">SNMP Host IP</span></div>
-                  <input className="input input-bordered input-sm" value={snmpHostIp} onChange={(e) => setSnmpHostIp(e.target.value)} placeholder="192.168.1.250" />
+                  <input className="input input-bordered input-sm" value={snmpHostIp} onChange={(e) => setSnmpHostIp(formatIpInput(e.target.value))} placeholder="192.168.1.250" />
                 </label>
               </div>
               <div className="grid grid-cols-2 gap-3">
@@ -431,7 +452,7 @@ const CommonServicesProfilesView: React.FC = () => {
               <div className="grid grid-cols-2 gap-3">
                 <label className="form-control flex flex-col gap-1">
                   <div className="label"><span className="label-text">Syslog Host IP</span></div>
-                  <input className="input input-bordered input-sm" value={syslogHostIp} onChange={(e) => setSyslogHostIp(e.target.value)} placeholder="192.168.1.251" />
+                  <input className="input input-bordered input-sm" value={syslogHostIp} onChange={(e) => setSyslogHostIp(formatIpInput(e.target.value))} placeholder="192.168.1.251" />
                 </label>
                 <label className="form-control flex flex-col gap-1">
                   <div className="label"><span className="label-text">Backend Syslog Port (App ↔ Server)</span></div>
@@ -456,7 +477,7 @@ const CommonServicesProfilesView: React.FC = () => {
               <div className="grid grid-cols-2 gap-3">
                 <label className="form-control flex flex-col gap-1">
                   <div className="label"><span className="label-text">NTP Server IP</span></div>
-                  <input className="input input-bordered input-sm" value={ntpServerIp} onChange={(e) => setNtpServerIp(e.target.value)} placeholder="192.168.1.252" />
+                  <input className="input input-bordered input-sm" value={ntpServerIp} onChange={(e) => setNtpServerIp(formatIpInput(e.target.value))} placeholder="192.168.1.252" />
                 </label>
                 <div className="flex items-end">
                   <button
@@ -470,10 +491,10 @@ const CommonServicesProfilesView: React.FC = () => {
               </div>
 
               <div className="card-actions justify-end mt-2">
-                  <button className="btn btn-outline btn-error btn-sm gap-1 min-w-24" onClick={handleDelete} disabled={isLoading}>
+                <button className="btn btn-outline btn-error btn-sm gap-1 min-w-24" onClick={handleDelete} disabled={isLoading}>
                   <Trash2 className="w-4 h-4" /> Delete
                 </button>
-                  <button className="btn btn-primary btn-sm gap-1 min-w-24" onClick={handleSave} disabled={isSaving || isLoading}>
+                <button className="btn btn-primary btn-sm gap-1 min-w-24" onClick={handleSave} disabled={isSaving || isLoading}>
                   <Save className="w-4 h-4" /> Save
                 </button>
               </div>
@@ -521,7 +542,7 @@ const CommonServicesProfilesView: React.FC = () => {
                     <input
                       className="input input-bordered input-sm"
                       value={targetServerIp}
-                      onChange={(event) => setTargetServerIp(event.target.value)}
+                      onChange={(event) => setTargetServerIp(formatIpInput(event.target.value))}
                       placeholder="192.168.1.240"
                     />
                   </label>
@@ -558,7 +579,6 @@ const CommonServicesProfilesView: React.FC = () => {
                 </div>
 
                 <div className="rounded-xl border border-base-300 bg-base-200/40 px-3 py-2">
-                  {/* <div className="grid grid-cols-1 md:grid-cols-3 gap-2 text-xs"> */}
                   <div className="grid grid-cols-1 gap-2 text-xs">
                     <label className="label cursor-pointer justify-start gap-2">
                       <input type="checkbox" className="checkbox checkbox-sm" checked={dryRun} onChange={(e) => setDryRun(e.target.checked)} />
@@ -592,7 +612,7 @@ const CommonServicesProfilesView: React.FC = () => {
             <div className="card flex-1 shadow-xl border border-base-300 bg-gradient-to-br from-base-100 via-base-100 to-base-200/70">
               <div className="card-body gap-4">
                 <div className="flex items-center justify-between">
-                <h2 className="card-title text-base flex items-center gap-2">
+                  <h2 className="card-title text-base flex items-center gap-2">
                     <Rocket className="h-4 w-4 text-primary" />
                     ZTP Publish Job
                   </h2>
@@ -678,78 +698,78 @@ const CommonServicesProfilesView: React.FC = () => {
 
         {/* ─── Full-width: Recent Syslog Events ─── */}
         <div className="card shadow-xl border border-base-300 bg-gradient-to-br from-base-100 via-base-100 to-base-200/70">
-              <div className="card-body gap-4">
-                <div className="flex items-center justify-between">
-                  <h2 className="card-title text-base flex items-center gap-2">
-                    <AlertTriangle className="h-4 w-4 text-warning" />
-                    Recent Syslog Events
-                  </h2>
-                  <div className="flex items-center gap-2">
-                    <button className="btn btn-ghost btn-sm" onClick={loadRecentSyslogEvents} disabled={syslogEventsLoading}>
-                      <RefreshCw className="w-3.5 h-3.5" />
-                    </button>
-                    <button className="btn btn-outline btn-sm" onClick={handleSyncTelegraf} disabled={telegrafSyncLoading}>
-                      {telegrafSyncLoading ? <span className="loading loading-spinner loading-xs" /> : null}
-                      Sync Telegraf
-                    </button>
-                    <button className="btn btn-outline btn-sm" onClick={handleSyncSyslogServer} disabled={syslogSyncLoading}>
-                      {syslogSyncLoading ? <span className="loading loading-spinner loading-xs" /> : null}
-                      Sync Server
-                    </button>
-                  </div>
-                </div>
-
-                <div className="flex items-center gap-2">
-                  <span className="text-xs opacity-70">View</span>
-                  <select
-                    className="select select-bordered select-sm w-full"
-                    value={selectedSyslogDevice}
-                    onChange={(e) => setSelectedSyslogDevice(e.target.value)}
-                  >
-                    <option value="">All Devices (Aggregate)</option>
-                    {syslogSources.map((source: any) => {
-                      const label = source?.device_hostname || source?.source_host || source?.source_ip || 'unknown';
-                      const value = source?.device_hostname || source?.source_ip || '';
-                      return (
-                        <option key={`${source?.source_ip || 'unknown'}-${source?.device_hostname || ''}`} value={value}>
-                          {label}{source?.source_ip ? ` (${source.source_ip})` : ''} · {source?.event_count || 0}
-                        </option>
-                      );
-                    })}
-                  </select>
-                </div>
-
-                {recentSyslogEvents.length === 0 ? (
-                  <div className="rounded-lg border border-dashed border-base-300 bg-base-100/60 px-4 py-4 text-sm opacity-70">
-                    No syslog events yet. Ensure your devices are sending syslog to the configured server/port and trigger traffic.
-                  </div>
-                ) : (
-                  <div className="space-y-2 max-h-60 overflow-y-auto">
-                    {recentSyslogEvents.map((evt: any) => (
-                      <div key={evt.id} className="rounded border border-base-300 bg-base-200/40 px-3 py-2 text-xs">
-                        <div className="flex items-center justify-between gap-2">
-                          <div className="flex items-center gap-2 min-w-0">
-                            <span className={`badge badge-xs ${String(evt.severity || '').toLowerCase() === 'critical' ? 'badge-error' : String(evt.severity || '').toLowerCase() === 'high' ? 'badge-warning' : String(evt.severity || '').toLowerCase() === 'medium' ? 'badge-info' : 'badge-ghost'}`}>
-                              {evt.severity || 'info'}
-                            </span>
-                            <span className="font-semibold truncate">{evt.mnemonic || evt.facility || 'syslog'}</span>
-                          </div>
-                          <span className="opacity-50 flex items-center gap-1 shrink-0">
-                            <Clock className="h-3 w-3" />
-                            {evt.created_at || '-'}
-                          </span>
-                        </div>
-                        <div className="mt-1 opacity-70 break-words">
-                          <span className="font-semibold">{evt.device_hostname || evt.source_host || 'unknown device'}</span>
-                          {evt.source_ip ? <span className="ml-2 font-mono">{evt.source_ip}</span> : null}
-                          {evt.message ? <span className="ml-2">{evt.message}</span> : <span className="ml-2">{evt.raw_message}</span>}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
+          <div className="card-body gap-4">
+            <div className="flex items-center justify-between">
+              <h2 className="card-title text-base flex items-center gap-2">
+                <AlertTriangle className="h-4 w-4 text-warning" />
+                Recent Syslog Events
+              </h2>
+              <div className="flex items-center gap-2">
+                <button className="btn btn-ghost btn-sm" onClick={loadRecentSyslogEvents} disabled={syslogEventsLoading}>
+                  <RefreshCw className="w-3.5 h-3.5" />
+                </button>
+                <button className="btn btn-outline btn-sm" onClick={handleSyncTelegraf} disabled={telegrafSyncLoading}>
+                  {telegrafSyncLoading ? <span className="loading loading-spinner loading-xs" /> : null}
+                  Sync Telegraf
+                </button>
+                <button className="btn btn-outline btn-sm" onClick={handleSyncSyslogServer} disabled={syslogSyncLoading}>
+                  {syslogSyncLoading ? <span className="loading loading-spinner loading-xs" /> : null}
+                  Sync Server
+                </button>
               </div>
             </div>
+
+            <div className="flex items-center gap-2">
+              <span className="text-xs opacity-70">View</span>
+              <select
+                className="select select-bordered select-sm w-full"
+                value={selectedSyslogDevice}
+                onChange={(e) => setSelectedSyslogDevice(e.target.value)}
+              >
+                <option value="">All Devices (Aggregate)</option>
+                {syslogSources.map((source: any) => {
+                  const label = source?.device_hostname || source?.source_host || source?.source_ip || 'unknown';
+                  const value = source?.device_hostname || source?.source_ip || '';
+                  return (
+                    <option key={`${source?.source_ip || 'unknown'}-${source?.device_hostname || ''}`} value={value}>
+                      {label}{source?.source_ip ? ` (${source.source_ip})` : ''} · {source?.event_count || 0}
+                    </option>
+                  );
+                })}
+              </select>
+            </div>
+
+            {recentSyslogEvents.length === 0 ? (
+              <div className="rounded-lg border border-dashed border-base-300 bg-base-100/60 px-4 py-4 text-sm opacity-70">
+                No syslog events yet. Ensure your devices are sending syslog to the configured server/port and trigger traffic.
+              </div>
+            ) : (
+              <div className="space-y-2 max-h-60 overflow-y-auto">
+                {recentSyslogEvents.map((evt: any) => (
+                  <div key={evt.id} className="rounded border border-base-300 bg-base-200/40 px-3 py-2 text-xs">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <span className={`badge badge-xs ${String(evt.severity || '').toLowerCase() === 'critical' ? 'badge-error' : String(evt.severity || '').toLowerCase() === 'high' ? 'badge-warning' : String(evt.severity || '').toLowerCase() === 'medium' ? 'badge-info' : 'badge-ghost'}`}>
+                          {evt.severity || 'info'}
+                        </span>
+                        <span className="font-semibold truncate">{evt.mnemonic || evt.facility || 'syslog'}</span>
+                      </div>
+                      <span className="opacity-50 flex items-center gap-1 shrink-0">
+                        <Clock className="h-3 w-3" />
+                        {evt.created_at || '-'}
+                      </span>
+                    </div>
+                    <div className="mt-1 opacity-70 break-words">
+                      <span className="font-semibold">{evt.device_hostname || evt.source_host || 'unknown device'}</span>
+                      {evt.source_ip ? <span className="ml-2 font-mono">{evt.source_ip}</span> : null}
+                      {evt.message ? <span className="ml-2">{evt.message}</span> : <span className="ml-2">{evt.raw_message}</span>}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
       </div>
     </div>
   );
