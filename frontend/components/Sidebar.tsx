@@ -29,9 +29,10 @@ interface SidebarProps {
   onLogout: () => void;
   collapsed: boolean;
   onToggleCollapse: () => void;
+  onEditProfile?: () => void;
 }
 
-const Sidebar: React.FC<SidebarProps> = ({ currentView, setView, user, onLogout, collapsed, onToggleCollapse }) => {
+const Sidebar: React.FC<SidebarProps> = ({ currentView, setView, user, onLogout, collapsed, onToggleCollapse, onEditProfile }) => {
   const [networkOpen, setNetworkOpen] = useState(true);
   const [automationOpen, setAutomationOpen] = useState(true);
 
@@ -123,23 +124,67 @@ const Sidebar: React.FC<SidebarProps> = ({ currentView, setView, user, onLogout,
       `}
     >
       {/* User Avatar Section */}
-      <div className={`border-b border-base-200 ${collapsed ? 'p-2 flex justify-center' : 'p-4'}`}>
+      <div 
+        className={`border-b border-base-200 cursor-pointer hover:bg-base-200/50 transition-colors ${collapsed ? 'p-2 flex justify-center' : 'p-4'}`}
+        onClick={onEditProfile}
+        title="Edit Profile Settings"
+      >
         {collapsed ? (
-          <div className="avatar placeholder tooltip tooltip-right" data-tip={user.username}>
-            <div className="bg-neutral text-neutral-content rounded-full w-10 flex items-center justify-center">
-              <span className="text-lg">{user.username.charAt(0).toUpperCase()}</span>
-            </div>
+          <div className="avatar tooltip tooltip-right" data-tip="Edit Profile Settings">
+            {(() => {
+              if (!user.avatar) {
+                return (
+                  <div className="bg-neutral text-neutral-content rounded-full w-10 h-10 flex items-center justify-center font-bold border border-base-content/10">
+                    <span className="text-lg">{user.username.charAt(0).toUpperCase()}</span>
+                  </div>
+                );
+              }
+              if (user.avatar.startsWith('avatar-')) {
+                return (
+                  <div className="bg-primary/20 text-primary flex items-center justify-center border border-primary/30 shadow-inner rounded-full w-10 h-10">
+                    <UserIcon className="w-5 h-5" />
+                  </div>
+                );
+              }
+              return (
+                <img
+                  src={user.avatar}
+                  alt="Profile"
+                  className="rounded-full object-cover border border-base-content/20 shadow-sm w-10 h-10"
+                />
+              );
+            })()}
           </div>
         ) : (
           <div className="flex items-center gap-3">
-            <div className="avatar placeholder">
-              <div className="bg-neutral text-neutral-content rounded-full w-10 flex items-center justify-center">
-                <span className="text-lg">{user.username.charAt(0).toUpperCase()}</span>
-              </div>
+            <div className="avatar">
+              {(() => {
+                if (!user.avatar) {
+                  return (
+                    <div className="bg-neutral text-neutral-content rounded-full w-10 h-10 flex items-center justify-center font-bold border border-base-content/10">
+                      <span className="text-lg">{user.username.charAt(0).toUpperCase()}</span>
+                    </div>
+                  );
+                }
+                if (user.avatar.startsWith('avatar-')) {
+                  return (
+                    <div className="bg-primary/20 text-primary flex items-center justify-center border border-primary/30 shadow-inner rounded-full w-10 h-10">
+                      <UserIcon className="w-5 h-5" />
+                    </div>
+                  );
+                }
+                return (
+                  <img
+                    src={user.avatar}
+                    alt="Profile"
+                    className="rounded-full object-cover border border-base-content/20 shadow-sm w-10 h-10"
+                  />
+                );
+              })()}
             </div>
-            <div>
-              <div className="font-bold text-sm">{user.username}</div>
-              <div className="text-xs opacity-60 capitalize">{normalizedRole}</div>
+            <div className="min-w-0 flex-1 text-left">
+              <div className="font-bold text-sm truncate" title={user.fullName || user.username}>{user.fullName || user.username}</div>
+              <div className="text-xs opacity-60 capitalize truncate">{normalizedRole}</div>
             </div>
           </div>
         )}

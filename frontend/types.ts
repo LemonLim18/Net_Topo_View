@@ -67,6 +67,9 @@ export interface User {
     username: string;
     role: UserRole;
     lastLogin: string;
+    fullName?: string;
+    email?: string;
+    avatar?: string;
 }
 
 // Domain Types

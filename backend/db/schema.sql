@@ -346,6 +346,11 @@ CREATE TABLE IF NOT EXISTS users (
     password_hash TEXT    NOT NULL,
     role          TEXT    DEFAULT 'engineer',  -- admin | engineer | auditor
     is_active     BOOLEAN DEFAULT 1,
+    full_name     TEXT,
+    email         TEXT,
+    avatar        TEXT,
+    security_question TEXT,
+    security_answer_hash TEXT,
     created_at    TEXT    DEFAULT (datetime('now')),
     last_login    TEXT
 );

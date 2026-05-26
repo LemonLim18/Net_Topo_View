@@ -1172,19 +1172,37 @@ export const syslogApi = {
 // --- M15: Auth API ---
 export const authApi = {
   login: (username: string, password: string) =>
-    request<{ access_token: string; token_type: string; user: { id: number; username: string; role: string; lastLogin: string } }>('/auth/login', {
+    request<{ access_token: string; token_type: string; user: { id: number; username: string; role: string; lastLogin: string; fullName: string; email: string; avatar: string } }>('/auth/login', {
       method: 'POST',
       body: JSON.stringify({ username, password }),
     }),
 
-  signup: (username: string, password: string) =>
-    request<{ access_token: string; token_type: string; user: { id: number; username: string; role: string; lastLogin: string } }>('/auth/signup', {
+  signup: (payload: { username: string; password: string; full_name: string; email: string; avatar?: string | null; security_question: string; security_answer: string }) =>
+    request<{ access_token: string; token_type: string; user: { id: number; username: string; role: string; lastLogin: string; fullName: string; email: string; avatar: string } }>('/auth/signup', {
       method: 'POST',
-      body: JSON.stringify({ username, password }),
+      body: JSON.stringify(payload),
     }),
 
   me: () =>
-    request<{ id: number; username: string; role: string; lastLogin: string; createdAt: string }>('/auth/me'),
+    request<{ id: number; username: string; role: string; lastLogin: string; createdAt: string; fullName: string; email: string; avatar: string }>('/auth/me'),
+
+  updateProfile: (payload: { full_name?: string; email?: string; avatar?: string; security_question?: string; security_answer?: string; current_password?: string; new_password?: string }) =>
+    request<{ status: string; message: string }>('/auth/me/profile', {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    }),
+
+  getResetQuestion: (username: string) =>
+    request<{ question: string }>('/auth/reset-password/question', {
+      method: 'POST',
+      body: JSON.stringify({ username }),
+    }),
+
+  resetPassword: (payload: { username: string; security_answer: string; new_password: string }) =>
+    request<{ status: string; message: string }>('/auth/reset-password/reset', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
 
   listUsers: () =>
     request<{ id: number; username: string; role: string; is_active: boolean; last_login: string; created_at: string }[]>('/auth/users'),

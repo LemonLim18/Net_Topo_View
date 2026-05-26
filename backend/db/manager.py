@@ -159,6 +159,11 @@ class DatabaseManager:
             ("devices", "management_subnet_mask", "TEXT"),
             ("devices", "management_interface", "TEXT"),
             ("devices", "netbox_id", "INTEGER"),
+            ("users", "full_name", "TEXT"),
+            ("users", "email", "TEXT"),
+            ("users", "avatar", "TEXT"),
+            ("users", "security_question", "TEXT"),
+            ("users", "security_answer_hash", "TEXT"),
         ]
         with self._connect() as conn:
             for table, col, col_def in _new_columns:

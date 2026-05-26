@@ -23,6 +23,7 @@ import FloatingInventoryOverlay from '../components/FloatingInventoryOverlay';
 
 import Login from '../views/Login';
 import NetworkPerformance from '../views/NetworkPerformance';
+import UserProfileModal from '../components/UserProfileModal';
 
 import { NotificationProvider } from '../contexts/NotificationContext';
 import { DeviceProvider } from '../contexts/DeviceContext';
@@ -78,6 +79,7 @@ const App: React.FC = () => {
   });
   const [user, setUser] = useState<User | null>(null);
   const [authChecked, setAuthChecked] = useState(false);
+  const [profileOpen, setProfileOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
     return localStorage.getItem('sidebarCollapsed') === 'true';
   });
@@ -103,6 +105,9 @@ const App: React.FC = () => {
           username: me.username,
           role: normalizeUserRole(me.role) as User['role'],
           lastLogin: me.lastLogin || new Date().toISOString(),
+          fullName: me.fullName,
+          email: me.email,
+          avatar: me.avatar,
         });
       })
       .catch(() => {
@@ -273,6 +278,7 @@ const App: React.FC = () => {
                 onLogout={() => { localStorage.removeItem('auth_token'); setUser(null); }}
                 collapsed={sidebarCollapsed}
                 onToggleCollapse={() => setSidebarCollapsed(c => !c)}
+                onEditProfile={() => setProfileOpen(true)}
             />
             <main className="grow relative overflow-hidden bg-base-200 flex">
               {/* Main Content Area */}
@@ -329,6 +335,13 @@ const App: React.FC = () => {
             </main>
         </div>
         </div>
+        {profileOpen && user && (
+          <UserProfileModal 
+            user={user} 
+            onClose={() => setProfileOpen(false)} 
+            onUpdateUser={setUser} 
+          />
+        )}
       </DeviceProvider>
     </NotificationProvider>
   );

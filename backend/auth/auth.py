@@ -238,8 +238,8 @@ def seed_default_admin() -> None:
         if not existing_admin:
             hashed = hash_password("admin")
             conn.execute(
-                "INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)",
-                ("admin", hashed, "admin"),
+                "INSERT INTO users (username, password_hash, role, full_name, email, avatar) VALUES (?, ?, ?, ?, ?, ?)",
+                ("admin", hashed, "admin", "CogniShield Administrator", "admin@cognishield.local", "avatar-1"),
             )
             logger.info("Seeded default admin user (admin/admin)")
 
@@ -251,10 +251,23 @@ def seed_default_admin() -> None:
         if not existing_engineer:
             hashed = hash_password("engineer")
             conn.execute(
-                "INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)",
-                ("engineer", hashed, "engineer"),
+                "INSERT INTO users (username, password_hash, role, full_name, email, avatar) VALUES (?, ?, ?, ?, ?, ?)",
+                ("engineer", hashed, "engineer", "Default Engineer", "engineer@cognishield.local", "avatar-2"),
             )
             logger.info("Seeded default engineer user (engineer/engineer)")
+
+        # Update missing fields for admin and engineer if they exist but have null values
+        try:
+            conn.execute(
+                "UPDATE users SET full_name = 'CogniShield Administrator', email = 'admin@cognishield.local', "
+                "avatar = 'avatar-1' WHERE username = 'admin' AND (full_name IS NULL OR full_name = '')"
+            )
+            conn.execute(
+                "UPDATE users SET full_name = 'Default Engineer', email = 'engineer@cognishield.local', "
+                "avatar = 'avatar-2' WHERE username = 'engineer' AND (full_name IS NULL OR full_name = '')"
+            )
+        except Exception as update_exc:
+            logger.warning("Could not update default profiles (possibly migrations not run yet): %s", update_exc)
         conn.commit()
         conn.close()
 
