@@ -254,14 +254,15 @@ const ConfigBackupView: React.FC = () => {
                 </div>
               ) : (
                 <div className="overflow-x-auto overflow-y-auto max-h-[400px] custom-scrollbar">
-                  <table className="table table-zebra table-pin-rows w-full">
+                  <table className="table table-zebra table-pin-rows w-full text-center">
                     <thead>
                       <tr className="bg-base-200 text-base-content/70">
                         <th className="font-bold pl-6">Snapshot</th>
                         <th className="font-bold">Description</th>
+                        <th className="font-bold">Owner</th>
                         <th className="font-bold">Status</th>
                         <th className="font-bold">Captured At</th>
-                        <th className="text-right font-bold pr-6">Actions</th>
+                        <th className="font-bold pr-6">Actions</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -284,6 +285,15 @@ const ConfigBackupView: React.FC = () => {
                             <div className="truncate" title={s.description ?? ''}>
                               {s.description ? s.description : <span className="opacity-40 italic">No description</span>}
                             </div>
+                          </td>
+                          <td className="py-4 text-sm opacity-80">
+                            {s.owner_username ? (
+                              <span className="badge badge-outline badge-sm font-semibold tracking-wider text-xs">
+                                {s.owner_username}
+                              </span>
+                            ) : (
+                              <span className="opacity-40 italic">—</span>
+                            )}
                           </td>
                           <td className="py-4">
                             <div className="badge badge-success badge-sm gap-1.5 py-2.5 px-3 font-medium text-black/70 border-none shadow-sm">

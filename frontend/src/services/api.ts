@@ -343,6 +343,9 @@ export interface PlaybookAnalysisResponse {
   rating: number;
   safety_level: string;
   findings: string[];
+  operational_rating: number;
+  operational_level: string;
+  operational_explanation: string;
 }
 
 export interface PlaybookQAResponse {
@@ -456,10 +459,13 @@ export const llmApi = {
   getHistory: () =>
     request<{ history: any[] }>('/llm/chat/history'),
 
-  analyzePlaybook: (playbookContent: string) =>
+  analyzePlaybook: (playbookContent: string, promptRequest?: string) =>
     request<PlaybookAnalysisResponse>('/llm/chat/playbook/analyze', {
       method: 'POST',
-      body: JSON.stringify({ playbook_content: playbookContent }),
+      body: JSON.stringify({
+        playbook_content: playbookContent,
+        prompt_request: promptRequest,
+      }),
     }),
 
   qaPlaybook: (playbookContent: string, question: string, history: { role: string; content: string }[]) =>
@@ -850,6 +856,7 @@ export interface ConfigBackupSnapshot {
   description?: string | null;
   config_preview: string;
   config_size: number;
+  owner_username?: string | null;
 }
 export interface ConfigBackupCaptureResponse {
   snapshot_id: number;

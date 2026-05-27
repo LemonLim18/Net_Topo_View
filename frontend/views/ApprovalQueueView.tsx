@@ -19,6 +19,7 @@ interface QueueItem {
   review_comment?: string | null;
   review_actor?: string | null;
   reviewed_at?: string | null;
+  owner_username?: string | null;
 }
 
 type QueueTab = 'pending' | 'approved' | 'rejected';
@@ -106,9 +107,12 @@ const ApprovalQueueView: React.FC<Props> = ({ setView: _setView }) => {
   const [aiTab, setAiTab] = useState<'audit' | 'chat'>('audit');
   const [analysis, setAnalysis] = useState<PlaybookAnalysisResponse | null>(null);
   const [analysisLoading, setAnalysisLoading] = useState(false);
-  const [qaHistory, setQaHistory] = useState<{ role: 'user' | 'assistant'; content: string }[]>([]);
+  const [qaHistory, setQaHistory] = useState<{ role: 'user' | 'assistant'; content: string; quote?: string }[]>([]);
   const [qaInput, setQaInput] = useState('');
   const [qaSending, setQaSending] = useState(false);
+  const [pendingQuote, setPendingQuote] = useState('');
+  const [selectionCoords, setSelectionCoords] = useState<{ top: number; left: number } | null>(null);
+  const [activeQuote, setActiveQuote] = useState('');
 
   const loadTab = useCallback(async (tab: QueueTab) => {
     setLoading((prev) => ({ ...prev, [tab]: true }));
@@ -192,7 +196,7 @@ const ApprovalQueueView: React.FC<Props> = ({ setView: _setView }) => {
     }
   }, [activeTab, refreshAllTabs]);
 
-  const triggerAnalysis = useCallback(async (content: string) => {
+  const triggerAnalysis = useCallback(async (content: string, promptRequest?: string) => {
     setAnalysis(null);
     setQaHistory([]);
     setQaInput('');
@@ -209,7 +213,7 @@ const ApprovalQueueView: React.FC<Props> = ({ setView: _setView }) => {
 
     setAnalysisLoading(true);
     try {
-      const res = await llmApi.analyzePlaybook(content);
+      const res = await llmApi.analyzePlaybook(content, promptRequest);
       setAnalysis(res);
     } catch (e) {
       console.error("Failed to analyze playbook:", e);
@@ -221,11 +225,28 @@ const ApprovalQueueView: React.FC<Props> = ({ setView: _setView }) => {
   const handleSendQa = async () => {
     if (!qaInput.trim() || qaSending || !previewContent) return;
     const userMsg = qaInput.trim();
+    const quoteToSubmit = activeQuote;
     setQaInput('');
-    setQaHistory((prev) => [...prev, { role: 'user', content: userMsg }]);
+    setActiveQuote('');
+    setQaHistory((prev) => [...prev, { role: 'user', content: userMsg, quote: quoteToSubmit }]);
     setQaSending(true);
+
+    const promptText = quoteToSubmit
+      ? `Quoted section from playbook/audit under review:\n"${quoteToSubmit}"\n\nQuestion about this quoted section:\n${userMsg}`
+      : userMsg;
+
+    const historyPayload = qaHistory.map((msg) => {
+      if (msg.role === 'user' && msg.quote) {
+        return {
+          role: 'user',
+          content: `Quoted section from playbook/audit under review:\n"${msg.quote}"\n\nQuestion about this quoted section:\n${msg.content}`
+        };
+      }
+      return { role: msg.role, content: msg.content };
+    });
+
     try {
-      const res = await llmApi.qaPlaybook(previewContent, userMsg, qaHistory);
+      const res = await llmApi.qaPlaybook(previewContent, promptText, historyPayload);
       setQaHistory((prev) => [...prev, { role: 'assistant', content: res.answer }]);
     } catch (e: any) {
       Toast.error("Failed to get AI answer", e.message || String(e));
@@ -233,6 +254,38 @@ const ApprovalQueueView: React.FC<Props> = ({ setView: _setView }) => {
     } finally {
       setQaSending(false);
     }
+  };
+
+  const handleTextSelection = () => {
+    const selection = window.getSelection();
+    if (!selection) {
+      setPendingQuote('');
+      return;
+    }
+    const text = selection.toString().trim();
+    if (text.length > 0) {
+      try {
+        const range = selection.getRangeAt(0);
+        const rect = range.getBoundingClientRect();
+        setSelectionCoords({
+          top: rect.bottom + 8,
+          left: rect.left + (rect.width / 2) - 50,
+        });
+        setPendingQuote(text);
+      } catch (err) {
+        setPendingQuote('');
+      }
+    } else {
+      setPendingQuote('');
+    }
+  };
+
+  const handleApplyQuote = () => {
+    setActiveQuote(pendingQuote);
+    setPendingQuote('');
+    setSelectionCoords(null);
+    window.getSelection()?.removeAllRanges();
+    setAiTab('chat');
   };
 
   const openPreview = useCallback(
@@ -245,6 +298,9 @@ const ApprovalQueueView: React.FC<Props> = ({ setView: _setView }) => {
       setAnalysisLoading(false);
       setQaHistory([]);
       setQaInput('');
+      setPendingQuote('');
+      setActiveQuote('');
+      setSelectionCoords(null);
       setAiTab('audit');
 
       let loadedContent = '';
@@ -284,7 +340,7 @@ const ApprovalQueueView: React.FC<Props> = ({ setView: _setView }) => {
       } finally {
         setPreviewContent(loadedContent);
         setPreviewLoading(false);
-        void triggerAnalysis(loadedContent);
+        void triggerAnalysis(loadedContent, item.title);
       }
     },
     [triggerAnalysis]
@@ -377,9 +433,16 @@ const ApprovalQueueView: React.FC<Props> = ({ setView: _setView }) => {
                   <td className="font-mono text-xs">#{item.id}</td>
                   <td className="max-w-xs truncate font-medium" title={item.title}>{item.title}</td>
                   <td>
-                    <span className="flex items-center gap-1 text-xs">
-                      <User className="w-3 h-3 opacity-50" /> {item.requester}
-                    </span>
+                    <div className="flex flex-col">
+                      <span className="flex items-center gap-1 text-xs">
+                        <User className="w-3 h-3 opacity-50" /> {item.requester}
+                      </span>
+                      {item.owner_username && (
+                        <span className="text-[10px] opacity-60 ml-4">
+                          Owner: {item.owner_username}
+                        </span>
+                      )}
+                    </div>
                   </td>
                   <td>
                     <span className={`badge badge-sm gap-1 ${statusBadgeClass(item.status)}`}>
@@ -474,7 +537,7 @@ const ApprovalQueueView: React.FC<Props> = ({ setView: _setView }) => {
 
       {previewOpen && (
         <dialog className="modal modal-open">
-          <div className="modal-box max-w-7xl w-11/12 p-5 flex flex-col overflow-hidden max-h-[90vh]">
+          <div className="modal-box max-w-7xl w-11/12 p-5 flex flex-col overflow-hidden max-h-[90vh]" onMouseUp={handleTextSelection}>
             <div className="flex items-center justify-between border-b pb-3 mb-4 shrink-0">
               <div>
                 <h3 className="font-bold text-lg text-base-content">Preview: {previewTitle}</h3>
@@ -483,9 +546,9 @@ const ApprovalQueueView: React.FC<Props> = ({ setView: _setView }) => {
               <button className="btn btn-sm btn-circle btn-ghost" onClick={() => setPreviewOpen(false)}>✕</button>
             </div>
 
-            <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 min-h-[60vh] max-h-[68vh] overflow-hidden flex-1">
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 h-[65vh] max-h-[65vh] min-h-0 overflow-hidden flex-1">
               {/* Left: Playbook Preview (YAML) */}
-              <div className="lg:col-span-7 flex flex-col min-h-0 border border-base-300 rounded-xl overflow-hidden bg-base-300/30">
+              <div className="lg:col-span-7 flex flex-col h-full min-h-0 border border-base-300 rounded-xl overflow-hidden bg-base-300/30">
                 <div className="p-3 bg-base-200 border-b border-base-300 flex items-center justify-between font-mono text-xs shrink-0 select-none">
                   <span className="font-bold text-base-content/70">playbook_entrypoint.yml</span>
                   <span className="badge badge-sm badge-outline">YAML</span>
@@ -503,7 +566,7 @@ const ApprovalQueueView: React.FC<Props> = ({ setView: _setView }) => {
               </div>
 
               {/* Right: AI Assistant (Audit / QA) */}
-              <div className="lg:col-span-5 flex flex-col min-h-0 border border-base-300 rounded-xl bg-base-100 overflow-hidden">
+              <div className="lg:col-span-5 flex flex-col h-full min-h-0 border border-base-300 rounded-xl bg-base-100 overflow-hidden">
                 {/* AI Assistant Tabs */}
                 <div className="flex border-b border-base-300 bg-base-200/50 shrink-0 select-none">
                   <button
@@ -515,7 +578,7 @@ const ApprovalQueueView: React.FC<Props> = ({ setView: _setView }) => {
                         : 'border-transparent text-base-content/60 hover:text-base-content/90'
                     }`}
                   >
-                    Safety Audit
+                    AI Summary
                   </button>
                   <button
                     type="button"
@@ -539,7 +602,7 @@ const ApprovalQueueView: React.FC<Props> = ({ setView: _setView }) => {
                         <div className="absolute w-10 h-10 rounded-full border-2 border-violet-500/20 border-b-violet-500 animate-spin" style={{ animationDirection: 'reverse' }} />
                         <span className="loading loading-spinner loading-xs text-primary relative z-10" />
                       </div>
-                      <p className="text-xs font-semibold text-base-content/70">AI is auditing & rating safety…</p>
+                      <p className="text-xs font-semibold text-base-content/70">AI is auditing & rating playbook…</p>
                     </div>
                   ) : aiTab === 'audit' ? (
                     /* AUDIT TAB */
@@ -549,7 +612,7 @@ const ApprovalQueueView: React.FC<Props> = ({ setView: _setView }) => {
                         <>
                           <div className="p-4 rounded-xl border border-base-300 bg-base-200/40 flex items-center justify-between gap-4 select-none">
                             <div>
-                              <span className="text-[10px] uppercase font-bold tracking-wider text-base-content/40">Safety Reference Rating</span>
+                              <span className="text-[10px] uppercase font-bold tracking-wider text-base-content/40">Playbook Reference Rating</span>
                               <div className="flex items-baseline gap-1 mt-0.5">
                                 <span className="text-3xl font-extrabold tracking-tight text-base-content">{analysis.rating}</span>
                                 <span className="text-xs opacity-50 font-medium">/ 10</span>
@@ -562,6 +625,22 @@ const ApprovalQueueView: React.FC<Props> = ({ setView: _setView }) => {
                             </div>
                           </div>
 
+                          {/* Playbook Operational Impact Rating */}
+                          <div className="p-4 rounded-xl border border-base-300 bg-base-200/40 flex items-center justify-between gap-4 select-none mt-2">
+                            <div>
+                              <span className="text-[10px] uppercase font-bold tracking-wider text-base-content/40">Playbook Operational Rating</span>
+                              <div className="flex items-baseline gap-1 mt-0.5">
+                                <span className="text-3xl font-extrabold tracking-tight text-base-content">{analysis.operational_rating}</span>
+                                <span className="text-xs opacity-50 font-medium">/ 10</span>
+                              </div>
+                            </div>
+                            <div className={`badge py-3 px-4 font-bold border-none text-black/75 shadow-sm text-xs ${
+                              analysis.operational_level === 'Normal' ? 'bg-success' : analysis.operational_level === 'Warning' ? 'bg-error' : 'bg-warning'
+                            }`}>
+                              {analysis.operational_level === 'Normal' ? '🟢 Normal' : analysis.operational_level === 'Warning' ? '🔴 Warning' : '🟡 Alert'}
+                            </div>
+                          </div>
+
                           {/* Explanation */}
                           <div className="space-y-1.5">
                             <h4 className="text-[10px] font-bold uppercase tracking-wider text-base-content/45 select-none">Playbook Explanation</h4>
@@ -570,22 +649,47 @@ const ApprovalQueueView: React.FC<Props> = ({ setView: _setView }) => {
                             </div>
                           </div>
 
+                          {/* Operational Impact Explanation */}
+                          <div className="space-y-1.5">
+                            <h4 className="text-[10px] font-bold uppercase tracking-wider text-base-content/45 select-none">Operational Impact Details</h4>
+                            <div className="text-xs leading-relaxed text-base-content/85 p-3 rounded-lg border bg-base-200/20 whitespace-pre-wrap font-sans select-text">
+                              {analysis.operational_explanation}
+                            </div>
+                          </div>
+
                           {/* Findings Checklist */}
                           <div className="space-y-2">
-                            <h4 className="text-[10px] font-bold uppercase tracking-wider text-base-content/45 select-none">Security Checklist Findings</h4>
+                            <h4 className="text-[10px] font-bold uppercase tracking-wider text-base-content/45 select-none">Overall Summary Findings</h4>
                             <div className="flex flex-col gap-2 select-text">
-                              {analysis.findings.map((finding, idx) => (
-                                <div key={idx} className="flex items-start gap-2.5 text-xs text-base-content/85 p-2.5 rounded-lg border border-base-200 bg-base-200/10">
-                                  {analysis.safety_level === 'Safe' ? (
-                                    <span className="text-success font-bold shrink-0 mt-0.5">✓</span>
-                                  ) : analysis.safety_level === 'Danger' ? (
-                                    <span className="text-error font-bold shrink-0 mt-0.5">⚠</span>
-                                  ) : (
-                                    <span className="text-warning font-bold shrink-0 mt-0.5">⚠</span>
-                                  )}
-                                  <span className="leading-normal">{finding}</span>
-                                </div>
-                              ))}
+                              {analysis.findings.map((finding, idx) => {
+                                let cleanFinding = finding;
+                                let isWarning = false;
+
+                                if (finding.startsWith('[⚠️ CRITICAL WARNING]')) {
+                                  isWarning = true;
+                                  cleanFinding = finding.replace('[⚠️ CRITICAL WARNING]', '').trim();
+                                } else if (finding.startsWith('[✓]')) {
+                                  cleanFinding = finding.replace('[✓]', '').trim();
+                                } else {
+                                  // Fallback keyword-based check
+                                  const lower = finding.toLowerCase();
+                                  const triggerKeywords = ['critical warning', 'danger', 'lockout', 'contradiction', 'vulnerability'];
+                                  isWarning = triggerKeywords.some(w => lower.includes(w));
+                                }
+
+                                const indicator = isWarning ? (
+                                  <span className="text-error font-bold shrink-0 mt-0.5">⚠</span>
+                                ) : (
+                                  <span className="text-success font-bold shrink-0 mt-0.5">✓</span>
+                                );
+
+                                return (
+                                  <div key={idx} className="flex items-start gap-2.5 text-xs text-base-content/85 p-2.5 rounded-lg border border-base-200 bg-base-200/10">
+                                    {indicator}
+                                    <span className="leading-normal">{cleanFinding}</span>
+                                  </div>
+                                );
+                              })}
                             </div>
                           </div>
                         </>
@@ -597,7 +701,7 @@ const ApprovalQueueView: React.FC<Props> = ({ setView: _setView }) => {
                     </div>
                   ) : (
                     /* Q&A CHAT TAB */
-                    <div className="flex flex-col h-full min-h-[300px]">
+                    <div className="flex flex-col h-full min-h-0">
                       {/* Messages history */}
                       <div className="flex-1 space-y-3 overflow-y-auto mb-3 pr-1 text-xs custom-scrollbar">
                         {qaHistory.length === 0 ? (
@@ -610,8 +714,13 @@ const ApprovalQueueView: React.FC<Props> = ({ setView: _setView }) => {
                         ) : (
                           qaHistory.map((msg, idx) => (
                             <div key={idx} className={`chat ${msg.role === 'user' ? 'chat-end' : 'chat-start'}`}>
-                              <div className={`chat-bubble py-2 px-3 rounded-xl leading-normal text-xs font-sans ${msg.role === 'user' ? 'chat-bubble-primary text-primary-content' : 'chat-bubble-neutral text-neutral-content'}`}>
-                                {msg.content}
+                              <div className={`chat-bubble py-2 px-3  leading-normal text-xs font-sans ${msg.role === 'user' ? 'chat-bubble-primary text-primary-content' : 'chat-bubble-neutral text-neutral-content'}`}>
+                                {msg.quote && (
+                                  <div className="border-l-2 border-current/35 pl-2 mb-1.5 italic opacity-85 text-[10px] bg-black/15 p-1 rounded-r max-w-xs truncate">
+                                    "{msg.quote}"
+                                  </div>
+                                )}
+                                <div className="whitespace-pre-wrap">{msg.content}</div>
                               </div>
                             </div>
                           ))
@@ -625,6 +734,25 @@ const ApprovalQueueView: React.FC<Props> = ({ setView: _setView }) => {
                           </div>
                         )}
                       </div>
+
+                      {/* Active Quote preview */}
+                      {activeQuote && (
+                        <div className="bg-base-200 text-base-content border border-base-300 rounded-xl p-2 px-3 mb-2 flex items-center justify-between gap-3 text-[11px] shrink-0">
+                          <div className="flex items-center gap-2 min-w-0">
+                            <span className="bg-neutral text-neutral-content rounded-md w-5 h-5 flex items-center justify-center text-[10px] font-bold shrink-0">❝</span>
+                            <span className="truncate italic opacity-95">
+                              {activeQuote}
+                            </span>
+                          </div>
+                          <button
+                            type="button"
+                            className="btn btn-xs btn-circle btn-ghost shrink-0"
+                            onClick={() => setActiveQuote('')}
+                          >
+                            ✕
+                          </button>
+                        </div>
+                      )}
 
                       {/* Input box */}
                       <div className="mt-auto border-t pt-3 flex gap-2 shrink-0 select-none">
@@ -660,6 +788,65 @@ const ApprovalQueueView: React.FC<Props> = ({ setView: _setView }) => {
               </span>
               <button className="btn btn-sm btn-outline" onClick={() => setPreviewOpen(false)}>Close Preview</button>
             </div>
+
+            {pendingQuote && selectionCoords && (
+  <>
+    <style>{`
+      @keyframes spin {
+        0% { transform: translate(-50%, -50%) rotate(0deg); }
+        100% { transform: translate(-50%, -50%) rotate(360deg); }
+      }
+      .rainbow-glow-wrapper {
+        position: fixed;
+        z-index: 9999;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        overflow: hidden;
+        padding: 2.5px; /* Slightly thicker for better visibility */
+        background: transparent;
+      }
+      /* This layer creates the seamless, super bright spinning rainbow */
+      .rainbow-glow-wrapper::before {
+        content: '';
+        position: absolute;
+        top: 50%;
+        left: 50%;
+        width: 300%; /* Extra wide to guarantee 100% corner coverage */
+        height: 300%;
+        border-radius: 50%; /* Perfect circle prevents black edge cutoffs */
+        background: conic-gradient(
+          #ff0055, #00ffcc, #9900ff, #ffcc00, #ff0055
+        );
+        /* ADJUST DIMNESS HERE: 0.0 is completely invisible, 1.0 is max brightness */
+        opacity: 0.50;
+        animation: spin 15s linear infinite;
+      }
+      .rainbow-btn-inner {
+        position: relative;
+        z-index: 10;
+        width: 100%;
+        height: 100%;
+      }
+    `}</style>
+
+    <div 
+      className="rainbow-glow-wrapper rounded-xl shadow-[0_0_15px_rgba(0,255,204,0.15)]"
+      style={{
+        top: `${selectionCoords.top - 100}px`,
+        left: `${selectionCoords.left - 100}px`,
+      }}
+    >
+      <button
+        type="button"
+        className="rainbow-btn-inner btn btn-xs btn-neutral gap-1 rounded-lg px-2.5 py-2.5 text-[12.5px] font-sans hover:bg-neutral-focus border-0"
+        onClick={handleApplyQuote}
+      >
+        <span className="text-primary font-bold">❝</span> Ask about
+      </button>
+    </div>
+  </>
+)}
           </div>
           <div className="modal-backdrop bg-black/60" onClick={() => setPreviewOpen(false)} />
         </dialog>

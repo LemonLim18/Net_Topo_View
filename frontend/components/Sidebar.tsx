@@ -16,6 +16,7 @@ import {
   FileCode2,
   HardDrive,
   RadioTower,
+  User as UserIcon,
 } from 'lucide-react';
 import type { ViewId, User } from '../types';
 import { normalizeUserRole } from '../types';

@@ -19,6 +19,7 @@ interface Job {
   status: string;
   created_at: string;
   error_message?: string;
+  owner_username?: string | null;
 }
 
 interface Proposal {
@@ -75,12 +76,19 @@ const Deployments: React.FC = () => {
     }
   };
 
-  // --- Jobs Tab Logic (existing) ---
+  // --- Jobs Tab Logic ---
+  const fetchJobs = async () => {
+    try {
+      const res = await deployApi.listJobs();
+      setJobs(res);
+    } catch (e) {
+      console.error('Failed to fetch jobs:', e);
+    }
+  };
+
   useEffect(() => {
     if (activeTab === 'jobs') {
-      setJobs([
-        { id: 1, request_id: 101, device_id: 1, stage: 'PLAN', status: 'PENDING', created_at: new Date().toISOString() }
-      ]);
+      fetchJobs();
     }
   }, [activeTab]);
 
@@ -290,7 +298,12 @@ const Deployments: React.FC = () => {
           <>
             {/* Job List */}
             <div className="bg-base-100 rounded-xl shadow-sm border border-base-300 flex flex-col">
-              <div className="p-4 border-b border-base-300 font-semibold">Active Jobs</div>
+              <div className="p-4 border-b border-base-300 font-semibold flex items-center justify-between">
+                <span>Active Jobs</span>
+                <button onClick={fetchJobs} className="btn btn-ghost btn-xs">
+                  <RotateCcw className="w-3 h-3" />
+                </button>
+              </div>
               <div className="overflow-y-auto flex-1">
                 {jobs.map(job => (
                   <div 
@@ -305,6 +318,11 @@ const Deployments: React.FC = () => {
                       </span>
                     </div>
                     <div className="font-semibold text-sm">Deploy Request #{job.request_id}</div>
+                    {job.owner_username && (
+                      <div className="text-xs mt-1 opacity-60 flex items-center gap-1">
+                        <User size={10} /> Owner: {job.owner_username}
+                      </div>
+                    )}
                     <div className="text-xs mt-1 flex items-center gap-1 opacity-70">
                       <Clock size={12} /> {new Date(job.created_at).toLocaleTimeString()}
                     </div>
