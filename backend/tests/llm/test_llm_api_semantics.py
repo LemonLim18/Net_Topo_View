@@ -84,7 +84,7 @@ def test_chat_endpoint_returns_grounding_meta(monkeypatch):
     class _FakeAgent:
         model_name = "test-model"
 
-        async def chat(self, message):
+        async def chat(self, message, grounding=True):
             return {
                 "role": "assistant",
                 "content": "answer\n\nGrounding: planned; sources=local_db; source_age=local_db:0s/live; confidence=high (0.9).",

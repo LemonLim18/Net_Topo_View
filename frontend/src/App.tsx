@@ -27,6 +27,7 @@ import UserProfileModal from '../components/UserProfileModal';
 
 import { NotificationProvider } from '../contexts/NotificationContext';
 import { DeviceProvider } from '../contexts/DeviceContext';
+import { useTaskProgress } from '../contexts/TaskProgressContext';
 import { Bot } from 'lucide-react';
 import { SHOW_SDN_CONTROLLER } from './config';
 
@@ -84,6 +85,10 @@ const App: React.FC = () => {
     return localStorage.getItem('sidebarCollapsed') === 'true';
   });
   const [overlayOpen, setOverlayOpen] = useState(false);
+
+  const { tasks } = useTaskProgress();
+  const hasProcessingTask = tasks.some((t) => t.status === 'processing');
+  const hasUncheckedDoneTask = tasks.some((t) => (t.status === 'done' || t.status === 'failed') && !t.checked);
   
   // Custom Draggable Button State
   const [buttonPos, setButtonPos] = useState({ x: window.innerWidth - 80, y: window.innerHeight - 80 });
@@ -319,10 +324,20 @@ const App: React.FC = () => {
                   >
                     <button 
                       onClick={() => !hasMoved && setOverlayOpen(true)}
-                      className="btn btn-primary btn-circle shadow-xl border-2 border-primary/20 agent-button agent-breathing transition-all active:scale-95"
+                      className="btn btn-primary btn-circle shadow-xl border-2 border-primary/20 agent-button agent-breathing transition-all active:scale-95 relative"
                       title="Open Inventory AI & Network Ops Center"
                     >
                       <Bot className="w-6 h-6" />
+                      {hasProcessingTask ? (
+                        <span className="absolute -top-1 -right-1 flex h-3 w-3">
+                          <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-yellow-400 opacity-75"></span>
+                          <span className="relative inline-flex rounded-full h-3 w-3 bg-yellow-500 border border-base-100"></span>
+                        </span>
+                      ) : hasUncheckedDoneTask ? (
+                        <span className="absolute -top-1 -right-1 flex h-3 w-3">
+                          <span className="relative inline-flex rounded-full h-3 w-3 bg-success border border-base-100"></span>
+                        </span>
+                      ) : null}
                     </button>
                   </div>
                 </>

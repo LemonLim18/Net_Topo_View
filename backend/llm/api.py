@@ -24,6 +24,7 @@ import json
 import asyncio
 import logging
 import os
+import re
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
@@ -609,11 +610,22 @@ async def get_info():
 async def get_controller_observability():
     """Return a canonical controller observability snapshot for debugging and higher-level agent integration."""
     agent = _get_agent()
-    # Build payload using the helper
+    proposals = agent.proposal_manager.list_all()
     payload = build_controller_observability_payload(
-        agent=agent,
+        controller={
+            "model": agent.model_name,
+            "history_length": len(agent.get_history()),
+            "scope_contract": getattr(agent, "controller_scope_contract", None),
+            "implementation_status": getattr(agent, "controller_implementation_status", None),
+            "milestone2_baseline": getattr(agent, "milestone2_baseline", None),
+        },
+        context_health=await _run_tool_json(network_tools.get_context_health),
+        sync_freshness=await _run_tool_json(network_tools.get_last_sync_status),
         config_snapshots=_build_config_snapshots_payload(agent),
+        proposal_state=summarize_proposals(proposals),
         deployment_state=_build_deployment_state_payload(agent),
+        validation_outcomes=summarize_validation_outcomes(proposals),
+        latest_chat=get_latest_controller_chat_snapshot(),
     )
     return payload
 
@@ -947,24 +959,7 @@ async def get_device_enrichment(hostname: str):
     except Exception as e:
         logger.error(f"Device enrichment error for {hostname}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
-    agent = _get_agent()
-    proposals = agent.proposal_manager.list_all()
-    return build_controller_observability_payload(
-        controller={
-            "model": agent.model_name,
-            "history_length": len(agent.get_history()),
-            "scope_contract": getattr(agent, "controller_scope_contract", None),
-            "implementation_status": getattr(agent, "controller_implementation_status", None),
-            "milestone2_baseline": getattr(agent, "milestone2_baseline", None),
-        },
-        context_health=await _run_tool_json(network_tools.get_context_health),
-        sync_freshness=await _run_tool_json(network_tools.get_last_sync_status),
-        config_snapshots=_build_config_snapshots_payload(agent),
-        proposal_state=summarize_proposals(proposals),
-        deployment_state=_build_deployment_state_payload(agent),
-        validation_outcomes=summarize_validation_outcomes(proposals),
-        latest_chat=get_latest_controller_chat_snapshot(),
-    )
+
 
 
 @router.get("/scope")

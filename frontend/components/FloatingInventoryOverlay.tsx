@@ -17,6 +17,7 @@ import {
   Layers,
   Bot
 } from 'lucide-react';
+import { useTaskProgress } from '../contexts/TaskProgressContext';
 
 interface DeviceInterface {
   name: string;
@@ -51,10 +52,14 @@ interface Message {
 }
 
 const FloatingInventoryOverlay: React.FC<{ onClose: () => void }> = ({ onClose }) => {
-  const [activeTab, setActiveTab] = useState<'inventory' | 'ollama' | 'inventory_ai'>('inventory');
+  const [activeTab, setActiveTab] = useState<'inventory' | 'ollama' | 'inventory_ai' | 'tasks'>('inventory');
   const [position, setPosition] = useState({ x: window.innerWidth - 450, y: 100 });
   const [isDragging, setIsDragging] = useState(false);
   const dragStartPos = useRef({ x: 0, y: 0 });
+
+  const { tasks, checkTask, removeTask } = useTaskProgress();
+  const hasProcessingTask = tasks.some((t) => t.status === 'processing');
+  const hasUncheckedDoneTask = tasks.some((t) => (t.status === 'done' || t.status === 'failed') && !t.checked);
   
   // Inventory State
   const [devices, setDevices] = useState<Device[]>([]);
@@ -323,20 +328,38 @@ const FloatingInventoryOverlay: React.FC<{ onClose: () => void }> = ({ onClose }
           INVENTORY
         </button>
         <button 
-          onClick={() => setActiveTab('inventory_ai')}
-          className={`flex-1 p-2.5 flex items-center justify-center gap-1.5 text-[10px] font-bold transition-colors
-            ${activeTab === 'inventory_ai' ? 'bg-base-100 text-secondary border-b-2 border-secondary' : 'hover:bg-base-200 opacity-60'}`}
-        >
-          <Bot className="w-3.5 h-3.5" />
-          INVENTORY AI
-        </button>
-        <button 
           onClick={() => setActiveTab('ollama')}
           className={`flex-1 p-2.5 flex items-center justify-center gap-1.5 text-[10px] font-bold transition-colors
-            ${activeTab === 'ollama' ? 'bg-base-100 text-info border-b-2 border-info' : 'hover:bg-base-200 opacity-60'}`}
+            ${activeTab === 'ollama' ? 'bg-base-100 text-secondary border-b-2 border-secondary' : 'hover:bg-base-200 opacity-60'}`}
         >
           <Cpu className="w-3.5 h-3.5" />
-          OLLAMA (FREE)
+          GENERAL AI
+        </button>
+        <button 
+          onClick={() => setActiveTab('inventory_ai')}
+          className={`flex-1 p-2.5 flex items-center justify-center gap-1.5 text-[10px] font-bold transition-colors
+            ${activeTab === 'inventory_ai' ? 'bg-base-100 text-accent border-b-2 border-accent' : 'hover:bg-base-200 opacity-60'}`}
+        >
+          <Bot className="w-3.5 h-3.5" />
+          NETWORK AI
+        </button>
+        <button 
+          onClick={() => setActiveTab('tasks')}
+          className={`flex-1 p-2.5 flex items-center justify-center gap-1.5 text-[10px] font-bold transition-colors relative
+            ${activeTab === 'tasks' ? 'bg-base-100 text-warning border-b-2 border-warning' : 'hover:bg-base-200 opacity-60'}`}
+        >
+          <Terminal className="w-3.5 h-3.5" />
+          TASKS
+          {hasProcessingTask ? (
+            <span className="absolute top-1.5 right-1.5 flex h-2 w-2">
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-yellow-400 opacity-75"></span>
+              <span className="relative inline-flex rounded-full h-2 w-2 bg-yellow-500"></span>
+            </span>
+          ) : hasUncheckedDoneTask ? (
+            <span className="absolute top-1.5 right-1.5 flex h-2 w-2">
+              <span className="relative inline-flex rounded-full h-2 w-2 bg-success"></span>
+            </span>
+          ) : null}
         </button>
       </div>
 
@@ -508,6 +531,95 @@ const FloatingInventoryOverlay: React.FC<{ onClose: () => void }> = ({ onClose }
               </>
             )}
           </div>
+        ) : activeTab === 'tasks' ? (
+          <div className="h-full flex flex-col p-4 bg-base-100 overflow-y-auto space-y-3">
+            <div className="flex items-center justify-between border-b border-base-content/5 pb-2">
+              <h3 className="font-bold text-xs uppercase opacity-75">Background Actions</h3>
+              {tasks.some(t => t.checked) && (
+                <button 
+                  onClick={() => tasks.forEach(t => t.checked && removeTask(t.id))}
+                  className="btn btn-ghost btn-xs text-[10px] text-primary"
+                >
+                  Clear Checked
+                </button>
+              )}
+            </div>
+
+            {tasks.length === 0 ? (
+              <div className="flex flex-col items-center justify-center h-48 opacity-45 text-center px-6">
+                <Terminal className="w-10 h-10 mb-2 opacity-50 text-slate-500" />
+                <p className="text-xs font-semibold">No active background tasks</p>
+                <p className="text-[10px] mt-1">Tasks you minimize from loader overlays will appear here.</p>
+              </div>
+            ) : (
+              <div className="space-y-2.5">
+                {tasks.map((task) => {
+                  const isDone = task.status === 'done' || task.status === 'failed';
+                  return (
+                    <div 
+                      key={task.id}
+                      className={`p-3 rounded-xl border flex items-start gap-3 transition-all
+                        ${isDone 
+                          ? 'bg-base-200/50 border-base-300' 
+                          : 'bg-yellow-500/5 border-yellow-500/20'}`}
+                    >
+                      <div className="mt-0.5">
+                        {task.status === 'processing' ? (
+                          <span className="flex h-2 w-2 relative mt-1.5">
+                            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-yellow-400 opacity-75"></span>
+                            <span className="relative inline-flex rounded-full h-2 w-2 bg-yellow-500"></span>
+                          </span>
+                        ) : (
+                          <span className="relative inline-flex rounded-full h-2 w-2 bg-success mt-1.5"></span>
+                        )}
+                      </div>
+
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-xs font-bold truncate">{task.message}</span>
+                          <span className={`badge badge-[9px] uppercase tracking-wider font-bold py-0.5 px-1
+                            ${task.status === 'processing' 
+                              ? 'badge-warning text-warning-content' 
+                              : task.status === 'failed' 
+                                ? 'badge-error text-error-content' 
+                                : 'badge-success text-success-content'}`}
+                          >
+                            {task.status}
+                          </span>
+                        </div>
+                        {task.subtitle && (
+                          <p className="text-[10px] opacity-60 mt-0.5 truncate">{task.subtitle}</p>
+                        )}
+                        {task.status === 'processing' && task.progressText && (
+                          <div className="mt-2 text-[10px] font-mono text-warning/90 bg-slate-950/40 px-2 py-1 rounded border border-warning/10 animate-pulse">
+                            {task.progressText}
+                          </div>
+                        )}
+                        {isDone && (
+                          <p className="text-[10px] text-success/90 mt-1">
+                            Action completed successfully.
+                          </p>
+                        )}
+                      </div>
+
+                      {isDone && (
+                        <button
+                          onClick={() => {
+                            checkTask(task.id);
+                            removeTask(task.id);
+                          }}
+                          className="btn btn-ghost btn-xs btn-circle hover:bg-success/20 text-success shrink-0"
+                          title="Dismiss Task"
+                        >
+                          <X className="w-3.5 h-3.5" />
+                        </button>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
         ) : (
           <div className="h-full flex flex-col bg-base-200/30">
             {/* Model Selector Bar */}
@@ -553,12 +665,12 @@ const FloatingInventoryOverlay: React.FC<{ onClose: () => void }> = ({ onClose }
             {/* Messages */}
             <div ref={scrollRef} className="flex-1 overflow-y-auto p-4 space-y-4">
               {(activeTab === 'ollama' ? ollamaMessages : inventoryAiMessages).length === 0 && (
-                <div className="flex flex-col items-center justify-center h-full opacity-30 text-center px-10 pt-10">
+                <div className="flex flex-col items-center justify-center h-full opacity-80 text-center px-10 pt-10">
                   {activeTab === 'inventory_ai' ? <Bot className="w-12 h-12 mb-4" /> : <Cpu className="w-12 h-12 mb-4" />}
                   <p className="text-sm font-semibold">
                     {activeTab === 'inventory_ai' ? 'Project Inventory AI' : 'Ollama Unrestricted Playground'}
                   </p>
-                  <p className="text-[11px] mt-2">
+                  <p className="text-[11px] mt-2 text-base-content/90">
                     {activeTab === 'inventory_ai' 
                       ? 'I can answer questions about your devices, vendors, and roles based on the current snapshot.'
                       : 'Speak directly to the local model. No grounding, no system prompts, just raw intelligence.'}
@@ -582,7 +694,7 @@ const FloatingInventoryOverlay: React.FC<{ onClose: () => void }> = ({ onClose }
                   >
                     <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.content}</ReactMarkdown>
                   </div>
-                  <span className="text-[9px] opacity-30 mt-1 px-1">{msg.timestamp}</span>
+                  <span className="text-[9px] opacity-55 mt-1 px-1">{msg.timestamp}</span>
                 </div>
               ))}
               {(activeTab === 'ollama' ? isOllamaLoading : isInventoryAiLoading) && (
@@ -602,7 +714,7 @@ const FloatingInventoryOverlay: React.FC<{ onClose: () => void }> = ({ onClose }
                   onChange={(e) => activeTab === 'ollama' ? setOllamaPrompt(e.target.value) : setInventoryAiPrompt(e.target.value)}
                   onKeyDown={(e) => e.key === 'Enter' && handleChatSend(activeTab === 'ollama' ? 'playground' : 'inventory')}
                   placeholder={availableModels.length > 0 ? (activeTab === 'inventory_ai' ? "Ask about your network..." : "Ask local model anything...") : "Ollama not available"}
-                  className="input input-bordered w-full pr-12 text-sm bg-base-200 border-none h-11 focus:outline-none"
+                  className="input input-bordered w-full pr-12 text-sm bg-base-200 border-none h-11 focus:outline-none placeholder:text-base-content/50"
                   disabled={availableModels.length === 0}
                 />
                 <button 

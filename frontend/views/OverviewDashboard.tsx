@@ -59,10 +59,10 @@ const OverviewDashboard: React.FC<Props> = ({ setView, setSelectedDeviceId, user
   const refresh = useCallback(async () => {
     setLoading(true);
     try {
-      const [s, d, proposals, deploys] = await Promise.all([
+      const [s, d, queueRes, deploys] = await Promise.all([
         dashboardApi.getSummary(),
         netboxApi.listDevices(),
-        proposalApi.list('pending').catch(() => ({ proposals: [] })),
+        deployApi.listApprovalQueue('pending').catch(() => ({ items: [] })),
         deployApi.listJobs().catch(() => []),
       ]);
       const [events, sources] = await Promise.all([
@@ -71,7 +71,18 @@ const OverviewDashboard: React.FC<Props> = ({ setView, setSelectedDeviceId, user
       ]);
       setSummary(s);
       setDevices(Array.isArray(d?.devices) ? d.devices : []);
-      setPendingApprovals(proposals.proposals ?? []);
+
+      const mappedQueue = (queueRes.items ?? []).map((p: any) => ({
+        id: p.id,
+        type: p.type || 'playbook_job',
+        title: p.title || `Job #${p.id}`,
+        vendor: p.vendor || '',
+        feature: p.feature || '',
+        status: p.status,
+        created_at: p.created_at,
+      }));
+
+      setPendingApprovals(mappedQueue);
       setRecentDeploys(Array.isArray(deploys) ? deploys.slice(0, 5) : []);
       setSyslogEvents(Array.isArray(events) ? events : []);
       setSyslogSources(Array.isArray(sources?.items) ? sources.items : []);
@@ -393,11 +404,17 @@ const OverviewDashboard: React.FC<Props> = ({ setView, setSelectedDeviceId, user
               ) : (
                 <div className="space-y-2 max-h-48 overflow-y-auto">
                   {pendingApprovals.map((p: any) => (
-                    <div key={p.id} className="flex items-start gap-3 p-2 rounded-lg hover:bg-base-200">
+                    <div
+                      key={`${p.type}-${p.id}`}
+                      className="flex items-start gap-3 p-2 rounded-lg hover:bg-base-200 cursor-pointer transition-colors"
+                      onClick={() => setView('approval_queue')}
+                    >
                       <Rocket className="h-4 w-4 mt-0.5 flex-shrink-0 text-warning" />
                       <div className="min-w-0 flex-1">
-                        <p className="text-xs font-medium truncate">{p.title ?? p.description ?? `Proposal ${p.id}`}</p>
-                        <p className="text-[10px] opacity-50">{p.vendor ?? ''} / {p.feature ?? ''}</p>
+                        <p className="text-xs font-medium truncate">{p.title}</p>
+                        <p className="text-[10px] opacity-50">
+                          {p.vendor || 'playbook'} / {p.feature || 'job'}
+                        </p>
                       </div>
                       <span className="badge badge-xs badge-warning">pending</span>
                     </div>
