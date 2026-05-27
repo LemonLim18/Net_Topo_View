@@ -1253,6 +1253,8 @@ export interface RagDocument {
   vendor: string;
   ingested_at: string;
   chunk_count: number;
+  applicable_feature?: string;
+  partition?: string;
 }
 
 export interface RagStatus {
@@ -1268,6 +1270,17 @@ export const ragApi = {
 
   listDocuments: () =>
     request<RagDocument[]>('/rag/documents'),
+
+  getDocumentPreview: (docId: string, limit = 120) =>
+    request<{
+      doc_id: string;
+      doc_name: string;
+      doc_type: string;
+      vendor: string;
+      chunk_count: number;
+      preview_text: string;
+      chunks: Array<{ text: string; chunk_index: number; page_number: number }>;
+    }>(`/rag/documents/${docId}/preview?limit=${limit}`),
 
   uploadDocument: (file: File, docType: string, vendor: string, docName?: string) => {
     const token = localStorage.getItem('auth_token');

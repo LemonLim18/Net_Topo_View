@@ -138,6 +138,16 @@ class StatusResponse(BaseModel):
     curation_audit: dict[str, object] = {}
 
 
+class DocumentPreviewResponse(BaseModel):
+    doc_id: str
+    doc_name: str
+    doc_type: str
+    vendor: str
+    chunk_count: int
+    preview_text: str
+    chunks: list[dict]
+
+
 # DI global for context bundle builder
 _bundle_builder = None
 _db_manager = None
@@ -175,6 +185,7 @@ _ALLOWED_DOC_TYPES = {
     "troubleshooting",
     "best_practice",
     "advisory",
+    "ansible_reference",
 }
 
 _ALLOWED_VENDORS = {"cisco", "huawei", "juniper", "aruba", "general"}
@@ -310,6 +321,46 @@ async def list_documents(
         return [DocumentInfo(**d) for d in docs]
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.get(
+    "/documents/{doc_id}/preview",
+    response_model=DocumentPreviewResponse,
+    summary="Preview reconstructed document text from stored chunks",
+)
+async def preview_document(
+    doc_id: str,
+    limit: int = 120,
+    current_user: dict = Depends(_auth_dep),
+):
+    _check_rag_ready()
+    docs = _vector_store.list_documents()
+    doc = next((d for d in docs if d.get("doc_id") == doc_id), None)
+    if doc is None:
+        raise HTTPException(status_code=404, detail=f"Document '{doc_id}' not found")
+
+    chunks = _vector_store.get_document_chunks(doc_id, partition=doc.get("partition"), limit=limit)
+    if not chunks:
+        return DocumentPreviewResponse(
+            doc_id=doc_id,
+            doc_name=doc.get("doc_name", ""),
+            doc_type=doc.get("doc_type", ""),
+            vendor=doc.get("vendor", ""),
+            chunk_count=0,
+            preview_text="",
+            chunks=[],
+        )
+
+    preview_text = "\n\n".join((c.get("text") or "").strip() for c in chunks if (c.get("text") or "").strip())
+    return DocumentPreviewResponse(
+        doc_id=doc_id,
+        doc_name=doc.get("doc_name", ""),
+        doc_type=doc.get("doc_type", ""),
+        vendor=doc.get("vendor", ""),
+        chunk_count=len(chunks),
+        preview_text=preview_text,
+        chunks=chunks,
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -356,7 +356,8 @@ const ApprovalQueueView: React.FC<Props> = ({ setView: _setView }) => {
           <ListChecks className="w-6 h-6 text-primary" />
           <div>
             <h1 className="text-2xl font-bold">Approval Queue</h1>
-            <p className="text-sm opacity-60 max-w-xl">
+            
+            <p className="text-slate-400 text-sm mt-1">
               Unified request review list with live counts across Pending, Approved, and Rejected tabs.
             </p>
           </div>

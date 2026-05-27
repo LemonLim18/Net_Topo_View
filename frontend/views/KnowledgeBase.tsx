@@ -1,5 +1,5 @@
 /// <reference types="vite/client" />
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import {
   BookOpen,
   Upload,
@@ -11,59 +11,72 @@ import {
   AlertTriangle,
   Loader2,
   Info,
+  Eye,
+  ArrowUpDown,
 } from 'lucide-react';
+import Swal from 'sweetalert2';
 import { ragApi, type RagDocument, type RagStatus } from '../src/services/api';
-import { Toast } from '../src/utils/swal';
-
-// ─── Constants ───────────────────────────────────────────────────────────────
+import { Toast, Confirm } from '../src/utils/swal';
 
 const DOC_TYPES = [
-  { value: 'vendor_doc',      label: 'Vendor Documentation' },
-  { value: 'cli_reference',   label: 'CLI Reference' },
-  { value: 'sop',             label: 'Standard Operating Procedure' },
+  { value: 'vendor_doc', label: 'Vendor Documentation' },
+  { value: 'cli_reference', label: 'CLI Reference' },
+  { value: 'sop', label: 'Standard Operating Procedure' },
   { value: 'troubleshooting', label: 'Troubleshooting Guide' },
-  { value: 'best_practice',   label: 'Best Practice' },
+  { value: 'best_practice', label: 'Best Practice' },
+  { value: 'advisory', label: 'Security Advisory' },
+  { value: 'ansible_reference', label: 'Ansible Reference' },
 ];
 
 const VENDORS = [
-  { value: 'cisco',   label: 'Cisco' },
-  { value: 'huawei',  label: 'Huawei' },
+  { value: 'cisco', label: 'Cisco' },
+  { value: 'huawei', label: 'Huawei' },
   { value: 'juniper', label: 'Juniper' },
-  { value: 'aruba',   label: 'Aruba' },
+  { value: 'aruba', label: 'Aruba' },
   { value: 'general', label: 'General' },
+  { value: 'multi_vendor', label: 'Multi Vendor' },
+  { value: 'cisco_ios', label: 'Cisco IOS' },
+  { value: 'juniper_junos', label: 'Juniper Junos' },
+  { value: 'huawei_vrp', label: 'Huawei VRP' },
 ];
 
 const VENDOR_BADGE: Record<string, string> = {
-  cisco:   'badge-primary',
-  huawei:  'badge-secondary',
+  cisco: 'badge-primary',
+  huawei: 'badge-secondary',
   juniper: 'badge-accent',
-  aruba:   'badge-info',
+  aruba: 'badge-info',
   general: 'badge-ghost',
+  multi_vendor: 'badge-ghost',
+  cisco_ios: 'badge-primary',
+  juniper_junos: 'badge-accent',
+  huawei_vrp: 'badge-secondary',
 };
 
 const DOCTYPE_BADGE: Record<string, string> = {
-  vendor_doc:      'badge-warning',
-  cli_reference:   'badge-info',
-  sop:             'badge-success',
+  vendor_doc: 'badge-warning',
+  cli_reference: 'badge-info',
+  sop: 'badge-success',
   troubleshooting: 'badge-error',
-  best_practice:   'badge-secondary',
+  best_practice: 'badge-secondary',
+  advisory: 'badge-warning',
+  ansible_reference: 'badge-primary badge-outline',
 };
 
 const ACCEPTED_EXTS = '.pdf,.txt,.md,.docx,.html,.htm';
+const ANSIBLE_DELETE_PASSWORD = (import.meta as any).env?.VITE_ANSIBLE_REFERENCE_DELETE_PASSWORD || 'ansible-ref-lock';
 
-// ─── Component ───────────────────────────────────────────────────────────────
+type SortField = 'doc_name' | 'doc_type' | 'vendor' | 'chunk_count' | 'ingested_at';
+type SortDir = 'asc' | 'desc';
 
 const KnowledgeBase: React.FC = () => {
-  // Status
   const [status, setStatus] = useState<RagStatus | null>(null);
   const [statusLoading, setStatusLoading] = useState(true);
 
-  // Documents
   const [docs, setDocs] = useState<RagDocument[]>([]);
   const [docsLoading, setDocsLoading] = useState(true);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [bulkDeleting, setBulkDeleting] = useState(false);
 
-  // Upload form
   const [uploadFile, setUploadFile] = useState<File | null>(null);
   const [docType, setDocType] = useState('vendor_doc');
   const [vendor, setVendor] = useState('general');
@@ -71,15 +84,17 @@ const KnowledgeBase: React.FC = () => {
   const [uploading, setUploading] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Rebuild
   const [rebuilding, setRebuilding] = useState(false);
-  const [_rebuildResult, setRebuildResult] = useState<{ files_processed: number; total_chunks: number; errors: string[] } | null>(null);
 
-  // Filter
   const [filterVendor, setFilterVendor] = useState('');
   const [filterType, setFilterType] = useState('');
 
-  // ── Data loading ──────────────────────────────────────────────────────────
+  const [sortField, setSortField] = useState<SortField>('ingested_at');
+  const [sortDir, setSortDir] = useState<SortDir>('desc');
+
+  const [previewOpen, setPreviewOpen] = useState(false);
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [previewDoc, setPreviewDoc] = useState<{ name: string; type: string; vendor: string; text: string } | null>(null);
 
   const loadAll = useCallback(async () => {
     setStatusLoading(true);
@@ -96,20 +111,15 @@ const KnowledgeBase: React.FC = () => {
     }
   }, []);
 
-  useEffect(() => { loadAll(); }, [loadAll]);
-
-  // ── Upload ────────────────────────────────────────────────────────────────
+  useEffect(() => {
+    loadAll();
+  }, [loadAll]);
 
   const handleUpload = async () => {
     if (!uploadFile) return;
     setUploading(true);
     try {
-      const result = await ragApi.uploadDocument(
-        uploadFile,
-        docType,
-        vendor,
-        docName.trim() || undefined,
-      );
+      const result = await ragApi.uploadDocument(uploadFile, docType, vendor, docName.trim() || undefined);
       Toast.success('Ingested', `${result.chunks_stored} chunks stored for "${result.doc_name}"`);
       setUploadFile(null);
       setDocName('');
@@ -122,14 +132,38 @@ const KnowledgeBase: React.FC = () => {
     }
   };
 
-  // ── Delete ────────────────────────────────────────────────────────────────
+  const promptAnsibleDeletePassword = async (): Promise<boolean> => {
+    const result = await Swal.fire({
+      icon: 'warning',
+      title: 'Protected Deletion',
+      text: 'Ansible Reference deletion requires password confirmation.',
+      input: 'password',
+      inputLabel: 'Enter deletion password',
+      inputPlaceholder: 'Password',
+      showCancelButton: true,
+      confirmButtonText: 'Verify',
+      cancelButtonText: 'Cancel',
+      inputValidator: (value) => (!value ? 'Password is required' : undefined),
+    });
+    if (!result.isConfirmed) return false;
+    if (result.value !== ANSIBLE_DELETE_PASSWORD) {
+      Toast.error('Denied', 'Incorrect password for Ansible Reference deletion.');
+      return false;
+    }
+    return true;
+  };
 
   const handleDelete = async (doc: RagDocument) => {
+    if (doc.doc_type === 'ansible_reference') {
+      const ok = await promptAnsibleDeletePassword();
+      if (!ok) return;
+    }
+
     setDeletingId(doc.doc_id);
     try {
       const result = await ragApi.deleteDocument(doc.doc_id);
       Toast.success('Deleted', result.message);
-      setDocs(prev => prev.filter(d => d.doc_id !== doc.doc_id));
+      setDocs((prev) => prev.filter((d) => d.doc_id !== doc.doc_id));
       loadAll();
     } catch (err: any) {
       Toast.error('Delete Failed', err.message);
@@ -138,14 +172,39 @@ const KnowledgeBase: React.FC = () => {
     }
   };
 
-  // ── Rebuild ───────────────────────────────────────────────────────────────
+  const handleDeleteAllNonAnsible = async () => {
+    const targets = docs.filter((d) => d.doc_type !== 'ansible_reference');
+    if (targets.length === 0) {
+      Toast.info('Nothing to Remove', 'Only ansible_reference documents remain.');
+      return;
+    }
+
+    const confirmed = await Confirm.danger(
+      'Remove all non-Ansible documents?',
+      `This will delete ${targets.length} document(s) from vector chunks.`
+    );
+    if (!confirmed) return;
+
+    setBulkDeleting(true);
+    let success = 0;
+    let failed = 0;
+    for (const doc of targets) {
+      try {
+        await ragApi.deleteDocument(doc.doc_id);
+        success += 1;
+      } catch {
+        failed += 1;
+      }
+    }
+    setBulkDeleting(false);
+    await loadAll();
+    Toast.success('Cleanup Complete', `Deleted ${success} docs. ${failed > 0 ? `${failed} failed.` : ''}`.trim());
+  };
 
   const handleRebuild = async () => {
     setRebuilding(true);
-    setRebuildResult(null);
     try {
-      const result = await ragApi.rebuild();
-      setRebuildResult(result);
+      await ragApi.rebuild();
       Toast.success('Rebuild Started', 'Re-ingestion runs in the background. Refresh status below for chunk counts.');
       await loadAll();
     } catch (err: any) {
@@ -155,287 +214,168 @@ const KnowledgeBase: React.FC = () => {
     }
   };
 
-  // ── Filtered docs ─────────────────────────────────────────────────────────
+  const openPreview = async (doc: RagDocument) => {
+    setPreviewOpen(true);
+    setPreviewLoading(true);
+    setPreviewDoc(null);
+    try {
+      const res = await ragApi.getDocumentPreview(doc.doc_id, 140);
+      setPreviewDoc({
+        name: res.doc_name,
+        type: res.doc_type,
+        vendor: res.vendor,
+        text: res.preview_text || '(No preview text available)',
+      });
+    } catch (err: any) {
+      setPreviewDoc({ name: doc.doc_name, type: doc.doc_type, vendor: doc.vendor, text: `Preview failed: ${err.message || 'Unknown error'}` });
+    } finally {
+      setPreviewLoading(false);
+    }
+  };
 
-  const filteredDocs = docs.filter(d => {
-    if (filterVendor && d.vendor !== filterVendor) return false;
-    if (filterType && d.doc_type !== filterType) return false;
-    return true;
-  });
+  const toggleSort = (field: SortField) => {
+    if (sortField === field) {
+      setSortDir((prev) => (prev === 'asc' ? 'desc' : 'asc'));
+      return;
+    }
+    setSortField(field);
+    setSortDir('asc');
+  };
 
-  // ─── Render ────────────────────────────────────────────────────────────────
+  const filteredDocs = useMemo(() => {
+    const base = docs.filter((d) => {
+      if (filterVendor && d.vendor !== filterVendor) return false;
+      if (filterType && d.doc_type !== filterType) return false;
+      return true;
+    });
+
+    const dir = sortDir === 'asc' ? 1 : -1;
+    return [...base].sort((a, b) => {
+      if (sortField === 'chunk_count') return (a.chunk_count - b.chunk_count) * dir;
+      if (sortField === 'ingested_at') return (new Date(a.ingested_at).getTime() - new Date(b.ingested_at).getTime()) * dir;
+      const av = String(a[sortField] || '').toLowerCase();
+      const bv = String(b[sortField] || '').toLowerCase();
+      return av.localeCompare(bv) * dir;
+    });
+  }, [docs, filterVendor, filterType, sortField, sortDir]);
 
   return (
     <div className="p-6 h-full overflow-y-auto">
       <div className="max-w-6xl mx-auto space-y-6">
-
-        {/* ── Header ── */}
         <div className="flex items-center justify-between">
           <div>
             <h1 className="text-2xl font-bold flex items-center gap-2">
               <BookOpen className="h-6 w-6 text-primary" />
               Knowledge Base
             </h1>
-            <p className="text-base-content/60 text-sm mt-1">
-              Upload vendor documentation, SOPs, and CLI references for the AI agent to consult.
-            </p>
+            <p className="text-base-content/60 text-sm mt-1">Minimal, effective curation controls for LLM quality.</p>
           </div>
           <div className="flex gap-2">
-            {/* <button
-              className={`btn btn-warning btn-sm gap-2 shrink-0 ${rebuilding ? 'loading' : ''}`}
-              onClick={handleRebuild}
-              disabled={rebuilding || status?.available === false}
-            >
-              {!rebuilding && <RefreshCw className="h-4 w-4" />}
-              {rebuilding ? 'Rebuilding…' : 'Rebuild'}
-            </button> */}
-            <button
-              className={`btn btn-ghost btn-sm gap-2 ${(statusLoading || docsLoading) ? 'loading' : ''}`}
-              onClick={loadAll}
-              disabled={statusLoading || docsLoading}
-            >
-              {!(statusLoading || docsLoading) && <RefreshCw className="h-4 w-4" />}
-              Refresh
+            <button className={`btn btn-ghost btn-sm gap-2 ${(statusLoading || docsLoading) ? 'loading' : ''}`} onClick={loadAll} disabled={statusLoading || docsLoading}>
+              {!(statusLoading || docsLoading) && <RefreshCw className="h-4 w-4" />} Refresh
             </button>
-            <button
-              className={`btn btn-warning btn-sm gap-2 shrink-0 ${rebuilding ? 'loading' : ''}`}
-              onClick={handleRebuild}
-              disabled={rebuilding || status?.available === false}
-            >
-              {!rebuilding && <RefreshCw className="h-4 w-4" />}
-              {rebuilding ? 'Rebuilding…' : 'Rebuild'}
+            <button className={`btn btn-warning btn-sm gap-2 shrink-0 ${rebuilding ? 'loading' : ''}`} onClick={handleRebuild} disabled={rebuilding || status?.available === false}>
+              {!rebuilding && <RefreshCw className="h-4 w-4" />} {rebuilding ? 'Rebuilding...' : 'Rebuild'}
             </button>
           </div>
         </div>
 
-        {/* ── Info Banner ── */}
-        {/* <div className="alert alert-info text-xs py-2 px-4">
-          <Info className="h-4 w-4 shrink-0" />
-          <span>
-            Uploaded files are saved to <code className="bg-info/20 px-1 rounded">backend/knowledge_base/</code> and
-            remain available for future rebuilds. Deleting a document only removes its vector chunks — the
-            source file is preserved.
-          </span>
-        </div> */}
-
-        {/* ── Status Cards ── */}
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-          <StatCard
-            label="Status"
-            loading={statusLoading}
-            value={status?.available ? 'Online' : 'Offline'}
-            icon={status?.available
-              ? <CheckCircle className="h-5 w-5 text-success" />
-              : <AlertTriangle className="h-5 w-5 text-error" />}
-            sub={status?.available ? 'ChromaDB ready' : 'ChromaDB unavailable'}
-          />
-          <StatCard
-            label="Documents"
-            loading={statusLoading}
-            value={status?.total_documents ?? '—'}
-            icon={<FileText className="h-5 w-5 text-primary" />}
-            sub="ingested files"
-          />
-          <StatCard
-            label="Chunks"
-            loading={statusLoading}
-            value={status?.total_chunks ?? '—'}
-            icon={<Database className="h-5 w-5 text-secondary" />}
-            sub="vector embeddings"
-          />
-          <StatCard
-            label="Store Path"
-            loading={statusLoading}
-            value="chroma_db/"
-            icon={<Info className="h-5 w-5 text-base-content/40" />}
-            sub={status?.chroma_path ? 'persistent SQLite' : '—'}
-            mono
-          />
+          <StatCard label="Status" loading={statusLoading} value={status?.available ? 'Online' : 'Offline'} icon={status?.available ? <CheckCircle className="h-5 w-5 text-success" /> : <AlertTriangle className="h-5 w-5 text-error" />} sub={status?.available ? 'ChromaDB ready' : 'ChromaDB unavailable'} />
+          <StatCard label="Documents" loading={statusLoading} value={status?.total_documents ?? '-'} icon={<FileText className="h-5 w-5 text-primary" />} sub="ingested files" />
+          <StatCard label="Chunks" loading={statusLoading} value={status?.total_chunks ?? '-'} icon={<Database className="h-5 w-5 text-secondary" />} sub="vector embeddings" />
+          <StatCard label="Store Path" loading={statusLoading} value="chroma_db/" icon={<Info className="h-5 w-5 text-base-content/40" />} sub={status?.chroma_path ? 'persistent SQLite' : '-'} mono />
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-
-          {/* ── Upload Form ── */}
           <div className="card bg-base-100 shadow">
             <div className="card-body p-5 space-y-4">
-              <h2 className="font-semibold text-sm flex items-center gap-2">
-                <Upload className="h-4 w-4 text-primary" />
-                Upload Document
-              </h2>
+              <h2 className="font-semibold text-sm flex items-center gap-2"><Upload className="h-4 w-4 text-primary" /> Upload Document</h2>
 
-              {/* File picker */}
               <div className="form-control">
                 <label className="label py-1"><span className="label-text text-xs">File</span></label>
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  accept={ACCEPTED_EXTS}
-                  className="file-input file-input-bordered file-input-sm w-full"
-                  onChange={e => setUploadFile(e.target.files?.[0] ?? null)}
-                />
-                <label className="label py-0">
-                  <span className="label-text-alt opacity-50">PDF · DOCX · HTML · TXT · MD</span>
-                </label>
+                <input ref={fileInputRef} type="file" accept={ACCEPTED_EXTS} className="file-input file-input-bordered file-input-sm w-full" onChange={(e) => setUploadFile(e.target.files?.[0] ?? null)} />
               </div>
 
-              {/* Doc type */}
               <div className="form-control">
                 <label className="label py-1"><span className="label-text text-xs">Document Type</span></label>
-                <select
-                  className="select select-bordered select-sm"
-                  value={docType}
-                  onChange={e => setDocType(e.target.value)}
-                >
-                  {DOC_TYPES.map(t => (
-                    <option key={t.value} value={t.value}>{t.label}</option>
-                  ))}
+                <select className="select select-bordered select-sm" value={docType} onChange={(e) => setDocType(e.target.value)}>
+                  {DOC_TYPES.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
                 </select>
               </div>
 
-              {/* Vendor */}
               <div className="form-control">
                 <label className="label py-1"><span className="label-text text-xs">Vendor</span></label>
-                <select
-                  className="select select-bordered select-sm"
-                  value={vendor}
-                  onChange={e => setVendor(e.target.value)}
-                >
-                  {VENDORS.map(v => (
-                    <option key={v.value} value={v.value}>{v.label}</option>
-                  ))}
+                <select className="select select-bordered select-sm" value={vendor} onChange={(e) => setVendor(e.target.value)}>
+                  {VENDORS.map((v) => <option key={v.value} value={v.value}>{v.label}</option>)}
                 </select>
               </div>
 
-              {/* Optional name */}
               <div className="form-control">
-                <label className="label py-1">
-                  <span className="label-text text-xs">Display Name</span>
-                  <span className="label-text-alt opacity-50">optional</span>
-                </label>
-                <input
-                  type="text"
-                  className="input input-bordered input-sm"
-                  placeholder={uploadFile?.name ?? 'e.g. Cisco OSPF Guide'}
-                  value={docName}
-                  onChange={e => setDocName(e.target.value)}
-                />
+                <label className="label py-1"><span className="label-text text-xs">Display Name</span><span className="label-text-alt opacity-50">optional</span></label>
+                <input type="text" className="input input-bordered input-sm" placeholder={uploadFile?.name ?? 'e.g. reference.md'} value={docName} onChange={(e) => setDocName(e.target.value)} />
               </div>
 
-              <button
-                className={`btn btn-primary btn-sm w-full gap-2 ${uploading ? 'loading' : ''}`}
-                onClick={handleUpload}
-                disabled={!uploadFile || uploading || status?.available === false}
-              >
-                {!uploading && <Upload className="h-4 w-4" />}
-                {uploading ? 'Ingesting…' : 'Upload & Ingest'}
+              <button className={`btn btn-primary btn-sm w-full gap-2 ${uploading ? 'loading' : ''}`} onClick={handleUpload} disabled={!uploadFile || uploading || status?.available === false}>
+                {!uploading && <Upload className="h-4 w-4" />} {uploading ? 'Ingesting...' : 'Upload & Ingest'}
               </button>
 
-              {status?.available === false && (
-                <p className="text-xs text-error text-center">
-                  ChromaDB unavailable — check backend logs.
-                </p>
-              )}
+              <button className={`btn btn-error btn-outline btn-sm w-full ${bulkDeleting ? 'loading' : ''}`} onClick={handleDeleteAllNonAnsible} disabled={bulkDeleting || docsLoading}>
+                Remove All Non-Ansible Docs
+              </button>
             </div>
           </div>
 
-          {/* ── Document Library ── */}
           <div className="lg:col-span-2 card bg-base-100 shadow">
             <div className="card-body p-5">
               <div className="flex items-center justify-between mb-3">
-                <h2 className="font-semibold text-sm flex items-center gap-2">
-                  <Database className="h-4 w-4 text-secondary" />
-                  Document Library
-                  {!docsLoading && (
-                    <span className="badge badge-ghost badge-sm">{filteredDocs.length}</span>
-                  )}
-                </h2>
+                <h2 className="font-semibold text-sm flex items-center gap-2"><Database className="h-4 w-4 text-secondary" /> Document Library {!docsLoading && (<span className="badge badge-ghost badge-sm">{filteredDocs.length}</span>)}</h2>
 
-                {/* Filters */}
                 <div className="flex gap-2">
-                  <select
-                    className="select select-bordered select-xs"
-                    value={filterVendor}
-                    onChange={e => setFilterVendor(e.target.value)}
-                  >
+                  <select className="select select-bordered select-xs" value={filterVendor} onChange={(e) => setFilterVendor(e.target.value)}>
                     <option value="">All vendors</option>
-                    {VENDORS.map(v => (
-                      <option key={v.value} value={v.value}>{v.label}</option>
-                    ))}
+                    {VENDORS.map((v) => <option key={v.value} value={v.value}>{v.label}</option>)}
                   </select>
-                  <select
-                    className="select select-bordered select-xs"
-                    value={filterType}
-                    onChange={e => setFilterType(e.target.value)}
-                  >
+                  <select className="select select-bordered select-xs" value={filterType} onChange={(e) => setFilterType(e.target.value)}>
                     <option value="">All types</option>
-                    {DOC_TYPES.map(t => (
-                      <option key={t.value} value={t.value}>{t.label}</option>
-                    ))}
+                    {DOC_TYPES.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
                   </select>
                 </div>
               </div>
 
               {docsLoading ? (
-                <div className="flex justify-center py-12">
-                  <Loader2 className="h-6 w-6 animate-spin text-primary" />
-                </div>
+                <div className="flex justify-center py-12"><Loader2 className="h-6 w-6 animate-spin text-primary" /></div>
               ) : filteredDocs.length === 0 ? (
-                <div className="text-center py-12">
-                  <BookOpen className="h-10 w-10 mx-auto text-base-content/20 mb-3" />
-                  <p className="text-base-content/50 text-sm">
-                    {docs.length === 0
-                      ? 'No documents ingested yet. Upload your first file.'
-                      : 'No documents match the current filter.'}
-                  </p>
-                </div>
+                <div className="text-center py-12"><BookOpen className="h-10 w-10 mx-auto text-base-content/20 mb-3" /><p className="text-base-content/50 text-sm">No documents match the current filter.</p></div>
               ) : (
-                <div className="overflow-x-auto max-h-[360px]">
+                <div className="overflow-x-auto max-h-[460px]">
                   <table className="table table-sm table-zebra">
                     <thead>
                       <tr>
-                        <th>Document</th>
-                        <th>Type</th>
-                        <th>Vendor</th>
-                        <th className="text-right">Chunks</th>
-                        <th>Ingested</th>
+                        <th><button className="btn btn-ghost btn-xs" onClick={() => toggleSort('doc_name')}>Document <ArrowUpDown className="h-3 w-3" /></button></th>
+                        <th><button className="btn btn-ghost btn-xs" onClick={() => toggleSort('doc_type')}>Type <ArrowUpDown className="h-3 w-3" /></button></th>
+                        <th><button className="btn btn-ghost btn-xs" onClick={() => toggleSort('vendor')}>Vendor <ArrowUpDown className="h-3 w-3" /></button></th>
+                        <th className="text-right"><button className="btn btn-ghost btn-xs" onClick={() => toggleSort('chunk_count')}>Chunks <ArrowUpDown className="h-3 w-3" /></button></th>
+                        <th><button className="btn btn-ghost btn-xs" onClick={() => toggleSort('ingested_at')}>Ingested <ArrowUpDown className="h-3 w-3" /></button></th>
                         <th></th>
                       </tr>
                     </thead>
                     <tbody>
-                      {filteredDocs.map(doc => (
+                      {filteredDocs.map((doc) => (
                         <tr key={doc.doc_id}>
-                          <td className="max-w-[180px]">
-                            <div className="flex items-center gap-2">
-                              <FileText className="h-3.5 w-3.5 text-base-content/40 shrink-0" />
-                              <span className="truncate text-xs font-medium" title={doc.doc_name}>
-                                {doc.doc_name}
-                              </span>
-                            </div>
+                          <td className="max-w-[220px]">
+                            <button className="flex items-center gap-2 text-left hover:underline" onClick={() => openPreview(doc)} title="Preview document">
+                              <Eye className="h-3.5 w-3.5 text-base-content/40 shrink-0" />
+                              <span className="truncate text-xs font-medium" title={doc.doc_name}>{doc.doc_name}</span>
+                            </button>
                           </td>
-                          <td>
-                            <span className={`badge badge-xs ${DOCTYPE_BADGE[doc.doc_type] ?? 'badge-ghost'}`}>
-                              {DOC_TYPES.find(t => t.value === doc.doc_type)?.label ?? doc.doc_type}
-                            </span>
-                          </td>
-                          <td>
-                            <span className={`badge badge-xs ${VENDOR_BADGE[doc.vendor] ?? 'badge-ghost'}`}>
-                              {doc.vendor}
-                            </span>
-                          </td>
+                          <td><span className={`badge badge-xs ${DOCTYPE_BADGE[doc.doc_type] ?? 'badge-ghost'}`}>{DOC_TYPES.find((t) => t.value === doc.doc_type)?.label ?? doc.doc_type}</span></td>
+                          <td><span className={`badge badge-xs ${VENDOR_BADGE[doc.vendor] ?? 'badge-ghost'}`}>{doc.vendor}</span></td>
                           <td className="text-right font-mono text-xs">{doc.chunk_count}</td>
-                          <td className="text-xs opacity-60 whitespace-nowrap">
-                            {doc.ingested_at ? new Date(doc.ingested_at).toLocaleDateString() : '—'}
-                          </td>
+                          <td className="text-xs opacity-60 whitespace-nowrap">{doc.ingested_at ? new Date(doc.ingested_at).toLocaleString() : '-'}</td>
                           <td>
-                            <button
-                              className="btn btn-ghost btn-xs text-error"
-                              onClick={() => handleDelete(doc)}
-                              disabled={deletingId === doc.doc_id}
-                              title="Delete all chunks for this document"
-                            >
-                              {deletingId === doc.doc_id
-                                ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                                : <Trash2 className="h-3.5 w-3.5" />}
+                            <button className="btn btn-ghost btn-xs text-error" onClick={() => handleDelete(doc)} disabled={deletingId === doc.doc_id} title={doc.doc_type === 'ansible_reference' ? 'Protected delete (password required)' : 'Delete document chunks'}>
+                              {deletingId === doc.doc_id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
                             </button>
                           </td>
                         </tr>
@@ -448,14 +388,26 @@ const KnowledgeBase: React.FC = () => {
           </div>
         </div>
 
-        
-
+        {previewOpen && (
+          <dialog className="modal modal-open">
+            <div className="modal-box max-w-5xl h-[80vh] flex flex-col">
+              <h3 className="font-bold text-lg">Document Preview</h3>
+              {previewLoading ? (
+                <div className="flex-1 flex items-center justify-center"><Loader2 className="h-6 w-6 animate-spin" /></div>
+              ) : (
+                <>
+                  <div className="text-xs opacity-70 mt-2 mb-3">{previewDoc?.name} � {previewDoc?.type} � {previewDoc?.vendor}</div>
+                  <pre className="flex-1 overflow-auto p-3 bg-base-200 rounded text-xs whitespace-pre-wrap">{previewDoc?.text}</pre>
+                </>
+              )}
+              <div className="modal-action"><button className="btn btn-sm" onClick={() => setPreviewOpen(false)}>Close</button></div>
+            </div>
+          </dialog>
+        )}
       </div>
     </div>
   );
 };
-
-// ─── Helper: Stat Card ────────────────────────────────────────────────────────
 
 interface StatCardProps {
   label: string;
@@ -469,15 +421,8 @@ interface StatCardProps {
 const StatCard: React.FC<StatCardProps> = ({ label, value, icon, sub, loading, mono }) => (
   <div className="card bg-base-100 shadow">
     <div className="card-body p-4">
-      <div className="flex items-center justify-between mb-1">
-        <span className="text-xs text-base-content/50">{label}</span>
-        {icon}
-      </div>
-      {loading ? (
-        <div className="h-6 w-16 bg-base-300 animate-pulse rounded" />
-      ) : (
-        <div className={`text-lg font-bold ${mono ? 'font-mono text-sm' : ''}`}>{value}</div>
-      )}
+      <div className="flex items-center justify-between mb-1"><span className="text-xs text-base-content/50">{label}</span>{icon}</div>
+      {loading ? <div className="h-6 w-16 bg-base-300 animate-pulse rounded" /> : <div className={`text-lg font-bold ${mono ? 'font-mono text-sm' : ''}`}>{value}</div>}
       <div className="text-xs text-base-content/40">{sub}</div>
     </div>
   </div>

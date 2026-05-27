@@ -403,7 +403,7 @@ const CommonServicesProfilesView: React.FC = () => {
           </span>
           <div>
             <h1 className="text-2xl font-bold tracking-tight">Global Service Profiles</h1>
-            <p className="text-sm opacity-70 mt-0.5">
+            <p className="text-slate-400 text-sm mt-1">
               Define SNMP, TFTP, Syslog, and NTP servers defaults injected into onboarding and template rendering.
             </p>
           </div>

@@ -115,10 +115,10 @@ const Login: React.FC<LoginProps> = ({ onLogin }) => {
         const response = await authApi.login(username, password);
         finishLogin(response);
       } else if (mode === 'signup') {
-        if (!fullName.strip()) {
+        if (!fullName.trim()) {
           throw new Error('Full Name is required');
         }
-        if (!email.strip() || !email.includes('@')) {
+        if (!email.trim() || !email.includes('@')) {
           throw new Error('Valid Email Address is required');
         }
         if (password !== confirmPassword) {
@@ -127,7 +127,7 @@ const Login: React.FC<LoginProps> = ({ onLogin }) => {
         if (passwordStrength.score < 3) {
           throw new Error('Password is too weak. Make sure it contains both letters and digits.');
         }
-        if (!securityQuestion || !securityAnswer.strip()) {
+        if (!securityQuestion || !securityAnswer.trim()) {
           throw new Error('Please configure a security question and answer for account recovery');
         }
 
@@ -150,7 +150,7 @@ const Login: React.FC<LoginProps> = ({ onLogin }) => {
 
   const handleFetchResetQuestion = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!resetUsername.strip()) {
+    if (!resetUsername.trim()) {
       Toast.error('Validation Error', 'Please enter your username');
       return;
     }
@@ -168,7 +168,7 @@ const Login: React.FC<LoginProps> = ({ onLogin }) => {
 
   const handlePerformPasswordReset = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!resetAnswer.strip()) {
+    if (!resetAnswer.trim()) {
       Toast.error('Validation Error', 'Please answer the security question');
       return;
     }

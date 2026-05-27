@@ -148,7 +148,7 @@ const ConfigBackupView: React.FC = () => {
           <HardDrive className="h-8 w-8 text-primary" />
           <h1 className="text-2xl font-bold">Config Backup & Restore</h1>
         </div>
-        <p className="text-base-content/70 text-sm leading-relaxed max-w-2xl">
+        <p className="text-slate-400 text-sm mt-1">
           Store the current <strong>live</strong> running-configuration of any device for backup.
           Snapshots are fetched from the device over SSH and saved so you can restore later if needed.
         </p>

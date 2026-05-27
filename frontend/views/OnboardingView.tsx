@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+﻿import React, { useState, useEffect } from 'react';
 import Editor from '@monaco-editor/react';
 import { PackagePlus, Download, RefreshCw, ChevronLeft, ChevronDown, ChevronUp, Terminal, Maximize2, Minimize2, Copy, Check, Lightbulb, X } from 'lucide-react';
 import type { ViewId } from '../types';
@@ -442,7 +442,7 @@ const OnboardingView: React.FC<{ setView: (id: ViewId) => void }> = ({ setView }
         <PackagePlus className="h-6 w-6 text-primary" />
         <div>
           <h1 className="text-xl font-bold">Onboard New Device</h1>
-          <p className="text-sm opacity-60">
+          <p className="text-slate-400 text-sm mt-1">
             Select a planned device, review the generated Day-0 config in the editor, then publish the configuration to the ZTP server.
           </p>
         </div>

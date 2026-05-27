@@ -374,6 +374,39 @@ class KnowledgeVectorStore:
             logger.error("list_documents failed: %s", exc)
             return []
 
+    def get_document_chunks(self, doc_id: str, partition: Optional[str] = None, limit: int = 200) -> list[dict]:
+        """
+        Return chunk rows for one document, sorted by chunk_index ascending.
+        Each row: {text, chunk_index, page_number, partition, metadata}
+        """
+        if not self.available:
+            return []
+        try:
+            rows: list[dict] = []
+            for selected in _unique_partitions([partition] if partition else None):
+                result = self._collections[selected].get(
+                    where={"doc_id": doc_id},
+                    include=["documents", "metadatas"],
+                )
+                docs = result.get("documents") or []
+                metas = result.get("metadatas") or []
+                for doc, meta in zip(docs, metas):
+                    m = dict(meta or {})
+                    rows.append(
+                        {
+                            "text": doc or "",
+                            "chunk_index": int(m.get("chunk_index", 0) or 0),
+                            "page_number": int(m.get("page_number", 0) or 0),
+                            "partition": selected,
+                            "metadata": m,
+                        }
+                    )
+            rows.sort(key=lambda r: (r["chunk_index"], r["page_number"]))
+            return rows[: max(1, limit)]
+        except Exception as exc:
+            logger.error("get_document_chunks failed for doc_id=%s: %s", doc_id, exc)
+            return []
+
     def count(self, partition: Optional[str] = None) -> int:
         """Total number of chunks stored."""
         if not self.available:
