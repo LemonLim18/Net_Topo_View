@@ -46,7 +46,7 @@ class NetBoxClient:
 
     def __init__(self, url=None, token=None):
         # Read env vars lazily (at instantiation time, AFTER load_dotenv)
-        resolved_url = url or os.environ.get("NETBOX_URL", "http://localhost:8000")
+        resolved_url = url or os.environ.get("NETBOX_URL", "")
         resolved_token = token or os.environ.get("NETBOX_TOKEN", "")
 
         if not resolved_token:
@@ -62,6 +62,32 @@ class NetBoxClient:
         self._connect()
 
     def _connect(self):
+        # Prevent recursive loops to local backend (usually localhost:8000 / 127.0.0.1:8000)
+        is_loopback = False
+        if self.url:
+            from urllib.parse import urlparse
+            try:
+                parsed = urlparse(self.url)
+                hostname = parsed.hostname or ""
+                port = parsed.port or 80
+                # Default backend port is 8000. If port is 8000 and matches loopback/localhost hostnames
+                if hostname.lower() in ("localhost", "127.0.0.1", "0.0.0.0") and port == 8000:
+                    is_loopback = True
+            except Exception:
+                pass
+
+        if not self.url or is_loopback:
+            if is_loopback:
+                logger.warning(
+                    "NetBox URL '%s' loops back to the local backend itself. "
+                    "Disabling NetBox connection to prevent recursive loopback / 404 errors.",
+                    self.url,
+                )
+            else:
+                logger.warning("NetBox URL is empty/not configured. NetBox API integration is disabled.")
+            self.api = None
+            return
+
         try:
             self.api = pynetbox.api(self.url, token=self.token)
             
@@ -220,6 +246,9 @@ class NetBoxClient:
             return str(raw).strip() if raw else None
 
     def _patch_interface(self, interface_id: int, payload: dict) -> bool:
+        if not self.api:
+            logger.warning("Cannot PATCH interface %s: NetBox API not connected", interface_id)
+            return False
         try:
             base = (self.url or "").rstrip("/")
             url = f"{base}/api/dcim/interfaces/{int(interface_id)}/"
