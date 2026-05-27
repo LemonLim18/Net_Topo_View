@@ -674,7 +674,7 @@ async def ollama_context_query(request: OllamaPlaygroundRequest):
     from llm.provider import LLMMessage
 
     try:
-        # 1. Fetch inventory snapshot
+        # 1. Fetch inventory snapshot to identify target devices
         agent = _get_agent()
         if agent._db and not network_tools._db_manager:
             network_tools.set_db_manager(agent._db)
@@ -690,9 +690,8 @@ async def ollama_context_query(request: OllamaPlaygroundRequest):
         
         devices = list(merged.values())
         prompt_text = str(request.prompt or "")
-        prompt_lower = prompt_text.lower()
 
-        # Identify likely target devices from the question so we always enrich them.
+        # Identify likely target devices from the question so we scope the RAG bundle
         ranked_targets = network_tools._rank_inventory_records(devices, prompt_text, limit=6) if prompt_text else []
         target_hostnames = {
             str(r.get("hostname", "")).strip()
@@ -700,174 +699,26 @@ async def ollama_context_query(request: OllamaPlaygroundRequest):
             if str(r.get("hostname", "")).strip()
         }
 
-        def _norm_host(hostname: str) -> str:
-            return re.sub(r"[^a-z0-9]+", "", str(hostname or "").lower())
+        # 2. Build comprehensive context prompt
+        from llm.context import ContextBuilder
+        from llm.context_contract import classify_query
 
-        def _append_link_fact(
-            out: List[Dict[str, str]],
-            seen: set,
-            src_host: str,
-            src_if: str,
-            dst_host: str,
-            dst_if: str,
-            source: str,
-        ) -> None:
-            a = str(src_host or "").strip()
-            b = str(dst_host or "").strip()
-            if not a or not b:
-                return
-            ai = str(src_if or "").strip() or "unknown-if"
-            bi = str(dst_if or "").strip() or "unknown-if"
-            key = tuple(sorted((a.lower(), b.lower()))) + tuple(sorted((ai.lower(), bi.lower())))
-            if key in seen:
-                return
-            seen.add(key)
-            out.append(
-                {
-                    "src": a,
-                    "src_if": ai,
-                    "dst": b,
-                    "dst_if": bi,
-                    "source": source,
-                }
-            )
+        routing_decision = classify_query(prompt_text)
+        context_builder = ContextBuilder(db_manager=agent._db)
         
-        # 2. Format context
-        total_count = len(devices)
-        roles = {}
-        vendors = {}
-        for d in devices:
-            r = d.get('role', 'unknown')
-            v = d.get('vendor', 'unknown')
-            roles[r] = roles.get(r, 0) + 1
-            vendors[v] = vendors.get(v, 0) + 1
-
-        summary_parts = [f"{count} {role}" for role, count in roles.items()]
-        vendor_parts = [f"{count} {vendor}" for vendor, count in vendors.items()]
+        network_context = context_builder.build_full_context(
+            device_hostnames=list(target_hostnames) if target_hostnames else None,
+            query=prompt_text,
+            routing_decision=routing_decision,
+        )
         
-        inventory_text = f"REAL-TIME INVENTORY METADATA:\n"
-        inventory_text += f"- Total Inventory Count: {total_count} devices\n"
-        inventory_text += f"- Role Summary: {', '.join(summary_parts)}\n"
-        inventory_text += f"- Vendor Summary: {', '.join(vendor_parts)}\n\n"
-        inventory_text += "DEVICE SNAPSHOT LIST:\n"
-        
-        enrich_limit = 8 # Limit to avoid excessive API latency
-        discovered_links: List[Dict[str, str]] = []
-        seen_links = set()
-        
-        for i, d in enumerate(devices):
-            # Detailed enrichment for smaller inventories
-            interfaces_summary = ""
-            links_summary = ""
-            
-            # Prioritize current prompt mention if possible, or just first few
-            hostname = str(d.get("hostname", ""))
-            should_enrich = (
-                i < enrich_limit
-                or hostname in target_hostnames
-                or (_norm_host(hostname) and _norm_host(hostname) in _norm_host(prompt_lower))
-            )
-            
-            if should_enrich:
-                try:
-                    enriched = network_tools._enrich_inventory_record(d)
-                    if enriched.get("interfaces"):
-                        # Just names and IPs to save tokens
-                        ifaces = [f"{iface['name']} ({iface['ip_address'] or 'no-ip'})" for iface in enriched["interfaces"][:15]]
-                        interfaces_summary = f", Interfaces: [{', '.join(ifaces)}]"
-                    if enriched.get("links"):
-                        links = [
-                            f"{l.get('local_interface') or '?'}->{l.get('peer_hostname') or '?'}:{l.get('peer_interface') or '?'}"
-                            for l in enriched["links"]
-                        ]
-                        links_summary = f", Connections: [{', '.join(links)}]"
-                        for l in enriched["links"]:
-                            _append_link_fact(
-                                discovered_links,
-                                seen_links,
-                                hostname,
-                                str(l.get("local_interface") or ""),
-                                str(l.get("peer_hostname") or ""),
-                                str(l.get("peer_interface") or ""),
-                                source="inventory_enrichment",
-                            )
-                except Exception:
-                    pass # Skip enrichment on failure
-
-            inventory_text += f"- {hostname} ({d.get('management_ip')}), {d.get('vendor')} {d.get('role')}{interfaces_summary}{links_summary}\n"
-        
-        if total_count > enrich_limit:
-            inventory_text += f"\n(Note: Detailed enrichment skipped for {total_count - enrich_limit} devices.)\n"
-
-        # Add explicit topology link facts (live + planned) so pairwise interface questions are answerable.
-        try:
-            if agent._db:
-                topo = agent._db.get_topology() or {}
-                live_nodes = topo.get("nodes", {}) if isinstance(topo, dict) else {}
-                for src_host, node_data in live_nodes.items():
-                    if not isinstance(node_data, dict):
-                        continue
-                    for src_if, edge in (node_data.get("edgeLink") or {}).items():
-                        if not isinstance(edge, dict):
-                            continue
-                        _append_link_fact(
-                            discovered_links,
-                            seen_links,
-                            str(src_host),
-                            str(src_if or ""),
-                            str(edge.get("remote_node") or ""),
-                            str(edge.get("remote_interface") or ""),
-                            source="live_topology",
-                        )
-        except Exception:
-            pass
-
-        try:
-            planned = network_tools._get_planned_topology_data()
-            for link in planned.get("links", []) or []:
-                if not isinstance(link, dict):
-                    continue
-                _append_link_fact(
-                    discovered_links,
-                    seen_links,
-                    str(link.get("src_hostname") or ""),
-                    str(link.get("src_interface") or ""),
-                    str(link.get("dst_hostname") or ""),
-                    str(link.get("dst_interface") or ""),
-                    source="planned_topology",
-                )
-        except Exception:
-            pass
-
-        relevant_links = [
-            lf
-            for lf in discovered_links
-            if not target_hostnames
-            or lf["src"] in target_hostnames
-            or lf["dst"] in target_hostnames
-        ]
-        if len(relevant_links) < 10:
-            relevant_links = discovered_links
-        relevant_links = relevant_links[:120]
-
-        inventory_text += "\nLINK FACTS (interface-to-interface):\n"
-        if relevant_links:
-            for lf in relevant_links:
-                inventory_text += (
-                    f"- {lf['src']}:{lf['src_if']} <-> {lf['dst']}:{lf['dst_if']} "
-                    f"[source={lf['source']}]\n"
-                )
-        else:
-            inventory_text += "- No link facts available.\n"
-
-        # 3. Build prompt
+        # 3. Build system prompt
         system_prompt = (
-            "You are a Network Inventory Assistant. "
-            f"There are exactly {total_count} devices in the inventory. "
-            "Use the metadata and snapshot below for accurate counts. "
-            "If asked 'how many', always refer to the 'Total Inventory Count' metadata. "
-            "When asked about connections between two devices, prioritize LINK FACTS and quote both local and peer interfaces.\n\n"
-            f"{inventory_text}"
+            "You are NetAutoController AI, operating as a grounded network reliability and automation controller.\n"
+            "Answer read-only network questions from authoritative evidence.\n"
+            "Prefer authoritative planned, live, telemetry, incident, drift, and knowledge evidence.\n"
+            "If evidence is stale, conflicting, or missing, say so explicitly.\n\n"
+            f"## Current Network State\n{network_context}"
         )
         
         provider = OllamaProvider(base_url=base_url, model=model)

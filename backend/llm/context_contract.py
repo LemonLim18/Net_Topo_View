@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set, Sequence
 
 
 CONTEXT_DOMAIN_INVENTORY = "planned_inventory"
@@ -487,15 +487,72 @@ def _is_architecture_planning_query(query: str) -> bool:
     return has_planning_shape and has_meta_system_scope
 
 
+def _contains_word(query: str, words: tuple[str, ...]) -> bool:
+    import re
+    pattern = r"\b(" + "|".join(re.escape(w) for w in words) + r")\b"
+    return bool(re.search(pattern, query.lower()))
+
+
 def classify_query(query: str) -> QueryRoutingDecision:
     q_lower = query.lower()
+
+    # Define operational keywords/triggers for whole-word matching
+    TELEMETRY_KEYS = ("cpu", "mem", "memory", "telemetry", "metric", "metrics", "traffic", "utilization", "usage", "load", "counters", "statistics", "stats")
+    CONFIG_HISTORY_KEYS = ("backup", "backups", "snapshot", "snapshots", "git", "history", "version", "versions", "previous config", "config history", "past config", "configuration backup")
+    DEPLOYMENT_KEYS = ("approval", "approvals", "change request", "change requests", "cr", "crs", "job", "jobs", "intent", "intents", "deploy", "deployment", "deployments", "pending approval", "approval status")
+    SECURITY_KEYS = ("syslog", "syslogs", "log", "logs", "security event", "security events", "threat", "threats", "rogue", "intrusion", "alert", "alerts")
+
+    is_operational_query = (
+        _contains_word(q_lower, TELEMETRY_KEYS) or
+        _contains_word(q_lower, CONFIG_HISTORY_KEYS) or
+        _contains_word(q_lower, DEPLOYMENT_KEYS) or
+        _contains_word(q_lower, SECURITY_KEYS)
+    )
 
     # --- M19 IMPROVEMENT: Check for hostnames FIRST ---
     # If the user is asking about a specific device, steer to inventory/live
     # instead of knowledge base, even if it starts with "what is".
     hostnames = _extract_hostname_hints(q_lower)
     if hostnames:
-        if _contains_any(q_lower, INVENTORY_ONLY_TRIGGERS) or not _contains_any(q_lower, LIVE_ONLY_TRIGGERS):
+        # Check if they also have trend or incident intents
+        has_trend_intent = any(t in q_lower for t in ("trend", "over time", "history", "historical", "last ", "past ", "baseline", "over the"))
+        has_incident_intent = any(t in q_lower for t in ("incident", "anomaly", "alert", "breach", "spike", "latency", "packet loss", "errors", "root cause"))
+        has_telemetry_intent = _contains_word(q_lower, TELEMETRY_KEYS) or _contains_word(q_lower, SECURITY_KEYS)
+
+        if has_trend_intent:
+             return QueryRoutingDecision(
+                query_class=QueryClass.GENERAL.value,
+                use_live_context=True,
+                use_knowledge=False,
+                include_inventory=True,
+                include_telemetry=True,
+                include_sdn=False,
+                required_domains=(CONTEXT_DOMAIN_INVENTORY, CONTEXT_DOMAIN_LIVE_TOPOLOGY),
+                reasoning=f"query mentions specific device(s) {', '.join(hostnames)} with trend intent",
+            )
+        elif has_incident_intent:
+             return QueryRoutingDecision(
+                query_class=QueryClass.TROUBLESHOOTING.value,
+                use_live_context=True,
+                use_knowledge=True,
+                include_inventory=True,
+                include_telemetry=True,
+                include_sdn=True,
+                required_domains=(CONTEXT_DOMAIN_LIVE_TOPOLOGY, CONTEXT_DOMAIN_TELEMETRY, CONTEXT_DOMAIN_INCIDENTS),
+                reasoning=f"query mentions specific device(s) {', '.join(hostnames)} with incident/troubleshooting intent",
+            )
+        elif has_telemetry_intent or _contains_any(q_lower, LIVE_ONLY_TRIGGERS):
+             return QueryRoutingDecision(
+                query_class=QueryClass.LIVE_ONLY.value,
+                use_live_context=True,
+                use_knowledge=False,
+                include_inventory=True,
+                include_telemetry=True,
+                include_sdn=True,
+                required_domains=(CONTEXT_DOMAIN_LIVE_TOPOLOGY, CONTEXT_DOMAIN_TELEMETRY),
+                reasoning=f"query mentions specific device(s) {', '.join(hostnames)} with live/telemetry intent",
+            )
+        else:
              return QueryRoutingDecision(
                 query_class=QueryClass.INVENTORY_ONLY.value,
                 use_live_context=False,
@@ -505,17 +562,6 @@ def classify_query(query: str) -> QueryRoutingDecision:
                 include_sdn=False,
                 required_domains=(CONTEXT_DOMAIN_INVENTORY, CONTEXT_DOMAIN_PLANNED_TOPOLOGY),
                 reasoning=f"query mentions specific device(s) {', '.join(hostnames)}, prioritizing inventory lookup",
-            )
-        else:
-            return QueryRoutingDecision(
-                query_class=QueryClass.LIVE_ONLY.value,
-                use_live_context=True,
-                use_knowledge=False,
-                include_inventory=True,
-                include_telemetry=True,
-                include_sdn=True,
-                required_domains=(CONTEXT_DOMAIN_LIVE_TOPOLOGY, CONTEXT_DOMAIN_TELEMETRY),
-                reasoning=f"query mentions specific device(s) {', '.join(hostnames)} with live-state intent",
             )
 
     if _contains_any(q_lower, PLANNED_VS_LIVE_TRIGGERS):
@@ -530,7 +576,20 @@ def classify_query(query: str) -> QueryRoutingDecision:
             reasoning="planned-versus-live comparison requires both source-of-truth and live-state domains",
         )
 
-    if _contains_any(q_lower, INVENTORY_ONLY_TRIGGERS):
+    # If it is a telemetry or log event query, route to Live/Troubleshooting state instead of inventory-only
+    if _contains_word(q_lower, TELEMETRY_KEYS) or _contains_word(q_lower, SECURITY_KEYS):
+        return QueryRoutingDecision(
+            query_class=QueryClass.TROUBLESHOOTING.value,
+            use_live_context=True,
+            use_knowledge=True,
+            include_inventory=True,
+            include_telemetry=True,
+            include_sdn=True,
+            required_domains=(CONTEXT_DOMAIN_LIVE_TOPOLOGY, CONTEXT_DOMAIN_TELEMETRY, CONTEXT_DOMAIN_INCIDENTS),
+            reasoning="query requests metrics or logs, routing to troubleshooting class to enable telemetry and security incidents",
+        )
+
+    if _contains_any(q_lower, INVENTORY_ONLY_TRIGGERS) and not is_operational_query:
         return QueryRoutingDecision(
             query_class=QueryClass.INVENTORY_ONLY.value,
             use_live_context=False,
@@ -542,7 +601,7 @@ def classify_query(query: str) -> QueryRoutingDecision:
             reasoning="inventory query should prefer planned-state sources before live discovery",
         )
 
-    if _is_architecture_planning_query(q_lower):
+    if _is_architecture_planning_query(q_lower) and not is_operational_query:
         return QueryRoutingDecision(
             query_class=QueryClass.ARCHITECTURE_PLANNING.value,
             use_live_context=False,
@@ -554,7 +613,7 @@ def classify_query(query: str) -> QueryRoutingDecision:
             reasoning="architecture and platform-design prompts should avoid live operational fetches unless the user explicitly asks for them",
         )
 
-    if _is_instructional_knowledge_query(q_lower):
+    if _is_instructional_knowledge_query(q_lower) and not is_operational_query:
         return QueryRoutingDecision(
             query_class=QueryClass.KNOWLEDGE_HEAVY.value,
             use_live_context=False,
@@ -614,7 +673,7 @@ def classify_query(query: str) -> QueryRoutingDecision:
             reasoning="live-state question should prioritize topology and telemetry without static docs",
         )
 
-    if _contains_any(q_lower, KNOWLEDGE_HEAVY_TRIGGERS):
+    if _contains_any(q_lower, KNOWLEDGE_HEAVY_TRIGGERS) and not is_operational_query:
         return QueryRoutingDecision(
             query_class=QueryClass.KNOWLEDGE_HEAVY.value,
             use_live_context=False,
