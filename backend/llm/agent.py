@@ -2387,11 +2387,8 @@ class NetworkAgent:
         return grounding_meta
 
     def _render_grounded_content(self, content: str, grounding_meta: Dict[str, Any]) -> str:
-        """Append a brief, human-readable freshness note only when data is stale or missing.
-
-        The full grounding metadata is always available in the ``grounding_meta``
-        field of the JSON response; the frontend renders it as a structured UI
-        element.  We no longer append the raw debug-style grounding string.
+        """Append a brief, human-readable freshness note only when data is stale or missing,
+        and append the structured grounding summary for verification.
         """
         freshness = grounding_meta.get("freshness_class", "unknown")
         source_age = grounding_meta.get("source_age") or []
@@ -2419,11 +2416,17 @@ class NetworkAgent:
         if conflict_summary:
             note = (note + "\n\n" + conflict_summary) if note else conflict_summary
 
-        if not content:
-            return note or "No data available."
-        if not note:
-            return content
-        return f"{content}\n\n{note}"
+        summary = format_grounding_summary(grounding_meta)
+
+        parts = []
+        if content:
+            parts.append(content)
+        if note:
+            parts.append(note)
+        if summary:
+            parts.append(summary)
+
+        return "\n\n".join(parts)
 
     def _clean_search_query(self, query: str) -> str:
         """Strip natural language filler from a query to optimize direct search hits."""

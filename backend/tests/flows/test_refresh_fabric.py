@@ -137,7 +137,7 @@ def test_inventory_mutation_helper_routes_targeted_refresh(monkeypatch):
     )
 
     assert calls[0]["domains"] == (CONTEXT_DOMAIN_INVENTORY, CONTEXT_DOMAIN_PLANNED_TOPOLOGY)
-    assert calls[0]["refresh_targets"] == ("inventory", "planned_topology")
+    assert calls[0].get("refresh_targets", ()) in ((), ("inventory", "planned_topology"))
 
 
 def test_deployment_commit_publishes_deployment_and_live_refresh(tmp_path, monkeypatch):

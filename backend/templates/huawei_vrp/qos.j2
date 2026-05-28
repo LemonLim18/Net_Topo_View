@@ -1,0 +1,42 @@
+{# M18: QoS Policy — Huawei VRP (Traffic Policy MQC) #}
+{# Implements the 5-step QoS model: Classify → Mark → Police/Shape → Queue → Schedule #}
+
+{# ── Step 1: Classification (Traffic Classifiers) ── #}
+{% for c_map in class_maps %}
+traffic classifier {{ c_map.name }} operator or
+{% for match in c_map.matches %}
+ if-match {{ match.type }} {{ match.value }}
+{% endfor %}
+#
+{% endfor %}
+
+{# ── Steps 2-3: Marking + Policing/Shaping (Traffic Behaviors) ── #}
+{% for p_class in policy_classes %}
+traffic behavior {{ p_class.class_name }}_behavior
+{% if p_class.dscp is defined and p_class.dscp %}
+ remark dscp {{ p_class.dscp }}
+{% endif %}
+{% if p_class.police_rate is defined and p_class.police_rate %}
+ car cir {{ p_class.police_rate }} cbs {{ (p_class.police_rate * 0.1) | int }} green pass yellow pass red discard
+{% endif %}
+{% if p_class.shape_average is defined and p_class.shape_average %}
+ gts cir {{ p_class.shape_average }}
+{% endif %}
+{% if p_class.priority_percent is defined and p_class.priority_percent %}
+ queue ef bandwidth pct {{ p_class.priority_percent }}
+{% elif p_class.bandwidth_percent is defined and p_class.bandwidth_percent %}
+ queue wfq weight {{ p_class.bandwidth_percent }}
+{% endif %}
+#
+{% endfor %}
+
+{# ── Steps 4-5: Queuing + Scheduling (Traffic Policy) ── #}
+traffic policy {{ policy_name }}
+{% for p_class in policy_classes %}
+ classifier {{ p_class.class_name }} behavior {{ p_class.class_name }}_behavior
+{% endfor %}
+#
+
+{# ── Apply to Interface ── #}
+interface {{ interface }}
+ traffic-policy {{ policy_name }} {{ direction }}

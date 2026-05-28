@@ -73,14 +73,7 @@ class NetworkStateEmbedder:
 
     def embed_crawl_result(self, topology: dict, previous_topology: Optional[dict] = None) -> Dict[str, Any]:
         """
-        Process a fresh crawl result and embed config snapshots.
-
-        Live network state (device status, interfaces, links) is **no
-        longer embedded** because it changes too frequently for vector
-        embeddings to stay useful.  Structured API queries via tool
-        calls (``get_topology_summary``, ``get_device_details``) already
-        serve real-time lookups.  Only config snapshots are embedded
-        since they change infrequently and benefit from semantic search.
+        Process a fresh crawl result and embed config snapshots plus live state documents.
 
         Parameters
         ----------
@@ -102,24 +95,25 @@ class NetworkStateEmbedder:
             return {"status": "skipped", "reason": "no_nodes"}
 
         config_documents = self._build_config_documents(nodes, now)
+        live_documents = self._build_live_documents(nodes, now)
 
-        if not config_documents:
+        if not config_documents and not live_documents:
             return {"status": "skipped", "reason": "no_chunks_generated"}
 
         summary = {
             "status": "embedded",
             "mode": "delta" if previous_topology is not None else "full",
-            "devices_embedded": 0,
+            "devices_embedded": len(nodes),
             "link_chunks": 0,
             "config_chunks": 0,
             "interface_chunks": 0,
             "total_chunks": 0,
             "documents_updated": 0,
             "documents_removed": 0,
-            "live_state_skipped": True,
             "embedded_at": now,
         }
 
+        # Embed config snapshots
         for doc_id, payload in config_documents.items():
             result = self._upsert_partitioned_document(
                 doc_id=doc_id,
@@ -132,10 +126,36 @@ class NetworkStateEmbedder:
                 summary["config_chunks"] += result["chunk_count"]
                 summary["total_chunks"] += result["chunk_count"]
 
+        # Embed live state (devices, links, interfaces)
+        for doc_id, payload in live_documents.items():
+            result = self._upsert_partitioned_document(
+                doc_id=doc_id,
+                chunks=payload["chunks"],
+                metas=payload["metas"],
+                partition=PARTITION_LIVE_STATE,
+            )
+            if result["status"] == "updated":
+                summary["documents_updated"] += 1
+                if "link" in doc_id:
+                    summary["link_chunks"] += result["chunk_count"]
+                elif "interface" in doc_id:
+                    summary["interface_chunks"] += result["chunk_count"]
+                summary["total_chunks"] += result["chunk_count"]
+
+        # Stale live state cleanup
+        if previous_topology is None:
+            removed = self._delete_missing_documents(
+                partition=PARTITION_LIVE_STATE,
+                current_doc_ids=set(live_documents.keys()),
+                prefix_filters=("live_device_", "live_link_", "live_interfaces_"),
+            )
+            summary["documents_removed"] += removed
+
         self._last_embed_ts = now
         logger.info(
-            "Auto-embedded config state: %d docs updated, %d total chunks (live_state skipped)",
+            "Auto-embedded crawl results: %d docs updated, %d docs removed, %d total chunks",
             summary["documents_updated"],
+            summary["documents_removed"],
             summary["total_chunks"],
         )
         return summary

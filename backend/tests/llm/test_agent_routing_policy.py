@@ -5,6 +5,8 @@ from db.models import Device
 from llm.agent import NetworkAgent
 from llm.proposal import ConfigProposal
 from llm.provider import LLMProvider, LLMMessage, LLMResponse, ToolCall
+from netbox.client import NetBoxClient
+NetBoxClient._instance = NetBoxClient(url="", token="")
 
 
 class _FakeProvider(LLMProvider):

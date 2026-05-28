@@ -31,7 +31,7 @@ def _load_tools_module():
     sys.modules["mcp.server"] = fake_server
 
     try:
-        tool_path = Path(__file__).resolve().parent / "mcp" / "tools.py"
+        tool_path = Path(__file__).resolve().parent.parent.parent / "mcp" / "tools.py"
         spec = importlib.util.spec_from_file_location("test_mcp_tools_module", tool_path)
         module = importlib.util.module_from_spec(spec)
         assert spec is not None and spec.loader is not None

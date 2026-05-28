@@ -157,7 +157,8 @@ def test_merge_multi_intent_llm_response():
 
 def test_prepare_llm_input_dict_pass_through():
     d = {"action": "create_vlan", "feature": "vlan", "parameters": {}}
-    assert prepare_llm_input_dict(d) == d
+    expected = {"action": "create_vlan", "feature": "vlan", "parameters": {"_canonical_operation": "create_vlan"}}
+    assert prepare_llm_input_dict(d) == expected
 
 
 def test_validate_create_vlan_vlans_and_targets():
@@ -980,7 +981,7 @@ def test_reference_fill_huawei_normalizes_long_interface_names_for_vrp():
     assert isinstance(rendered, str) and rendered
     assert "replace('GigabitEthernet', 'GE')" in rendered
     assert "replace('TenGigabitEthernet', '10GE')" in rendered
-    assert 'parents: "interface {{ (item.name | string | replace(' in rendered
+    assert 'parents: "interface {{ (item.name | string).split(' in rendered
 
 
 def test_reference_fill_multi_vendor_interface_keeps_huawei_name_normalization():

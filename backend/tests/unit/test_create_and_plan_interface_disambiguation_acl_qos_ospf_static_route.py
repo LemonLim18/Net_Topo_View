@@ -145,6 +145,9 @@ class TestCreateAndPlanInterfaceDisambiguation(unittest.TestCase):
                 "acl_type": "ipv4",
                 "rules": ["permit ip any any"],
                 "apply_to": ["Gi0/99 in"],
+                "_user_supplied_acl_name": True,
+                "_user_supplied_acl_type": True,
+                "_user_supplied_acl_rules": True,
             },
         )
 

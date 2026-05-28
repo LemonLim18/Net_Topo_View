@@ -35,7 +35,7 @@ def _load_resources_module():
     sys.modules["mcp.server"] = fake_server
 
     try:
-        resource_path = Path(__file__).resolve().parent / "mcp" / "resources.py"
+        resource_path = Path(__file__).resolve().parent.parent.parent / "mcp" / "resources.py"
         spec = importlib.util.spec_from_file_location("test_mcp_resources_module", resource_path)
         module = importlib.util.module_from_spec(spec)
         assert spec is not None and spec.loader is not None

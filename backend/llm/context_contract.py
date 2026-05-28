@@ -516,10 +516,43 @@ def classify_query(query: str) -> QueryRoutingDecision:
     if hostnames:
         # Check if they also have trend or incident intents
         has_trend_intent = any(t in q_lower for t in ("trend", "over time", "history", "historical", "last ", "past ", "baseline", "over the"))
-        has_incident_intent = any(t in q_lower for t in ("incident", "anomaly", "alert", "breach", "spike", "latency", "packet loss", "errors", "root cause"))
+        has_incident_intent = any(t in q_lower for t in ("incident", "anomaly", "alert", "breach", "spike", "latency", "packet loss", "errors", "root cause", "troubleshoot", "diagnose", "debug", "why", "down", "unreachable", "flap"))
         has_telemetry_intent = _contains_word(q_lower, TELEMETRY_KEYS) or _contains_word(q_lower, SECURITY_KEYS)
 
-        if has_trend_intent:
+        if _contains_any(q_lower, PLANNED_VS_LIVE_TRIGGERS):
+             return QueryRoutingDecision(
+                query_class=QueryClass.PLANNED_VS_LIVE.value,
+                use_live_context=True,
+                use_knowledge=False,
+                include_inventory=True,
+                include_telemetry=True,
+                include_sdn=True,
+                required_domains=(CONTEXT_DOMAIN_INVENTORY, CONTEXT_DOMAIN_PLANNED_TOPOLOGY, CONTEXT_DOMAIN_LIVE_TOPOLOGY),
+                reasoning=f"query mentions specific device(s) {', '.join(hostnames)} with planned-vs-live intent",
+             )
+        elif _contains_any(q_lower, CHANGE_PLANNING_TRIGGERS):
+             return QueryRoutingDecision(
+                query_class=QueryClass.CHANGE_PLANNING.value,
+                use_live_context=True,
+                use_knowledge=True,
+                include_inventory=True,
+                include_telemetry=True,
+                include_sdn=False,
+                required_domains=(CONTEXT_DOMAIN_INVENTORY, CONTEXT_DOMAIN_LIVE_TOPOLOGY, CONTEXT_DOMAIN_KNOWLEDGE),
+                reasoning=f"query mentions specific device(s) {', '.join(hostnames)} with change planning intent",
+             )
+        elif _contains_any(q_lower, COMPLIANCE_TRIGGERS):
+             return QueryRoutingDecision(
+                query_class=QueryClass.COMPLIANCE.value,
+                use_live_context=True,
+                use_knowledge=True,
+                include_inventory=True,
+                include_telemetry=False,
+                include_sdn=False,
+                required_domains=(CONTEXT_DOMAIN_INVENTORY, CONTEXT_DOMAIN_CONFIG, CONTEXT_DOMAIN_KNOWLEDGE),
+                reasoning=f"query mentions specific device(s) {', '.join(hostnames)} with compliance intent",
+             )
+        elif has_trend_intent:
              return QueryRoutingDecision(
                 query_class=QueryClass.GENERAL.value,
                 use_live_context=True,
@@ -530,7 +563,7 @@ def classify_query(query: str) -> QueryRoutingDecision:
                 required_domains=(CONTEXT_DOMAIN_INVENTORY, CONTEXT_DOMAIN_LIVE_TOPOLOGY),
                 reasoning=f"query mentions specific device(s) {', '.join(hostnames)} with trend intent",
             )
-        elif has_incident_intent:
+        elif has_incident_intent or _contains_any(q_lower, TROUBLESHOOTING_TRIGGERS):
              return QueryRoutingDecision(
                 query_class=QueryClass.TROUBLESHOOTING.value,
                 use_live_context=True,
@@ -728,4 +761,47 @@ def _extract_hostname_hints(query: str) -> Set[str]:
         if name:
             hints.add(name)
 
-    return hints
+    excluded = {
+        "show", "get", "post", "delete", "put", "generate", "playbook", "for", "the", "device", 
+        "this", "status", "unstable", "why", "now", "ospf", "bgp", "vlan", "route", "acl", 
+        "logs", "log", "config", "configuration", "fail", "impact", "blast", "down", 
+        "disconnect", "reachability", "is", "flapping", "active", "down", "up", "a", "an", "of",
+        "switch", "switches", "devices", "router", "routers", "core", "host", "hosts",
+        "node", "nodes", "distribution", "dist", "access", "spine", "leaf", "ip", "ips", "model",
+        "models", "vendor", "vendors", "interface", "interfaces", "link", "links", "connection",
+        "connections", "neighbor", "neighbors", "port", "ports", "planned", "live", "state",
+        "comparison", "mismatch", "history", "trend", "incidents", "alerts", "syslog", "syslogs",
+        "compliance", "policy", "cis", "baseline", "audit", "control", "standard", "architecture",
+        "design", "plan", "roadmap", "blueprint", "refactor", "optimize", "production-grade",
+        "high-performance", "scalable", "production", "grade", "performance", "high",
+        "zero-trust", "peerings", "peer", "session", "sessions", "all", "that", "these", "those",
+        "under", "over", "between", "with", "without", "from", "into", "onto", "upon", "about",
+        "above", "below", "during", "before", "after", "here", "there", "when", "where", "which",
+        "who", "whom", "whose", "latency", "packet", "loss", "errors", "error", "alarm", "alarms",
+        "incident", "failure", "failures", "working", "unreachable", "configure", "change",
+        "deploy", "deployment", "deployments", "rollout", "rollback", "provision", "enable",
+        "disable", "apply", "how", "what", "explain", "describe", "best", "practice", "recommendation",
+        "guideline", "command", "syntax", "example", "cisco", "juniper", "huawei", "arista",
+        "netbox", "management", "serial", "number", "site", "rack", "mac", "address", "addresses",
+        "vlan", "vlans", "ospf", "bgp", "route", "routes", "acl", "acls", "qos", "policing", "dscp",
+        "controller", "runtime", "vector", "store", "embedding", "retrieval", "prompt", "inference",
+        "llm", "rag", "mcp", "agentic", "ollama", "gemini"
+    }
+
+    filtered_hints = set()
+    for hint in hints:
+        h_lower = hint.lower().strip()
+        if not h_lower:
+            continue
+        if h_lower in excluded:
+            continue
+        parts = [p for p in re.split(r"[-_\.]", h_lower) if p]
+        if not parts:
+            continue
+        has_digits = any(any(char.isdigit() for char in part) for part in parts)
+        if not has_digits:
+            if all(part in excluded for part in parts):
+                continue
+        filtered_hints.add(hint)
+
+    return filtered_hints

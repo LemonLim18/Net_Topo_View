@@ -59,19 +59,22 @@ class _FakeDb:
 def _reset_ansible_globals(monkeypatch):
     monkeypatch.setattr(ansible_api, "_agent", None)
     monkeypatch.setattr(ansible_api, "_pipeline", None)
+    monkeypatch.setattr(ansible_api, "should_validate_interface_names_against_inventory", lambda *a, **kw: False)
+    monkeypatch.setattr(ansible_api, "fill_playbook_from_reference", lambda *a, **kw: None)
 
 
 def test_plan_ansible_auto_refines_to_valid_playbook(tmp_path, monkeypatch):
     db = _FakeDb(tmp_path / "ansible.db")
     monkeypatch.setattr(ansible_api, "_db", db)
     monkeypatch.setattr(ansible_api, "_builder", _FakeBuilder("- name: draft\n  hosts: SW1\n  tasks:\n    - name: bad\n      debug: msg=BROKEN\n"))
+    monkeypatch.setattr(ansible_api, "ANSIBLE_BASE", tmp_path / "ansible")
 
     def _fake_build_inventory(target_hosts=None, topology_override=None):
         return {"all": {"hosts": {"SW1": {}}}}
 
     monkeypatch.setattr("ansible.inventory.build_inventory", _fake_build_inventory)
 
-    async def _fake_refine(original, errors, feedback):
+    async def _fake_refine(original, errors, feedback, **kwargs):
         assert errors
         return (
             "- name: draft\n  hosts: SW1\n  gather_facts: false\n  tasks:\n    - name: fixed\n      debug:\n        msg: fixed\n",
@@ -87,8 +90,8 @@ def test_plan_ansible_auto_refines_to_valid_playbook(tmp_path, monkeypatch):
                 intent_description="Fix SW1",
                 target_hosts=["SW1"],
                 vendor="cisco_ios",
-                feature="interface",
-                params={},
+                feature="ospf",
+                params={"interfaces": ["GigabitEthernet0/1"], "process_id": 1, "networks": [{"network": "10.0.0.0", "wildcard": "0.0.0.255", "area": 0}]},
                 auto_refine=True,
                 max_refinement_attempts=3,
             ),
@@ -112,13 +115,14 @@ def test_plan_ansible_fails_closed_when_max_attempts_reached(tmp_path, monkeypat
     db = _FakeDb(tmp_path / "ansible.db")
     monkeypatch.setattr(ansible_api, "_db", db)
     monkeypatch.setattr(ansible_api, "_builder", _FakeBuilder("- name: draft\n  hosts: SW1\n  tasks:\n    - name: bad\n      debug: msg=BROKEN\n"))
+    monkeypatch.setattr(ansible_api, "ANSIBLE_BASE", tmp_path / "ansible")
 
     def _fake_build_inventory(target_hosts=None, topology_override=None):
         return {"all": {"hosts": {"SW1": {}}}}
 
     monkeypatch.setattr("ansible.inventory.build_inventory", _fake_build_inventory)
 
-    async def _fake_refine(original, errors, feedback):
+    async def _fake_refine(original, errors, feedback, **kwargs):
         return original.replace("BROKEN", "BROKEN_AGAIN"), ["changed token"]
 
     monkeypatch.setattr(ansible_api, "_ai_refine_playbook", _fake_refine)
@@ -131,8 +135,8 @@ def test_plan_ansible_fails_closed_when_max_attempts_reached(tmp_path, monkeypat
                     intent_description="Fix SW1",
                     target_hosts=["SW1"],
                     vendor="cisco_ios",
-                    feature="interface",
-                    params={},
+                    feature="ospf",
+                    params={"interfaces": ["GigabitEthernet0/1"], "process_id": 1, "networks": [{"network": "10.0.0.0", "wildcard": "0.0.0.255", "area": 0}]},
                     auto_refine=True,
                     max_refinement_attempts=2,
                 ),

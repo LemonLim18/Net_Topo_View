@@ -19,7 +19,7 @@ nb.http_session = session
 try:
     # Request basic system status
     status = nb.status()
-    print(f"✅ Connection Successful!")
+    print(f"[OK] Connection Successful!")
     print(f"NetBox Version: {status.get('netbox-version', 'Unknown')}")
 except Exception as e:
-    print(f"❌ Connection Failed: {e}")
+    print(f"[FAIL] Connection Failed: {e}")

@@ -3,6 +3,8 @@ from types import SimpleNamespace
 
 from db.models import Device
 from llm import network_tools
+from netbox.client import NetBoxClient
+NetBoxClient._instance = NetBoxClient(url="", token="")
 
 
 class _InventoryFakeConn:

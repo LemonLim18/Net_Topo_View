@@ -46,12 +46,7 @@ def list_devices(scope: str = "both") -> str:
 
 @mcp.tool()
 def get_device_details(hostname: str) -> str:
-    """Get authoritative device details using a single inventory fetch.
-
-    Previous implementation made 3 redundant calls (inventory + live +
-    compare).  Now fetches inventory once and derives canonical state,
-    cutting DB/API round-trips by 2/3.
-    """
+    """Get authoritative device details combining inventory, live, and canonical state."""
     inventory = _tool_payload(network_tools.get_inventory_device, hostname)
     authority_version = inventory.get("authority_map_version")
     semantics_map = inventory.get("semantics_map")
@@ -65,13 +60,17 @@ def get_device_details(hostname: str) -> str:
         "model": device.get("model"),
         "role": device.get("role"),
         "site": device.get("site"),
+        "presence_state": device.get("presence_state"),
         "source": "inventory",
     }
+
+    live = _tool_payload(network_tools.get_device_details, hostname)
 
     return json.dumps(
         {
             "hostname": hostname,
             "inventory": inventory,
+            "live": live,
             "canonical_state": canonical_state,
             "authority_map_version": authority_version,
             "semantics_map": semantics_map,

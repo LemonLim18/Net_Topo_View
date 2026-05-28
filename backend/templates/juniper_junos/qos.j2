@@ -1,0 +1,37 @@
+{# M18: QoS Policy — Juniper Junos (Class of Service) #}
+{# Implements the 5-step QoS model: Classify → Mark → Police/Shape → Queue → Schedule #}
+
+{# ── Step 1 & 4: Classification + Queuing (Forwarding Classes) ── #}
+{% for c_map in class_maps %}
+set class-of-service forwarding-classes class {{ c_map.name }} queue-num {{ loop.index0 }}
+{% endfor %}
+
+{# ── Step 2: Marking (DSCP Classifier) ── #}
+set class-of-service classifiers dscp {{ policy_name }}_CLASSIFIER import default
+{% for p_class in policy_classes %}
+{% if p_class.dscp is defined and p_class.dscp %}
+set class-of-service classifiers dscp {{ policy_name }}_CLASSIFIER forwarding-class {{ p_class.class_name }} loss-priority low code-points {{ p_class.dscp }}
+{% endif %}
+{% endfor %}
+
+{# ── Step 3 & 5: Policing/Shaping + Scheduling (Schedulers) ── #}
+{% for p_class in policy_classes %}
+{% if p_class.shape_average is defined and p_class.shape_average %}
+set class-of-service schedulers {{ p_class.class_name }}_SCHED transmit-rate {{ p_class.shape_average }}
+{% else %}
+set class-of-service schedulers {{ p_class.class_name }}_SCHED transmit-rate remainder
+{% endif %}
+{% if p_class.priority_percent is defined and p_class.priority_percent %}
+set class-of-service schedulers {{ p_class.class_name }}_SCHED priority strict-high
+{% endif %}
+set class-of-service schedulers {{ p_class.class_name }}_SCHED buffer-size percent {{ p_class.bandwidth_percent | default(25) }}
+{% endfor %}
+
+{# ── Scheduler Map ── #}
+{% for p_class in policy_classes %}
+set class-of-service scheduler-maps {{ policy_name }}_MAP forwarding-class {{ p_class.class_name }} scheduler {{ p_class.class_name }}_SCHED
+{% endfor %}
+
+{# ── Apply to Interface ── #}
+set class-of-service interfaces {{ interface }} scheduler-map {{ policy_name }}_MAP
+set class-of-service interfaces {{ interface }} unit 0 classifiers dscp {{ policy_name }}_CLASSIFIER

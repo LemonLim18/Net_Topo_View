@@ -46,8 +46,8 @@ class NetBoxClient:
 
     def __init__(self, url=None, token=None):
         # Read env vars lazily (at instantiation time, AFTER load_dotenv)
-        resolved_url = url or os.environ.get("NETBOX_URL", "")
-        resolved_token = token or os.environ.get("NETBOX_TOKEN", "")
+        resolved_url = url if url is not None else os.environ.get("NETBOX_URL", "")
+        resolved_token = token if token is not None else os.environ.get("NETBOX_TOKEN", "")
 
         if not resolved_token:
             logger.warning(

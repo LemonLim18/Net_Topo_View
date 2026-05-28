@@ -698,7 +698,7 @@ def _resolve_target_hosts(target_hosts: List[str]) -> List[str]:
     actual device hostnames from the device DB. Fixes intent like "all access
     switches" being parsed as literal ["all", "access", "switches"].
     """
-    if not target_hosts or _db is None:
+    if not target_hosts or _db is None or not hasattr(_db, "get_all_devices"):
         return list(target_hosts) if target_hosts else []
 
     devices = _db.get_all_devices()
@@ -2446,7 +2446,7 @@ def _filter_inventory_to_db_hosts(inventory: dict[str, Any]) -> None:
     Remove any host that is not in the device DB. Ensures only registered devices
     (e.g. Acc_Huawei_3) appear; crawler-only names (e.g. Acc_Huawei_1) are dropped.
     """
-    if _db is None:
+    if _db is None or not hasattr(_db, "get_device_by_hostname"):
         return
     all_group = inventory.get("all") or {}
     hosts = (all_group.get("hosts") or {}) if isinstance(all_group, dict) else {}
@@ -3057,8 +3057,8 @@ async def plan_ansible(
     # the frontend/LLM set req.action to configure_interface.
     # Prefer request overrides, but fall back to parsed intent output so operation-specific
     # schemas (e.g. apply_acl_to_interface) can be selected even when the client only sent text.
-    effective_feature = (req.feature or parsed.feature or "").strip()
-    effective_action = (inferred_interface_action or getattr(req, "action", None) or parsed.action or "").strip()
+    effective_feature = (req.feature or parsed_intent.get("feature") or "").strip()
+    effective_action = (inferred_interface_action or getattr(req, "action", None) or parsed_intent.get("action") or "").strip()
     action_or_feature = effective_action or effective_feature
     schema = get_schema_for_parsed_intent(
         {
@@ -3251,7 +3251,10 @@ async def plan_ansible(
                         "target_hosts": resolved_hosts,
                     },
                 )
-            intent.setdefault("params", {})["interfaces_to_shutdown"] = resolved_names
+            if inferred_interface_action == "shutdown_interface":
+                intent.setdefault("params", {})["interfaces_to_shutdown"] = resolved_names
+            else:
+                intent.setdefault("params", {})["interfaces"] = resolved_names
 
     vendors = vendors_from_planning_context(planning_context)
     # planning_context can have empty vendors when: (1) devices=[] (no inventory for hostnames),
@@ -3406,14 +3409,17 @@ async def plan_ansible(
                 },
             )
 
-    template_filled = fill_playbook_from_reference(
-        feature=req.feature or "",
-        vendors=vendors,
-        intent=intent,
-        planning_context=planning_context,
-    )
+    use_bundle = bool(getattr(builder, "supports_role_bundle", lambda *_: False)(req.feature))
+    template_filled = None
+    if not use_bundle:
+        template_filled = fill_playbook_from_reference(
+            feature=req.feature or "",
+            vendors=vendors,
+            intent=intent,
+            planning_context=planning_context,
+        )
     # For VLAN, never use LLM — only reference template. Retry fill with minimal defaults if first attempt returned None.
-    if is_vlan and template_filled is None and resolved_hosts:
+    if is_vlan and template_filled is None and resolved_hosts and not use_bundle:
         fallback_intent = dict(intent)
         fallback_intent["target_hosts"] = list(resolved_hosts)
         fallback_intent.setdefault("params", {})
@@ -3425,7 +3431,7 @@ async def plan_ansible(
             intent=fallback_intent,
             planning_context=planning_context,
         )
-    if (is_vlan or is_interface or is_acl) and template_filled is None:
+    if (is_vlan or is_interface or is_acl) and template_filled is None and not use_bundle:
         logger.error(
             "Reference template fill returned None (vendors=%s); refusing to fall back to LLM for feature=%s",
             vendors,
@@ -3509,10 +3515,6 @@ async def plan_ansible(
                     },
                 )
 
-    # For VLAN/interface/ACL always use reference-style single playbook (no LLM).
-    use_bundle = bool(getattr(builder, "supports_role_bundle", lambda *_: False)(req.feature))
-    if is_vlan or is_interface or is_acl:
-        use_bundle = False
     if orchestration is None and _agent is not None and skip_upfront_vector_rag:
         # Deferred RAG: reference path missed and we need LLM (e.g. interface VLAN/IP fallback).
         if include_full_ctx and not rag_context:

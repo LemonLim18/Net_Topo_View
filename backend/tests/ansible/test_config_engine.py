@@ -111,4 +111,4 @@ try:
 except ValueError as e:
     print(f"Correctly caught: {e}")
 
-print("\n✅ ALL TESTS PASSED!")
+print("\n[OK] ALL TESTS PASSED!")

@@ -1306,6 +1306,9 @@ def extract_vlan_ids_for_trunk_allowed_from_prompt(text: str) -> List[int]:
     t = str(text or "").strip().lower()
     if not t:
         return []
+    # Strip interface names and slash-separated ports to avoid matching their numbers as VLANs
+    t = re.sub(r'\b(?:gigabitethernet|tengigabitethernet|fastethernet|ethernet|port-channel|gig|eth|gi|te|fa)\s*\d+(?:/\d+)*\b', ' ', t)
+    t = re.sub(r'\b\d+(?:/\d+)+\b', ' ', t)
     ids: List[int] = []
     seen: Set[int] = set()
     for m in re.finditer(r"\bvlans?\b([^.;\n]*)", t):
@@ -3202,24 +3205,6 @@ def get_schema_for_parsed_intent(parsed_intent: Dict[str, Any]) -> Optional[Dict
             schema = load_schema("configure_ospf_redistribute")
             if schema:
                 return schema
-
-    if feature == "qos" or action == "configure_qos" or canonical in (
-        "create_qos_policy",
-        "apply_qos_policy_to_interface",
-        "mark_qos_dscp",
-        "create_qos_policing_policy",
-    ):
-        qos_schema_by_canonical = {
-            "create_qos_policy": "create_qos_policy",
-            "apply_qos_policy_to_interface": "apply_qos_policy_to_interface",
-            "mark_qos_dscp": "mark_qos_dscp",
-            "create_qos_policing_policy": "create_qos_policing_policy",
-        }
-        ckey = qos_schema_by_canonical.get(canonical)
-        if ckey:
-            schema = load_schema(ckey)
-            if schema:
-                return schema
         if canonical in ("configure_passive_interface", "configure_ospf_passive_interface"):
             schema = load_schema("configure_ospf_passive_interface")
             if schema:
@@ -3236,6 +3221,24 @@ def get_schema_for_parsed_intent(parsed_intent: Dict[str, Any]) -> Optional[Dict
         has_passive = ospf_passive_interfaces_non_empty(passive)
         if has_passive and not params.get("networks"):
             schema = load_schema("configure_ospf_passive_interface")
+            if schema:
+                return schema
+
+    if feature == "qos" or action == "configure_qos" or canonical in (
+        "create_qos_policy",
+        "apply_qos_policy_to_interface",
+        "mark_qos_dscp",
+        "create_qos_policing_policy",
+    ):
+        qos_schema_by_canonical = {
+            "create_qos_policy": "create_qos_policy",
+            "apply_qos_policy_to_interface": "apply_qos_policy_to_interface",
+            "mark_qos_dscp": "mark_qos_dscp",
+            "create_qos_policing_policy": "create_qos_policing_policy",
+        }
+        ckey = qos_schema_by_canonical.get(canonical)
+        if ckey:
+            schema = load_schema(ckey)
             if schema:
                 return schema
 

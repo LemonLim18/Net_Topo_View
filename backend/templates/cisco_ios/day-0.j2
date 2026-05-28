@@ -20,6 +20,10 @@ interface {{ mgmt_interface }}
  no shutdown
  exit
 !
+{% if gateway %}
+ip default-gateway {{ gateway }}
+!
+{% endif %}
 crypto key generate rsa modulus 2048
 ip ssh version 2
 ip ssh time-out 60
