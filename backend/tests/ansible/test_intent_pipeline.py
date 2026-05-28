@@ -16,11 +16,14 @@ from llm.intent import (
 )
 from ansible.api import (
     _extract_non_exact_device_aliases_from_prompt,
+    _inventory_hostnames_mentioned_in_prompt,
     _is_management_interface,
     _normalize_mismatched_qualified_interface_tokens,
     _normalize_secondary_intents_qualified_interface_tokens,
+    _resolve_target_hosts,
     _resolve_unknown_device_aliases,
 )
+from ansible import api as ansible_api
 from ansible.context_entity_validation import build_planned_all_interfaces_preview
 from ansible.intent_validation import (
     CHAT_INTERFACE_LAYER_FIELD,
@@ -34,6 +37,32 @@ from ansible.intent_validation import (
     correct_interface_l3_params_from_natural_language,
 )
 from ansible.api import _coerce_params_for_validation
+
+
+class _ExactAliasDevice:
+    def __init__(self, hostname: str, role: str = "access", vendor: str = "juniper_junos"):
+        self.hostname = hostname
+        self.role = role
+        self.vendor = vendor
+
+
+class _ExactAliasDb:
+    def get_all_devices(self):
+        return [
+            _ExactAliasDevice("Juniper_Acc_4"),
+            _ExactAliasDevice("Cisco_Acc_1", vendor="cisco_ios"),
+        ]
+
+
+def test_inventory_hostname_space_alias_resolves_to_planned_hostname(monkeypatch):
+    db = _ExactAliasDb()
+    monkeypatch.setattr(ansible_api, "_db", db)
+
+    assert _inventory_hostnames_mentioned_in_prompt("Turn the interfaces of Juniper Acc 4 off", db) == [
+        "Juniper_Acc_4"
+    ]
+    assert _resolve_target_hosts(["Juniper Acc 4"]) == ["Juniper_Acc_4"]
+    assert _extract_non_exact_device_aliases_from_prompt("Turn the interfaces of Juniper Acc 4 off", db) == []
 
 
 def test_coerce_params_ospf_atomic_fields_override_stale_networks():

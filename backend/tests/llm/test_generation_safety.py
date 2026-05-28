@@ -3,7 +3,12 @@ import asyncio
 import pytest
 
 from config_engine.renderer import TemplateRenderer
-from config_engine.safety import validate_action_artifact, validate_cli_artifact, validate_playbook_yaml
+from config_engine.safety import (
+    validate_action_artifact,
+    validate_cli_artifact,
+    validate_playbook_bundle,
+    validate_playbook_yaml,
+)
 from llm.api import approve_proposal, rollback_proposal
 from llm.proposal import ConfigProposal
 
@@ -80,6 +85,66 @@ def test_playbook_validation_rejects_destructive_commands_without_guard():
 
     assert report["passed"] is False
     assert any("destructive" in error.lower() for error in report["errors"])
+
+
+def test_juniper_native_bundle_accepts_juniper_device_collection():
+    run_path = "playbooks/generated/job_test/playbook.yml"
+    bundle = {
+        "entrypoint_path": run_path,
+        "files": [
+            {
+                "path": run_path,
+                "kind": "playbook",
+                "content": (
+                    "---\n"
+                    "- name: Configure Juniper interfaces\n"
+                    "  hosts: Juniper_Acc_4\n"
+                    "  gather_facts: false\n"
+                    "  roles:\n"
+                    "    - generated/job_test/interface\n"
+                ),
+            },
+            {
+                "path": "roles/generated/job_test/interface/tasks/main.yml",
+                "kind": "task",
+                "content": "- name: Dispatch Juniper\n  include_tasks: juniper.yml\n",
+            },
+            {
+                "path": "roles/generated/job_test/interface/tasks/cisco.yml",
+                "kind": "task",
+                "content": "- name: Cisco placeholder\n  ansible.builtin.debug:\n    msg: cisco\n",
+            },
+            {
+                "path": "roles/generated/job_test/interface/tasks/huawei.yml",
+                "kind": "task",
+                "content": "- name: Huawei placeholder\n  ansible.builtin.debug:\n    msg: huawei\n",
+            },
+            {
+                "path": "roles/generated/job_test/interface/tasks/juniper.yml",
+                "kind": "task",
+                "content": (
+                    "- name: Shutdown Juniper interface\n"
+                    "  juniper.device.junos_interfaces:\n"
+                    "    config:\n"
+                    "      - name: ge-0/0/1\n"
+                    "        enabled: false\n"
+                    "    state: merged\n"
+                ),
+            },
+        ],
+        "manifest": {"generator": "test"},
+    }
+
+    report = validate_playbook_bundle(
+        bundle=bundle,
+        vendor="juniper_junos",
+        feature="interface",
+        target_hosts=["Juniper_Acc_4"],
+        execution_engine="ansible_native",
+    )
+
+    assert report["passed"] is True
+    assert report["errors"] == []
 
 
 def test_approve_proposal_blocks_failed_step10_validation(monkeypatch):

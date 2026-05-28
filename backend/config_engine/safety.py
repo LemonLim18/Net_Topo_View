@@ -104,7 +104,7 @@ _DANGEROUS_PLAYBOOK_PATTERNS: Tuple[Tuple[str, re.Pattern[str], str], ...] = (
 
 _NATIVE_PLAYBOOK_COLLECTIONS: Dict[str, Sequence[str]] = {
     "cisco_ios": ("cisco.ios.",),
-    "juniper_junos": ("junipernetworks.junos.",),
+    "juniper_junos": ("juniper.device.", "junipernetworks.junos."),
 }
 
 # Short names allowed when play declares collections: [cisco.ios] (task key is "ios_vlans" not "cisco.ios.ios_vlans")

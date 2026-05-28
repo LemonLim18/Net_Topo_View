@@ -239,7 +239,7 @@ const Sidebar: React.FC<SidebarProps> = ({ currentView, setView, user, onLogout,
           {SHOW_SDN_CONTROLLER && (
             <MenuItem id="sdn_dashboard" label="SDN Controllers" icon={Network} iconColor="text-accent"/>
           )}
-          <MenuItem id="knowledge_base" label="Knowledge Base" icon={BookOpen} iconColor="text-accent"/>
+          {/* <MenuItem id="knowledge_base" label="Knowledge Base" icon={BookOpen} iconColor="text-accent"/> */}
         </SectionHeader>
         {/* <SectionHeader
           label="Security"

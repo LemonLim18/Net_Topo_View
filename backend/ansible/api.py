@@ -820,6 +820,12 @@ def _resolve_target_hosts(target_hosts: List[str]) -> List[str]:
         if t in _NON_HOSTNAME_WORDS:
             continue
         # Concrete hostname: keep only if it exists in DB
+        alias_host = _resolve_inventory_hostname_alias(str(raw).strip(), _db)
+        if alias_host:
+            if alias_host not in seen:
+                seen.add(alias_host)
+                expanded.append(alias_host)
+            continue
         for d in devices:
             if d.hostname and d.hostname.lower() == t:
                 if d.hostname not in seen:
@@ -966,6 +972,7 @@ def _extract_non_exact_device_aliases_from_prompt(intent_description: str, db_ma
     raw.extend(_extract_device_like_tokens(text))
 
     phrase_patterns = [
+        r"\b(?:cisco|juniper|huawei|aruba)\s+(?:acc|access|dist|distribution|core|edge)\s+\d+\b",
         r"\b(?:access|distribution|core)\s+switch\s+\d+\b",
         r"\brouter\s+\d+\b",
         r"\bswitch\s+\d+\b",
@@ -982,7 +989,7 @@ def _extract_non_exact_device_aliases_from_prompt(intent_description: str, db_ma
         if not t:
             continue
         tl = t.lower()
-        if tl in cmap:
+        if tl in cmap or _resolve_inventory_hostname_alias(t, db_manager):
             continue
         if tl in seen:
             continue
@@ -1089,6 +1096,64 @@ def _all_inventory_hostnames_sorted(db_manager: Any) -> List[str]:
 
 def _compact_alnum(s: str) -> str:
     return re.sub(r"[^a-z0-9]+", "", (s or "").lower())
+
+
+def _hostname_alias_pattern(hostname: str) -> Optional[re.Pattern[str]]:
+    parts = [p for p in re.split(r"[_\-\s]+", str(hostname or "").strip().lower()) if p]
+    if not parts:
+        return None
+    return re.compile(r"\b" + r"[\s_\-]+".join(re.escape(part) for part in parts) + r"\b", re.IGNORECASE)
+
+
+def _resolve_inventory_hostname_alias(alias: str, db_manager: Any) -> Optional[str]:
+    """
+    Resolve exact inventory aliases that differ only by separators.
+
+    Example: ``Juniper Acc 4`` should deterministically resolve to
+    ``Juniper_Acc_4`` instead of being treated as an unknown fuzzy alias.
+    """
+    if db_manager is None:
+        return None
+    alias_text = str(alias or "").strip()
+    if not alias_text:
+        return None
+    cmap = _db_hostname_lower_to_canonical(db_manager)
+    exact = cmap.get(alias_text.lower())
+    if exact:
+        return exact
+    compact_alias = _compact_alnum(alias_text)
+    if not compact_alias:
+        return None
+    matches: List[str] = []
+    try:
+        for host in _all_inventory_hostnames_sorted(db_manager):
+            if _compact_alnum(host) == compact_alias:
+                matches.append(host)
+    except Exception:
+        return None
+    if len(matches) == 1:
+        return matches[0]
+    return None
+
+
+def _inventory_hostnames_mentioned_in_prompt(intent_description: str, db_manager: Any) -> List[str]:
+    """Return planned inventory hosts explicitly named in the prompt, including space/underscore aliases."""
+    if db_manager is None or not intent_description:
+        return []
+    text = str(intent_description or "")
+    matches: List[str] = []
+    seen: set[str] = set()
+    for host in _all_inventory_hostnames_sorted(db_manager):
+        pattern = _hostname_alias_pattern(host)
+        if pattern is None:
+            continue
+        if not pattern.search(text):
+            continue
+        if host.lower() in seen:
+            continue
+        seen.add(host.lower())
+        matches.append(host)
+    return matches
 
 
 def _score_device_hint_vs_hostname(hint_raw: str, hostname: str) -> float:
@@ -1881,6 +1946,7 @@ def _resolve_backend_intent_request(req, user: dict) -> tuple["PlanAnsibleReques
     elif params_after.get("target_devices") is not None:
         td = params_after["target_devices"]
         explicit_targets = td if isinstance(td, list) else [td] if td else []
+    user_explicit_targets_create = bool(req.target_hosts) or bool(explicit_targets)
 
     # Prefer explicit target list from API or params over LLM-resolved bulk inventory.
     # If the client sent only `['all']` but params carry a concrete list (Studio overlay), prefer params.
@@ -1912,12 +1978,13 @@ def _resolve_backend_intent_request(req, user: dict) -> tuple["PlanAnsibleReques
     parsed.resolved_devices = _narrow_resolved_by_hostnames_in_prompt(
         req.intent_description, list(parsed.resolved_devices or []), _db
     )
+    if not parsed.resolved_devices and not user_explicit_targets_create and _db is not None:
+        parsed.resolved_devices = _inventory_hostnames_mentioned_in_prompt(req.intent_description, _db)
     _nr, _ = _apply_numeric_subset_fallback(
         req.intent_description, list(parsed.resolved_devices or [])
     )
     parsed.resolved_devices = _nr
 
-    user_explicit_targets_create = bool(req.target_hosts) or bool(explicit_targets)
     _forced_aliases_create: List[str] = []
     if not user_explicit_targets_create and _db is not None:
         _forced_aliases_create = _extract_non_exact_device_aliases_from_prompt(req.intent_description, _db)
@@ -6206,6 +6273,8 @@ def _preview_parse_and_rag(
     else:
         resolved = [] if strict_user_input else _resolve_target_hosts(parsed_resolved)
     resolved = _narrow_resolved_by_hostnames_in_prompt(intent_description, resolved, _db)
+    if not resolved and not explicit_targets_from_ui and _db is not None:
+        resolved = _inventory_hostnames_mentioned_in_prompt(intent_description, _db)
     # Do not re-map "access switch 1,2,3" when the client already sent explicit hostnames —
     # numeric subset would shrink the list and append §1c reasoning that then contradicts
     # ``req.params.target_hosts`` / coalesced API targets (e.g. six picks vs three inferred).
