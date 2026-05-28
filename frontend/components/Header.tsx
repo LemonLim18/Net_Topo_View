@@ -1,6 +1,7 @@
 import React from 'react';
-import { Bell, Check, Sun } from 'lucide-react';
+import { Bell, Check, ListChecks, Sun } from 'lucide-react';
 import { useNotification } from '../contexts/NotificationContext';
+import { useTaskProgress } from '../contexts/TaskProgressContext';
 
 const daisyUIThemes = [
   "light", "dark", "cupcake", "emerald", "corporate", "synthwave",
@@ -18,6 +19,10 @@ interface HeaderProps {
 const Header: React.FC<HeaderProps> = ({ theme, setTheme }) => {
   const { notifications, markAsRead, clearAll } = useNotification();
   const unreadCount = notifications.filter(n => !n.read).length;
+    const { tasks, checkTask, removeTask, clearCheckedTasks } = useTaskProgress();
+    const hasProcessingTask = tasks.some((t) => t.status === 'processing');
+    const hasUncheckedDoneTask = tasks.some((t) => (t.status === 'done' || t.status === 'failed') && !t.checked);
+    const hasCheckedTasks = tasks.some((t) => t.checked);
 
   const getIconColor = (type: string) => {
       switch(type) {
@@ -47,7 +52,7 @@ const Header: React.FC<HeaderProps> = ({ theme, setTheme }) => {
                     {unreadCount > 0 && <span className="badge badge-sm badge-error indicator-item">{unreadCount}</span>}
                 </div>
             </div>
-            <div tabIndex={0} className="mt-3 z-[1] card card-compact dropdown-content w-80 bg-base-100 shadow-xl border border-base-200">
+            <div tabIndex={0} className="mt-3 z-1 card card-compact dropdown-content w-80 bg-base-100 shadow-xl border border-base-200">
                 <div className="card-body">
                     <div className="flex justify-between items-center mb-2">
                         <span className="font-bold text-lg">Notifications</span>
@@ -75,6 +80,109 @@ const Header: React.FC<HeaderProps> = ({ theme, setTheme }) => {
                                     </div>
                                 </div>
                             ))
+                        )}
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        {/* Task List */}
+        <div className="dropdown dropdown-end">
+            <div tabIndex={0} role="button" className="btn btn-ghost btn-circle">
+                <div className="indicator">
+                    <ListChecks className="h-5 w-5" />
+                    {hasProcessingTask ? (
+                        <span className="absolute -right-1 flex h-2 w-2">
+                            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-yellow-400 opacity-75"></span>
+                            <span className="relative inline-flex rounded-full h-2 w-2 bg-yellow-500"></span>
+                        </span>
+                    ) : hasUncheckedDoneTask ? (
+                        <span className="absolute -right-1 flex h-2 w-2">
+                            <span className="relative inline-flex rounded-full h-2 w-2 bg-success"></span>
+                        </span>
+                    ) : null}
+                </div>
+            </div>
+            <div tabIndex={0} className="mt-3 z-1 card card-compact dropdown-content w-96 bg-base-100 shadow-xl border border-base-200">
+                <div className="card-body">
+                    <div className="flex justify-between items-center mb-2">
+                        <span className="font-bold text-lg">Background Actions</span>
+                        <button
+                            onClick={clearCheckedTasks}
+                            className="btn btn-xs btn-ghost text-primary"
+                            disabled={!hasCheckedTasks}
+                        >
+                            Clear checked
+                        </button>
+                    </div>
+                    <div className="max-h-96 overflow-y-auto space-y-2">
+                        {tasks.length === 0 ? (
+                            <div className="text-center py-8 opacity-50 text-sm">No active background tasks</div>
+                        ) : (
+                            tasks.map((task) => {
+                                const isDone = task.status === 'done' || task.status === 'failed';
+                                return (
+                                    <div
+                                        key={task.id}
+                                        className={`p-3 rounded-lg border flex items-start gap-3
+                                          ${isDone
+                                            ? 'bg-base-200/50 border-base-300'
+                                            : 'bg-yellow-500/5 border-yellow-500/20'}`}
+                                    >
+                                        <div className="mt-0.5">
+                                            {task.status === 'processing' ? (
+                                                <span className="flex h-2 w-2 relative mt-1.5">
+                                                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-yellow-400 opacity-75"></span>
+                                                    <span className="relative inline-flex rounded-full h-2 w-2 bg-yellow-500"></span>
+                                                </span>
+                                            ) : (
+                                                <span className="relative inline-flex rounded-full h-2 w-2 bg-success mt-1.5"></span>
+                                            )}
+                                        </div>
+
+                                        <div className="flex-1 min-w-0">
+                                            <div className="flex items-center justify-between gap-2">
+                                                <span className="text-xs font-bold truncate">{task.message}</span>
+                                                <span className={`badge badge-[9px] uppercase tracking-wider font-bold py-0.5 px-1
+                                                  ${task.status === 'processing'
+                                                    ? 'badge-warning text-warning-content'
+                                                    : task.status === 'failed'
+                                                      ? 'badge-error text-error-content'
+                                                      : 'badge-success text-success-content'}`}
+                                                >
+                                                    {task.status}
+                                                </span>
+                                            </div>
+                                            {task.subtitle && (
+                                                <p className="text-[10px] opacity-60 mt-0.5 truncate">{task.subtitle}</p>
+                                            )}
+                                            {task.status === 'processing' && task.progressText && (
+                                                <div className="mt-2 text-[10px] font-mono text-warning/90 bg-slate-950/40 px-2 py-1 rounded border border-warning/10 animate-pulse">
+                                                    {task.progressText}
+                                                </div>
+                                            )}
+                                            {isDone && (
+                                                <p className={`text-[10px] mt-1 ${task.status === 'failed' ? 'text-error/90' : 'text-success/90'}`}>
+                                                    {task.status === 'failed' ? 'Action failed.' : 'Action completed successfully.'}
+                                                </p>
+                                            )}
+                                        </div>
+
+                                        {isDone && (
+                                            <button
+                                                onClick={() => {
+                                                    checkTask(task.id);
+                                                    removeTask(task.id);
+                                                }}
+                                                className="btn btn-ghost btn-xs btn-circle hover:bg-success/20 text-success shrink-0"
+                                                title="Dismiss Task"
+                                            >
+                                                <Check className="w-3 h-3" />
+                                            </button>
+                                        )}
+                                    </div>
+                                );
+                            })
                         )}
                     </div>
                 </div>

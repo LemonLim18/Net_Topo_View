@@ -16,9 +16,11 @@ import {
   Info,
   Layers,
   Bot,
-  Activity
+  Activity,
+  Quote,
+  Copy,
+  Square
 } from 'lucide-react';
-import { useTaskProgress } from '../contexts/TaskProgressContext';
 import { llmApi } from '../src/services/api';
 
 interface DeviceInterface {
@@ -54,23 +56,95 @@ interface Message {
   groundingMeta?: {
     answer_scope?: string;
     freshness_class?: string;
+    display_freshness_class?: string;
     confidence?: number;
     source_used?: string[];
-    source_age?: Array<{ source?: string; age_seconds?: number | null; freshness_class?: string }>;
-    conflicts?: Array<{ code?: string; message?: string }>;
+    display_source_used?: string[];
+    source_age?: Array<{ source?: string; scope?: string; source_category?: string; age_seconds?: number | null; freshness_class?: string }>;
+    display_source_age?: Array<{ source?: string; scope?: string; source_category?: string; age_seconds?: number | null; freshness_class?: string }>;
+    conflicts?: Array<{ code?: string; summary?: string; message?: string; severity?: string }>;
+    display_conflicts?: Array<{ code?: string; summary?: string; message?: string; severity?: string }>;
   };
 }
 
-const FloatingInventoryOverlay: React.FC<{ onClose: () => void }> = ({ onClose }) => {
-  const [activeTab, setActiveTab] = useState<'inventory' | 'ollama' | 'inventory_ai' | 'system_ai' | 'tasks'>('inventory');
-  const [position, setPosition] = useState({ x: window.innerWidth - 450, y: 100 });
-  const [isDragging, setIsDragging] = useState(false);
-  const dragStartPos = useRef({ x: 0, y: 0 });
+type OperatingMode = 'query' | 'thinking' | 'expert';
 
-  const { tasks, checkTask, removeTask } = useTaskProgress();
-  const hasProcessingTask = tasks.some((t) => t.status === 'processing');
-  const hasUncheckedDoneTask = tasks.some((t) => (t.status === 'done' || t.status === 'failed') && !t.checked);
-  
+interface QuotedMessage {
+  role: Message['role'];
+  content: string;
+  timestamp: string;
+}
+
+const PREFERRED_OVERLAY_MODEL = 'ollama::qwen2.5-coder:3b';
+const OVERLAY_MIN_WIDTH = 340;
+const OVERLAY_DEFAULT_WIDTH = 420;
+const OVERLAY_MAX_WIDTH = 920;
+const OVERLAY_MARGIN = 12;
+
+const OPERATING_MODE_LABELS: Record<OperatingMode, string> = {
+  query: 'Query',
+  thinking: 'Thinking',
+  expert: 'Expert',
+};
+
+const OPERATING_MODE_PROMPTS: Record<OperatingMode, string> = {
+  query: 'Operating mode: Query. Answer directly and concisely. Use the best available grounded evidence, but do not add reasoning steps unless needed for clarity.',
+  thinking: 'Operating mode: Thinking. Explain the reasoning path briefly before the answer. Keep it operational and avoid unrelated background.',
+  expert: 'Operating mode: Expert. Correlate across relevant events, sources, timing, topology, telemetry, syslog, inventory, and configuration evidence. Identify possible relationships only when evidence supports them.',
+};
+
+function pickPreferredOverlayModel(models: string[]): string {
+  if (models.includes(PREFERRED_OVERLAY_MODEL)) return PREFERRED_OVERLAY_MODEL;
+  const localQwen = models.find((model) => model.startsWith('ollama::qwen2.5'));
+  if (localQwen) return localQwen;
+  const anyLocal = models.find((model) => model.startsWith('ollama::'));
+  if (anyLocal) return anyLocal;
+  return models[0] || '';
+}
+
+function clampOverlayWidth(width: number) {
+  const viewportMax = Math.max(OVERLAY_MIN_WIDTH, window.innerWidth - OVERLAY_MARGIN * 2);
+  return Math.min(Math.max(width, OVERLAY_MIN_WIDTH), Math.min(OVERLAY_MAX_WIDTH, viewportMax));
+}
+
+function clampOverlayPosition(x: number, y: number, width: number) {
+  const maxX = Math.max(OVERLAY_MARGIN, window.innerWidth - width - OVERLAY_MARGIN);
+  const maxY = Math.max(OVERLAY_MARGIN, window.innerHeight - 120);
+  return {
+    x: Math.min(Math.max(x, OVERLAY_MARGIN), maxX),
+    y: Math.min(Math.max(y, OVERLAY_MARGIN), maxY),
+  };
+}
+
+function quoteForPrompt(quoted: QuotedMessage | null): string {
+  if (!quoted) return '';
+  const trimmed = quoted.content.replace(/\s+/g, ' ').trim();
+  return `Quoted previous message (${quoted.role}, ${quoted.timestamp}):\n${trimmed}`;
+}
+
+function buildModePrompt(prompt: string, mode: OperatingMode, quoted: QuotedMessage | null): string {
+  const quote = quoteForPrompt(quoted);
+  return [
+    OPERATING_MODE_PROMPTS[mode],
+    quote ? `Use this quoted context only when it is relevant:\n${quote}` : '',
+    `User request:\n${prompt}`,
+  ].filter(Boolean).join('\n\n');
+}
+
+async function copyText(value: string) {
+  if (!value) return;
+  await navigator.clipboard?.writeText(value);
+}
+
+const FloatingInventoryOverlay: React.FC<{ onClose: () => void }> = ({ onClose }) => {
+  const [activeTab, setActiveTab] = useState<'inventory' | 'ollama' | 'inventory_ai' | 'system_ai'>('inventory');
+  const [overlayWidth, setOverlayWidth] = useState(() => clampOverlayWidth(OVERLAY_DEFAULT_WIDTH));
+  const [position, setPosition] = useState(() => clampOverlayPosition(window.innerWidth - OVERLAY_DEFAULT_WIDTH - 30, 100, OVERLAY_DEFAULT_WIDTH));
+  const [isDragging, setIsDragging] = useState(false);
+  const [resizeEdge, setResizeEdge] = useState<'left' | 'right' | null>(null);
+  const dragStartPos = useRef({ x: 0, y: 0 });
+  const resizeStartRef = useRef({ x: 0, width: OVERLAY_DEFAULT_WIDTH, left: 0 });
+
   // Inventory State
   const [devices, setDevices] = useState<Device[]>([]);
   const [expandedDevice, setExpandedDevice] = useState<Device | null>(null);
@@ -92,17 +166,23 @@ const FloatingInventoryOverlay: React.FC<{ onClose: () => void }> = ({ onClose }
   const [systemAiPrompt, setSystemAiPrompt] = useState('');
   const [systemAiMessages, setSystemAiMessages] = useState<Message[]>([]);
   const [isSystemAiLoading, setIsSystemAiLoading] = useState(false);
-  const [systemAiGrounding, setSystemAiGrounding] = useState<Message['groundingMeta'] | null>(null);
+  const [expandedSystemAiEvidenceIndex, setExpandedSystemAiEvidenceIndex] = useState<number | null>(null);
+  const [operatingMode, setOperatingMode] = useState<OperatingMode>('query');
+  const [quotedMessage, setQuotedMessage] = useState<QuotedMessage | null>(null);
 
   // Common LLM Params
-  const [availableModels, setAvailableModels] = useState<string[]>([]);
-  const [selectedModel, setSelectedModel] = useState<string>('');
+  const [availableModels, setAvailableModels] = useState<string[]>(['ollama::qwen2.5-coder:3b']);
+  const [selectedModel, setSelectedModel] = useState<string>('ollama::qwen2.5-coder:3b');
   const [modelFetchError, setModelFetchError] = useState<string | null>(null);
+  const [hasFetchedModels, setHasFetchedModels] = useState(false);
   
   const scrollRef = useRef<HTMLDivElement>(null);
+  const activeAbortController = useRef<AbortController | null>(null);
+  const previousActiveTab = useRef(activeTab);
 
   // --- Draggable Logic ---
   const handleMouseDown = (e: React.MouseEvent) => {
+    if (resizeEdge) return;
     setIsDragging(true);
     dragStartPos.current = {
       x: e.clientX - position.x,
@@ -110,13 +190,25 @@ const FloatingInventoryOverlay: React.FC<{ onClose: () => void }> = ({ onClose }
     };
   };
 
+  const handleResizeMouseDown = (edge: 'left' | 'right') => (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setResizeEdge(edge);
+    resizeStartRef.current = {
+      x: e.clientX,
+      width: overlayWidth,
+      left: position.x,
+    };
+  };
+
   useEffect(() => {
     const handleMouseMove = (e: MouseEvent) => {
       if (!isDragging) return;
-      setPosition({
-        x: e.clientX - dragStartPos.current.x,
-        y: e.clientY - dragStartPos.current.y
-      });
+      setPosition(clampOverlayPosition(
+        e.clientX - dragStartPos.current.x,
+        e.clientY - dragStartPos.current.y,
+        overlayWidth,
+      ));
     };
     const handleMouseUp = () => setIsDragging(false);
 
@@ -128,7 +220,49 @@ const FloatingInventoryOverlay: React.FC<{ onClose: () => void }> = ({ onClose }
       window.removeEventListener('mousemove', handleMouseMove);
       window.removeEventListener('mouseup', handleMouseUp);
     };
-  }, [isDragging]);
+  }, [isDragging, overlayWidth]);
+
+  useEffect(() => {
+    const handleMouseMove = (e: MouseEvent) => {
+      if (!resizeEdge) return;
+      const delta = e.clientX - resizeStartRef.current.x;
+      if (resizeEdge === 'right') {
+        const nextWidth = clampOverlayWidth(resizeStartRef.current.width + delta);
+        setOverlayWidth(nextWidth);
+        setPosition((prev) => clampOverlayPosition(prev.x, prev.y, nextWidth));
+        return;
+      }
+
+      const rawWidth = resizeStartRef.current.width - delta;
+      const nextWidth = clampOverlayWidth(rawWidth);
+      const widthDelta = nextWidth - resizeStartRef.current.width;
+      const nextLeft = resizeStartRef.current.left - widthDelta;
+      setOverlayWidth(nextWidth);
+      setPosition((prev) => clampOverlayPosition(nextLeft, prev.y, nextWidth));
+    };
+    const handleMouseUp = () => setResizeEdge(null);
+
+    if (resizeEdge) {
+      window.addEventListener('mousemove', handleMouseMove);
+      window.addEventListener('mouseup', handleMouseUp);
+    }
+    return () => {
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
+    };
+  }, [resizeEdge]);
+
+  useEffect(() => {
+    const handleWindowResize = () => {
+      setOverlayWidth((currentWidth) => {
+        const nextWidth = clampOverlayWidth(currentWidth);
+        setPosition((currentPosition) => clampOverlayPosition(currentPosition.x, currentPosition.y, nextWidth));
+        return nextWidth;
+      });
+    };
+    window.addEventListener('resize', handleWindowResize);
+    return () => window.removeEventListener('resize', handleWindowResize);
+  }, []);
 
   // --- Inventory Logic ---
   const fetchInventory = async () => {
@@ -168,10 +302,19 @@ const FloatingInventoryOverlay: React.FC<{ onClose: () => void }> = ({ onClose }
     if (activeTab === 'inventory' && devices.length === 0) {
       fetchInventory();
     }
-    if ((activeTab === 'ollama' || activeTab === 'inventory_ai' || activeTab === 'system_ai') && availableModels.length === 0) {
+    if ((activeTab === 'ollama' || activeTab === 'inventory_ai' || activeTab === 'system_ai') && !hasFetchedModels) {
       fetchModels();
+      return;
     }
-  }, [activeTab]);
+    const switchedTab = previousActiveTab.current !== activeTab;
+    if (switchedTab && (activeTab === 'ollama' || activeTab === 'inventory_ai' || activeTab === 'system_ai')) {
+      const preferredModel = pickPreferredOverlayModel(availableModels);
+      if (preferredModel && selectedModel !== preferredModel) {
+        setSelectedModel(preferredModel);
+      }
+    }
+    previousActiveTab.current = activeTab;
+  }, [activeTab, availableModels, devices.length, selectedModel, hasFetchedModels]);
 
   const fetchModels = async () => {
     setModelFetchError(null);
@@ -203,12 +346,17 @@ const FloatingInventoryOverlay: React.FC<{ onClose: () => void }> = ({ onClose }
         combined = localModels;
       }
 
+      if (!combined.includes('ollama::qwen2.5-coder:3b')) {
+        combined.push('ollama::qwen2.5-coder:3b');
+      }
+
       if (combined.length === 0) {
         setModelFetchError('No models found (cloud or local).');
       } else {
         setAvailableModels(combined);
-        setSelectedModel(combined[0]);
+        setSelectedModel(pickPreferredOverlayModel(combined));
       }
+      setHasFetchedModels(true);
     } catch (err) {
       console.error('Failed to fetch Ollama models:', err);
       setModelFetchError('Connection failed.');
@@ -221,7 +369,18 @@ const FloatingInventoryOverlay: React.FC<{ onClose: () => void }> = ({ onClose }
     d.role?.toLowerCase().includes(searchQuery.toLowerCase())
   );
 
-  const latestSystemAiGrounding = systemAiGrounding ?? [...systemAiMessages].reverse().find((msg) => msg.role === 'assistant' && msg.groundingMeta)?.groundingMeta ?? null;
+  const stopActiveResponse = () => {
+    activeAbortController.current?.abort();
+    activeAbortController.current = null;
+  };
+
+  const quoteMessage = (msg: Message) => {
+    setQuotedMessage({
+      role: msg.role,
+      content: msg.content,
+      timestamp: msg.timestamp,
+    });
+  };
 
   // --- Chat Handling ---
   const handleChatSend = async (mode: 'playground' | 'inventory' | 'system') => {
@@ -229,6 +388,14 @@ const FloatingInventoryOverlay: React.FC<{ onClose: () => void }> = ({ onClose }
     const isInventory = mode === 'inventory';
     const prompt = isPlayground ? ollamaPrompt : isInventory ? inventoryAiPrompt : systemAiPrompt;
     if (!prompt.trim()) return;
+    const controller = new AbortController();
+    activeAbortController.current = controller;
+    const quotedForThisTurn = quotedMessage;
+    const effectivePrompt = mode === 'system'
+      ? buildModePrompt(prompt, operatingMode, quotedForThisTurn)
+      : quotedForThisTurn
+        ? `${quoteForPrompt(quotedForThisTurn)}\n\nUser request:\n${prompt}`
+        : prompt;
 
     const userMsg: Message = {
       role: 'user',
@@ -249,6 +416,7 @@ const FloatingInventoryOverlay: React.FC<{ onClose: () => void }> = ({ onClose }
       setSystemAiPrompt('');
       setIsSystemAiLoading(true);
     }
+    setQuotedMessage(null);
 
     try {
       if (mode === 'system') {
@@ -262,9 +430,9 @@ const FloatingInventoryOverlay: React.FC<{ onClose: () => void }> = ({ onClose }
             provider: runtimeProvider,
             model: runtimeModel,
             clear_history: false,
-          });
+          }, { signal: controller.signal });
         }
-        const data = await llmApi.chat(userMsg.content);
+        const data = await llmApi.chat(effectivePrompt, { signal: controller.signal });
         const assistantMsg: Message = {
           role: 'assistant',
           content: data.content || 'No response from model.',
@@ -272,17 +440,17 @@ const FloatingInventoryOverlay: React.FC<{ onClose: () => void }> = ({ onClose }
           groundingMeta: data.grounding_meta,
         };
         setSystemAiMessages((prev) => [...prev, assistantMsg]);
-        setSystemAiGrounding(data.grounding_meta || null);
         return;
       } else if (selectedModel.startsWith('gemini::')) {
         const resp = await fetch('/api/v1/llm/chat', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            message: userMsg.content,
+            message: effectivePrompt,
             model: selectedModel.split('::', 2)[1],
             grounding: mode !== 'playground',
           }),
+          signal: controller.signal,
         });
         const data = await resp.json();
         const assistantMsg: Message = {
@@ -304,7 +472,8 @@ const FloatingInventoryOverlay: React.FC<{ onClose: () => void }> = ({ onClose }
         const resp = await fetch(endpoint, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ prompt: userMsg.content, model: modelName }),
+          body: JSON.stringify({ prompt: effectivePrompt, model: modelName }),
+          signal: controller.signal,
         });
         const data = await resp.json();
         const assistantMsg: Message = {
@@ -318,7 +487,22 @@ const FloatingInventoryOverlay: React.FC<{ onClose: () => void }> = ({ onClose }
           setInventoryAiMessages((prev) => [...prev, assistantMsg]);
         }
       }
-    } catch (err) {
+    } catch (err: any) {
+      if (err?.name === 'AbortError') {
+        const haltedMsg: Message = {
+          role: 'system',
+          content: 'Response halted.',
+          timestamp: new Date().toLocaleTimeString(),
+        };
+        if (isPlayground) {
+          setOllamaMessages((prev) => [...prev, haltedMsg]);
+        } else if (isInventory) {
+          setInventoryAiMessages((prev) => [...prev, haltedMsg]);
+        } else {
+          setSystemAiMessages((prev) => [...prev, haltedMsg]);
+        }
+        return;
+      }
       const errMsg: Message = {
         role: 'system',
         content: `Error: ${err}`,
@@ -335,6 +519,9 @@ const FloatingInventoryOverlay: React.FC<{ onClose: () => void }> = ({ onClose }
       if (isPlayground) setIsOllamaLoading(false);
       else if (isInventory) setIsInventoryAiLoading(false);
       else setIsSystemAiLoading(false);
+      if (activeAbortController.current === controller) {
+        activeAbortController.current = null;
+      }
     }
   };
 
@@ -348,19 +535,31 @@ const FloatingInventoryOverlay: React.FC<{ onClose: () => void }> = ({ onClose }
     <div 
       className="fixed z-9999 shadow-2xl border border-base-content/10 bg-base-100 rounded-xl overflow-hidden flex flex-col"
       style={{ 
-        width: '420px', 
-        height: '550px', 
+        width: `${overlayWidth}px`,
+        maxWidth: `calc(100vw - ${OVERLAY_MARGIN * 2}px)`,
+        height: '550px',
+        maxHeight: `calc(100vh - ${OVERLAY_MARGIN * 2}px)`,
         left: `${position.x}px`, 
         top: `${position.y}px`,
-        transition: isDragging ? 'none' : 'all 0.1s ease'
+        transition: isDragging || resizeEdge ? 'none' : 'all 0.1s ease'
       }}
     >
+      <div
+        className="absolute left-0 top-10 bottom-0 z-20 w-1.5 cursor-ew-resize hover:bg-primary/30"
+        onMouseDown={handleResizeMouseDown('left')}
+        title="Resize overlay"
+      />
+      <div
+        className="absolute right-0 top-10 bottom-0 z-20 w-1.5 cursor-ew-resize hover:bg-primary/30"
+        onMouseDown={handleResizeMouseDown('right')}
+        title="Resize overlay"
+      />
       {/* Header / Drag Handle */}
       <div 
         className="bg-primary text-primary-content p-3 flex items-center justify-between cursor-grab active:cursor-grabbing select-none"
         onMouseDown={handleMouseDown}
       >
-        <div className="flex items-center gap-2 font-bold text-sm">
+        <div className="flex items-center gap-2 font-bold text-base-200 text-sm">
           <Terminal className="w-4 h-4" />
           <span>Network Ops Center Overlay</span>
         </div>
@@ -373,10 +572,10 @@ const FloatingInventoryOverlay: React.FC<{ onClose: () => void }> = ({ onClose }
       </div>
 
       {/* Tabs Selector */}
-      <div className="flex border-b border-base-content/10 bg-base-200/50">
+      <div className="flex overflow-x-auto border-b border-base-content/10 bg-base-200/50">
         <button 
           onClick={() => setActiveTab('inventory')}
-          className={`flex-1 p-2.5 flex items-center justify-center gap-1.5 text-[10px] font-bold transition-colors
+          className={`min-w-[72px] flex-1 p-2.5 flex items-center justify-center gap-1.5 text-[10px] font-bold transition-colors
             ${activeTab === 'inventory' ? 'bg-base-100 text-primary border-b-2 border-primary' : 'hover:bg-base-200 opacity-60'}`}
         >
           <Database className="w-3.5 h-3.5" />
@@ -384,7 +583,7 @@ const FloatingInventoryOverlay: React.FC<{ onClose: () => void }> = ({ onClose }
         </button>
         <button 
           onClick={() => setActiveTab('ollama')}
-          className={`flex-1 p-2.5 flex items-center justify-center gap-1.5 text-[10px] font-bold transition-colors
+          className={`min-w-[72px] flex-1 p-2.5 flex items-center justify-center gap-1.5 text-[10px] font-bold transition-colors
             ${activeTab === 'ollama' ? 'bg-base-100 text-secondary border-b-2 border-secondary' : 'hover:bg-base-200 opacity-60'}`}
         >
           <Cpu className="w-3.5 h-3.5" />
@@ -392,7 +591,7 @@ const FloatingInventoryOverlay: React.FC<{ onClose: () => void }> = ({ onClose }
         </button>
         <button 
           onClick={() => setActiveTab('inventory_ai')}
-          className={`flex-1 p-2.5 flex items-center justify-center gap-1.5 text-[10px] font-bold transition-colors
+          className={`min-w-[72px] flex-1 p-2.5 flex items-center justify-center gap-1.5 text-[10px] font-bold transition-colors
             ${activeTab === 'inventory_ai' ? 'bg-base-100 text-accent border-b-2 border-accent' : 'hover:bg-base-200 opacity-60'}`}
         >
           <Bot className="w-3.5 h-3.5" />
@@ -400,29 +599,11 @@ const FloatingInventoryOverlay: React.FC<{ onClose: () => void }> = ({ onClose }
         </button>
         <button 
           onClick={() => setActiveTab('system_ai')}
-          className={`flex-1 p-2.5 flex items-center justify-center gap-1.5 text-[10px] font-bold transition-colors
+          className={`min-w-[72px] flex-1 p-2.5 flex items-center justify-center gap-1.5 text-[10px] font-bold transition-colors
             ${activeTab === 'system_ai' ? 'bg-base-100 text-success border-b-2 border-success' : 'hover:bg-base-200 opacity-60'}`}
         >
           <Activity className="w-3.5 h-3.5" />
           SYSTEM AI
-        </button>
-        <button 
-          onClick={() => setActiveTab('tasks')}
-          className={`flex-1 p-2.5 flex items-center justify-center gap-1.5 text-[10px] font-bold transition-colors relative
-            ${activeTab === 'tasks' ? 'bg-base-100 text-warning border-b-2 border-warning' : 'hover:bg-base-200 opacity-60'}`}
-        >
-          <Terminal className="w-3.5 h-3.5" />
-          TASKS
-          {hasProcessingTask ? (
-            <span className="absolute top-1.5 right-1.5 flex h-2 w-2">
-              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-yellow-400 opacity-75"></span>
-              <span className="relative inline-flex rounded-full h-2 w-2 bg-yellow-500"></span>
-            </span>
-          ) : hasUncheckedDoneTask ? (
-            <span className="absolute top-1.5 right-1.5 flex h-2 w-2">
-              <span className="relative inline-flex rounded-full h-2 w-2 bg-success"></span>
-            </span>
-          ) : null}
         </button>
       </div>
 
@@ -594,113 +775,24 @@ const FloatingInventoryOverlay: React.FC<{ onClose: () => void }> = ({ onClose }
               </>
             )}
           </div>
-        ) : activeTab === 'tasks' ? (
-          <div className="h-full flex flex-col p-4 bg-base-100 overflow-y-auto space-y-3">
-            <div className="flex items-center justify-between border-b border-base-content/5 pb-2">
-              <h3 className="font-bold text-xs uppercase opacity-75">Background Actions</h3>
-              {tasks.some(t => t.checked) && (
-                <button 
-                  onClick={() => tasks.forEach(t => t.checked && removeTask(t.id))}
-                  className="btn btn-ghost btn-xs text-[10px] text-primary"
-                >
-                  Clear Checked
-                </button>
-              )}
-            </div>
-
-            {tasks.length === 0 ? (
-              <div className="flex flex-col items-center justify-center h-48 opacity-45 text-center px-6">
-                <Terminal className="w-10 h-10 mb-2 opacity-50 text-slate-500" />
-                <p className="text-xs font-semibold">No active background tasks</p>
-                <p className="text-[10px] mt-1">Tasks you minimize from loader overlays will appear here.</p>
-              </div>
-            ) : (
-              <div className="space-y-2.5">
-                {tasks.map((task) => {
-                  const isDone = task.status === 'done' || task.status === 'failed';
-                  return (
-                    <div 
-                      key={task.id}
-                      className={`p-3 rounded-xl border flex items-start gap-3 transition-all
-                        ${isDone 
-                          ? 'bg-base-200/50 border-base-300' 
-                          : 'bg-yellow-500/5 border-yellow-500/20'}`}
-                    >
-                      <div className="mt-0.5">
-                        {task.status === 'processing' ? (
-                          <span className="flex h-2 w-2 relative mt-1.5">
-                            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-yellow-400 opacity-75"></span>
-                            <span className="relative inline-flex rounded-full h-2 w-2 bg-yellow-500"></span>
-                          </span>
-                        ) : (
-                          <span className="relative inline-flex rounded-full h-2 w-2 bg-success mt-1.5"></span>
-                        )}
-                      </div>
-
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center justify-between gap-2">
-                          <span className="text-xs font-bold truncate">{task.message}</span>
-                          <span className={`badge badge-[9px] uppercase tracking-wider font-bold py-0.5 px-1
-                            ${task.status === 'processing' 
-                              ? 'badge-warning text-warning-content' 
-                              : task.status === 'failed' 
-                                ? 'badge-error text-error-content' 
-                                : 'badge-success text-success-content'}`}
-                          >
-                            {task.status}
-                          </span>
-                        </div>
-                        {task.subtitle && (
-                          <p className="text-[10px] opacity-60 mt-0.5 truncate">{task.subtitle}</p>
-                        )}
-                        {task.status === 'processing' && task.progressText && (
-                          <div className="mt-2 text-[10px] font-mono text-warning/90 bg-slate-950/40 px-2 py-1 rounded border border-warning/10 animate-pulse">
-                            {task.progressText}
-                          </div>
-                        )}
-                        {isDone && (
-                          <p className="text-[10px] text-success/90 mt-1">
-                            Action completed successfully.
-                          </p>
-                        )}
-                      </div>
-
-                      {isDone && (
-                        <button
-                          onClick={() => {
-                            checkTask(task.id);
-                            removeTask(task.id);
-                          }}
-                          className="btn btn-ghost btn-xs btn-circle hover:bg-success/20 text-success shrink-0"
-                          title="Dismiss Task"
-                        >
-                          <X className="w-3.5 h-3.5" />
-                        </button>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-          </div>
         ) : (
           <div className="h-full flex flex-col bg-base-200/30">
             {/* Model Selector Bar */}
-            <div className={`p-2 border-b border-base-content/5 flex items-center justify-between gap-2
+            <div className={`px-3 md:px-5 py-2 border-b border-base-content/5 flex items-center justify-between gap-2
               ${modelFetchError ? 'bg-error/10' : 'bg-base-100'}`}>
               <div className="flex items-center gap-1.5 opacity-60 ml-1">
                  <Cpu className="w-3.5 h-3.5" />
                  <span className="text-[10px] font-bold uppercase tracking-wider">Model</span>
               </div>
               
-              <div className="flex items-center gap-2">
+              <div className="flex min-w-0 items-center gap-2">
                 {modelFetchError && (
                   <div className="tooltip tooltip-left" data-tip={modelFetchError}>
                     <Info className="w-3.5 h-3.5 text-error ring-1 ring-error/20 rounded-full" />
                   </div>
                 )}
-                <select 
-                  className={`select select-bordered select-xs bg-base-200 border-none font-mono text-[10px] h-7 min-h-0 focus:outline-none 
+                <select
+                  className={`select select-bordered select-xs bg-base-200 border-none font-mono text-[10px] h-7 min-h-0 max-w-[210px] min-w-[140px] focus:outline-none
                     ${availableModels.length === 0 ? 'opacity-50' : ''}`}
                   value={selectedModel}
                   onChange={(e) => setSelectedModel(e.target.value)}
@@ -726,49 +818,21 @@ const FloatingInventoryOverlay: React.FC<{ onClose: () => void }> = ({ onClose }
             </div>
 
             {activeTab === 'system_ai' && (
-              <div className="px-3 py-2 border-b border-base-content/10 bg-success/5 text-[10px]">
-                {latestSystemAiGrounding ? (
-                  <div className="space-y-2">
-                    <div className="flex flex-wrap items-center gap-1.5">
-                      <span className="badge badge-xs badge-success">Grounded</span>
-                      <span className="badge badge-xs badge-outline">
-                        Scope: {latestSystemAiGrounding.answer_scope || 'unknown'}
-                      </span>
-                      <span className="badge badge-xs badge-outline">
-                        Freshness: {latestSystemAiGrounding.freshness_class || 'unknown'}
-                      </span>
-                      <span className="badge badge-xs badge-outline">
-                        Confidence: {typeof latestSystemAiGrounding.confidence === 'number' ? latestSystemAiGrounding.confidence.toFixed(2) : 'n/a'}
-                      </span>
-                    </div>
-                    <div className="flex flex-wrap gap-1.5">
-                      {(latestSystemAiGrounding.source_used || []).slice(0, 5).map((source) => (
-                        <span key={source} className="badge badge-xs badge-secondary badge-outline">
-                          {source}
-                        </span>
-                      ))}
-                      {latestSystemAiGrounding.conflicts?.length ? (
-                        <span className="badge badge-xs badge-error badge-outline">
-                          {latestSystemAiGrounding.conflicts.length} conflict(s)
-                        </span>
-                      ) : null}
-                    </div>
-                    {latestSystemAiGrounding.source_age?.length ? (
-                      <div className="flex flex-wrap gap-1.5">
-                        {latestSystemAiGrounding.source_age.slice(0, 5).map((entry, idx) => (
-                          <span key={`${entry.source || 'source'}-${idx}`} className="badge badge-xs badge-ghost">
-                            {entry.source || 'source'} · {entry.freshness_class || 'unknown'}
-                            {typeof entry.age_seconds === 'number' ? ` · ${entry.age_seconds}s` : ''}
-                          </span>
-                        ))}
-                      </div>
-                    ) : null}
-                  </div>
-                ) : (
-                  <div className="opacity-70">
-                    System AI will show source freshness and provenance here after the first grounded answer.
-                  </div>
-                )}
+              <div className="px-3 sm:px-7 md:px-10 py-2 border-b border-base-content/5 bg-base-100/70 flex items-center justify-between gap-2">
+                <span className="text-[10px] font-bold uppercase tracking-wider opacity-60">Mode</span>
+                <div className="join">
+                  {(['query', 'thinking', 'expert'] as OperatingMode[]).map((item) => (
+                    <button
+                      key={item}
+                      type="button"
+                      onClick={() => setOperatingMode(item)}
+                      className={`join-item btn btn-xs min-h-0 h-6 px-2 text-[10px] ${operatingMode === item ? 'btn-success' : 'btn-ghost bg-base-200/70'}`}
+                      title={OPERATING_MODE_PROMPTS[item]}
+                    >
+                      {OPERATING_MODE_LABELS[item]}
+                    </button>
+                  ))}
+                </div>
               </div>
             )}
 
@@ -795,20 +859,138 @@ const FloatingInventoryOverlay: React.FC<{ onClose: () => void }> = ({ onClose }
                   )}
                 </div>
               )}
-              {(activeTab === 'ollama' ? ollamaMessages : activeTab === 'inventory_ai' ? inventoryAiMessages : systemAiMessages).map((msg, idx) => (
-                <div key={idx} className={`flex flex-col ${msg.role === 'user' ? 'items-end' : 'items-start'}`}>
-                  <div className={`max-w-[85%] p-3 rounded-2xl text-[13px] leading-relaxed
-                    ${msg.role === 'user' 
-                      ? 'bg-primary text-primary-content rounded-tr-none shadow-md' 
-                      : msg.role === 'system'
-                        ? 'bg-error/10 text-error border border-error/20 italic'
-                        : 'bg-base-100 text-base-content rounded-tl-none shadow-sm'}`}
-                  >
-                    <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.content}</ReactMarkdown>
+              {(activeTab === 'ollama' ? ollamaMessages : activeTab === 'inventory_ai' ? inventoryAiMessages : systemAiMessages).map((msg, idx) => {
+                const isSystemAnswer = activeTab === 'system_ai' && msg.role === 'assistant';
+                const isEvidenceOpen = expandedSystemAiEvidenceIndex === idx;
+                const grounding = msg.groundingMeta;
+                const evidenceSources: Array<{ source?: string; scope?: string; source_category?: string; age_seconds?: number | null; freshness_class?: string }> = grounding?.display_source_age?.length
+                  ? grounding.display_source_age
+                  : grounding?.source_age?.length
+                    ? grounding.source_age
+                    : (grounding?.display_source_used?.map(source => ({ source })) ?? grounding?.source_used?.map(source => ({ source })) ?? []);
+                const evidenceConflicts = grounding?.display_conflicts?.length
+                  ? grounding.display_conflicts
+                  : (grounding?.conflicts ?? []);
+                const freshnessLabel = grounding?.display_freshness_class || grounding?.freshness_class;
+                const freshnessBadgeClass = freshnessLabel === 'live'
+                  ? 'badge-success'
+                  : freshnessLabel === 'warm'
+                    ? 'badge-warning'
+                    : freshnessLabel === 'stale'
+                      ? 'badge-error'
+                      : 'badge-ghost';
+
+                return (
+                  <div key={idx} className={`flex flex-col ${msg.role === 'user' ? 'items-end' : 'items-start'}`}>
+                    <div className={`flex items-start gap-2 max-w-[92%] ${msg.role === 'user' ? 'flex-row-reverse' : ''}`}>
+                      <div className={`p-3 rounded-2xl text-[13px] leading-relaxed
+                        ${msg.role === 'user'
+                          ? 'bg-primary text-primary-content rounded-tr-none shadow-md'
+                          : msg.role === 'system'
+                            ? 'bg-error/10 text-error border border-error/20 italic'
+                            : 'bg-base-100 text-base-content rounded-tl-none shadow-sm'}`}
+                      >
+                        <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.content}</ReactMarkdown>
+                      </div>
+                      {isSystemAnswer && grounding && (
+                        <button
+                          type="button"
+                          onClick={() => setExpandedSystemAiEvidenceIndex(isEvidenceOpen ? null : idx)}
+                          className={`mt-1 btn btn-ghost btn-xs btn-circle ${isEvidenceOpen ? 'btn-active text-success' : 'opacity-70 hover:opacity-100'}`}
+                          aria-label={isEvidenceOpen ? 'Hide evidence' : 'Show evidence'}
+                          title={isEvidenceOpen ? 'Hide evidence' : 'Show evidence'}
+                        >
+                          <Info className="w-4 h-4" />
+                        </button>
+                      )}
+                      <div className="mt-1 flex flex-col gap-1 opacity-60 hover:opacity-100 transition-opacity">
+                        <button
+                          type="button"
+                          onClick={() => quoteMessage(msg)}
+                          className="btn btn-ghost btn-xs btn-circle"
+                          aria-label="Quote message"
+                          title="Quote message"
+                        >
+                          <Quote className="w-3.5 h-3.5" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => copyText(msg.content).catch(() => undefined)}
+                          className="btn btn-ghost btn-xs btn-circle"
+                          aria-label="Copy message"
+                          title="Copy message"
+                        >
+                          <Copy className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    </div>
+
+                    {isSystemAnswer && grounding && isEvidenceOpen && (
+                      <div className="mt-2 w-full max-w-[92%] rounded-xl border border-base-content/10 bg-base-200/50 p-3 text-[10px]">
+                        <div className="mb-2 flex flex-wrap items-center gap-1.5">
+                          <span className="badge badge-xs badge-success">Grounded</span>
+                          {grounding.answer_scope && <span className="badge badge-xs badge-outline">{grounding.answer_scope}</span>}
+                          {freshnessLabel && <span className={`badge badge-xs ${freshnessBadgeClass}`}>{freshnessLabel}</span>}
+                          {typeof grounding.confidence === 'number' && <span className="badge badge-xs badge-outline">confidence {grounding.confidence.toFixed(2)}</span>}
+                        </div>
+
+                        <div className="overflow-x-auto">
+                          <table className="table table-xs">
+                            <thead>
+                              <tr>
+                                <th>Source</th>
+                                <th>Category</th>
+                                <th>Age</th>
+                                <th>Freshness</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {evidenceSources.map((entry, sourceIdx) => {
+                                const ageSeconds = entry.age_seconds;
+                                const ageLabel = typeof ageSeconds === 'number'
+                                  ? ageSeconds < 60
+                                    ? `${ageSeconds}s`
+                                    : ageSeconds < 3600
+                                      ? `${Math.round(ageSeconds / 60)}m`
+                                      : `${Math.round(ageSeconds / 3600)}h`
+                                  : 'n/a';
+                                return (
+                                  <tr key={`${entry.source || 'source'}-${sourceIdx}`}>
+                                    <td className="font-mono">{entry.source || 'unknown'}</td>
+                                    <td>{entry.source_category || 'other'}</td>
+                                    <td>{ageLabel}</td>
+                                    <td>{entry.freshness_class || 'n/a'}</td>
+                                  </tr>
+                                );
+                              })}
+                              {evidenceSources.length === 0 && (
+                                <tr>
+                                  <td colSpan={4} className="text-center opacity-60">No evidence details available.</td>
+                                </tr>
+                              )}
+                            </tbody>
+                          </table>
+                        </div>
+
+                        {evidenceConflicts.length > 0 && (
+                          <div className="mt-2">
+                            <div className="mb-1 font-semibold opacity-70">Conflicts</div>
+                            <ul className="space-y-1">
+                              {evidenceConflicts.map((conflict, conflictIdx) => (
+                                <li key={`${conflict.code || 'conflict'}-${conflictIdx}`} className="rounded-md bg-error/10 px-2 py-1 text-error">
+                                  [{(conflict.severity || conflict.code || 'info').toUpperCase()}] {conflict.summary || conflict.message || 'Conflict detected'}
+                                </li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    <span className="text-[9px] opacity-55 mt-1 px-1">{msg.timestamp}</span>
                   </div>
-                  <span className="text-[9px] opacity-55 mt-1 px-1">{msg.timestamp}</span>
-                </div>
-              ))}
+                );
+              })}
               {(activeTab === 'ollama' ? isOllamaLoading : activeTab === 'inventory_ai' ? isInventoryAiLoading : isSystemAiLoading) && (
                 <div className="flex items-center gap-2 px-1 text-primary animate-pulse">
                   <Loader2 className="w-3.5 h-3.5 animate-spin" />
@@ -821,6 +1003,25 @@ const FloatingInventoryOverlay: React.FC<{ onClose: () => void }> = ({ onClose }
 
             {/* Input */}
             <div className="p-3 bg-base-100 border-t border-base-content/10">
+              {quotedMessage && (
+                <div className="mb-2 rounded-lg border border-success/20 bg-success/5 px-3 py-2 text-[10px]">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="min-w-0">
+                      <div className="font-bold uppercase tracking-wider text-success">Quoted {quotedMessage.role}</div>
+                      <div className="truncate opacity-70">{quotedMessage.content}</div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setQuotedMessage(null)}
+                      className="btn btn-ghost btn-xs btn-circle shrink-0"
+                      aria-label="Clear quoted message"
+                      title="Clear quoted message"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                </div>
+              )}
               <div className="relative">
                 <input 
                   type="text"
@@ -830,17 +1031,28 @@ const FloatingInventoryOverlay: React.FC<{ onClose: () => void }> = ({ onClose }
                     else if (activeTab === 'inventory_ai') setInventoryAiPrompt(e.target.value);
                     else setSystemAiPrompt(e.target.value);
                   }}
-                  onKeyDown={(e) => e.key === 'Enter' && handleChatSend(activeTab === 'ollama' ? 'playground' : activeTab === 'inventory_ai' ? 'inventory' : 'system')}
+                  onKeyDown={(e) => {
+                    const isLoading = activeTab === 'ollama' ? isOllamaLoading : activeTab === 'inventory_ai' ? isInventoryAiLoading : isSystemAiLoading;
+                    if (e.key === 'Escape' && isLoading) stopActiveResponse();
+                    if (e.key === 'Enter' && !isLoading) handleChatSend(activeTab === 'ollama' ? 'playground' : activeTab === 'inventory_ai' ? 'inventory' : 'system');
+                  }}
                   placeholder={availableModels.length > 0 ? (activeTab === 'inventory_ai' ? "Ask about your network snapshot..." : activeTab === 'system_ai' ? "Ask about live ops, inventory, telemetry, or RAG..." : "Ask local model anything...") : "Ollama not available"}
-                  className="input input-bordered w-full pr-12 text-sm bg-base-200 border-none h-11 focus:outline-none placeholder:text-base-content/50"
+                  className="input input-bordered w-full pr-12 text-sm bg-base-200 border-none h-11 focus:outline-none placeholder:text-base-content/50 placeholder:text-[13px]"
                   disabled={availableModels.length === 0}
                 />
                 <button 
-                  onClick={() => handleChatSend(activeTab === 'ollama' ? 'playground' : activeTab === 'inventory_ai' ? 'inventory' : 'system')}
-                  disabled={(activeTab === 'ollama' ? isOllamaLoading : activeTab === 'inventory_ai' ? isInventoryAiLoading : isSystemAiLoading) || (activeTab === 'ollama' ? !ollamaPrompt.trim() : activeTab === 'inventory_ai' ? !inventoryAiPrompt.trim() : !systemAiPrompt.trim()) || availableModels.length === 0}
-                  className={`absolute right-1 top-1/2 -translate-y-1/2 btn btn-sm btn-circle ${activeTab === 'inventory_ai' ? 'btn-secondary' : activeTab === 'system_ai' ? 'btn-success' : 'btn-primary'}`}
+                  onClick={() => {
+                    const isLoading = activeTab === 'ollama' ? isOllamaLoading : activeTab === 'inventory_ai' ? isInventoryAiLoading : isSystemAiLoading;
+                    if (isLoading) stopActiveResponse();
+                    else handleChatSend(activeTab === 'ollama' ? 'playground' : activeTab === 'inventory_ai' ? 'inventory' : 'system');
+                  }}
+                  disabled={!(activeTab === 'ollama' ? isOllamaLoading : activeTab === 'inventory_ai' ? isInventoryAiLoading : isSystemAiLoading) && ((activeTab === 'ollama' ? !ollamaPrompt.trim() : activeTab === 'inventory_ai' ? !inventoryAiPrompt.trim() : !systemAiPrompt.trim()) || availableModels.length === 0)}
+                  className={`absolute right-1 top-1/2 -translate-y-1/2 btn btn-sm btn-circle ${(activeTab === 'ollama' ? isOllamaLoading : activeTab === 'inventory_ai' ? isInventoryAiLoading : isSystemAiLoading) ? 'btn-error' : activeTab === 'inventory_ai' ? 'btn-secondary' : activeTab === 'system_ai' ? 'btn-success' : 'btn-primary'}`}
+                  title={(activeTab === 'ollama' ? isOllamaLoading : activeTab === 'inventory_ai' ? isInventoryAiLoading : isSystemAiLoading) ? 'Stop response' : 'Send'}
                 >
-                  <Send className="w-4 h-4" />
+                  {(activeTab === 'ollama' ? isOllamaLoading : activeTab === 'inventory_ai' ? isInventoryAiLoading : isSystemAiLoading)
+                    ? <Square className="w-3.5 h-3.5 fill-current" />
+                    : <Send className="w-4 h-4" />}
                 </button>
               </div>
             </div>

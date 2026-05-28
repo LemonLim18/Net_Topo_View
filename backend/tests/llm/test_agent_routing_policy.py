@@ -191,7 +191,8 @@ def test_inventory_query_prefetches_inventory_tool():
     assert response["grounding_meta"]["structured_rationale"]["verification_plan"]
     assert response["grounding_meta"]["controller_flow"]["release"]["decision"] == "allow"
     assert response["grounding_meta"]["controller_flow"]["observe"]["satisfied_domains"] == ["planned_inventory"]
-    assert "Grounding: planned;" in response["content"]
+    assert response["content"].startswith("authoritative answer")
+    assert "Grounding:" not in response["content"]
 
 
 def test_inventory_query_fuzzy_alias_prefetches_inventory_tool():
@@ -386,7 +387,8 @@ def test_planned_vs_live_query_returns_mixed_grounding():
     assert response["grounding_meta"]["answer_scope"] == "mixed"
     assert "crawler_cache" in response["grounding_meta"]["source_used"]
     assert "local_db" in response["grounding_meta"]["source_used"]
-    assert "Grounding: mixed;" in response["content"]
+    assert response["content"].startswith("authoritative answer")
+    assert "Grounding:" not in response["content"]
 
 
 def test_live_query_returns_live_grounding_and_confidence():
@@ -399,7 +401,8 @@ def test_live_query_returns_live_grounding_and_confidence():
     assert response["grounding_meta"]["evidence_authority"]["preferred_evidence_present"] is True
     assert "crawler_cache" in response["grounding_meta"]["source_used"]
     assert response["grounding_meta"]["confidence"]["level"] in {"medium", "high"}
-    assert "source_age=" in response["content"]
+    assert response["content"].startswith("authoritative answer")
+    assert "source_age=" not in response["content"]
 
 
 def test_streaming_query_reuses_prefetched_tools_without_duplicate_execution():
@@ -429,6 +432,235 @@ def test_streaming_query_reuses_prefetched_tools_without_duplicate_execution():
     assert execution_counts["get_topology_summary"] == 1
 
 
+def test_streaming_wrapped_cisco_inventory_query_uses_inventory_fast_path():
+    import asyncio
+
+    class _CiscoInventoryDb(_AgentFakeDb):
+        def get_all_devices(self):
+            return [
+                Device(
+                    hostname="Cisco_Acc_1",
+                    management_ip="192.168.1.43",
+                    vendor="Cisco",
+                    model="Cisco_IOS",
+                    status="active",
+                    role="Access Switch",
+                    source="netbox",
+                    updated_at="2026-05-28T10:00:00+00:00",
+                    id=1,
+                )
+            ]
+
+        def get_topology(self):
+            return {
+                "timestamp": "2026-05-28T10:00:00+00:00",
+                "nodes": {
+                    "Cisco_Acc_1": {
+                        "mgmt_ip": "192.168.1.43",
+                        "down": False,
+                        "connectedNode": [],
+                        "interfaceList": [],
+                        "edgeLink": {},
+                    }
+                },
+            }
+
+    provider = _FakeProvider()
+    agent = NetworkAgent(
+        db_manager=_CiscoInventoryDb(),
+        provider=provider,
+        retriever=None,
+        proposal_manager=_MemoryProposalManager(),
+    )
+    wrapped_message = (
+        "Operating mode: Expert. Correlate inventory, live topology, telemetry, config, and syslog.\n"
+        "User request:\n"
+        "What is the vendor, model, and role of Cisco_Acc_1?"
+    )
+
+    events = asyncio.run(_collect_stream_events(agent, wrapped_message))
+    response = events[-1]
+
+    assert response["event"] == "complete"
+    assert response["grounding_meta"]["answer_policy"]["name"] == "default_grounding"
+    assert response["grounding_meta"]["answer_scope"] == "planned"
+    assert response["grounding_meta"]["display_source_age"][0]["source"] == "local_db"
+    assert "config_snapshots" not in response["grounding_meta"]["display_source_used"]
+    assert "Vendor: **Cisco**" in response["content"]
+    assert "Model: **Cisco_IOS**" in response["content"]
+    assert "Role: **Access Switch**" in response["content"]
+    assert provider.calls == []
+
+
+def test_streaming_network_wide_telemetry_summary_uses_summary_tool_not_hostname():
+    import asyncio
+
+    provider = _FakeProvider()
+    agent = NetworkAgent(
+        db_manager=_AgentFakeDb(),
+        provider=provider,
+        retriever=None,
+        proposal_manager=_MemoryProposalManager(),
+    )
+    executed = []
+
+    def _execute(name, arguments):
+        executed.append((name, arguments))
+        if name == "get_context_health":
+            return json.dumps({"status": "ok"})
+        if name == "get_network_telemetry_summary":
+            return json.dumps(
+                {
+                    "devices": [
+                        {"hostname": "SW1", "cpu_usage": 11.5, "memory_usage": 42.0},
+                        {"hostname": "R1", "cpu_usage": 4.0, "memory_usage": 33.0},
+                    ],
+                    "source_metadata": {
+                        "source": "influxdb",
+                        "scope": "telemetry",
+                        "freshness_class": "live",
+                        "age_seconds": 0,
+                        "confidence": 0.95,
+                    },
+                }
+            )
+        raise AssertionError(f"unexpected tool {name}({arguments})")
+
+    agent._tools.execute = _execute  # type: ignore[method-assign]
+
+    events = asyncio.run(_collect_stream_events(agent, "Show me a network-wide telemetry summary"))
+    response = events[-1]
+
+    assert response["event"] == "complete"
+    assert any(name == "get_network_telemetry_summary" for name, _ in executed)
+    assert not any(args.get("hostname") == "network-wide" for _, args in executed)
+    assert provider.calls == []
+    assert "Network-wide telemetry summary" in response["content"]
+    assert "**SW1**" in response["content"]
+    assert response["grounding_meta"]["display_source_age"][0]["source"] == "influxdb"
+
+
+def test_streaming_source_specific_fast_paths_answer_from_requested_source_only():
+    import asyncio
+
+    provider = _FakeProvider()
+    agent = NetworkAgent(
+        db_manager=_AgentFakeDb(),
+        provider=provider,
+        retriever=None,
+        proposal_manager=_MemoryProposalManager(),
+    )
+
+    def _execute(name, arguments):
+        if name == "get_context_health":
+            return json.dumps({"status": "ok"})
+        if name == "get_device_telemetry_snapshot":
+            return json.dumps(
+                {
+                    "hostname": "SW1",
+                    "metrics": [{"timestamp": "2026-05-28T10:00:00+00:00", "cpu_usage": 12, "memory_usage": 44}],
+                    "source_metadata": {
+                        "source": "influxdb",
+                        "scope": "telemetry",
+                        "freshness_class": "live",
+                        "age_seconds": 0,
+                        "confidence": 0.95,
+                    },
+                }
+            )
+        if name == "get_device_details":
+            return json.dumps(
+                {
+                    "hostname": "SW1",
+                    "status": "up",
+                    "neighbors": ["R1"],
+                    "source_metadata": {
+                        "source": "crawler_cache",
+                        "scope": "live_topology",
+                        "freshness_class": "live",
+                        "age_seconds": 8,
+                        "confidence": 0.9,
+                    },
+                }
+            )
+        if name == "find_path":
+            return json.dumps(
+                {
+                    "source": arguments.get("source"),
+                    "destination": arguments.get("destination"),
+                    "path": [arguments.get("source"), arguments.get("destination")],
+                    "hops": 1,
+                    "source_metadata": {
+                        "source": "crawler_cache",
+                        "scope": "live_topology",
+                        "freshness_class": "live",
+                        "age_seconds": 8,
+                        "confidence": 0.9,
+                    },
+                }
+            )
+        if name == "get_device_running_config":
+            return json.dumps(
+                {
+                    "hostname": "SW1",
+                    "snapshot_time": "2026-05-27T10:00:00+00:00",
+                    "config_length": 1234,
+                    "source_metadata": {
+                        "source": "config_snapshots",
+                        "scope": "config_history",
+                        "freshness_class": "stale",
+                        "age_seconds": 86400,
+                        "confidence": 0.75,
+                    },
+                }
+            )
+        if name == "get_device_syslog_events":
+            return json.dumps(
+                {
+                    "device": "SW1",
+                    "events": [
+                        {
+                            "created_at": "2026-05-28T10:01:00+00:00",
+                            "severity": "high",
+                            "mnemonic": "UPDOWN",
+                            "message": "Interface Ethernet0/1 changed state to up",
+                            "device_hostname": "SW1",
+                        }
+                    ],
+                    "source_metadata": {
+                        "source": "device_syslog_events",
+                        "scope": "security_alerts",
+                        "freshness_class": "stale",
+                        "age_seconds": 3600,
+                        "confidence": 0.85,
+                    },
+                }
+            )
+        raise AssertionError(f"unexpected tool {name}({arguments})")
+
+    agent._tools.execute = _execute  # type: ignore[method-assign]
+
+    telemetry = asyncio.run(_collect_stream_events(agent, "Show CPU telemetry for SW1"))[-1]
+    neighbors = asyncio.run(_collect_stream_events(agent, "Who are the neighbors of SW1"))[-1]
+    path = asyncio.run(_collect_stream_events(agent, "Find the path between R1 and SW1"))[-1]
+    config = asyncio.run(_collect_stream_events(agent, "Show the latest config backup for SW1"))[-1]
+    syslog = asyncio.run(_collect_stream_events(agent, "Give me the latest syslog for SW1"))[-1]
+
+    assert "Latest telemetry for **SW1**" in telemetry["content"]
+    assert telemetry["grounding_meta"]["display_source_age"][0]["source"] == "influxdb"
+    assert "Live neighbors for **SW1**" in neighbors["content"]
+    assert neighbors["grounding_meta"]["display_source_age"][0]["source"] == "crawler_cache"
+    assert "Path from **R1** to **SW1**" in path["content"]
+    assert path["grounding_meta"]["display_source_age"][0]["source"] == "crawler_cache"
+    assert "Latest config snapshot for **SW1**" in config["content"]
+    assert "Note: Some required evidence is stale or missing" not in config["content"]
+    assert config["grounding_meta"]["display_source_age"][0]["source"] == "config_snapshots"
+    assert "Latest syslog for **SW1**" in syslog["content"]
+    assert "Note: Some required evidence is stale or missing" not in syslog["content"]
+    assert syslog["grounding_meta"]["display_source_age"][0]["source"] == "device_syslog_events"
+    assert provider.calls == []
+
+
 def test_knowledge_query_returns_documentation_authority_profile():
     import asyncio
 
@@ -440,8 +672,14 @@ def test_knowledge_query_returns_documentation_authority_profile():
     assert "documentation" in authority["observed_families"]
 
 
-def test_live_query_telemetry_failure_self_corrects_with_fallback():
+def test_live_query_telemetry_failure_self_corrects_with_fallback(monkeypatch):
     import asyncio
+
+    class _FakeIncidentStore:
+        def list_all(self, status=None, limit=10):
+            return []
+
+    monkeypatch.setattr("incidents.store.IncidentStore", _FakeIncidentStore)
 
     provider = _FakeProvider()
     agent = NetworkAgent(
@@ -456,6 +694,10 @@ def test_live_query_telemetry_failure_self_corrects_with_fallback():
     def _execute_with_telemetry_failure(name, arguments):
         if name == "get_device_telemetry_snapshot":
             return json.dumps({"error": "telemetry backend timeout"})
+        if name == "get_last_sync_status":
+            return json.dumps({"status": "ok"})
+        if name == "trigger_context_refresh":
+            return json.dumps({"status": "accepted", "job_id": "refresh-test"})
         return original_execute(name, arguments)
 
     agent._tools.execute = _execute_with_telemetry_failure  # type: ignore[method-assign]
@@ -516,7 +758,7 @@ def test_planned_vs_live_answer_surfaces_management_ip_conflict():
 
     conflicts = response["grounding_meta"]["conflicts"]
     assert any(conflict["code"] == "management_ip_mismatch" for conflict in conflicts)
-    assert "Conflicts:" in response["content"]
+    assert "authoritative sources disagree" in response["content"]
 
 
 def test_troubleshooting_answer_surfaces_drift_and_missing_config_conflicts(monkeypatch):
@@ -714,3 +956,57 @@ def test_inventory_query_returns_stale_answer_without_refresh_reroute():
     assert response["grounding_meta"]["answer_release"]["decision"] == "allow_limited"
     assert response["grounding_meta"]["answer_release"]["refresh_attempted"] is False
     assert "Note: Some required evidence is stale or missing." in response["content"]
+
+
+def test_syslog_lookup_returns_direct_log_without_topology_refresh_gate():
+    import asyncio
+
+    provider = _FakeProvider()
+    agent = NetworkAgent(
+        db_manager=_AgentFakeDb(),
+        provider=provider,
+        retriever=None,
+        proposal_manager=_MemoryProposalManager(),
+    )
+    original_execute = agent._tools.execute
+
+    def _execute_with_syslog(name, arguments):
+        if name == "get_device_syslog_events":
+            return json.dumps(
+                {
+                    "device": arguments.get("device"),
+                    "events": [
+                        {
+                            "id": 1,
+                            "source_ip": "10.0.0.2",
+                            "device_hostname": "SW1",
+                            "severity": "high",
+                            "facility": "LOCAL7",
+                            "mnemonic": "UPDOWN",
+                            "message": "Interface Ethernet0/1, changed state to up",
+                            "raw_message": "%LINK-3-UPDOWN: Interface Ethernet0/1, changed state to up",
+                            "created_at": "2026-03-09T10:16:00+00:00",
+                        }
+                    ],
+                    "total": 1,
+                    "source_metadata": {
+                        "source": "device_syslog_events",
+                        "scope": "security_alerts",
+                        "freshness_class": "live",
+                        "confidence": 0.9,
+                        "age_seconds": 5,
+                    },
+                }
+            )
+        return original_execute(name, arguments)
+
+    agent._tools.execute = _execute_with_syslog  # type: ignore[method-assign]
+
+    response = asyncio.run(_run_chat_with_agent(agent, "Give me the latest syslog for SW1"))
+
+    assert provider.calls == []
+    assert "Latest syslog for **SW1**" in response["content"]
+    assert "UPDOWN" in response["content"]
+    assert response["grounding_meta"]["answer_release"]["decision"] == "allow"
+    assert response["grounding_meta"]["display_source_used"] == ["device_syslog_events"]
+    assert response["grounding_meta"]["display_conflicts"] == []

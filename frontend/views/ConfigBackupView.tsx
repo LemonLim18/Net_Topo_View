@@ -190,7 +190,7 @@ const ConfigBackupView: React.FC = () => {
 
               {/* Actions (Right - Inline smaller buttons) */}
               {selectedDevice && (
-                <div className="flex flex-wrap items-center gap-3 w-full md:w-auto shrink-0 md:mb-[1px]">
+                <div className="flex flex-wrap items-center gap-3 w-full md:w-auto shrink-0 md:mb-px">
                   <button
                     type="button"
                     className="btn btn-primary btn-sm gap-2 shadow-sm font-medium"

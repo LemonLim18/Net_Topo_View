@@ -38,7 +38,7 @@ from llm.controller_scope import (
     build_controller_scope_contract,
     render_controller_scope_prompt,
 )
-from llm.context_contract import classify_query
+from llm.context_contract import classify_query, extract_user_request_text
 
 from llm.milestone_baseline import build_milestone2_baseline, render_milestone2_baseline_prompt
 from llm.provider import LLMProvider, LLMMessage, LLMResponse, ToolCall
@@ -156,7 +156,7 @@ class NetworkAgent:
     _SOURCE_LABELS: Dict[str, str] = {
         "inventory_only": "device inventory (NetBox)",
         "planned_vs_live": "planned vs. live state comparison",
-        "live_only": "live network topology",
+        "live_only": "live telemetry or topology",
         "troubleshooting": "incidents, telemetry & live state",
         "change_planning": "intent pipeline & configuration engine",
         "architecture_planning": "controller architecture guidance",
@@ -166,27 +166,30 @@ class NetworkAgent:
     }
 
     def _prepare_turn_state(self, user_message: str) -> Dict[str, Any]:
-        routing_decision = classify_query(user_message)
+        user_request = extract_user_request_text(user_message)
+        routing_decision = classify_query(user_request)
         logger.info(
             "Query classified as %s (%s)",
             routing_decision.query_class,
             routing_decision.reasoning,
         )
 
-        candidate_hostnames = self._extract_candidate_hostnames(user_message)
+        candidate_hostnames = self._extract_candidate_hostnames(user_request)
         route_plan = self._build_route_plan(
-            user_message,
+            user_request,
             routing_decision.query_class,
             candidate_hostnames,
         )
         route_plan["query_class"] = routing_decision.query_class
         route_plan["required_domains"] = list(routing_decision.required_domains)
         route_plan["hostnames"] = list(candidate_hostnames)
+        route_plan["user_request"] = user_request
 
         return {
             "routing_decision": routing_decision,
             "candidate_hostnames": candidate_hostnames,
             "route_plan": route_plan,
+            "user_request": user_request,
         }
 
     async def _prefetch_route_tools(
@@ -288,7 +291,16 @@ class NetworkAgent:
             # Build a concise, natural-language answer
             parts = []
             q_lower = user_message.lower()
-            if "management ip" in q_lower or "mgmt ip" in q_lower or "ip address" in q_lower:
+            wants_profile = all(term in q_lower for term in ("vendor", "model", "role"))
+            if wants_profile:
+                parts.extend(
+                    [
+                        f"Vendor: **{vendor or 'unknown'}**",
+                        f"Model: **{model or 'unknown'}**",
+                        f"Role: **{role or 'unknown'}**",
+                    ]
+                )
+            elif "management ip" in q_lower or "mgmt ip" in q_lower or "ip address" in q_lower:
                 if mgmt_ip:
                     parts.append(f"The management IP address for **{hostname}** is **{mgmt_ip}**.")
                 else:
@@ -398,6 +410,370 @@ class NetworkAgent:
 
         return None
 
+    def _try_syslog_fast_path(
+        self,
+        user_message: str,
+        query_class: str,
+        tool_results: Dict[str, Any],
+        tool_args: Dict[str, Dict],
+        route_plan: Optional[Dict[str, Any]] = None,
+        append_user: bool = True,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Compose direct answers for syslog lookup turns.
+
+        Syslog-only questions should return the log evidence itself instead of
+        waiting on unrelated topology, telemetry, config, or drift context.
+        """
+        answer_policy = (route_plan or {}).get("answer_policy") or {}
+        if answer_policy.get("name") != "syslog_lookup":
+            return None
+
+        raw = tool_results.get("get_device_syslog_events")
+        tool_name = "get_device_syslog_events"
+        if raw is None:
+            raw = tool_results.get("get_security_events")
+            tool_name = "get_security_events"
+        if raw is None:
+            return None
+
+        try:
+            payload = json.loads(raw) if isinstance(raw, str) else raw
+        except (json.JSONDecodeError, TypeError):
+            return None
+        if not isinstance(payload, dict) or payload.get("error"):
+            return None
+
+        events = payload.get("events") if isinstance(payload.get("events"), list) else []
+        q_lower = user_message.lower()
+        latest_only = any(token in q_lower for token in ("latest", "last", "only one", "one latest", "most recent"))
+        selected_events = events[:1] if latest_only else events[:5]
+        requested_device = str(payload.get("device") or "").strip()
+        target_label = requested_device or "the network"
+
+        if not selected_events:
+            content = f"No syslog events were found for **{target_label}** in the current syslog store."
+        elif len(selected_events) == 1:
+            event = selected_events[0]
+            timestamp = event.get("created_at") or event.get("time") or "unknown"
+            severity = event.get("severity") or "unknown"
+            event_name = event.get("mnemonic") or event.get("type") or event.get("facility") or "syslog"
+            message = event.get("message") or event.get("description") or event.get("raw_message") or ""
+            host = event.get("device_hostname") or event.get("source_host") or event.get("source_ip") or target_label
+            content = (
+                f"Latest syslog for **{host}**:\n\n"
+                f"- **Time:** {timestamp}\n"
+                f"- **Severity:** {severity}\n"
+                f"- **Event:** {event_name}\n"
+                f"- **Message:** {message or 'No message text available.'}"
+            )
+        else:
+            lines = [f"Recent syslog events for **{target_label}**:"]
+            for event in selected_events:
+                timestamp = event.get("created_at") or event.get("time") or "unknown"
+                severity = event.get("severity") or "unknown"
+                event_name = event.get("mnemonic") or event.get("type") or event.get("facility") or "syslog"
+                message = event.get("message") or event.get("description") or event.get("raw_message") or ""
+                lines.append(f"- **{timestamp}** [{severity}] **{event_name}**: {message or 'No message text available.'}")
+            content = "\n".join(lines)
+
+        scoped_tool_results = {tool_name: raw}
+        scoped_tool_args = {tool_name: tool_args.get(tool_name, {})}
+        grounding_meta = self._build_grounding_meta(
+            query_class=query_class,
+            tool_results=scoped_tool_results,
+            tool_args=scoped_tool_args,
+            answer_policy=answer_policy,
+        )
+        answer_release = build_answer_release_state(
+            query_class=query_class,
+            grounding=grounding_meta,
+            tool_args=scoped_tool_args,
+            allowed_tools=(route_plan or {}).get("allowed_tools") or [],
+        )
+        grounding_meta["answer_release"] = answer_release
+        if (
+            str(answer_release.get("decision") or "") == "allow_limited"
+            and answer_policy.get("name") not in {"syslog_lookup"}
+        ):
+            content = self._render_limited_answer(content, answer_release)
+
+        final_content = self._render_grounded_content(content, grounding_meta)
+        if append_user:
+            self._history.append(LLMMessage(role="user", content=user_message))
+        self._history.append(LLMMessage(role="assistant", content=final_content))
+
+        return {
+            "role": "assistant",
+            "content": final_content,
+            "type": "text",
+            "grounding_meta": grounding_meta,
+        }
+
+    def _source_response(
+        self,
+        *,
+        user_message: str,
+        query_class: str,
+        content: str,
+        tool_name: str,
+        raw: Any,
+        tool_args: Dict[str, Dict],
+        route_plan: Optional[Dict[str, Any]],
+        append_user: bool,
+    ) -> Dict[str, Any]:
+        scoped_tool_results = {tool_name: raw}
+        scoped_tool_args = {tool_name: tool_args.get(tool_name, {})}
+        grounding_meta = self._build_grounding_meta(
+            query_class=query_class,
+            tool_results=scoped_tool_results,
+            tool_args=scoped_tool_args,
+            answer_policy=(route_plan or {}).get("answer_policy"),
+        )
+        answer_release = build_answer_release_state(
+            query_class=query_class,
+            grounding=grounding_meta,
+            tool_args=scoped_tool_args,
+            allowed_tools=(route_plan or {}).get("allowed_tools") or [],
+        )
+        grounding_meta["answer_release"] = answer_release
+        direct_lookup_policies = {
+            "telemetry_lookup",
+            "config_snapshot_lookup",
+            "live_state_lookup",
+        }
+        if (
+            str(answer_release.get("decision") or "") == "allow_limited"
+            and ((route_plan or {}).get("answer_policy") or {}).get("name") not in direct_lookup_policies
+        ):
+            content = self._render_limited_answer(content, answer_release)
+
+        final_content = self._render_grounded_content(content, grounding_meta)
+        if append_user:
+            self._history.append(LLMMessage(role="user", content=user_message))
+        self._history.append(LLMMessage(role="assistant", content=final_content))
+        return {
+            "role": "assistant",
+            "content": final_content,
+            "type": "text",
+            "grounding_meta": grounding_meta,
+        }
+
+    @staticmethod
+    def _decode_tool_payload(raw: Any) -> Optional[Dict[str, Any]]:
+        try:
+            payload = json.loads(raw) if isinstance(raw, str) else raw
+        except (json.JSONDecodeError, TypeError):
+            return None
+        return payload if isinstance(payload, dict) else None
+
+    @staticmethod
+    def _compact_metric_line(metric: Dict[str, Any]) -> str:
+        skip = {"hostname", "device", "device_name", "management_ip", "ip", "tags"}
+        timestamp = metric.get("time") or metric.get("timestamp") or metric.get("_time") or metric.get("last_polled")
+        values = []
+        for key, value in metric.items():
+            if key in skip or value in (None, "", [], {}):
+                continue
+            if isinstance(value, (dict, list)):
+                continue
+            values.append(f"{key}={value}")
+            if len(values) >= 5:
+                break
+        return f"{timestamp or 'latest'}: " + (", ".join(values) if values else json.dumps(metric, ensure_ascii=False)[:240])
+
+    @staticmethod
+    def _metric_has_error_signal(device: Dict[str, Any]) -> bool:
+        for key, value in device.items():
+            lowered = str(key).lower()
+            if "error" not in lowered and "discard" not in lowered:
+                continue
+            if isinstance(value, (int, float)) and value > 0:
+                return True
+            if isinstance(value, str):
+                try:
+                    if float(value) > 0:
+                        return True
+                except ValueError:
+                    continue
+        return False
+
+    def _try_source_specific_fast_path(
+        self,
+        user_message: str,
+        query_class: str,
+        tool_results: Dict[str, Any],
+        tool_args: Dict[str, Dict],
+        route_plan: Optional[Dict[str, Any]] = None,
+        append_user: bool = True,
+    ) -> Optional[Dict[str, Any]]:
+        answer_policy = (route_plan or {}).get("answer_policy") or {}
+        policy_name = answer_policy.get("name")
+        q_lower = user_message.lower()
+
+        if policy_name == "telemetry_lookup":
+            if "get_network_telemetry_summary" in tool_results:
+                tool_name = "get_network_telemetry_summary"
+                raw = tool_results[tool_name]
+                payload = self._decode_tool_payload(raw)
+                if not payload or payload.get("error"):
+                    return None
+                devices = [item for item in payload.get("devices") or [] if isinstance(item, dict)]
+                if "error" in q_lower or "discard" in q_lower:
+                    flagged = [device for device in devices if self._metric_has_error_signal(device)]
+                    if flagged:
+                        lines = ["Devices with current error/discard signals:"]
+                        for device in flagged[:10]:
+                            name = device.get("hostname") or device.get("device") or device.get("name") or "unknown"
+                            lines.append(f"- **{name}**: {self._compact_metric_line(device)}")
+                        content = "\n".join(lines)
+                    else:
+                        content = "No devices with non-zero error or discard counters were found in the latest telemetry summary."
+                elif devices:
+                    lines = [f"Network-wide telemetry summary: **{len(devices)}** device(s) reported recent metrics."]
+                    for device in devices[:8]:
+                        name = device.get("hostname") or device.get("device") or device.get("name") or "unknown"
+                        lines.append(f"- **{name}**: {self._compact_metric_line(device)}")
+                    content = "\n".join(lines)
+                else:
+                    content = "No network-wide telemetry samples are currently available."
+                return self._source_response(
+                    user_message=user_message,
+                    query_class=query_class,
+                    content=content,
+                    tool_name=tool_name,
+                    raw=raw,
+                    tool_args=tool_args,
+                    route_plan=route_plan,
+                    append_user=append_user,
+                )
+
+            if "get_device_telemetry_snapshot" in tool_results:
+                tool_name = "get_device_telemetry_snapshot"
+                raw = tool_results[tool_name]
+                payload = self._decode_tool_payload(raw)
+                if not payload or payload.get("error"):
+                    return None
+                hostname = payload.get("hostname") or tool_args.get(tool_name, {}).get("hostname") or "device"
+                metrics = [item for item in payload.get("metrics") or [] if isinstance(item, dict)]
+                if metrics:
+                    metric_lines = "\n".join(f"- {self._compact_metric_line(metric)}" for metric in metrics[:5])
+                    content = f"Latest telemetry for **{hostname}**:\n{metric_lines}"
+                else:
+                    content = f"No telemetry samples were found for **{hostname}** in the current telemetry store."
+                return self._source_response(
+                    user_message=user_message,
+                    query_class=query_class,
+                    content=content,
+                    tool_name=tool_name,
+                    raw=raw,
+                    tool_args=tool_args,
+                    route_plan=route_plan,
+                    append_user=append_user,
+                )
+
+        if policy_name == "config_snapshot_lookup":
+            tool_name = "get_device_running_config" if "get_device_running_config" in tool_results else "get_config_snapshot_summary"
+            raw = tool_results.get(tool_name)
+            payload = self._decode_tool_payload(raw)
+            if not payload or payload.get("error"):
+                return None
+            if tool_name == "get_device_running_config":
+                hostname = payload.get("hostname") or tool_args.get(tool_name, {}).get("hostname") or "device"
+                snapshot_time = payload.get("snapshot_time") or "unknown"
+                config_length = payload.get("config_length")
+                note = payload.get("note")
+                if note:
+                    content = f"**{hostname}** does not currently have a stored config snapshot. {note}"
+                else:
+                    content = f"Latest config snapshot for **{hostname}** was captured at **{snapshot_time}**."
+                    if isinstance(config_length, int):
+                        content += f"\nConfig size: **{config_length}** characters."
+            else:
+                snapshots = [item for item in payload.get("snapshots") or [] if isinstance(item, dict)]
+                if snapshots:
+                    lines = [f"Latest config snapshot summary: **{len(snapshots)}** device(s)."]
+                    for snapshot in snapshots[:10]:
+                        name = snapshot.get("hostname") or "unknown"
+                        captured_at = snapshot.get("captured_at") or "unknown"
+                        length = snapshot.get("config_length")
+                        suffix = f", {length} chars" if isinstance(length, int) else ""
+                        lines.append(f"- **{name}**: {captured_at}{suffix}")
+                    content = "\n".join(lines)
+                else:
+                    content = "No config snapshots are currently stored."
+            return self._source_response(
+                user_message=user_message,
+                query_class=query_class,
+                content=content,
+                tool_name=tool_name,
+                raw=raw,
+                tool_args=tool_args,
+                route_plan=route_plan,
+                append_user=append_user,
+            )
+
+        if policy_name == "live_state_lookup":
+            if "find_path" in tool_results:
+                tool_name = "find_path"
+                raw = tool_results[tool_name]
+                payload = self._decode_tool_payload(raw)
+                if not payload:
+                    return None
+                if payload.get("path"):
+                    content = (
+                        f"Path from **{payload.get('source')}** to **{payload.get('destination')}**: "
+                        f"{' -> '.join(str(item) for item in payload.get('path') or [])} "
+                        f"(**{payload.get('hops', 0)}** hop(s))."
+                    )
+                else:
+                    content = str(payload.get("error") or "No path was found in the current live topology.")
+                return self._source_response(
+                    user_message=user_message,
+                    query_class=query_class,
+                    content=content,
+                    tool_name=tool_name,
+                    raw=raw,
+                    tool_args=tool_args,
+                    route_plan=route_plan,
+                    append_user=append_user,
+                )
+            if "get_device_details" in tool_results:
+                tool_name = "get_device_details"
+                raw = tool_results[tool_name]
+                payload = self._decode_tool_payload(raw)
+                if not payload or payload.get("error"):
+                    return None
+                hostname = payload.get("hostname") or tool_args.get(tool_name, {}).get("hostname") or "device"
+                status = payload.get("status") or "unknown"
+                neighbors = payload.get("neighbors") if isinstance(payload.get("neighbors"), list) else []
+                if "neighbor" in q_lower:
+                    content = (
+                        f"Live neighbors for **{hostname}**: "
+                        + (", ".join(f"**{item}**" for item in neighbors) if neighbors else "none found.")
+                    )
+                elif "impact" in q_lower or "fail" in q_lower:
+                    content = (
+                        f"If **{hostname}** fails, directly adjacent devices in the current live topology are: "
+                        + (", ".join(f"**{item}**" for item in neighbors) if neighbors else "none found.")
+                    )
+                else:
+                    content = f"**{hostname}** is currently **{status}** in the live topology."
+                    if neighbors:
+                        content += "\nNeighbors: " + ", ".join(f"**{item}**" for item in neighbors)
+                return self._source_response(
+                    user_message=user_message,
+                    query_class=query_class,
+                    content=content,
+                    tool_name=tool_name,
+                    raw=raw,
+                    tool_args=tool_args,
+                    route_plan=route_plan,
+                    append_user=append_user,
+                )
+
+        return None
+
     async def chat_streaming(self, user_message: str, grounding: bool = True) -> AsyncIterator[Dict[str, Any]]:
         """
         Streaming version of chat() that yields progress events.
@@ -425,6 +801,7 @@ class NetworkAgent:
         turn_state = self._prepare_turn_state(user_message)
         routing_decision = turn_state["routing_decision"]
         route_plan = turn_state["route_plan"]
+        user_request = turn_state.get("user_request", user_message)
 
         source_label = self._SOURCE_LABELS.get(routing_decision.query_class, "network context")
 
@@ -435,7 +812,7 @@ class NetworkAgent:
 
         # Phase 2b: Try fast path (skip LLM for simple inventory lookups)
         fast_result = self._try_inventory_fast_path(
-            user_message,
+            user_request,
             routing_decision.query_class,
             tool_results,
             tool_args,
@@ -444,6 +821,30 @@ class NetworkAgent:
         if fast_result is not None:
             fast_result["elapsed_ms"] = _elapsed()
             yield {"event": "complete", **fast_result}
+            return
+
+        syslog_fast_result = self._try_syslog_fast_path(
+            user_request,
+            routing_decision.query_class,
+            tool_results,
+            tool_args,
+            route_plan,
+        )
+        if syslog_fast_result is not None:
+            syslog_fast_result["elapsed_ms"] = _elapsed()
+            yield {"event": "complete", **syslog_fast_result}
+            return
+
+        source_fast_result = self._try_source_specific_fast_path(
+            user_request,
+            routing_decision.query_class,
+            tool_results,
+            tool_args,
+            route_plan,
+        )
+        if source_fast_result is not None:
+            source_fast_result["elapsed_ms"] = _elapsed()
+            yield {"event": "complete", **source_fast_result}
             return
 
         # Phase 3: LLM reasoning
@@ -491,9 +892,10 @@ class NetworkAgent:
         routing_decision = turn_state["routing_decision"]
         candidate_hostnames = turn_state["candidate_hostnames"]
         route_plan = turn_state["route_plan"]
+        user_request = turn_state.get("user_request", user_message)
 
         per_turn_system = self._render_system_prompt(
-            user_message=user_message,
+            user_message=user_request,
             routing_decision=routing_decision,
             device_hostnames=candidate_hostnames,
             controller_policy=route_plan.get("controller_policy"),
@@ -503,7 +905,7 @@ class NetworkAgent:
         if routing_decision.use_knowledge:
             if self._retrieval is None and self._retriever is not None:
                 knowledge_ctx = self._context.build_knowledge_context(
-                    user_message, self._retriever
+                    user_request, self._retriever
                 )
         if knowledge_ctx:
             per_turn_system = per_turn_system + "\n\n" + knowledge_ctx
@@ -519,7 +921,29 @@ class NetworkAgent:
         tool_args: Dict[str, Dict] = dict(prefetched_tool_args or {})
         self_correction_state = build_self_correction_state()
 
-        await self._apply_prefetched_route_tools(messages, route_plan, tool_results, tool_args, self_correction_state, user_message)
+        await self._apply_prefetched_route_tools(messages, route_plan, tool_results, tool_args, self_correction_state, user_request)
+
+        syslog_fast_result = self._try_syslog_fast_path(
+            user_request,
+            routing_decision.query_class,
+            tool_results,
+            tool_args,
+            route_plan,
+            append_user=False,
+        )
+        if syslog_fast_result is not None:
+            return syslog_fast_result
+
+        source_fast_result = self._try_source_specific_fast_path(
+            user_request,
+            routing_decision.query_class,
+            tool_results,
+            tool_args,
+            route_plan,
+            append_user=False,
+        )
+        if source_fast_result is not None:
+            return source_fast_result
 
         # Get tool declarations
         tool_declarations = self._tools.get_declarations(route_plan["allowed_tools"])
@@ -537,17 +961,17 @@ class NetworkAgent:
                 if self._enforce_controller_policy(
                     messages,
                     route_plan,
-                    user_message,
+                    user_request,
                     tool_results,
                     tool_args,
                     self_correction_state,
                 ):
                     continue
-                if self._enforce_required_tool_policy(messages, route_plan, tool_results, tool_args, self_correction_state, user_message):
+                if self._enforce_required_tool_policy(messages, route_plan, tool_results, tool_args, self_correction_state, user_request):
                     continue
                 flow_state, flow_action = self._evaluate_controller_flow(
                     messages,
-                    user_message,
+                    user_request,
                     route_plan,
                     tool_results,
                     tool_args,
@@ -567,7 +991,7 @@ class NetworkAgent:
                 )
                 answer_release, answer_release_action = self._evaluate_answer_release(
                     messages,
-                    user_message,
+                    user_request,
                     route_plan,
                     grounding_meta,
                     tool_results,
@@ -654,7 +1078,7 @@ class NetworkAgent:
                     messages,
                     tool_results,
                     tool_args,
-                    user_message,
+                    user_request,
                     self_correction_state,
                 )
 
@@ -669,8 +1093,8 @@ class NetworkAgent:
                 ))
 
         # If we exhausted all rounds, ensure controller and answer policies have run, then return whatever we have
-        self._enforce_controller_policy(messages, route_plan, user_message, tool_results, tool_args, self_correction_state)
-        self._enforce_required_tool_policy(messages, route_plan, tool_results, tool_args, self_correction_state, user_message)
+        self._enforce_controller_policy(messages, route_plan, user_request, tool_results, tool_args, self_correction_state)
+        self._enforce_required_tool_policy(messages, route_plan, tool_results, tool_args, self_correction_state, user_request)
         final_response = await self._provider.generate(
             messages=messages,
             tools=None,  # Force text response
@@ -678,7 +1102,7 @@ class NetworkAgent:
         )
 
         flow_state = self._build_controller_flow_state(
-            user_message,
+            user_request,
             route_plan,
             tool_results,
             tool_args,
@@ -1490,6 +1914,7 @@ class NetworkAgent:
                 "get_topology_summary",
                 "get_device_details",
                 "get_device_telemetry_snapshot",
+                "get_network_telemetry_summary",
                 "list_all_devices",
                 "find_path",
                 "get_recent_incidents",
@@ -1500,13 +1925,15 @@ class NetworkAgent:
                 "Do not substitute planned inventory for live facts."
             )
             prefetch_tools.append(ToolCall(name="get_context_health", arguments={}))
-            if hostnames:
-                prefetch_tools.extend(
-                    [
-                        ToolCall(name="get_device_details", arguments={"hostname": hostnames[0]}),
-                        ToolCall(name="get_device_telemetry_snapshot", arguments={"hostname": hostnames[0], "limit": 10}),
-                    ]
-                )
+            if answer_policy.get("name") == "telemetry_lookup":
+                if hostnames:
+                    prefetch_tools.append(ToolCall(name="get_device_telemetry_snapshot", arguments={"hostname": hostnames[0], "limit": 10}))
+                else:
+                    prefetch_tools.append(ToolCall(name="get_network_telemetry_summary", arguments={"limit": 20}))
+            elif "path between" in user_message.lower() and len(hostnames) >= 2:
+                prefetch_tools.append(ToolCall(name="find_path", arguments={"source": hostnames[0], "destination": hostnames[1]}))
+            elif hostnames:
+                prefetch_tools.append(ToolCall(name="get_device_details", arguments={"hostname": hostnames[0]}))
             else:
                 prefetch_tools.append(ToolCall(name="get_topology_summary", arguments={}))
 
@@ -1517,8 +1944,9 @@ class NetworkAgent:
                 "get_device_telemetry_snapshot",
                 "get_device_running_config",
                 "get_recent_incidents",
-                "get_recent_drift_events",
                 "get_security_events",
+                "get_device_syslog_events",
+                "get_recent_drift_events",
                 "run_security_audit",
                 "analyze_security_alert",
                 "find_path",
@@ -1531,6 +1959,25 @@ class NetworkAgent:
             )
             prefetch_tools.append(ToolCall(name="get_context_health", arguments={}))
             prefetch_tools.append(ToolCall(name="get_recent_incidents", arguments={"limit": 5}))
+            if answer_policy.get("name") == "syslog_lookup":
+                instruction = (
+                    "For this syslog lookup, answer directly from device syslog or security-event evidence. "
+                    "Do not require topology, telemetry, config, drift, or incident context unless the user asks for diagnosis."
+                )
+                prefetch_tools = []
+                if hostnames:
+                    prefetch_tools.append(
+                        ToolCall(name="get_device_syslog_events", arguments={"device": hostnames[0], "limit": 20})
+                    )
+                else:
+                    prefetch_tools.append(ToolCall(name="get_security_events", arguments={"limit": 10}))
+                return {
+                    "prefetch_tools": prefetch_tools,
+                    "allowed_tools": allowed_tools,
+                    "instruction": instruction,
+                    "answer_policy": answer_policy,
+                    "controller_policy": build_controller_policy(query_class, allowed_tools),
+                }
             if hostnames:
                 if digital_twin_enabled:
                     allowed_tools.append("get_digital_twin")
@@ -1541,6 +1988,7 @@ class NetworkAgent:
                         ToolCall(name="get_device_details", arguments={"hostname": hostnames[0]}),
                         ToolCall(name="get_device_telemetry_snapshot", arguments={"hostname": hostnames[0], "limit": 10}),
                         ToolCall(name="get_device_running_config", arguments={"hostname": hostnames[0]}),
+                        ToolCall(name="get_device_syslog_events", arguments={"device": hostnames[0], "limit": 20}),
                         ToolCall(name="get_recent_drift_events", arguments={"hostname": hostnames[0], "limit": 5}),
                     ]
                 )
@@ -1598,6 +2046,7 @@ class NetworkAgent:
             allowed_tools = generic_read_tools + [
                 "get_inventory_device",
                 "get_device_running_config",
+                "get_config_snapshot_summary",
                 "get_recent_drift_events",
                 "get_recent_incidents",
                 "run_security_audit",
@@ -1607,15 +2056,21 @@ class NetworkAgent:
                 "For this compliance query, prefer config evidence, drift state, audit findings, and knowledge documents."
             )
             prefetch_tools.append(ToolCall(name="get_context_health", arguments={}))
-            prefetch_tools.append(ToolCall(name="get_knowledge_base_status", arguments={"limit": 5}))
-            if hostnames:
-                prefetch_tools.extend(
-                    [
-                        ToolCall(name="get_inventory_device", arguments={"hostname": hostnames[0]}),
-                        ToolCall(name="get_device_running_config", arguments={"hostname": hostnames[0]}),
-                        ToolCall(name="get_recent_drift_events", arguments={"hostname": hostnames[0], "limit": 5}),
-                    ]
-                )
+            if answer_policy.get("name") == "config_snapshot_lookup":
+                if hostnames:
+                    prefetch_tools.append(ToolCall(name="get_device_running_config", arguments={"hostname": hostnames[0]}))
+                else:
+                    prefetch_tools.append(ToolCall(name="get_config_snapshot_summary", arguments={"limit": 20}))
+            else:
+                prefetch_tools.append(ToolCall(name="get_knowledge_base_status", arguments={"limit": 5}))
+                if hostnames:
+                    prefetch_tools.extend(
+                        [
+                            ToolCall(name="get_inventory_device", arguments={"hostname": hostnames[0]}),
+                            ToolCall(name="get_device_running_config", arguments={"hostname": hostnames[0]}),
+                            ToolCall(name="get_recent_drift_events", arguments={"hostname": hostnames[0], "limit": 5}),
+                        ]
+                    )
 
         elif query_class == "knowledge_heavy":
             allowed_tools = generic_read_tools + [
@@ -2411,46 +2866,8 @@ class NetworkAgent:
         return grounding_meta
 
     def _render_grounded_content(self, content: str, grounding_meta: Dict[str, Any]) -> str:
-        """Append a brief, human-readable freshness note only when data is stale or missing,
-        and append the structured grounding summary for verification.
-        """
-        freshness = grounding_meta.get("freshness_class", "unknown")
-        source_age = grounding_meta.get("source_age") or []
-
-        # Only add a note for stale / missing evidence
-        note = ""
-        if freshness == "stale" and source_age:
-            # Find human-readable age
-            max_age = max(
-                (entry.get("age_seconds") or 0 for entry in source_age),
-                default=0,
-            )
-            if max_age > 0:
-                if max_age < 3600:
-                    age_text = f"{max_age // 60} minutes"
-                elif max_age < 86400:
-                    age_text = f"{max_age // 3600} hours"
-                else:
-                    age_text = f"{max_age // 86400} days"
-                note = f"ℹ️ *Based on inventory data last refreshed {age_text} ago.*"
-        elif freshness == "missing":
-            note = "⚠️ *Some required evidence was unavailable. Results may be incomplete.*"
-
-        conflict_summary = format_conflict_summary(grounding_meta)
-        if conflict_summary:
-            note = (note + "\n\n" + conflict_summary) if note else conflict_summary
-
-        summary = format_grounding_summary(grounding_meta)
-
-        parts = []
-        if content:
-            parts.append(content)
-        if note:
-            parts.append(note)
-        if summary:
-            parts.append(summary)
-
-        return "\n\n".join(parts)
+        """Return the answer body only; grounding details are exposed separately in metadata."""
+        return content or ""
 
     def _clean_search_query(self, query: str) -> str:
         """Strip natural language filler from a query to optimize direct search hits."""
@@ -2526,3 +2943,4 @@ class NetworkAgent:
     def available_tools(self) -> List[str]:
         """Return the list of available tool names."""
         return self._tools.list_tools()
+

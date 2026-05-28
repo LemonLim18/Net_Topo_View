@@ -968,6 +968,14 @@ def intent_requests_all_interfaces(text: Optional[str]) -> bool:
         "admin-up all interfaces",
         "administratively down all",
         "admin down all interfaces",
+        "the interfaces",
+        "the ports",
+        "its interfaces",
+        "all of its interfaces",
+        "all of the interfaces",
+        "turn off the interfaces",
+        "turn on the interfaces",
+        "shut down the interfaces",
         "bring down all interfaces",
     )
     return any(p in t for p in phrases)

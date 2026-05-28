@@ -51,7 +51,7 @@ const OperationEditor: React.FC<Props> = ({ operation }) => {
       {operation.dependencies && operation.dependencies.length > 0 ? (
         <div className="flex flex-col gap-3">
           {operation.dependencies.map((d, i) => (
-            <div key={i} className="p-3 bg-warning/10 text-warning-content text-sm rounded-lg border border-warning/30 flex justify-between items-center">
+            <div key={i} className="p-3 bg-warning/10 text-warning text-sm rounded-lg border border-warning/30 flex justify-between items-center font-medium">
                <div className="flex flex-col">
                   <span className="font-bold flex gap-1 items-center"><Link className="w-3 h-3"/> IF: {d.condition}</span>
                   <span className="opacity-80 ml-4 border-l pl-2 mt-1">THEN: {d.action}</span>

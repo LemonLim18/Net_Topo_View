@@ -3223,7 +3223,7 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
                   ) : (msg as any).interfaceDisambiguation && interfaceDisambiguation?.messageId === msg.id ? (
                     <div className="space-y-3">
                       {interfaceDisambiguation.validationNotice ? (
-                        <div className="rounded-md border border-warning/60 bg-warning/10 px-3 py-2 text-sm text-warning-content whitespace-pre-line">
+                        <div className="rounded-md border border-warning/60 bg-warning/10 px-3 py-2 text-sm text-warning whitespace-pre-line font-medium">
                           {interfaceDisambiguation.validationNotice}
                         </div>
                       ) : null}
@@ -3538,7 +3538,7 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
                                     }
                                     if (visibleInterfaceDevices.length === 0) {
                                       return (
-                                        <div className="rounded border border-warning/60 bg-warning/10 px-3 py-2 text-xs text-warning-content">
+                                        <div className="rounded border border-warning/60 bg-warning/10 px-3 py-2 text-xs text-warning font-medium">
                                           No planned interfaces found for the selected target device(s). Refresh planned topology/local DB and try again.
                                         </div>
                                       );
@@ -3976,7 +3976,7 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
                                                     ))}
                                                   </select>
                                                   {!deviceObj || ifaceOptions.length === 0 ? (
-                                                    <div className="text-[11px] text-warning-content/80 mt-1">
+                                                    <div className="text-[11px] text-warning/90 mt-1 font-medium">
                                                       No planned interfaces found for this device. Refresh planned topology/local DB and try again.
                                                     </div>
                                                   ) : null}

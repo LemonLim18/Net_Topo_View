@@ -20,6 +20,7 @@ from llm.context_contract import (
     CONTEXT_DOMAIN_KNOWLEDGE,
     CONTEXT_DOMAIN_LIVE_TOPOLOGY,
     CONTEXT_DOMAIN_PLANNED_TOPOLOGY,
+    CONTEXT_DOMAIN_SECURITY,
     CONTEXT_DOMAIN_TELEMETRY,
     build_source_matrix,
     compute_freshness,
@@ -1161,6 +1162,103 @@ def get_device_telemetry_snapshot(hostname: str, limit: int = 20) -> str:
         )
 
 
+def get_network_telemetry_summary(limit: int = 20) -> str:
+    """
+    Get a network-wide telemetry summary for the latest monitored devices.
+    """
+    try:
+        from monitor.api import _get_device_metrics_summary_sync
+
+        limit = max(1, min(int(limit), 200))
+        payload = _get_device_metrics_summary_sync(limit=limit)
+        devices = list(payload.get("devices") or [])
+        latest_polled = max((str(device.get("last_polled") or "") for device in devices if device.get("last_polled")), default=None)
+        return json.dumps(
+            {
+                "devices": devices,
+                "total": len(devices),
+                "source": payload.get("source") or "influxdb",
+                "source_metadata": _telemetry_source_metadata(str(payload.get("source") or "influxdb"), latest_polled, confidence=0.85 if devices else 0.0),
+            },
+            ensure_ascii=False,
+        )
+    except Exception as e:
+        return json.dumps(
+            {
+                "devices": [],
+                "total": 0,
+                "source_metadata": missing_freshness(
+                    CONTEXT_DOMAIN_TELEMETRY,
+                    "influxdb",
+                    "device_metrics",
+                ).to_dict(),
+                "error": str(e),
+            },
+            ensure_ascii=False,
+        )
+
+
+def get_config_snapshot_summary(limit: int = 20) -> str:
+    """
+    Get the latest configuration snapshot timestamp per device.
+    """
+    if not _db_manager:
+        return json.dumps({"error": "Database not available"})
+
+    try:
+        limit = max(1, min(int(limit), 200))
+        with _db_manager._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT d.hostname, d.management_ip, d.vendor, d.model,
+                       cs.captured_at, LENGTH(COALESCE(cs.config_text, '')) AS config_length
+                FROM config_snapshots cs
+                JOIN devices d ON d.id = cs.device_id
+                JOIN (
+                    SELECT device_id, MAX(captured_at) AS latest_captured_at
+                    FROM config_snapshots
+                    GROUP BY device_id
+                ) latest
+                  ON latest.device_id = cs.device_id
+                 AND latest.latest_captured_at = cs.captured_at
+                ORDER BY cs.captured_at DESC, d.hostname ASC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+
+        snapshots = [
+            {
+                "hostname": r["hostname"],
+                "management_ip": r["management_ip"],
+                "vendor": r["vendor"] or "",
+                "model": r["model"] or "",
+                "captured_at": r["captured_at"],
+                "config_length": int(r["config_length"] or 0),
+            }
+            for r in rows
+        ]
+        latest_captured = max((item.get("captured_at") for item in snapshots if item.get("captured_at")), default=None)
+        return json.dumps(
+            {
+                "snapshots": snapshots,
+                "total": len(snapshots),
+                "source_metadata": _config_source_metadata("config_snapshots", latest_captured, confidence=0.9 if snapshots else 0.0),
+            },
+            ensure_ascii=False,
+        )
+    except Exception as e:
+        return json.dumps(
+            {
+                "snapshots": [],
+                "total": 0,
+                "source_metadata": _config_source_metadata("config_snapshots", None, confidence=0.0),
+                "error": str(e),
+            },
+            ensure_ascii=False,
+        )
+
+
 def get_knowledge_base_status(limit: int = 10) -> str:
     """
     Get knowledge base document summaries and freshness metadata.
@@ -1804,6 +1902,102 @@ def get_security_events(limit: int = 10) -> str:
         })
     except Exception as e:
         return json.dumps({"error": str(e)})
+
+
+def get_device_syslog_events(device: str, limit: int = 20, source_ip: str = "", q: str = "") -> str:
+    """
+    Get recent raw syslog events for a device or source IP.
+
+    This is the device-scoped syslog tool for System AI. It returns the
+    direct syslog feed that can be used without forcing telemetry.
+    """
+    if not _db_manager:
+        return json.dumps({"error": "Database not available"})
+
+    try:
+        limit = max(1, min(int(limit), 1000))
+    except Exception:
+        limit = 20
+
+    device_filter = str(device or "").strip()
+    source_ip_filter = str(source_ip or "").strip()
+    query_filter = str(q or "").strip()
+
+    where: List[str] = []
+    params: List[Any] = []
+    if device_filter:
+        where.append("(d.hostname = ? OR d.management_ip = ? OR e.source_ip = ?)")
+        params.extend([device_filter, device_filter, device_filter])
+    if source_ip_filter:
+        where.append("e.source_ip = ?")
+        params.append(source_ip_filter)
+    if query_filter:
+        needle = f"%{query_filter}%"
+        where.append("(e.raw_message LIKE ? OR e.message LIKE ? OR d.hostname LIKE ?)")
+        params.extend([needle, needle, needle])
+
+    query = (
+        "SELECT e.id, e.source_ip, e.source_host, e.device_id, d.hostname AS device_hostname, "
+        "e.severity, e.facility, e.mnemonic, e.message, e.raw_message, e.created_at "
+        "FROM device_syslog_events e "
+        "LEFT JOIN devices d ON e.device_id = d.id "
+    )
+    if where:
+        query += "WHERE " + " AND ".join(where) + " "
+    query += "ORDER BY e.created_at DESC LIMIT ?"
+    params.append(limit)
+
+    try:
+        with _db_manager._connect() as conn:
+            rows = conn.execute(query, tuple(params)).fetchall()
+
+        events = [
+            {
+                "id": int(r["id"]),
+                "source_ip": str(r["source_ip"] or ""),
+                "source_host": r["source_host"],
+                "device_id": r["device_id"],
+                "device_hostname": r["device_hostname"],
+                "severity": r["severity"],
+                "facility": r["facility"],
+                "mnemonic": r["mnemonic"],
+                "message": r["message"],
+                "raw_message": str(r["raw_message"] or ""),
+                "created_at": r["created_at"],
+            }
+            for r in rows
+        ]
+        latest_created = max((event.get("created_at") for event in events if event.get("created_at")), default=None)
+        return json.dumps(
+            {
+                "device": device_filter or None,
+                "events": events,
+                "total": len(events),
+                "source_metadata": _incident_source_metadata(
+                    "device_syslog_events",
+                    latest_created,
+                    confidence=0.9 if events else 0.0,
+                    scope="security_alerts",
+                ),
+            },
+            ensure_ascii=False,
+        )
+    except Exception as e:
+        return json.dumps(
+            {
+                "device": device_filter or None,
+                "events": [],
+                "total": 0,
+                "source_metadata": _incident_source_metadata(
+                    "device_syslog_events",
+                    None,
+                    confidence=0.0,
+                    scope="security_alerts",
+                ),
+                "error": str(e),
+            },
+            ensure_ascii=False,
+        )
 
 
 def analyze_security_alert(event_id: int) -> str:
@@ -2490,6 +2684,13 @@ def register_all_tools(registry) -> None:
         },
     )
     registry.register(
+        get_network_telemetry_summary,
+        description="Get a network-wide telemetry summary from the latest monitored devices.",
+        param_descriptions={
+            "limit": "Maximum number of devices to include in the telemetry summary",
+        },
+    )
+    registry.register(
         get_knowledge_base_status,
         description="Get knowledge base document summaries and freshness metadata.",
         param_descriptions={"limit": "Maximum number of documents to return"},
@@ -2558,6 +2759,16 @@ def register_all_tools(registry) -> None:
         get_security_events,
         description="Get recent security events/threats (brute force, port scans, Suricata alerts, rogue devices).",
         param_descriptions={"limit": "Max events to return (default 10)"},
+    )
+    registry.register(
+        get_device_syslog_events,
+        description="Get raw syslog events for a specific device, hostname, or management IP.",
+        param_descriptions={
+            "device": "Device hostname or management IP",
+            "limit": "Maximum number of syslog events to return",
+            "source_ip": "Optional source IP filter",
+            "q": "Optional text filter against the syslog message",
+        },
     )
     registry.register(
         analyze_security_alert,
@@ -2649,6 +2860,13 @@ def register_all_tools(registry) -> None:
         ),
         param_descriptions={
             "hostname": "Device hostname to look up",
+        },
+    )
+    registry.register(
+        get_config_snapshot_summary,
+        description="Get the latest configuration snapshot summary across devices.",
+        param_descriptions={
+            "limit": "Maximum number of devices to include",
         },
     )
     registry.register(

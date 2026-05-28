@@ -511,7 +511,7 @@ const KnowledgeBase: React.FC = () => {
               ) : filteredDocs.length === 0 ? (
                 <div className="text-center py-12"><BookOpen className="h-10 w-10 mx-auto text-base-content/20 mb-3" /><p className="text-base-content/50 text-sm">No documents match the current filter.</p></div>
               ) : (
-                <div className="overflow-x-auto max-h-[460px]">
+                <div className="overflow-x-auto max-h-[300px]">
                   <table className="table table-sm table-zebra">
                     <thead>
                       <tr>

@@ -487,14 +487,164 @@ def _is_architecture_planning_query(query: str) -> bool:
     return has_planning_shape and has_meta_system_scope
 
 
+def _is_syslog_focus_query(query: str) -> bool:
+    """
+    Detect requests that are primarily asking for syslog or security-event evidence.
+
+    These should not be forced into the telemetry-heavy troubleshooting path when
+    the user only asked for log evidence.
+    """
+    syslog_focus_terms = (
+        "syslog",
+        "syslogs",
+        "security event",
+        "security events",
+        "security log",
+        "security logs",
+        "log entry",
+        "log entries",
+    )
+    telemetry_terms = (
+        "cpu",
+        "memory",
+        "mem",
+        "telemetry",
+        "metric",
+        "metrics",
+        "traffic",
+        "utilization",
+        "usage",
+        "packet loss",
+        "latency",
+        "counters",
+        "statistics",
+        "stats",
+    )
+    normalized = query.lower()
+    return _contains_any(normalized, syslog_focus_terms) and not _contains_any(normalized, telemetry_terms)
+
+
+def _is_telemetry_focus_query(query: str) -> bool:
+    telemetry_terms = (
+        "cpu",
+        "memory",
+        "mem",
+        "telemetry",
+        "metric",
+        "metrics",
+        "traffic",
+        "utilization",
+        "usage",
+        "load",
+        "counters",
+        "statistics",
+        "stats",
+        "packet loss",
+        "latency",
+        "errors",
+        "discards",
+    )
+    exclude_terms = (
+        "syslog",
+        "syslogs",
+        "security event",
+        "security events",
+        "config backup",
+        "config history",
+        "configuration backup",
+        "snapshot",
+        "topology",
+        "neighbors",
+        "path between",
+    )
+    normalized = query.lower()
+    return _contains_any(normalized, telemetry_terms) and not _contains_any(normalized, exclude_terms)
+
+
+def _is_config_focus_query(query: str) -> bool:
+    config_terms = (
+        "config backup",
+        "config backups",
+        "configuration backup",
+        "configuration backups",
+        "config history",
+        "running config",
+        "running configuration",
+        "config snapshot",
+        "config snapshots",
+        "backup config",
+        "latest config",
+        "last config",
+        "previous config",
+        "show config",
+    )
+    exclude_terms = (
+        "change plan",
+        "plan change",
+        "deploy",
+        "rollout",
+        "rollback",
+        "apply config",
+    )
+    normalized = query.lower()
+    return _contains_any(normalized, config_terms) and not _contains_any(normalized, exclude_terms)
+
+
+def _is_topology_focus_query(query: str) -> bool:
+    topology_terms = (
+        "live topology",
+        "current topology",
+        "latest crawl",
+        "last crawl",
+        "neighbors",
+        "neighbor",
+        "topology",
+        "find path",
+        "path between",
+        "downstream",
+        "upstream",
+        "connected to",
+        "what links",
+        "blast radius",
+        "impacted if",
+    )
+    exclude_terms = (
+        "syslog",
+        "telemetry",
+        "metrics",
+        "config backup",
+        "config history",
+    )
+    normalized = query.lower()
+    return _contains_any(normalized, topology_terms) and not _contains_any(normalized, exclude_terms)
+
+
 def _contains_word(query: str, words: tuple[str, ...]) -> bool:
     import re
     pattern = r"\b(" + "|".join(re.escape(w) for w in words) + r")\b"
     return bool(re.search(pattern, query.lower()))
 
 
+def extract_user_request_text(query: str) -> str:
+    """
+    Strip overlay-side mode and quote wrappers before routing.
+
+    The System AI overlay sends instructions such as "Operating mode: Expert"
+    around the real request. Routing must classify the user's request, not the
+    wrapper text, otherwise inventory lookups get polluted by telemetry/config
+    words from the operating-mode instructions.
+    """
+    raw = str(query or "").strip()
+    marker = "User request:"
+    marker_index = raw.lower().rfind(marker.lower())
+    if marker_index >= 0:
+        return raw[marker_index + len(marker):].strip()
+    return raw
+
+
 def classify_query(query: str) -> QueryRoutingDecision:
-    q_lower = query.lower()
+    user_query = extract_user_request_text(query)
+    q_lower = user_query.lower()
 
     # Define operational keywords/triggers for whole-word matching
     TELEMETRY_KEYS = ("cpu", "mem", "memory", "telemetry", "metric", "metrics", "traffic", "utilization", "usage", "load", "counters", "statistics", "stats")
@@ -514,6 +664,17 @@ def classify_query(query: str) -> QueryRoutingDecision:
     # instead of knowledge base, even if it starts with "what is".
     hostnames = _extract_hostname_hints(q_lower)
     if hostnames:
+        if _is_syslog_focus_query(q_lower):
+             return QueryRoutingDecision(
+                query_class=QueryClass.TROUBLESHOOTING.value,
+                use_live_context=True,
+                use_knowledge=False,
+                include_inventory=True,
+                include_telemetry=False,
+                include_sdn=False,
+                required_domains=(CONTEXT_DOMAIN_SECURITY,),
+                reasoning=f"query mentions specific device(s) {', '.join(hostnames)} with syslog-only intent",
+             )
         # Check if they also have trend or incident intents
         has_trend_intent = any(t in q_lower for t in ("trend", "over time", "history", "historical", "last ", "past ", "baseline", "over the"))
         has_incident_intent = any(t in q_lower for t in ("incident", "anomaly", "alert", "breach", "spike", "latency", "packet loss", "errors", "root cause", "troubleshoot", "diagnose", "debug", "why", "down", "unreachable", "flap"))
@@ -541,7 +702,40 @@ def classify_query(query: str) -> QueryRoutingDecision:
                 required_domains=(CONTEXT_DOMAIN_INVENTORY, CONTEXT_DOMAIN_LIVE_TOPOLOGY, CONTEXT_DOMAIN_KNOWLEDGE),
                 reasoning=f"query mentions specific device(s) {', '.join(hostnames)} with change planning intent",
              )
-        elif _contains_any(q_lower, COMPLIANCE_TRIGGERS):
+        elif _is_config_focus_query(q_lower):
+             return QueryRoutingDecision(
+                query_class=QueryClass.COMPLIANCE.value,
+                use_live_context=True,
+                use_knowledge=False,
+                include_inventory=True,
+                include_telemetry=False,
+                include_sdn=False,
+                required_domains=(CONTEXT_DOMAIN_CONFIG,),
+                reasoning=f"query mentions specific device(s) {', '.join(hostnames)} with config snapshot intent",
+             )
+        elif _is_topology_focus_query(q_lower):
+             return QueryRoutingDecision(
+                query_class=QueryClass.LIVE_ONLY.value,
+                use_live_context=True,
+                use_knowledge=False,
+                include_inventory=True,
+                include_telemetry=False,
+                include_sdn=True,
+                required_domains=(CONTEXT_DOMAIN_LIVE_TOPOLOGY,),
+                reasoning=f"query mentions specific device(s) {', '.join(hostnames)} with live-topology intent",
+             )
+        elif _is_telemetry_focus_query(q_lower):
+             return QueryRoutingDecision(
+                query_class=QueryClass.LIVE_ONLY.value,
+                use_live_context=True,
+                use_knowledge=False,
+                include_inventory=True,
+                include_telemetry=True,
+                include_sdn=False,
+                required_domains=(CONTEXT_DOMAIN_TELEMETRY,),
+                reasoning=f"query mentions specific device(s) {', '.join(hostnames)} with telemetry-only intent",
+             )
+        elif _contains_word(q_lower, COMPLIANCE_TRIGGERS):
              return QueryRoutingDecision(
                 query_class=QueryClass.COMPLIANCE.value,
                 use_live_context=True,
@@ -609,7 +803,67 @@ def classify_query(query: str) -> QueryRoutingDecision:
             reasoning="planned-versus-live comparison requires both source-of-truth and live-state domains",
         )
 
+    if _is_architecture_planning_query(q_lower):
+        return QueryRoutingDecision(
+            query_class=QueryClass.ARCHITECTURE_PLANNING.value,
+            use_live_context=False,
+            use_knowledge=False,
+            include_inventory=False,
+            include_telemetry=False,
+            include_sdn=False,
+            required_domains=(),
+            reasoning="architecture and platform-design prompts should avoid live operational fetches unless the user explicitly asks for them",
+        )
+
+    if _is_topology_focus_query(q_lower):
+        return QueryRoutingDecision(
+            query_class=QueryClass.LIVE_ONLY.value,
+            use_live_context=True,
+            use_knowledge=False,
+            include_inventory=True,
+            include_telemetry=False,
+            include_sdn=True,
+            required_domains=(CONTEXT_DOMAIN_LIVE_TOPOLOGY,),
+            reasoning="query requests topology evidence, so live topology should be primary without forcing telemetry",
+        )
+
+    if _is_telemetry_focus_query(q_lower):
+        return QueryRoutingDecision(
+            query_class=QueryClass.LIVE_ONLY.value,
+            use_live_context=True,
+            use_knowledge=False,
+            include_inventory=True,
+            include_telemetry=True,
+            include_sdn=False,
+            required_domains=(CONTEXT_DOMAIN_TELEMETRY,),
+            reasoning="query requests telemetry evidence, so metrics should be primary without forcing topology details",
+        )
+
+    if _is_config_focus_query(q_lower):
+        return QueryRoutingDecision(
+            query_class=QueryClass.COMPLIANCE.value,
+            use_live_context=True,
+            use_knowledge=False,
+            include_inventory=True,
+            include_telemetry=False,
+            include_sdn=False,
+            required_domains=(CONTEXT_DOMAIN_CONFIG,),
+            reasoning="query requests configuration snapshot or backup evidence, so config history should be primary",
+        )
+
     # If it is a telemetry or log event query, route to Live/Troubleshooting state instead of inventory-only
+    if _is_syslog_focus_query(q_lower):
+        return QueryRoutingDecision(
+            query_class=QueryClass.TROUBLESHOOTING.value,
+            use_live_context=True,
+            use_knowledge=False,
+            include_inventory=True,
+            include_telemetry=False,
+            include_sdn=False,
+            required_domains=(CONTEXT_DOMAIN_SECURITY,),
+            reasoning="syslog-focused query should prioritize security events without forcing telemetry or topology",
+        )
+
     if _contains_word(q_lower, TELEMETRY_KEYS) or _contains_word(q_lower, SECURITY_KEYS):
         return QueryRoutingDecision(
             query_class=QueryClass.TROUBLESHOOTING.value,
@@ -658,7 +912,7 @@ def classify_query(query: str) -> QueryRoutingDecision:
             reasoning="instructional how-to and SOP-style questions should prefer curated knowledge before operational state",
         )
 
-    if _contains_any(q_lower, COMPLIANCE_TRIGGERS):
+    if _contains_word(q_lower, COMPLIANCE_TRIGGERS):
         return QueryRoutingDecision(
             query_class=QueryClass.COMPLIANCE.value,
             use_live_context=True,
@@ -785,7 +1039,7 @@ def _extract_hostname_hints(query: str) -> Set[str]:
         "netbox", "management", "serial", "number", "site", "rack", "mac", "address", "addresses",
         "vlan", "vlans", "ospf", "bgp", "route", "routes", "acl", "acls", "qos", "policing", "dscp",
         "controller", "runtime", "vector", "store", "embedding", "retrieval", "prompt", "inference",
-        "llm", "rag", "mcp", "agentic", "ollama", "gemini"
+        "llm", "rag", "mcp", "agentic", "ollama", "gemini", "network-wide", "networkwide"
     }
 
     filtered_hints = set()

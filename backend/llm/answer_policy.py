@@ -8,6 +8,18 @@ from llm.provider import ToolCall
 
 _MANAGEMENT_IP_PATTERN = re.compile(r"\b(management\s+ip|mgmt\s+ip|primary\s+ip)\b", re.IGNORECASE)
 _LIVE_COMPARE_HINT_PATTERN = re.compile(r"\b(live|actual|currently|right now|compare|match|mismatch)\b", re.IGNORECASE)
+_SYSLOG_FOCUS_PATTERN = re.compile(
+    r"\b(syslog|syslogs|security event|security events|security log|security logs|log entry|log entries)\b",
+    re.IGNORECASE,
+)
+_TELEMETRY_HINT_PATTERN = re.compile(
+    r"\b(cpu|memory|mem|telemetry|metric|metrics|traffic|utilization|usage|packet loss|latency|counters|statistics|stats)\b",
+    re.IGNORECASE,
+)
+_CONFIG_FOCUS_PATTERN = re.compile(
+    r"\b(config backup|config backups|configuration backup|configuration backups|config history|running config|running configuration|config snapshot|config snapshots|latest config|last config|previous config|show config)\b",
+    re.IGNORECASE,
+)
 
 
 def build_answer_policy(
@@ -47,14 +59,37 @@ def build_answer_policy(
         return policy
 
     if query_class == "live_only":
-        policy["name"] = "live_state_lookup"
-        policy["reason"] = "Live-state answers must check live topology evidence before answering."
-        policy["required_tool_calls"] = [
-            ToolCall(name="get_device_details", arguments={"hostname": primary_hostname}) if primary_hostname else ToolCall(name="get_topology_summary", arguments={}),
-        ]
+        if _TELEMETRY_HINT_PATTERN.search(normalized_message):
+            policy["name"] = "telemetry_lookup"
+            policy["reason"] = "Telemetry-focused answers must check current metrics evidence before answering."
+            policy["required_tool_calls"] = [
+                ToolCall(name="get_device_telemetry_snapshot", arguments={"hostname": primary_hostname, "limit": 10})
+                if primary_hostname
+                else ToolCall(name="get_network_telemetry_summary", arguments={"limit": 20}),
+            ]
+        else:
+            policy["name"] = "live_state_lookup"
+            policy["reason"] = "Live-state answers must check live topology evidence before answering."
+            policy["required_tool_calls"] = [
+                ToolCall(name="get_device_details", arguments={"hostname": primary_hostname}) if primary_hostname else ToolCall(name="get_topology_summary", arguments={}),
+            ]
+        return policy
+
+    if query_class == "troubleshooting" and _SYSLOG_FOCUS_PATTERN.search(normalized_message) and not _TELEMETRY_HINT_PATTERN.search(normalized_message):
+        policy["name"] = "syslog_lookup"
+        policy["reason"] = "Syslog-focused questions should be grounded in security events and device log evidence without forcing telemetry."
+        if primary_hostname:
+            policy["required_tool_calls"] = [
+                ToolCall(name="get_device_syslog_events", arguments={"device": primary_hostname, "limit": 20}),
+            ]
+        else:
+            policy["required_tool_calls"] = [
+                ToolCall(name="get_security_events", arguments={"limit": 10}),
+            ]
         return policy
 
     if query_class == "troubleshooting" and primary_hostname:
+
         policy["name"] = "troubleshooting_multisource"
         policy["reason"] = "Troubleshooting answers must gather inventory, live, telemetry, and config evidence before answering."
         policy["required_tool_calls"] = [
@@ -79,11 +114,30 @@ def build_answer_policy(
         return policy
 
     if query_class == "compliance" and primary_hostname:
+        if _CONFIG_FOCUS_PATTERN.search(normalized_message):
+            policy["name"] = "config_snapshot_lookup"
+            policy["reason"] = "Config backup questions should be grounded in configuration snapshot evidence before answering."
+            policy["required_tool_calls"] = [
+                ToolCall(name="get_device_running_config", arguments={"hostname": primary_hostname}),
+            ]
+            policy["recommended_tool_calls"] = [
+                ToolCall(name="get_recent_drift_events", arguments={"hostname": primary_hostname, "limit": 5}),
+            ]
+            return policy
+
         policy["name"] = "compliance_grounding"
         policy["reason"] = "Compliance answers must check current config and drift evidence before answering."
         policy["required_tool_calls"] = [
             ToolCall(name="get_device_running_config", arguments={"hostname": primary_hostname}),
             ToolCall(name="get_recent_drift_events", arguments={"hostname": primary_hostname, "limit": 5}),
+        ]
+        return policy
+
+    if query_class == "compliance" and _CONFIG_FOCUS_PATTERN.search(normalized_message):
+        policy["name"] = "config_snapshot_lookup"
+        policy["reason"] = "Config backup questions should be grounded in configuration snapshot evidence before answering."
+        policy["required_tool_calls"] = [
+            ToolCall(name="get_config_snapshot_summary", arguments={"limit": 20}),
         ]
         return policy
 

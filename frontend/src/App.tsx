@@ -10,7 +10,6 @@ import AnsibleStudioView from '../views/AnsibleStudioView';
 import TemplateStudioView from '../views/TemplateStudioView';
 import ConfigBackupView from '../views/ConfigBackupView';
 import ComplianceHubView from '../views/ComplianceHubView';
-import ComplianceDeviceDetail from '../views/ComplianceDeviceDetail';
 
 import OnboardingView from '../views/OnboardingView';
 import IntentHistoryView from '../views/IntentHistoryView';
@@ -86,10 +85,6 @@ const App: React.FC = () => {
   });
   const [overlayOpen, setOverlayOpen] = useState(false);
 
-  const { tasks } = useTaskProgress();
-  const hasProcessingTask = tasks.some((t) => t.status === 'processing');
-  const hasUncheckedDoneTask = tasks.some((t) => (t.status === 'done' || t.status === 'failed') && !t.checked);
-  
   // Custom Draggable Button State
   const [buttonPos, setButtonPos] = useState({ x: window.innerWidth - 80, y: window.innerHeight - 80 });
   const [isDraggingButton, setIsDraggingButton] = useState(false);
@@ -328,7 +323,7 @@ const App: React.FC = () => {
                       title="Open Inventory AI & Network Ops Center"
                     >
                       <Bot className="w-6 h-6" />
-                      {hasProcessingTask ? (
+                      {/* {hasProcessingTask ? (
                         <span className="absolute -top-1 -right-1 flex h-3 w-3">
                           <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-yellow-400 opacity-75"></span>
                           <span className="relative inline-flex rounded-full h-3 w-3 bg-yellow-500 border border-base-100"></span>
@@ -337,7 +332,7 @@ const App: React.FC = () => {
                         <span className="absolute -top-1 -right-1 flex h-3 w-3">
                           <span className="relative inline-flex rounded-full h-3 w-3 bg-success border border-base-100"></span>
                         </span>
-                      ) : null}
+                      ) : null} */}
                     </button>
                   </div>
                 </>

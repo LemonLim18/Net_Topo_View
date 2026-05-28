@@ -11,6 +11,7 @@ from llm.context_contract import (
     CONTEXT_DOMAIN_KNOWLEDGE,
     CONTEXT_DOMAIN_LIVE_TOPOLOGY,
     CONTEXT_DOMAIN_PLANNED_TOPOLOGY,
+    CONTEXT_DOMAIN_SECURITY,
     CONTEXT_DOMAIN_TELEMETRY,
 )
 from llm.provider import ToolCall
@@ -80,10 +81,16 @@ def _has_authoritative_evidence(tool_name: str, payload: Dict[str, Any], argumen
         return bool(payload.get("total")) or _non_empty_sequence(payload.get("devices"))
     if tool_name == "get_device_telemetry_snapshot":
         return bool(payload.get("total")) or _non_empty_sequence(payload.get("metrics"))
+    if tool_name == "get_network_telemetry_summary":
+        return isinstance(payload.get("source_metadata"), dict) and isinstance(payload.get("devices"), list)
     if tool_name == "get_device_running_config":
         return bool(payload.get("config") or payload.get("running_config") or payload.get("rendered_config"))
+    if tool_name == "get_config_snapshot_summary":
+        return isinstance(payload.get("source_metadata"), dict) and isinstance(payload.get("snapshots"), list)
     if tool_name == "get_recent_incidents":
         return "incidents" in payload and isinstance(payload.get("incidents"), list)
+    if tool_name in {"get_security_events", "get_device_syslog_events"}:
+        return isinstance(payload.get("source_metadata"), dict) and not payload.get("error") and not payload.get("controller_policy_error")
     if tool_name in {"get_knowledge_base_status", "list_templates"}:
         return bool(payload.get("total")) or _non_empty_sequence(payload.get("documents")) or _non_empty_sequence(payload.get("templates"))
     if tool_name == "get_template_schema":
@@ -174,6 +181,8 @@ def _effective_required_domains(
     declared_domains: Sequence[str],
     hostnames: Sequence[str],
 ) -> List[str]:
+    if query_class in {"live_only", "troubleshooting", "compliance"} and declared_domains:
+        return list(dict.fromkeys(declared_domains))
     if query_class == "inventory_only":
         return [CONTEXT_DOMAIN_INVENTORY]
     if query_class == "planned_vs_live":
@@ -226,10 +235,16 @@ def _domains_for_tool(tool_name: str, arguments: Dict[str, Any]) -> List[str]:
         return [CONTEXT_DOMAIN_INVENTORY, CONTEXT_DOMAIN_LIVE_TOPOLOGY]
     if tool_name == "get_device_telemetry_snapshot":
         return [CONTEXT_DOMAIN_TELEMETRY]
+    if tool_name == "get_network_telemetry_summary":
+        return [CONTEXT_DOMAIN_TELEMETRY]
     if tool_name == "get_device_running_config":
+        return [CONTEXT_DOMAIN_CONFIG]
+    if tool_name == "get_config_snapshot_summary":
         return [CONTEXT_DOMAIN_CONFIG]
     if tool_name == "get_recent_incidents":
         return [CONTEXT_DOMAIN_INCIDENTS]
+    if tool_name in {"get_security_events", "get_device_syslog_events"}:
+        return [CONTEXT_DOMAIN_SECURITY]
     if tool_name in {"get_knowledge_base_status", "list_templates", "get_template_schema"}:
         return [CONTEXT_DOMAIN_KNOWLEDGE]
     return []
@@ -303,12 +318,21 @@ def build_recovery_tool_calls(
         elif domain == CONTEXT_DOMAIN_TELEMETRY:
             if primary_hostname and "get_device_telemetry_snapshot" in allowed:
                 calls.append(ToolCall(name="get_device_telemetry_snapshot", arguments={"hostname": primary_hostname, "limit": 10}))
+            elif "get_network_telemetry_summary" in allowed:
+                calls.append(ToolCall(name="get_network_telemetry_summary", arguments={"limit": 20}))
         elif domain == CONTEXT_DOMAIN_CONFIG:
             if primary_hostname and "get_device_running_config" in allowed:
                 calls.append(ToolCall(name="get_device_running_config", arguments={"hostname": primary_hostname}))
+            elif "get_config_snapshot_summary" in allowed:
+                calls.append(ToolCall(name="get_config_snapshot_summary", arguments={"limit": 20}))
         elif domain == CONTEXT_DOMAIN_INCIDENTS:
             if "get_recent_incidents" in allowed:
                 calls.append(ToolCall(name="get_recent_incidents", arguments={"limit": 5}))
+        elif domain == CONTEXT_DOMAIN_SECURITY:
+            if primary_hostname and "get_device_syslog_events" in allowed:
+                calls.append(ToolCall(name="get_device_syslog_events", arguments={"device": primary_hostname, "limit": 20}))
+            elif "get_security_events" in allowed:
+                calls.append(ToolCall(name="get_security_events", arguments={"limit": 10}))
         elif domain == CONTEXT_DOMAIN_KNOWLEDGE:
             calls.extend(_template_knowledge_calls(allowed_tools, tool_results))
             if not calls and "get_knowledge_base_status" in allowed:

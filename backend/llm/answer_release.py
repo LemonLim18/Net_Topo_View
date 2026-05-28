@@ -27,10 +27,17 @@ _PLANNED_REFRESH_TARGET_BY_SCOPE = {
     "planned_inventory": "inventory",
     "planned_topology": "planned_topology",
 }
+_NO_REFRESH_SCOPES = {
+    "config_history",
+    "device_configs",
+    "drift_state",
+}
 
 
 def _refresh_target_for_scope(scope: str) -> Optional[str]:
     normalized = str(scope or "unknown")
+    if normalized in _NO_REFRESH_SCOPES:
+        return None
     if normalized in _PLANNED_REFRESH_TARGET_BY_SCOPE:
         return _PLANNED_REFRESH_TARGET_BY_SCOPE[normalized]
     if normalized in _LIVE_REFRESH_SCOPES:
@@ -60,7 +67,7 @@ def _refresh_tool_calls(
         return []
 
     targets: List[str] = []
-    for entry in grounding.get("source_age") or []:
+    for entry in grounding.get("display_source_age") or grounding.get("source_age") or []:
         if str(entry.get("freshness_class") or "unknown") not in _REFRESHABLE_FRESHNESS:
             continue
         target = _refresh_target_for_scope(str(entry.get("scope") or "unknown"))
@@ -94,11 +101,12 @@ def build_answer_release_state(
     tool_args = tool_args or {}
     allowed_tools = allowed_tools or []
 
-    freshness_class = str(grounding.get("freshness_class") or "unknown")
-    conflicts = grounding.get("conflicts") or []
+    source_age = grounding.get("display_source_age") or grounding.get("source_age") or []
+    freshness_class = str(grounding.get("display_freshness_class") or grounding.get("freshness_class") or "unknown")
+    conflicts = grounding.get("display_conflicts") or grounding.get("conflicts") or []
     evidence_authority = grounding.get("evidence_authority") or {}
     stale_entries = [
-        entry for entry in grounding.get("source_age") or []
+        entry for entry in source_age
         if str(entry.get("freshness_class") or "unknown") in _REFRESHABLE_FRESHNESS
     ]
     conflict_codes = [str(conflict.get("code") or "unknown") for conflict in conflicts]

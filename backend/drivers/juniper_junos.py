@@ -244,18 +244,24 @@ class JuniperJunosDriver(SSHDriver):
         """
         m = RE_JUNOS_HOSTNAME.search(raw_output)
         if m:
-            return m.group("hostname").rstrip(";")
+            name = m.group("hostname").rstrip(";").strip()
+            if name.lower() != "host-name":
+                return name
 
         m = RE_JUNOS_VER_HOSTNAME.search(raw_output)
         if m:
-            return m.group("hostname")
+            name = m.group("hostname").strip()
+            if name.lower() != "host-name":
+                return name
 
         # Fallback: try to extract from prompt
         for line in reversed(raw_output.splitlines()):
             line = line.strip()
             m2 = RE_JUNOS_PROMPT.search(line)
             if m2:
-                return m2.group("hostname")
+                name = m2.group("hostname").strip()
+                if name.lower() != "host-name":
+                    return name
 
         return "unknown"
 

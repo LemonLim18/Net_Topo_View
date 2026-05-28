@@ -36,6 +36,22 @@ _TARGET_STATE_BY_QUERY_CLASS = {
 
 _DOCUMENTATION_SCOPES = {"knowledge_documents"}
 
+_SCOPE_CATEGORY_LABELS = {
+    "planned_inventory": "planned inventory",
+    "planned_topology": "planned topology",
+    "live_topology": "live operational",
+    "telemetry": "live operational",
+    "device_metrics": "live operational",
+    "config_history": "config backup",
+    "device_configs": "config backup",
+    "incidents": "live operational",
+    "incident_state": "live operational",
+    "security_alerts": "syslog/security",
+    "drift": "drift/compliance",
+    "drift_state": "drift/compliance",
+    "knowledge_documents": "knowledge base",
+}
+
 _PREFERRED_EVIDENCE_FAMILIES = {
     "inventory_only": ["planned"],
     "planned_vs_live": ["planned", "live"],
@@ -91,6 +107,7 @@ def _normalize_source_entry(metadata: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "source": str(metadata.get("source") or "unknown"),
         "scope": str(metadata.get("scope") or "unknown"),
+        "source_category": _SCOPE_CATEGORY_LABELS.get(str(metadata.get("scope") or "unknown"), "other"),
         "captured_at": metadata.get("captured_at"),
         "freshness_class": str(metadata.get("freshness_class") or "unknown"),
         "age_seconds": metadata.get("age_seconds"),
@@ -660,6 +677,70 @@ def _current_state_summary(grounding: Dict[str, Any]) -> str:
     return sentence
 
 
+def _preferred_display_scopes(query_class: str, tool_names: List[str]) -> Optional[set[str]]:
+    tool_set = set(tool_names)
+    if "get_device_syslog_events" in tool_set or "get_security_events" in tool_set:
+        return {"security_alerts"}
+    if "get_network_telemetry_summary" in tool_set or "get_device_telemetry_snapshot" in tool_set:
+        return {"telemetry", "device_metrics"}
+    if "get_config_snapshot_summary" in tool_set or "get_device_running_config" in tool_set:
+        return {"config_history", "device_configs"}
+    if "get_topology_summary" in tool_set or "get_device_details" in tool_set or "find_path" in tool_set:
+        return {"live_topology"}
+    if "compare_planned_vs_live" in tool_set:
+        return {"planned_inventory", "planned_topology", "live_topology"}
+    if query_class == "inventory_only":
+        return {"planned_inventory", "planned_topology"}
+    if query_class == "live_only":
+        return {"live_topology", "telemetry", "device_metrics"}
+    if query_class == "compliance":
+        return {"config_history", "device_configs", "drift_state"}
+    return None
+
+
+def _build_display_evidence(
+    *,
+    query_class: str,
+    tool_names: List[str],
+    source_age: List[Dict[str, Any]],
+    conflicts: List[Dict[str, Any]],
+) -> tuple[List[Dict[str, Any]], List[str], List[Dict[str, Any]]]:
+    preferred_scopes = _preferred_display_scopes(query_class, tool_names)
+    if preferred_scopes:
+        filtered_sources = [entry for entry in source_age if str(entry.get("scope") or "unknown") in preferred_scopes]
+    else:
+        filtered_sources = list(source_age)
+
+    if not filtered_sources:
+        filtered_sources = list(source_age)
+
+    visible_scopes = {str(entry.get("scope") or "unknown") for entry in filtered_sources}
+    filtered_conflicts: List[Dict[str, Any]] = []
+    for conflict in conflicts:
+        code = str(conflict.get("code") or "")
+        if code.startswith("config_") and not ({"config_history", "device_configs"} & visible_scopes):
+            continue
+        if code.startswith("telemetry_") and not ({"telemetry", "device_metrics"} & visible_scopes):
+            continue
+        if code in {"active_incident"} and not ({"incident_state"} & visible_scopes):
+            continue
+        if code.startswith("management_ip_") or code.startswith("device_presence_") or code.startswith("operational_state_"):
+            if "live_topology" not in visible_scopes and "planned_inventory" not in visible_scopes:
+                continue
+        filtered_conflicts.append(conflict)
+
+    filtered_sources_used: List[str] = []
+    seen_sources = set()
+    for entry in filtered_sources:
+        source = str(entry.get("source") or "unknown")
+        if source in seen_sources:
+            continue
+        seen_sources.add(source)
+        filtered_sources_used.append(source)
+
+    return filtered_sources, filtered_sources_used, filtered_conflicts
+
+
 def _target_state_summary(query_class: str) -> str:
     return _TARGET_STATE_BY_QUERY_CLASS.get(
         query_class,
@@ -760,6 +841,13 @@ def build_answer_grounding(
     confidence_score = _confidence_score(source_age, answer_scope, tool_names, errors, conflicts)
     confidence_level = _confidence_level(confidence_score)
     freshness_class = _overall_freshness_class(source_age)
+    display_source_age, display_source_used, display_conflicts = _build_display_evidence(
+        query_class=query_class,
+        tool_names=tool_names,
+        source_age=source_age,
+        conflicts=conflicts,
+    )
+    display_freshness_class = _overall_freshness_class(display_source_age)
 
     if source_age:
         reason = f"Computed from {len(source_age)} authoritative evidence snapshot(s)"
@@ -791,10 +879,13 @@ def build_answer_grounding(
         "version": "phase2_step6_v1",
         "source_used": deduped_sources,
         "source_age": source_age,
+        "display_source_age": display_source_age,
         "freshness_class": freshness_class,
+        "display_freshness_class": display_freshness_class,
         "confidence": confidence,
         "answer_scope": answer_scope,
         "conflicts": conflicts,
+        "display_conflicts": display_conflicts,
         "assumptions": assumptions,
         "evidence_authority": evidence_authority,
     }
@@ -826,8 +917,12 @@ def build_answer_grounding(
         "freshness_class": freshness_class,
         "source_used": deduped_sources,
         "source_age": source_age,
+        "display_source_used": display_source_used,
+        "display_source_age": display_source_age,
+        "display_freshness_class": display_freshness_class,
         "tool_evidence": tool_names,
         "conflicts": conflicts,
+        "display_conflicts": display_conflicts,
         "confidence": confidence,
         "assumptions": assumptions,
         "evidence_authority": evidence_authority,

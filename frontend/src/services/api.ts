@@ -353,7 +353,7 @@ export interface PlaybookQAResponse {
 }
 
 export const llmApi = {
-  chat: (message: string) =>
+  chat: (message: string, options?: { signal?: AbortSignal }) =>
     request<{
       role: string;
       content: string;
@@ -364,14 +364,19 @@ export const llmApi = {
       grounding_meta?: {
         answer_scope?: string;
         freshness_class?: string;
+        display_freshness_class?: string;
         confidence?: number;
         source_used?: string[];
-        source_age?: Array<{ source?: string; age_seconds?: number | null; freshness_class?: string }>;
-        conflicts?: Array<{ code?: string; message?: string }>;
+        display_source_used?: string[];
+        source_age?: Array<{ source?: string; scope?: string; source_category?: string; age_seconds?: number | null; freshness_class?: string }>;
+        display_source_age?: Array<{ source?: string; scope?: string; source_category?: string; age_seconds?: number | null; freshness_class?: string }>;
+        conflicts?: Array<{ code?: string; summary?: string; message?: string; severity?: string }>;
+        display_conflicts?: Array<{ code?: string; summary?: string; message?: string; severity?: string }>;
       };
     }>('/llm/chat', {
       method: 'POST',
       body: JSON.stringify({ message }),
+      signal: options?.signal,
     }),
 
   /**
@@ -462,10 +467,11 @@ export const llmApi = {
     return request<LlmRuntimeState>(`/llm/chat/runtime${suffix}`);
   },
 
-  updateRuntime: (payload: LlmRuntimeUpdatePayload) =>
+  updateRuntime: (payload: LlmRuntimeUpdatePayload, options?: { signal?: AbortSignal }) =>
     request<LlmRuntimeState>('/llm/chat/runtime', {
       method: 'POST',
       body: JSON.stringify(payload),
+      signal: options?.signal,
     }),
   
   clearHistory: () =>

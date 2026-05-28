@@ -2,8 +2,14 @@ import json
 from datetime import datetime, timedelta, timezone
 
 from llm import network_tools
+from llm.answer_policy import build_answer_policy
 from llm.context_contract import (
+    CONTEXT_DOMAIN_CONFIG,
+    CONTEXT_DOMAIN_INVENTORY,
     CONTEXT_DOMAIN_LIVE_TOPOLOGY,
+    CONTEXT_DOMAIN_PLANNED_TOPOLOGY,
+    CONTEXT_DOMAIN_SECURITY,
+    CONTEXT_DOMAIN_TELEMETRY,
     QueryClass,
     compute_freshness,
     classify_query,
@@ -76,6 +82,66 @@ def test_query_taxonomy_routes_inventory_and_comparison_queries():
     assert knowledge_query.query_class == QueryClass.KNOWLEDGE_HEAVY.value
     assert how_to_query.query_class == QueryClass.KNOWLEDGE_HEAVY.value
     assert live_query.query_class == QueryClass.LIVE_ONLY.value
+
+
+def test_query_taxonomy_routes_source_specific_operational_queries():
+    telemetry_query = classify_query("Show CPU telemetry for R1")
+    config_query = classify_query("Show the latest config backup for R1")
+    topology_query = classify_query("Show the current topology neighbors for R1")
+    syslog_query = classify_query("Give me the latest syslog for R1")
+
+    assert telemetry_query.query_class == QueryClass.LIVE_ONLY.value
+    assert telemetry_query.required_domains == (CONTEXT_DOMAIN_TELEMETRY,)
+    assert config_query.query_class == QueryClass.COMPLIANCE.value
+    assert config_query.required_domains == (CONTEXT_DOMAIN_CONFIG,)
+    assert topology_query.query_class == QueryClass.LIVE_ONLY.value
+    assert topology_query.required_domains == (CONTEXT_DOMAIN_LIVE_TOPOLOGY,)
+    assert syslog_query.query_class == QueryClass.TROUBLESHOOTING.value
+    assert syslog_query.required_domains == (CONTEXT_DOMAIN_SECURITY,)
+
+
+def test_query_taxonomy_ignores_overlay_wrapper_and_cisco_is_not_cis_compliance():
+    wrapped_query = classify_query(
+        "Operating mode: Expert. Correlate inventory, live topology, telemetry, config, and syslog.\n"
+        "User request:\n"
+        "What is the vendor, model, and role of Cisco_Acc_1?"
+    )
+    management_ip_query = classify_query("What is the management IP of Cisco_Acc_1?")
+    health_query = classify_query("Is Cisco_Acc_1 unhealthy right now?")
+
+    assert wrapped_query.query_class == QueryClass.INVENTORY_ONLY.value
+    assert wrapped_query.required_domains == (CONTEXT_DOMAIN_INVENTORY, CONTEXT_DOMAIN_PLANNED_TOPOLOGY)
+    assert management_ip_query.query_class == QueryClass.INVENTORY_ONLY.value
+    assert management_ip_query.required_domains == (CONTEXT_DOMAIN_INVENTORY, CONTEXT_DOMAIN_PLANNED_TOPOLOGY)
+    assert health_query.query_class == QueryClass.LIVE_ONLY.value
+    assert CONTEXT_DOMAIN_CONFIG not in health_query.required_domains
+
+
+def test_query_taxonomy_routes_network_wide_telemetry_without_fake_hostname():
+    decision = classify_query("Show me a network-wide telemetry summary")
+
+    assert decision.query_class == QueryClass.LIVE_ONLY.value
+    assert decision.required_domains == (CONTEXT_DOMAIN_TELEMETRY,)
+
+
+def test_answer_policy_uses_source_specific_live_and_config_tools():
+    telemetry_policy = build_answer_policy("Show CPU telemetry for R1", QueryClass.LIVE_ONLY.value, ["R1"])
+    config_policy = build_answer_policy("Show the latest config backup for R1", QueryClass.COMPLIANCE.value, ["R1"])
+    topology_policy = build_answer_policy("Show the current topology neighbors for R1", QueryClass.LIVE_ONLY.value, ["R1"])
+    syslog_policy = build_answer_policy("Give me the latest syslog for R1", QueryClass.TROUBLESHOOTING.value, ["R1"])
+
+    assert telemetry_policy["name"] == "telemetry_lookup"
+    assert telemetry_policy["required_tool_calls"][0].name == "get_device_telemetry_snapshot"
+    assert config_policy["name"] == "config_snapshot_lookup"
+    assert config_policy["required_tool_calls"][0].name == "get_device_running_config"
+    assert topology_policy["name"] == "live_state_lookup"
+    assert topology_policy["required_tool_calls"][0].name == "get_device_details"
+    assert syslog_policy["name"] == "syslog_lookup"
+    assert syslog_policy["required_tool_calls"][0].name == "get_device_syslog_events"
+
+    network_wide_policy = build_answer_policy("Show me a network-wide telemetry summary", QueryClass.LIVE_ONLY.value, [])
+    assert network_wide_policy["name"] == "telemetry_lookup"
+    assert network_wide_policy["required_tool_calls"][0].name == "get_network_telemetry_summary"
 
 
 def test_query_taxonomy_routes_platform_architecture_prompts_away_from_compliance():
