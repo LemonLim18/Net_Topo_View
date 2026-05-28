@@ -19,13 +19,9 @@ import { ragApi, type RagDocument, type RagStatus } from '../src/services/api';
 import { Toast, Confirm } from '../src/utils/swal';
 
 const DOC_TYPES = [
-  { value: 'vendor_doc', label: 'Vendor Documentation' },
-  { value: 'cli_reference', label: 'CLI Reference' },
-  { value: 'sop', label: 'Standard Operating Procedure' },
-  { value: 'troubleshooting', label: 'Troubleshooting Guide' },
-  { value: 'best_practice', label: 'Best Practice' },
-  { value: 'advisory', label: 'Security Advisory' },
   { value: 'ansible_reference', label: 'Ansible Reference' },
+  { value: 'live_ops_state', label: 'Live Operational State' },
+  { value: 'planned_inventory', label: 'Planned Inventory' },
 ];
 
 const VENDORS = [
@@ -53,13 +49,9 @@ const VENDOR_BADGE: Record<string, string> = {
 };
 
 const DOCTYPE_BADGE: Record<string, string> = {
-  vendor_doc: 'badge-warning',
-  cli_reference: 'badge-info',
-  sop: 'badge-success',
-  troubleshooting: 'badge-error',
-  best_practice: 'badge-secondary',
-  advisory: 'badge-warning',
   ansible_reference: 'badge-primary badge-outline',
+  live_ops_state: 'badge-accent',
+  planned_inventory: 'badge-info',
 };
 
 const ACCEPTED_EXTS = '.pdf,.txt,.md,.docx,.html,.htm';
@@ -78,7 +70,7 @@ const KnowledgeBase: React.FC = () => {
   const [bulkDeleting, setBulkDeleting] = useState(false);
 
   const [uploadFile, setUploadFile] = useState<File | null>(null);
-  const [docType, setDocType] = useState('vendor_doc');
+  const [docType, setDocType] = useState('ansible_reference');
   const [vendor, setVendor] = useState('general');
   const [docName, setDocName] = useState('');
   const [uploading, setUploading] = useState(false);
@@ -96,6 +88,132 @@ const KnowledgeBase: React.FC = () => {
   const [previewLoading, setPreviewLoading] = useState(false);
   const [previewDoc, setPreviewDoc] = useState<{ name: string; type: string; vendor: string; text: string } | null>(null);
 
+  // Operational Integration States
+  const [showOpDashboard, setShowOpDashboard] = useState<boolean>(() => {
+    return localStorage.getItem('kb_show_op_dashboard') === 'true';
+  });
+
+  const [redisBypassing, setRedisBypassing] = useState(false);
+  const [redisTesting, setRedisTesting] = useState(false);
+  
+  // Redis configuration overrides
+  const [configModalOpen, setConfigModalOpen] = useState(false);
+  const [configHost, setConfigHost] = useState('');
+  const [configPort, setConfigPort] = useState('');
+  const [configPassword, setConfigPassword] = useState('');
+  const [configSaving, setConfigSaving] = useState(false);
+
+  const [contextPreviewLoading, setContextPreviewLoading] = useState(false);
+  const [contextPreviewText, setContextPreviewText] = useState<string>('');
+  
+  const [stateEmbeddingLoading, setStateEmbeddingLoading] = useState(false);
+  const [stateEmbeddingState, setStateEmbeddingState] = useState<{ available: boolean; last_embedded_at: string | null } | null>(null);
+
+  const fetchStateEmbeddingStatus = useCallback(async () => {
+    try {
+      const res = await ragApi.stateEmbeddingStatus();
+      setStateEmbeddingState(res);
+    } catch (err: any) {
+      console.error('Failed to load embedding status', err);
+    }
+  }, []);
+
+  const handleToggleOpDashboard = (val: boolean) => {
+    setShowOpDashboard(val);
+    localStorage.setItem('kb_show_op_dashboard', val ? 'true' : 'false');
+  };
+
+  const handleToggleRedisBypass = async () => {
+    if (!status) return;
+    const currentBypassed = !!status.redis_bypassed;
+    setRedisBypassing(true);
+    try {
+      await ragApi.setRedisBypass(!currentBypassed);
+      Toast.success(
+        !currentBypassed ? 'Redis Bypassed' : 'Redis Reconnected',
+        !currentBypassed ? 'Forced local in-memory operational cache fallback.' : 'Operational data syncing restored.'
+      );
+      const s = await ragApi.getStatus();
+      setStatus(s);
+    } catch (err: any) {
+      Toast.error('Bypass Toggle Failed', err.message || 'Could not change Redis bypass state.');
+    } finally {
+      setRedisBypassing(false);
+    }
+  };
+
+  const handleOpenConfigModal = () => {
+    setConfigHost(status?.redis_host || '192.168.1.250');
+    setConfigPort(String(status?.redis_port || 6379));
+    setConfigPassword('');
+    setConfigModalOpen(true);
+  };
+
+  const handleSaveRedisConfig = async () => {
+    if (!configHost) {
+      Toast.error('Validation Error', 'Host is required');
+      return;
+    }
+    const portNum = Number(configPort);
+    if (isNaN(portNum) || portNum <= 0 || portNum > 65535) {
+      Toast.error('Validation Error', 'Port must be a valid number between 1 and 65535');
+      return;
+    }
+    
+    setConfigSaving(true);
+    try {
+      await ragApi.updateRedisConfig(configHost, portNum, configPassword || undefined);
+      Toast.success('Saved', 'Redis configuration updated and connection verified.');
+      setConfigModalOpen(false);
+      const s = await ragApi.getStatus();
+      setStatus(s);
+    } catch (err: any) {
+      Toast.error('Configuration Failed', err.message || 'Could not verify Redis connection.');
+    } finally {
+      setConfigSaving(false);
+    }
+  };
+
+  const handleTestConnection = async () => {
+    setRedisTesting(true);
+    try {
+      const res = await ragApi.testRedisActiveConnection();
+      Toast.success('Connected', res.message || 'Successfully connected to Redis cache.');
+      await loadAll();
+    } catch (err: any) {
+      Toast.error('Connection Failed', err.message || 'Could not reach Redis server.');
+      await loadAll();
+    } finally {
+      setRedisTesting(false);
+    }
+  };
+
+  const handleFetchContextPreview = async () => {
+    setContextPreviewLoading(true);
+    try {
+      const res = await ragApi.previewBundle({ include_telemetry: true, include_sdn: true });
+      setContextPreviewText(res.prompt_text);
+      Toast.success('Context Loaded', 'Retrieved latest fused LLM context bundle.');
+    } catch (err: any) {
+      Toast.error('Preview Failed', err.message || 'Could not build context preview.');
+    } finally {
+      setContextPreviewLoading(false);
+    }
+  };
+
+  const handleTriggerStateEmbedding = async () => {
+    setStateEmbeddingLoading(true);
+    try {
+      const res = await ragApi.triggerStateEmbedding();
+      Toast.success('Embedding Triggered', `Re-embedded ${res.total_chunks || 0} chunks successfully.`);
+      await fetchStateEmbeddingStatus();
+    } catch (err: any) {
+      Toast.error('Embedding Failed', err.message || 'Could not trigger re-embedding.');
+    } finally {
+      setStateEmbeddingLoading(false);
+    }
+  };
+
   const loadAll = useCallback(async () => {
     setStatusLoading(true);
     setDocsLoading(true);
@@ -103,13 +221,14 @@ const KnowledgeBase: React.FC = () => {
       const [s, d] = await Promise.all([ragApi.getStatus(), ragApi.listDocuments()]);
       setStatus(s);
       setDocs(d);
+      await fetchStateEmbeddingStatus();
     } catch (err: any) {
       Toast.error('Load Failed', err.message || 'Could not load knowledge base data');
     } finally {
       setStatusLoading(false);
       setDocsLoading(false);
     }
-  }, []);
+  }, [fetchStateEmbeddingStatus]);
 
   useEffect(() => {
     loadAll();
@@ -181,24 +300,20 @@ const KnowledgeBase: React.FC = () => {
 
     const confirmed = await Confirm.danger(
       'Remove all non-Ansible documents?',
-      `This will delete ${targets.length} document(s) from vector chunks.`
+      `This will permanently delete all ${targets.length} non-Ansible document(s) from vector chunks and source files.`
     );
     if (!confirmed) return;
 
     setBulkDeleting(true);
-    let success = 0;
-    let failed = 0;
-    for (const doc of targets) {
-      try {
-        await ragApi.deleteDocument(doc.doc_id);
-        success += 1;
-      } catch {
-        failed += 1;
-      }
+    try {
+      const res = await ragApi.deleteNonAnsibleDocuments();
+      Toast.success('Cleanup Complete', res.message || 'Deleted non-Ansible documents.');
+      await loadAll();
+    } catch (err: any) {
+      Toast.error('Cleanup Failed', err.message || 'Could not delete non-Ansible documents.');
+    } finally {
+      setBulkDeleting(false);
     }
-    setBulkDeleting(false);
-    await loadAll();
-    Toast.success('Cleanup Complete', `Deleted ${success} docs. ${failed > 0 ? `${failed} failed.` : ''}`.trim());
   };
 
   const handleRebuild = async () => {
@@ -270,12 +385,31 @@ const KnowledgeBase: React.FC = () => {
             </h1>
             <p className="text-base-content/60 text-sm mt-1">Minimal, effective curation controls for LLM quality.</p>
           </div>
-          <div className="flex gap-2">
-            <button className={`btn btn-ghost btn-sm gap-2 ${(statusLoading || docsLoading) ? 'loading' : ''}`} onClick={loadAll} disabled={statusLoading || docsLoading}>
-              {!(statusLoading || docsLoading) && <RefreshCw className="h-4 w-4" />} Refresh
+          <div className="flex gap-2 items-center">
+            <label className="label cursor-pointer gap-2 mr-2">
+              <span className="label-text text-xs font-semibold">Show Operational Integration</span>
+              <input 
+                type="checkbox" 
+                className="toggle toggle-primary toggle-sm" 
+                checked={showOpDashboard} 
+                onChange={(e) => handleToggleOpDashboard(e.target.checked)} 
+              />
+            </label>
+            <button className="btn btn-ghost btn-sm gap-2" onClick={loadAll} disabled={statusLoading || docsLoading}>
+              {(statusLoading || docsLoading) ? (
+                <span className="loading loading-spinner loading-xs shrink-0"></span>
+              ) : (
+                <RefreshCw className="h-4 w-4" />
+              )}
+              Refresh
             </button>
-            <button className={`btn btn-warning btn-sm gap-2 shrink-0 ${rebuilding ? 'loading' : ''}`} onClick={handleRebuild} disabled={rebuilding || status?.available === false}>
-              {!rebuilding && <RefreshCw className="h-4 w-4" />} {rebuilding ? 'Rebuilding...' : 'Rebuild'}
+            <button className="btn btn-warning btn-sm gap-2 shrink-0" onClick={handleRebuild} disabled={rebuilding || status?.available === false}>
+              {rebuilding ? (
+                <span className="loading loading-spinner loading-xs shrink-0"></span>
+              ) : (
+                <RefreshCw className="h-4 w-4" />
+              )}
+              {rebuilding ? 'Rebuilding...' : 'Rebuild'}
             </button>
           </div>
         </div>
@@ -316,12 +450,13 @@ const KnowledgeBase: React.FC = () => {
                 <input type="text" className="input input-bordered input-sm" placeholder={uploadFile?.name ?? 'e.g. reference.md'} value={docName} onChange={(e) => setDocName(e.target.value)} />
               </div>
 
-              <button className={`btn btn-primary btn-sm w-full gap-2 ${uploading ? 'loading' : ''}`} onClick={handleUpload} disabled={!uploadFile || uploading || status?.available === false}>
-                {!uploading && <Upload className="h-4 w-4" />} {uploading ? 'Ingesting...' : 'Upload & Ingest'}
-              </button>
-
-              <button className={`btn btn-error btn-outline btn-sm w-full ${bulkDeleting ? 'loading' : ''}`} onClick={handleDeleteAllNonAnsible} disabled={bulkDeleting || docsLoading}>
-                Remove All Non-Ansible Docs
+              <button className="btn btn-primary btn-sm w-full gap-2" onClick={handleUpload} disabled={!uploadFile || uploading || status?.available === false}>
+                {uploading ? (
+                  <span className="loading loading-spinner loading-xs shrink-0"></span>
+                ) : (
+                  <Upload className="h-4 w-4" />
+                )}
+                {uploading ? 'Ingesting...' : 'Upload & Ingest'}
               </button>
             </div>
           </div>
@@ -331,16 +466,44 @@ const KnowledgeBase: React.FC = () => {
               <div className="flex items-center justify-between mb-3">
                 <h2 className="font-semibold text-sm flex items-center gap-2"><Database className="h-4 w-4 text-secondary" /> Document Library {!docsLoading && (<span className="badge badge-ghost badge-sm">{filteredDocs.length}</span>)}</h2>
 
-                <div className="flex gap-2">
+                <div className="flex gap-2 items-center">
                   <select className="select select-bordered select-xs" value={filterVendor} onChange={(e) => setFilterVendor(e.target.value)}>
                     <option value="">All vendors</option>
                     {VENDORS.map((v) => <option key={v.value} value={v.value}>{v.label}</option>)}
                   </select>
-                  <select className="select select-bordered select-xs" value={filterType} onChange={(e) => setFilterType(e.target.value)}>
-                    <option value="">All types</option>
-                    {DOC_TYPES.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
-                  </select>
+                  <button 
+                    className="btn btn-xs btn-outline btn-error gap-1"
+                    onClick={handleDeleteAllNonAnsible}
+                    disabled={bulkDeleting || docsLoading}
+                    title="Purge all non-Ansible reference documents from library and source files"
+                  >
+                    {bulkDeleting ? (
+                      <span className="loading loading-spinner loading-xs shrink-0"></span>
+                    ) : (
+                      <Trash2 className="h-3 w-3" />
+                    )}
+                    Purge Non-Ansible
+                  </button>
                 </div>
+              </div>
+
+              {/* Tabbed view for Document Type filters */}
+              <div className="tabs tabs-boxed flex-nowrap overflow-x-auto py-1 mb-4 gap-1 select-none no-scrollbar">
+                <button 
+                  className={`tab tab-xs flex-1 ${filterType === '' ? 'tab-active font-semibold' : ''}`}
+                  onClick={() => setFilterType('')}
+                >
+                  All Documents
+                </button>
+                {DOC_TYPES.map((t) => (
+                  <button
+                    key={t.value}
+                    className={`tab tab-xs whitespace-nowrap ${filterType === t.value ? 'tab-active font-semibold' : ''}`}
+                    onClick={() => setFilterType(t.value)}
+                  >
+                    {t.label}
+                  </button>
+                ))}
               </div>
 
               {docsLoading ? (
@@ -388,6 +551,174 @@ const KnowledgeBase: React.FC = () => {
           </div>
         </div>
 
+        {showOpDashboard && (
+          <div className="card bg-base-100 shadow border border-primary/20 transition-all duration-300 animate-fadeIn">
+            <div className="card-body p-6 space-y-6">
+              <div className="flex items-center justify-between border-b border-base-200 pb-3">
+                <div className="flex items-center gap-2">
+                  <Database className="h-5 w-5 text-primary" />
+                  <h2 className="text-lg font-bold">Operational AI & Grounding Integration</h2>
+                </div>
+                <div className="badge badge-accent badge-outline">Live Telemetry & Topology Grounding</div>
+              </div>
+
+              {/* Sub-grid: Redis Connection Info & Explanation, Network State Embedding Status */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                
+                {/* Card 1: Redis Connection Status */}
+                <div className="flex flex-col space-y-3 bg-base-200/50 p-4 rounded-xl border border-base-300">
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm font-semibold flex items-center gap-1.5">
+                      <Database className="h-4 w-4 text-secondary" /> Redis Connection
+                    </span>
+                    <span className={`badge badge-sm ${status?.redis_bypassed ? 'badge-warning' : (status?.redis_online ? 'badge-success' : 'badge-error')}`}>
+                      {status?.redis_bypassed ? 'Bypassed (Fallback)' : (status?.redis_online ? 'Connected' : 'Offline')}
+                    </span>
+                  </div>
+                  
+                  <div className="text-xs space-y-1">
+                    <div className="flex justify-between">
+                      <span className="opacity-60">Configured Host:</span>
+                      <span className="font-mono font-medium">{status?.redis_host || '192.168.1.250'}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="opacity-60">Configured Port:</span>
+                      <span className="font-mono font-medium">{status?.redis_port || 6379}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="opacity-60">Authentication:</span>
+                      <span className="font-mono font-medium">{status?.redis_has_password ? 'Password Enabled' : 'No Password'}</span>
+                    </div>
+                  </div>
+
+                  {/* Connection Controls */}
+                  <div className="flex gap-2 mt-1">
+                    <button 
+                      className="btn btn-sm btn-outline btn-primary flex-1 text-xs"
+                      onClick={handleOpenConfigModal}
+                    >
+                      Configure Redis
+                    </button>
+                    <button 
+                      className="btn btn-sm btn-outline flex-1 text-xs gap-1"
+                      onClick={handleTestConnection}
+                      disabled={redisTesting || statusLoading}
+                    >
+                      {redisTesting ? (
+                        <span className="loading loading-spinner loading-xs shrink-0"></span>
+                      ) : (
+                        <RefreshCw className="h-3.5 w-3.5" />
+                      )}
+                      Test / Connect
+                    </button>
+                  </div>
+
+                  {/* Bypass toggle button */}
+                  <button 
+                    className={`btn btn-sm w-full gap-2 mt-1 ${status?.redis_bypassed ? 'btn-success' : 'btn-outline btn-warning'}`}
+                    onClick={handleToggleRedisBypass}
+                    disabled={redisBypassing}
+                  >
+                    {redisBypassing ? (
+                      <span className="loading loading-spinner loading-xs shrink-0"></span>
+                    ) : (
+                      <RefreshCw className="h-3.5 w-3.5" />
+                    )}
+                    {status?.redis_bypassed ? 'Reconnect Redis Cache' : 'Bypass Redis (Force Fallback)'}
+                  </button>
+
+                  <div className="alert alert-info py-2 px-3 text-[11px] leading-relaxed shadow-sm bg-info/10 text-info border-info/20 mt-2">
+                    <Info className="h-4 w-4 shrink-0" />
+                    <span>
+                      Redis serves as the short-lived operational memory configured in the backend <code>.env</code> (currently pointing to <strong>192.168.1.250</strong>). It is not prompted in the GUI because it is system-level infrastructure. If unreachable, the application falls back automatically to local in-memory storage.
+                    </span>
+                  </div>
+                </div>
+
+                {/* Card 2: Network State Auto-Embedding Status */}
+                <div className="flex flex-col space-y-3 bg-base-200/50 p-4 rounded-xl border border-base-300">
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm font-semibold flex items-center gap-1.5">
+                      <Database className="h-4 w-4 text-primary" /> State Embedding Status
+                    </span>
+                    <span className={`badge badge-sm ${stateEmbeddingState?.available ? 'badge-primary' : 'badge-ghost'}`}>
+                      {stateEmbeddingState?.available ? 'Ready' : 'Not Loaded'}
+                    </span>
+                  </div>
+
+                  <div className="text-xs space-y-1">
+                    <div className="flex justify-between">
+                      <span className="opacity-60">Last Embedded:</span>
+                      <span className="font-mono font-medium">
+                        {stateEmbeddingState?.last_embedded_at ? new Date(stateEmbeddingState.last_embedded_at).toLocaleString() : 'Never'}
+                      </span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="opacity-60">ChromaDB Partition:</span>
+                      <span className="font-mono font-medium">network_state</span>
+                    </div>
+                  </div>
+
+                  <button
+                    className="btn btn-sm btn-primary w-full gap-2 mt-2"
+                    onClick={handleTriggerStateEmbedding}
+                    disabled={stateEmbeddingLoading || !stateEmbeddingState?.available}
+                  >
+                    {stateEmbeddingLoading ? (
+                      <span className="loading loading-spinner loading-xs shrink-0"></span>
+                    ) : (
+                      <RefreshCw className="h-3.5 w-3.5" />
+                    )}
+                    {stateEmbeddingLoading ? 'Embedding State...' : 'Trigger Re-Embedding'}
+                  </button>
+
+                  <div className="alert alert-info py-2 px-3 text-[11px] leading-relaxed shadow-sm bg-info/10 text-info border-info/20 mt-2">
+                    <Info className="h-4 w-4 shrink-0" />
+                    <span>
+                      RAG automatically embeds live configuration, loopbacks, interfaces, and logical routing tables into ChromaDB to provide real-time grounding context to the LLM agent.
+                    </span>
+                  </div>
+                </div>
+
+              </div>
+
+              {/* Card 3: Live LLM Grounding Context Bundle Preview */}
+              <div className="flex flex-col space-y-3 bg-base-200/50 p-4 rounded-xl border border-base-300">
+                <div className="flex items-center justify-between border-b border-base-300 pb-2">
+                  <span className="text-sm font-semibold flex items-center gap-1.5">
+                    <FileText className="h-4 w-4 text-accent" /> Live Grounding Context Bundle
+                  </span>
+                  <button 
+                    className="btn btn-xs btn-outline btn-accent gap-1"
+                    onClick={handleFetchContextPreview}
+                    disabled={contextPreviewLoading}
+                  >
+                    {contextPreviewLoading ? (
+                      <span className="loading loading-spinner loading-xs shrink-0"></span>
+                    ) : (
+                      <RefreshCw className="h-3 w-3" />
+                    )}
+                    Fetch Live Bundle
+                  </button>
+                </div>
+
+                <p className="text-xs text-base-content/60">
+                  Inspect the physical topology, InfluxDB telemetry (CPU/memory), and live syslog logs exactly as they are formatted, weighted by freshness, and sent to the LLM for agentic reasoning:
+                </p>
+
+                <div className="relative bg-neutral text-neutral-content rounded-lg p-4 overflow-hidden border border-neutral-focus">
+                  <div className="max-h-[300px] overflow-y-auto font-mono text-[11px] leading-relaxed whitespace-pre-wrap">
+                    {contextPreviewText || (
+                      <span className="opacity-50 italic">No bundle loaded. Click "Fetch Live Bundle" to generate and inspect.</span>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+            </div>
+          </div>
+        )}
+
         {previewOpen && (
           <dialog className="modal modal-open">
             <div className="modal-box max-w-5xl h-[80vh] flex flex-col">
@@ -396,11 +727,91 @@ const KnowledgeBase: React.FC = () => {
                 <div className="flex-1 flex items-center justify-center"><Loader2 className="h-6 w-6 animate-spin" /></div>
               ) : (
                 <>
-                  <div className="text-xs opacity-70 mt-2 mb-3">{previewDoc?.name} • {previewDoc?.type} • {previewDoc?.vendor}</div>
+                  <div className="text-xs opacity-70 mt-2 mb-3">{previewDoc?.name} â€¢ {previewDoc?.type} â€¢ {previewDoc?.vendor}</div>
                   <pre className="flex-1 overflow-auto p-3 bg-base-200 rounded text-xs whitespace-pre-wrap">{previewDoc?.text}</pre>
                 </>
               )}
               <div className="modal-action"><button className="btn btn-sm" onClick={() => setPreviewOpen(false)}>Close</button></div>
+            </div>
+          </dialog>
+        )}
+
+        {configModalOpen && (
+          <dialog className="modal modal-open">
+            <div className="modal-box max-w-md flex flex-col space-y-4">
+              <h3 className="font-bold text-lg flex items-center gap-2">
+                <Database className="h-5 w-5 text-primary" />
+                Configure Redis Cache
+              </h3>
+              <p className="text-xs text-base-content/60">
+                Update connection details for the operational grounding memory layer. Changes are tested instantly and written to the backend <code>.env</code> file.
+              </p>
+
+              <div className="form-control w-full">
+                <label className="label py-1">
+                  <span className="label-text text-xs font-semibold">Redis Host</span>
+                </label>
+                <input 
+                  type="text" 
+                  className="input input-bordered input-sm font-mono" 
+                  value={configHost} 
+                  onChange={(e) => setConfigHost(e.target.value)} 
+                  placeholder="e.g. 192.168.1.250"
+                  disabled={configSaving}
+                />
+              </div>
+
+              <div className="form-control w-full">
+                <label className="label py-1">
+                  <span className="label-text text-xs font-semibold">Redis Port</span>
+                </label>
+                <input 
+                  type="number" 
+                  className="input input-bordered input-sm font-mono" 
+                  value={configPort} 
+                  onChange={(e) => setConfigPort(e.target.value)} 
+                  placeholder="e.g. 6379"
+                  disabled={configSaving}
+                />
+              </div>
+
+              <div className="form-control w-full">
+                <label className="label py-1">
+                  <span className="label-text text-xs font-semibold">Password (Optional)</span>
+                </label>
+                <input 
+                  type="password" 
+                  className="input input-bordered input-sm font-mono" 
+                  value={configPassword} 
+                  onChange={(e) => setConfigPassword(e.target.value)} 
+                  placeholder="Leave empty if none"
+                  disabled={configSaving}
+                />
+              </div>
+
+              <div className="modal-action flex gap-2">
+                <button 
+                  className="btn btn-sm btn-ghost flex-1" 
+                  onClick={() => setConfigModalOpen(false)}
+                  disabled={configSaving}
+                >
+                  Cancel
+                </button>
+                <button 
+                  className="btn btn-sm btn-primary flex-1"
+                  onClick={handleSaveRedisConfig}
+                  disabled={configSaving}
+                >
+                  {configSaving ? (
+                    <>
+                      <span className="loading loading-spinner loading-xs shrink-0 mr-1"></span>
+                      Testing...
+                    </>
+                  ) : (
+                    'Test & Save'
+                  )}
+                </button>
+              </div>
             </div>
           </dialog>
         )}

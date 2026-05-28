@@ -136,6 +136,11 @@ class StatusResponse(BaseModel):
     chroma_path: str
     partition_counts: dict[str, int] = {}
     curation_audit: dict[str, object] = {}
+    redis_host: Optional[str] = None
+    redis_port: Optional[int] = None
+    redis_online: Optional[bool] = None
+    redis_bypassed: Optional[bool] = None
+    redis_has_password: Optional[bool] = None
 
 
 class DocumentPreviewResponse(BaseModel):
@@ -364,8 +369,93 @@ async def preview_document(
 
 
 # ---------------------------------------------------------------------------
-# Delete document
+# Delete document & Cleanup Helpers
 # ---------------------------------------------------------------------------
+
+def delete_source_file_by_name(doc_name: str, kb_dir: str | Path) -> None:
+    kb_path = Path(kb_dir)
+    # 1. Check if a file exists with name == doc_name
+    target_file = kb_path / doc_name
+    if target_file.is_file():
+        try:
+            target_file.unlink()
+            meta_file = target_file.with_suffix(target_file.suffix + ".meta.json")
+            if meta_file.is_file():
+                meta_file.unlink()
+            logger.info("Deleted source file and metadata for: %s", doc_name)
+        except Exception as e:
+            logger.warning("Failed to delete source file: %s", e)
+
+    # 2. Check manifest for matches by key (filename) or by title (doc_name)
+    from rag.knowledge_curation import load_manifest, save_manifest
+    manifest = load_manifest(kb_path)
+    updated_manifest = {}
+    removed_any = False
+    for filename, meta in manifest.items():
+        if filename == doc_name or meta.title == doc_name:
+            # Delete the file if it exists
+            f = kb_path / filename
+            if f.is_file():
+                try:
+                    f.unlink()
+                    meta_file = f.with_suffix(f.suffix + ".meta.json")
+                    if meta_file.is_file():
+                        meta_file.unlink()
+                except Exception as e:
+                    logger.warning("Failed to delete file from manifest: %s", e)
+            removed_any = True
+            logger.info("Removing manifest entry: %s", filename)
+        else:
+            updated_manifest[filename] = meta
+            
+    if removed_any:
+        save_manifest(kb_path, updated_manifest)
+
+
+@router.delete(
+    "/documents/non-ansible",
+    summary="Delete all non-Ansible documents and their source files",
+)
+async def delete_non_ansible_documents(
+    current_user: dict = Depends(_auth_dep),
+):
+    """
+    Remove all vector chunks for documents not typed 'ansible_reference' from ChromaDB,
+    and permanently delete their source files, metadata, and manifest entries.
+    """
+    _check_rag_ready()
+    try:
+        docs = _vector_store.list_documents()
+        non_ansible_docs = [d for d in docs if d.get("doc_type") != "ansible_reference"]
+        
+        deleted_count = 0
+        deleted_docs = []
+        for d in non_ansible_docs:
+            doc_id = d.get("doc_id")
+            deleted = _vector_store.delete_document(doc_id)
+            deleted_count += deleted
+            deleted_docs.append(doc_id)
+            
+            doc_name = d.get("doc_name")
+            if doc_name:
+                delete_source_file_by_name(doc_name, _KNOWLEDGE_BASE_DIR)
+                
+        logger.info(
+            "user=%s bulk deleted %d non-Ansible documents (%d chunks)",
+            current_user.get("username"),
+            len(deleted_docs),
+            deleted_count
+        )
+        return {
+            "status": "success",
+            "docs_deleted": len(deleted_docs),
+            "chunks_deleted": deleted_count,
+            "message": f"Successfully deleted {len(deleted_docs)} non-Ansible documents and {deleted_count} chunks.",
+        }
+    except Exception as exc:
+        logger.error("Bulk delete non-ansible failed: %s", exc)
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
 
 @router.delete(
     "/documents/{doc_id}",
@@ -377,25 +467,30 @@ async def delete_document(
     current_user: dict = Depends(_auth_dep),
 ):
     """
-    Remove all vector chunks associated with doc_id from ChromaDB.
-
-    Does NOT delete the source file from knowledge_base/ so that a rebuild
-    would re-ingest it.  If you want to permanently remove a document, delete
-    the source file and then call rebuild.
+    Remove all vector chunks associated with doc_id from ChromaDB,
+    and permanently delete the source file, metadata, and manifest entries.
     """
     _check_rag_ready()
     try:
+        # Get document info first to find its doc_name
+        docs = _vector_store.list_documents()
+        doc = next((d for d in docs if d.get("doc_id") == doc_id), None)
+
         deleted = _vector_store.delete_document(doc_id)
         if deleted == 0:
             raise HTTPException(
                 status_code=404,
                 detail=f"No chunks found for doc_id='{doc_id}'",
             )
+            
+        if doc and doc.get("doc_name"):
+            delete_source_file_by_name(doc.get("doc_name"), _KNOWLEDGE_BASE_DIR)
+            
         logger.info("user=%s deleted doc_id=%s (%d chunks)", current_user.get("username"), doc_id, deleted)
         return DeleteResponse(
             doc_id=doc_id,
             chunks_deleted=deleted,
-            message=f"Deleted {deleted} chunks.",
+            message=f"Deleted {deleted} chunks and cleaned up source files.",
         )
     except HTTPException:
         raise
@@ -503,7 +598,32 @@ async def get_rag_status(
     current_user: dict = Depends(_auth_dep),
 ):
     """Return health information for the ChromaDB knowledge store."""
-    # Do not call _check_rag_ready() here — status works even when !available
+    # Do not call _check_rag_ready() here - status works even when !available
+    from retrieval.fetchers.redis_ops import (
+        _REDIS_BYPASS,
+        _OVERRIDE_REDIS_HOST,
+        _OVERRIDE_REDIS_PORT,
+        _OVERRIDE_REDIS_PASSWORD,
+    )
+    
+    redis_host = _OVERRIDE_REDIS_HOST or os.environ.get("REDIS_HOST", "localhost")
+    port_env = os.environ.get("REDIS_PORT", "6379")
+    redis_port = _OVERRIDE_REDIS_PORT or (int(port_env) if port_env.isdigit() else 6379)
+    redis_password = _OVERRIDE_REDIS_PASSWORD or os.environ.get("REDIS_PASSWORD", None)
+    redis_has_password = bool(redis_password)
+    
+    redis_online = False
+    
+    # Only test connection if not bypassed
+    if not _REDIS_BYPASS and os.environ.get("REDIS_BYPASS", "0") != "1":
+        try:
+            import redis
+            client = redis.Redis(host=redis_host, port=redis_port, password=redis_password, db=0, socket_timeout=1.0)
+            client.ping()
+            redis_online = True
+        except Exception:
+            pass
+
     if _vector_store is None:
         return StatusResponse(
             available=False,
@@ -511,6 +631,11 @@ async def get_rag_status(
             total_documents=0,
             chroma_path=_KNOWLEDGE_BASE_DIR,
             partition_counts={},
+            redis_host=redis_host,
+            redis_port=redis_port,
+            redis_online=redis_online,
+            redis_bypassed=_REDIS_BYPASS or os.environ.get("REDIS_BYPASS", "0") == "1",
+            redis_has_password=redis_has_password,
         )
 
     try:
@@ -523,6 +648,11 @@ async def get_rag_status(
             chroma_path=str(Path(_KNOWLEDGE_BASE_DIR).resolve()),
             partition_counts=_vector_store.count_by_partition() if hasattr(_vector_store, "count_by_partition") else {},
             curation_audit=build_curation_audit(docs),
+            redis_host=redis_host,
+            redis_port=redis_port,
+            redis_online=redis_online,
+            redis_bypassed=_REDIS_BYPASS or os.environ.get("REDIS_BYPASS", "0") == "1",
+            redis_has_password=redis_has_password,
         )
     except Exception as exc:
         return StatusResponse(
@@ -532,6 +662,154 @@ async def get_rag_status(
             chroma_path=_KNOWLEDGE_BASE_DIR,
             partition_counts={},
             curation_audit=build_curation_audit([]),
+            redis_host=redis_host,
+            redis_port=redis_port,
+            redis_online=redis_online,
+            redis_bypassed=_REDIS_BYPASS or os.environ.get("REDIS_BYPASS", "0") == "1",
+            redis_has_password=redis_has_password,
+        )
+
+
+class RedisBypassRequest(BaseModel):
+    bypass: bool
+
+
+@router.post(
+    "/redis/bypass",
+    summary="Bypass Redis connection and force local memory cache fallback",
+)
+async def set_redis_bypass_endpoint(
+    body: RedisBypassRequest,
+    current_user: dict = Depends(_auth_dep),
+):
+    from retrieval.fetchers.redis_ops import set_redis_bypass
+    set_redis_bypass(body.bypass)
+    return {"status": "success", "redis_bypassed": body.bypass}
+
+
+class RedisConfigRequest(BaseModel):
+    host: str
+    port: int
+    password: Optional[str] = None
+
+
+@router.post(
+    "/redis/config",
+    summary="Update and test Redis operational cache configuration",
+)
+async def update_redis_config_endpoint(
+    body: RedisConfigRequest,
+    current_user: dict = Depends(_auth_dep),
+):
+    """
+    Test and persist new Redis connection parameters.
+    Saves to environmental variables and updates the running overrides in retrieval.fetchers.redis_ops.
+    Also updates the backend/etc/.env file to survive restarts.
+    """
+    try:
+        import redis
+        client = redis.Redis(
+            host=body.host,
+            port=body.port,
+            password=body.password if body.password else None,
+            db=0,
+            socket_timeout=2.0
+        )
+        client.ping()
+    except Exception as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Redis connection test failed: {exc}"
+        )
+
+    # Update dynamic memory settings in the module
+    from retrieval.fetchers import redis_ops
+    redis_ops.set_redis_config(body.host, body.port, body.password)
+    redis_ops.set_redis_bypass(False)
+
+    # Persist overrides to .env so they survive restart
+    env_path = Path(__file__).resolve().parent.parent / ".env"
+    if env_path.exists():
+        try:
+            content = env_path.read_text(encoding="utf-8")
+            lines = content.splitlines()
+            new_lines = []
+            
+            has_host = False
+            has_port = False
+            has_password = False
+            
+            for line in lines:
+                stripped = line.strip()
+                if stripped.startswith("REDIS_HOST="):
+                    new_lines.append(f"REDIS_HOST={body.host}")
+                    has_host = True
+                elif stripped.startswith("REDIS_PORT="):
+                    new_lines.append(f"REDIS_PORT={body.port}")
+                    has_port = True
+                elif stripped.startswith("REDIS_PASSWORD="):
+                    if body.password:
+                        new_lines.append(f"REDIS_PASSWORD={body.password}")
+                    else:
+                        new_lines.append("REDIS_PASSWORD=")
+                    has_password = True
+                else:
+                    new_lines.append(line)
+                    
+            if not has_host:
+                new_lines.append(f"REDIS_HOST={body.host}")
+            if not has_port:
+                new_lines.append(f"REDIS_PORT={body.port}")
+            if not has_password and body.password:
+                new_lines.append(f"REDIS_PASSWORD={body.password}")
+                
+            env_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+        except Exception as e:
+            logger.warning("Failed to write to .env file: %s", e)
+
+    return {"status": "success", "message": "Redis connection updated successfully and written to .env."}
+
+
+@router.post(
+    "/redis/test-active",
+    summary="Test current active Redis connection configuration and return status or error details",
+)
+async def test_active_redis_connection_endpoint(
+    current_user: dict = Depends(_auth_dep),
+):
+    """
+    Test the current active Redis connection configuration (including dynamic overrides or env values).
+    Returns success or raises a 400 Bad Request with the connection error details.
+    """
+    from retrieval.fetchers.redis_ops import (
+        _OVERRIDE_REDIS_HOST,
+        _OVERRIDE_REDIS_PORT,
+        _OVERRIDE_REDIS_PASSWORD,
+    )
+    
+    redis_host = _OVERRIDE_REDIS_HOST or os.environ.get("REDIS_HOST", "localhost")
+    port_env = os.environ.get("REDIS_PORT", "6379")
+    redis_port = _OVERRIDE_REDIS_PORT or (int(port_env) if port_env.isdigit() else 6379)
+    redis_password = _OVERRIDE_REDIS_PASSWORD or os.environ.get("REDIS_PASSWORD", None)
+
+    try:
+        import redis
+        client = redis.Redis(
+            host=redis_host,
+            port=redis_port,
+            password=redis_password if redis_password else None,
+            db=0,
+            socket_timeout=2.0
+        )
+        client.ping()
+        return {
+            "status": "success",
+            "message": f"Successfully connected to Redis cache at {redis_host}:{redis_port}"
+        }
+    except Exception as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Redis connection failed: {exc}"
         )
 
 

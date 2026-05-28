@@ -15,9 +15,11 @@ import {
   ArrowLeft,
   Info,
   Layers,
-  Bot
+  Bot,
+  Activity
 } from 'lucide-react';
 import { useTaskProgress } from '../contexts/TaskProgressContext';
+import { llmApi } from '../src/services/api';
 
 interface DeviceInterface {
   name: string;
@@ -49,10 +51,18 @@ interface Message {
   role: 'user' | 'assistant' | 'system';
   content: string;
   timestamp: string;
+  groundingMeta?: {
+    answer_scope?: string;
+    freshness_class?: string;
+    confidence?: number;
+    source_used?: string[];
+    source_age?: Array<{ source?: string; age_seconds?: number | null; freshness_class?: string }>;
+    conflicts?: Array<{ code?: string; message?: string }>;
+  };
 }
 
 const FloatingInventoryOverlay: React.FC<{ onClose: () => void }> = ({ onClose }) => {
-  const [activeTab, setActiveTab] = useState<'inventory' | 'ollama' | 'inventory_ai' | 'tasks'>('inventory');
+  const [activeTab, setActiveTab] = useState<'inventory' | 'ollama' | 'inventory_ai' | 'system_ai' | 'tasks'>('inventory');
   const [position, setPosition] = useState({ x: window.innerWidth - 450, y: 100 });
   const [isDragging, setIsDragging] = useState(false);
   const dragStartPos = useRef({ x: 0, y: 0 });
@@ -77,6 +87,12 @@ const FloatingInventoryOverlay: React.FC<{ onClose: () => void }> = ({ onClose }
   const [inventoryAiPrompt, setInventoryAiPrompt] = useState('');
   const [inventoryAiMessages, setInventoryAiMessages] = useState<Message[]>([]);
   const [isInventoryAiLoading, setIsInventoryAiLoading] = useState(false);
+
+  // System AI State
+  const [systemAiPrompt, setSystemAiPrompt] = useState('');
+  const [systemAiMessages, setSystemAiMessages] = useState<Message[]>([]);
+  const [isSystemAiLoading, setIsSystemAiLoading] = useState(false);
+  const [systemAiGrounding, setSystemAiGrounding] = useState<Message['groundingMeta'] | null>(null);
 
   // Common LLM Params
   const [availableModels, setAvailableModels] = useState<string[]>([]);
@@ -152,7 +168,7 @@ const FloatingInventoryOverlay: React.FC<{ onClose: () => void }> = ({ onClose }
     if (activeTab === 'inventory' && devices.length === 0) {
       fetchInventory();
     }
-    if ((activeTab === 'ollama' || activeTab === 'inventory_ai') && availableModels.length === 0) {
+    if ((activeTab === 'ollama' || activeTab === 'inventory_ai' || activeTab === 'system_ai') && availableModels.length === 0) {
       fetchModels();
     }
   }, [activeTab]);
@@ -205,81 +221,120 @@ const FloatingInventoryOverlay: React.FC<{ onClose: () => void }> = ({ onClose }
     d.role?.toLowerCase().includes(searchQuery.toLowerCase())
   );
 
+  const latestSystemAiGrounding = systemAiGrounding ?? [...systemAiMessages].reverse().find((msg) => msg.role === 'assistant' && msg.groundingMeta)?.groundingMeta ?? null;
+
   // --- Chat Handling ---
-  const handleChatSend = async (mode: 'playground' | 'inventory') => {
-    const prompt = mode === 'playground' ? ollamaPrompt : inventoryAiPrompt;
+  const handleChatSend = async (mode: 'playground' | 'inventory' | 'system') => {
+    const isPlayground = mode === 'playground';
+    const isInventory = mode === 'inventory';
+    const prompt = isPlayground ? ollamaPrompt : isInventory ? inventoryAiPrompt : systemAiPrompt;
     if (!prompt.trim()) return;
-    
-    const userMsg: Message = { 
-      role: 'user', 
-      content: prompt, 
-      timestamp: new Date().toLocaleTimeString() 
+
+    const userMsg: Message = {
+      role: 'user',
+      content: prompt,
+      timestamp: new Date().toLocaleTimeString(),
     };
-    
-    if (mode === 'playground') {
-      setOllamaMessages(prev => [...prev, userMsg]);
+
+    if (isPlayground) {
+      setOllamaMessages((prev) => [...prev, userMsg]);
       setOllamaPrompt('');
       setIsOllamaLoading(true);
-    } else {
-      setInventoryAiMessages(prev => [...prev, userMsg]);
+    } else if (isInventory) {
+      setInventoryAiMessages((prev) => [...prev, userMsg]);
       setInventoryAiPrompt('');
       setIsInventoryAiLoading(true);
+    } else {
+      setSystemAiMessages((prev) => [...prev, userMsg]);
+      setSystemAiPrompt('');
+      setIsSystemAiLoading(true);
     }
 
     try {
-      // Determine provider/model routing from selectedModel prefix
-      let resp;
-      if (selectedModel.startsWith('gemini::')) {
-        // Cloud Gemini provider — use unified chat endpoint
-        resp = await fetch('/api/v1/llm/chat', {
+      if (mode === 'system') {
+        const runtimeModel = selectedModel.startsWith('gemini::') || selectedModel.startsWith('ollama::')
+          ? selectedModel.split('::', 2)[1]
+          : selectedModel;
+        const runtimeProvider = selectedModel.startsWith('gemini::') ? 'gemini' : 'ollama';
+
+        if (runtimeModel) {
+          await llmApi.updateRuntime({
+            provider: runtimeProvider,
+            model: runtimeModel,
+            clear_history: false,
+          });
+        }
+        const data = await llmApi.chat(userMsg.content);
+        const assistantMsg: Message = {
+          role: 'assistant',
+          content: data.content || 'No response from model.',
+          timestamp: new Date().toLocaleTimeString(),
+          groundingMeta: data.grounding_meta,
+        };
+        setSystemAiMessages((prev) => [...prev, assistantMsg]);
+        setSystemAiGrounding(data.grounding_meta || null);
+        return;
+      } else if (selectedModel.startsWith('gemini::')) {
+        const resp = await fetch('/api/v1/llm/chat', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ 
-            message: userMsg.content, 
+          body: JSON.stringify({
+            message: userMsg.content,
             model: selectedModel.split('::', 2)[1],
-            grounding: mode !== 'playground'
+            grounding: mode !== 'playground',
           }),
         });
+        const data = await resp.json();
+        const assistantMsg: Message = {
+          role: 'assistant',
+          content: data.content || 'No response from model.',
+          timestamp: new Date().toLocaleTimeString(),
+        };
+        if (isPlayground) {
+          setOllamaMessages((prev) => [...prev, assistantMsg]);
+        } else if (isInventory) {
+          setInventoryAiMessages((prev) => [...prev, assistantMsg]);
+        }
+        return;
       } else {
-        // Default: Ollama local playground/context query
         const modelName = selectedModel.startsWith('ollama::') ? selectedModel.split('::', 2)[1] : selectedModel;
-        const endpoint = mode === 'playground' 
-          ? '/api/v1/llm/chat/ollama/playground' 
+        const endpoint = isPlayground
+          ? '/api/v1/llm/chat/ollama/playground'
           : '/api/v1/llm/chat/ollama/context_query';
-        resp = await fetch(endpoint, {
+        const resp = await fetch(endpoint, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ prompt: userMsg.content, model: modelName }),
         });
-      }
-
-      const data = await resp.json();
-      
-      const assistantMsg: Message = {
-        role: 'assistant',
-        content: data.content || 'No response from model.',
-        timestamp: new Date().toLocaleTimeString()
-      };
-
-      if (mode === 'playground') {
-        setOllamaMessages(prev => [...prev, assistantMsg]);
-      } else {
-        setInventoryAiMessages(prev => [...prev, assistantMsg]);
+        const data = await resp.json();
+        const assistantMsg: Message = {
+          role: 'assistant',
+          content: data.content || 'No response from model.',
+          timestamp: new Date().toLocaleTimeString(),
+        };
+        if (isPlayground) {
+          setOllamaMessages((prev) => [...prev, assistantMsg]);
+        } else if (isInventory) {
+          setInventoryAiMessages((prev) => [...prev, assistantMsg]);
+        }
       }
     } catch (err) {
       const errMsg: Message = {
         role: 'system',
         content: `Error: ${err}`,
-        timestamp: new Date().toLocaleTimeString()
+        timestamp: new Date().toLocaleTimeString(),
       };
-      if (mode === 'playground') {
-        setOllamaMessages(prev => [...prev, errMsg]);
+      if (isPlayground) {
+        setOllamaMessages((prev) => [...prev, errMsg]);
+      } else if (isInventory) {
+        setInventoryAiMessages((prev) => [...prev, errMsg]);
       } else {
-        setInventoryAiMessages(prev => [...prev, errMsg]);
+        setSystemAiMessages((prev) => [...prev, errMsg]);
       }
     } finally {
-      if (mode === 'playground') setIsOllamaLoading(false);
-      else setIsInventoryAiLoading(false);
+      if (isPlayground) setIsOllamaLoading(false);
+      else if (isInventory) setIsInventoryAiLoading(false);
+      else setIsSystemAiLoading(false);
     }
   };
 
@@ -287,7 +342,7 @@ const FloatingInventoryOverlay: React.FC<{ onClose: () => void }> = ({ onClose }
     if (scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
-  }, [ollamaMessages, inventoryAiMessages]);
+  }, [ollamaMessages, inventoryAiMessages, systemAiMessages]);
 
   return (
     <div 
@@ -342,6 +397,14 @@ const FloatingInventoryOverlay: React.FC<{ onClose: () => void }> = ({ onClose }
         >
           <Bot className="w-3.5 h-3.5" />
           NETWORK AI
+        </button>
+        <button 
+          onClick={() => setActiveTab('system_ai')}
+          className={`flex-1 p-2.5 flex items-center justify-center gap-1.5 text-[10px] font-bold transition-colors
+            ${activeTab === 'system_ai' ? 'bg-base-100 text-success border-b-2 border-success' : 'hover:bg-base-200 opacity-60'}`}
+        >
+          <Activity className="w-3.5 h-3.5" />
+          SYSTEM AI
         </button>
         <button 
           onClick={() => setActiveTab('tasks')}
@@ -662,17 +725,66 @@ const FloatingInventoryOverlay: React.FC<{ onClose: () => void }> = ({ onClose }
               </div>
             </div>
 
+            {activeTab === 'system_ai' && (
+              <div className="px-3 py-2 border-b border-base-content/10 bg-success/5 text-[10px]">
+                {latestSystemAiGrounding ? (
+                  <div className="space-y-2">
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <span className="badge badge-xs badge-success">Grounded</span>
+                      <span className="badge badge-xs badge-outline">
+                        Scope: {latestSystemAiGrounding.answer_scope || 'unknown'}
+                      </span>
+                      <span className="badge badge-xs badge-outline">
+                        Freshness: {latestSystemAiGrounding.freshness_class || 'unknown'}
+                      </span>
+                      <span className="badge badge-xs badge-outline">
+                        Confidence: {typeof latestSystemAiGrounding.confidence === 'number' ? latestSystemAiGrounding.confidence.toFixed(2) : 'n/a'}
+                      </span>
+                    </div>
+                    <div className="flex flex-wrap gap-1.5">
+                      {(latestSystemAiGrounding.source_used || []).slice(0, 5).map((source) => (
+                        <span key={source} className="badge badge-xs badge-secondary badge-outline">
+                          {source}
+                        </span>
+                      ))}
+                      {latestSystemAiGrounding.conflicts?.length ? (
+                        <span className="badge badge-xs badge-error badge-outline">
+                          {latestSystemAiGrounding.conflicts.length} conflict(s)
+                        </span>
+                      ) : null}
+                    </div>
+                    {latestSystemAiGrounding.source_age?.length ? (
+                      <div className="flex flex-wrap gap-1.5">
+                        {latestSystemAiGrounding.source_age.slice(0, 5).map((entry, idx) => (
+                          <span key={`${entry.source || 'source'}-${idx}`} className="badge badge-xs badge-ghost">
+                            {entry.source || 'source'} · {entry.freshness_class || 'unknown'}
+                            {typeof entry.age_seconds === 'number' ? ` · ${entry.age_seconds}s` : ''}
+                          </span>
+                        ))}
+                      </div>
+                    ) : null}
+                  </div>
+                ) : (
+                  <div className="opacity-70">
+                    System AI will show source freshness and provenance here after the first grounded answer.
+                  </div>
+                )}
+              </div>
+            )}
+
             {/* Messages */}
             <div ref={scrollRef} className="flex-1 overflow-y-auto p-4 space-y-4">
-              {(activeTab === 'ollama' ? ollamaMessages : inventoryAiMessages).length === 0 && (
+              {(activeTab === 'ollama' ? ollamaMessages : activeTab === 'inventory_ai' ? inventoryAiMessages : systemAiMessages).length === 0 && (
                 <div className="flex flex-col items-center justify-center h-full opacity-80 text-center px-10 pt-10">
-                  {activeTab === 'inventory_ai' ? <Bot className="w-12 h-12 mb-4" /> : <Cpu className="w-12 h-12 mb-4" />}
+                  {activeTab === 'inventory_ai' ? <Bot className="w-12 h-12 mb-4" /> : activeTab === 'system_ai' ? <Activity className="w-12 h-12 mb-4" /> : <Cpu className="w-12 h-12 mb-4" />}
                   <p className="text-sm font-semibold">
-                    {activeTab === 'inventory_ai' ? 'Project Inventory AI' : 'Ollama Unrestricted Playground'}
+                    {activeTab === 'inventory_ai' ? 'Project Inventory AI' : activeTab === 'system_ai' ? 'System AI' : 'Ollama Unrestricted Playground'}
                   </p>
                   <p className="text-[11px] mt-2 text-base-content/90">
                     {activeTab === 'inventory_ai' 
                       ? 'I can answer questions about your devices, vendors, and roles based on the current snapshot.'
+                      : activeTab === 'system_ai'
+                        ? 'I can answer live operational, inventory, telemetry, syslog, planned-state, and RAG-grounded questions across the network.'
                       : 'Speak directly to the local model. No grounding, no system prompts, just raw intelligence.'}
                   </p>
                   {availableModels.length === 0 && !modelFetchError && (
@@ -683,7 +795,7 @@ const FloatingInventoryOverlay: React.FC<{ onClose: () => void }> = ({ onClose }
                   )}
                 </div>
               )}
-              {(activeTab === 'ollama' ? ollamaMessages : inventoryAiMessages).map((msg, idx) => (
+              {(activeTab === 'ollama' ? ollamaMessages : activeTab === 'inventory_ai' ? inventoryAiMessages : systemAiMessages).map((msg, idx) => (
                 <div key={idx} className={`flex flex-col ${msg.role === 'user' ? 'items-end' : 'items-start'}`}>
                   <div className={`max-w-[85%] p-3 rounded-2xl text-[13px] leading-relaxed
                     ${msg.role === 'user' 
@@ -697,10 +809,12 @@ const FloatingInventoryOverlay: React.FC<{ onClose: () => void }> = ({ onClose }
                   <span className="text-[9px] opacity-55 mt-1 px-1">{msg.timestamp}</span>
                 </div>
               ))}
-              {(activeTab === 'ollama' ? isOllamaLoading : isInventoryAiLoading) && (
+              {(activeTab === 'ollama' ? isOllamaLoading : activeTab === 'inventory_ai' ? isInventoryAiLoading : isSystemAiLoading) && (
                 <div className="flex items-center gap-2 px-1 text-primary animate-pulse">
                   <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                  <span className="text-[10px] font-bold uppercase tracking-widest">Ollama is thinking...</span>
+                  <span className="text-[10px] font-bold uppercase tracking-widest">
+                    {activeTab === 'system_ai' ? 'System AI is thinking...' : 'Ollama is thinking...'}
+                  </span>
                 </div>
               )}
             </div>
@@ -710,17 +824,21 @@ const FloatingInventoryOverlay: React.FC<{ onClose: () => void }> = ({ onClose }
               <div className="relative">
                 <input 
                   type="text"
-                  value={activeTab === 'ollama' ? ollamaPrompt : inventoryAiPrompt}
-                  onChange={(e) => activeTab === 'ollama' ? setOllamaPrompt(e.target.value) : setInventoryAiPrompt(e.target.value)}
-                  onKeyDown={(e) => e.key === 'Enter' && handleChatSend(activeTab === 'ollama' ? 'playground' : 'inventory')}
-                  placeholder={availableModels.length > 0 ? (activeTab === 'inventory_ai' ? "Ask about your network..." : "Ask local model anything...") : "Ollama not available"}
+                  value={activeTab === 'ollama' ? ollamaPrompt : activeTab === 'inventory_ai' ? inventoryAiPrompt : systemAiPrompt}
+                  onChange={(e) => {
+                    if (activeTab === 'ollama') setOllamaPrompt(e.target.value);
+                    else if (activeTab === 'inventory_ai') setInventoryAiPrompt(e.target.value);
+                    else setSystemAiPrompt(e.target.value);
+                  }}
+                  onKeyDown={(e) => e.key === 'Enter' && handleChatSend(activeTab === 'ollama' ? 'playground' : activeTab === 'inventory_ai' ? 'inventory' : 'system')}
+                  placeholder={availableModels.length > 0 ? (activeTab === 'inventory_ai' ? "Ask about your network snapshot..." : activeTab === 'system_ai' ? "Ask about live ops, inventory, telemetry, or RAG..." : "Ask local model anything...") : "Ollama not available"}
                   className="input input-bordered w-full pr-12 text-sm bg-base-200 border-none h-11 focus:outline-none placeholder:text-base-content/50"
                   disabled={availableModels.length === 0}
                 />
                 <button 
-                  onClick={() => handleChatSend(activeTab === 'ollama' ? 'playground' : 'inventory')}
-                  disabled={(activeTab === 'ollama' ? isOllamaLoading : isInventoryAiLoading) || (activeTab === 'ollama' ? !ollamaPrompt.trim() : !inventoryAiPrompt.trim()) || availableModels.length === 0}
-                  className={`absolute right-1 top-1/2 -translate-y-1/2 btn btn-sm btn-circle ${activeTab === 'inventory_ai' ? 'btn-secondary' : 'btn-primary'}`}
+                  onClick={() => handleChatSend(activeTab === 'ollama' ? 'playground' : activeTab === 'inventory_ai' ? 'inventory' : 'system')}
+                  disabled={(activeTab === 'ollama' ? isOllamaLoading : activeTab === 'inventory_ai' ? isInventoryAiLoading : isSystemAiLoading) || (activeTab === 'ollama' ? !ollamaPrompt.trim() : activeTab === 'inventory_ai' ? !inventoryAiPrompt.trim() : !systemAiPrompt.trim()) || availableModels.length === 0}
+                  className={`absolute right-1 top-1/2 -translate-y-1/2 btn btn-sm btn-circle ${activeTab === 'inventory_ai' ? 'btn-secondary' : activeTab === 'system_ai' ? 'btn-success' : 'btn-primary'}`}
                 >
                   <Send className="w-4 h-4" />
                 </button>
@@ -734,3 +852,4 @@ const FloatingInventoryOverlay: React.FC<{ onClose: () => void }> = ({ onClose }
 };
 
 export default FloatingInventoryOverlay;
+

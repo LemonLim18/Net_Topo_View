@@ -1,3 +1,4 @@
+import os
 import time
 import json
 import logging
@@ -23,15 +24,21 @@ _LOCAL_POLL_LOCKS = set()
 
 # Initialize Celery app if Celery is installed
 if celery_available:
-    celery_app = Celery('network_ops', broker='redis://localhost:6379/0')
+    redis_host = os.environ.get("REDIS_HOST", "localhost")
+    redis_port = os.environ.get("REDIS_PORT", "6379")
+    celery_app = Celery('network_ops', broker=f'redis://{redis_host}:{redis_port}/0')
 else:
     celery_app = None
 
 def get_redis_client():
     if not redis_available:
         return None
+    if os.environ.get("REDIS_BYPASS", "0") == "1":
+        return None
     try:
-        client = redis.Redis(host='localhost', port=6379, db=0, socket_timeout=2.0)
+        host = os.environ.get("REDIS_HOST", "localhost")
+        port = int(os.environ.get("REDIS_PORT", "6379"))
+        client = redis.Redis(host=host, port=port, db=0, socket_timeout=2.0)
         client.ping()
         return client
     except Exception:

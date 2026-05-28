@@ -121,3 +121,55 @@ async def test_orchestrator_flow():
     assert "edge-r1" in ctx
     
     conn.close()
+
+
+@pytest.mark.anyio
+async def test_operational_appendix_includes_live_snapshot_and_impact():
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.execute("CREATE TABLE devices (id INTEGER PRIMARY KEY, hostname TEXT, role TEXT, status TEXT)")
+    conn.execute("CREATE TABLE links (src_device_id INTEGER, dst_device_id INTEGER, src_interface_id INTEGER, dst_interface_id INTEGER, discovery_protocol TEXT, updated_at TEXT)")
+    conn.execute("INSERT INTO devices (id, hostname, role, status) VALUES (1, 'core-r1', 'core', 'active')")
+    conn.execute("INSERT INTO devices (id, hostname, role, status) VALUES (2, 'edge-r1', 'edge', 'active')")
+    conn.execute("INSERT INTO links (src_device_id, dst_device_id, src_interface_id, dst_interface_id, discovery_protocol, updated_at) VALUES (1, 2, NULL, NULL, 'lldp', '2026-01-01T00:00:00+00:00')")
+    conn.commit()
+
+    db = MockDBManager(conn)
+    orchestrator = RetrievalOrchestrator(db)
+
+    set_cached_live_status_local("edge-r1", "DEGRADED", {"GigabitEthernet1": {"status": "down"}})
+    orchestrator.memory.remember_topology_snapshot(
+        {
+            "timestamp": "2026-01-01T00:00:01+00:00",
+            "nodes": {
+                "core-r1": {"edgeLink": {"Gi0/0": {"remote_node": "edge-r1", "remote_interface": "Gi0/1"}}},
+                "edge-r1": {"edgeLink": {"Gi0/1": {"remote_node": "core-r1", "remote_interface": "Gi0/0"}}},
+            },
+        },
+        ttl_seconds=30,
+    )
+
+    appendix = orchestrator._build_operational_appendix(
+        query="What devices are impacted if core-r1 fails and why is edge-r1 unstable?",
+        decision=type("Decision", (), {"include_telemetry": True, "include_inventory": True, "include_sdn": True, "use_knowledge": True, "query_class": "troubleshooting"})(),
+        device_hostnames=["core-r1", "edge-r1"],
+        bundle=type("Bundle", (), {
+            "inventory": type("Section", (), {"source": "local_db", "source_detail": "local", "freshness": type("F", (), {"captured_at": "2026-01-01", "ingested_at": "2026-01-01", "freshness_class": "live", "age_seconds": 0, "confidence": 1.0})()})(),
+            "planned_topology": type("Section", (), {"source": "local_db", "source_detail": "local", "freshness": type("F", (), {"captured_at": "2026-01-01", "ingested_at": "2026-01-01", "freshness_class": "live", "age_seconds": 0, "confidence": 1.0})()})(),
+            "telemetry": type("Section", (), {"source": "influxdb", "source_detail": "", "freshness": type("F", (), {"captured_at": "2026-01-01", "ingested_at": "2026-01-01", "freshness_class": "live", "age_seconds": 0, "confidence": 1.0})()})(),
+            "sdn_state": type("Section", (), {"source": "sdn_controllers", "source_detail": "", "freshness": type("F", (), {"captured_at": None, "ingested_at": None, "freshness_class": "missing", "age_seconds": None, "confidence": 0.0})()})(),
+            "config_history": type("Section", (), {"source": "config_snapshots", "source_detail": "", "freshness": type("F", (), {"captured_at": None, "ingested_at": None, "freshness_class": "missing", "age_seconds": None, "confidence": 0.0})()})(),
+            "deployment_status": type("Section", (), {"source": "intent_store+deployment_pipeline", "source_detail": "", "freshness": type("F", (), {"captured_at": None, "ingested_at": None, "freshness_class": "missing", "age_seconds": None, "confidence": 0.0})()})(),
+            "incidents": type("Section", (), {"source": "incident_store", "source_detail": "", "freshness": type("F", (), {"captured_at": None, "ingested_at": None, "freshness_class": "missing", "age_seconds": None, "confidence": 0.0})()})(),
+            "threat_detections": type("Section", (), {"source": "security_events", "source_detail": "", "freshness": type("F", (), {"captured_at": None, "ingested_at": None, "freshness_class": "missing", "age_seconds": None, "confidence": 0.0})()})(),
+            "drift": type("Section", (), {"source": "drift_store", "source_detail": "", "freshness": type("F", (), {"captured_at": None, "ingested_at": None, "freshness_class": "missing", "age_seconds": None, "confidence": 0.0})()})(),
+            "knowledge": type("Section", (), {"source": "vector_store", "source_detail": "", "freshness": type("F", (), {"captured_at": None, "ingested_at": None, "freshness_class": "live", "age_seconds": 0, "confidence": 1.0})()})(),
+        })(),
+    )
+
+    assert "Source Provenance" in appendix["appendix"]
+    assert "Live Operational Snapshot" in appendix["appendix"]
+    assert "Topology Impact Analysis" in appendix["appendix"]
+    assert "edge-r1" in appendix["appendix"]
+
+    conn.close()

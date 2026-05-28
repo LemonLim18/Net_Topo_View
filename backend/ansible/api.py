@@ -174,6 +174,7 @@ _builder  = None   # PlaybookBuilder
 _agent    = None   # NetworkAgent (for RAG context)
 _pipeline = None   # DeploymentPipeline
 _db       = None   # DatabaseManager
+_retrieval = None  # RetrievalOrchestrator
 
 
 def _get_safe_mode_default() -> bool:
@@ -208,6 +209,70 @@ def _plan_ansible_include_vector_rag() -> bool:
     """
     v = os.getenv("ANSIBLE_PLAN_VECTOR_RAG", "true").strip().lower()
     return v not in ("0", "false", "no", "off")
+
+
+def _build_ansible_retrieval_context(
+    intent_description: str,
+    feature: str,
+    resolved_hosts: List[str],
+    effective_vendor: str,
+) -> tuple[str, list[str]]:
+    """
+    Build curated context for Ansible planning without changing deterministic
+    template path resolution. Returns (rag_context, kb_snippets).
+    """
+    query = str(intent_description or "").strip()
+    if feature:
+        query = f"{query} feature {feature}".strip()
+    if effective_vendor:
+        query = f"{query} vendor {effective_vendor}".strip()
+
+    rag_context = ""
+    kb_snippets: list[str] = []
+
+    if _retrieval is not None:
+        try:
+            package = _retrieval.build_context_package(
+                query=query or intent_description or feature or "ansible planning",
+                device_hostnames=resolved_hosts or None,
+                vendor_hint=effective_vendor or None,
+                feature_hint=feature or None,
+            )
+            rag_context = package.prompt_text
+            kb_snippets = list(package.knowledge_snippets or [])
+        except Exception as exc:
+            logger.debug("Retrieval orchestrator for Ansible planning failed: %s", exc)
+    elif _agent is not None:
+        try:
+            if _plan_ansible_include_agent_full_context():
+                rag_context = _agent._context.build_full_context(
+                    device_hostnames=resolved_hosts,
+                    query=intent_description,
+                )
+            if _plan_ansible_include_vector_rag() and hasattr(_agent, "_retriever") and _agent._retriever:
+                if feature or effective_vendor:
+                    retrieval_query = query
+                else:
+                    retrieval_query = intent_description
+                kb_snippets = [
+                    r["text"]
+                    for r in _agent._retriever.retrieve(
+                        retrieval_query,
+                        k=3,
+                        vendor_filter=effective_vendor or None,
+                        doc_type_filter="ansible_reference",
+                    )
+                ]
+                if not kb_snippets:
+                    kb_snippets = [
+                        r["text"]
+                        for r in _agent._retriever.retrieve(retrieval_query, k=2)
+                    ]
+                kb_snippets = kb_snippets[:2]
+        except Exception as exc:
+            logger.debug("Fallback Ansible retrieval failed: %s", exc)
+
+    return rag_context, kb_snippets
 
 
 def _coerce_params_for_validation(params: Dict[str, Any]) -> None:
@@ -550,13 +615,14 @@ def _inventory_normalized_iface_names_for_hosts(hosts: List[str]) -> Set[str]:
     return out
 
 
-def setup_ansible(builder, agent, pipeline, db_manager) -> None:
+def setup_ansible(builder, agent, pipeline, db_manager, retrieval=None) -> None:
     """Called from backend.py lifespan to inject shared instances."""
-    global _builder, _agent, _pipeline, _db
+    global _builder, _agent, _pipeline, _db, _retrieval
     _builder  = builder
     _agent    = agent
     _pipeline = pipeline
     _db       = db_manager
+    _retrieval = retrieval
     logger.info("Ansible orchestration layer initialized")
 
 
@@ -2826,50 +2892,21 @@ async def plan_ansible(
     except Exception as _qos_guard_exc:
         logger.debug("create_and_plan QoS interface guard skipped: %s", _qos_guard_exc)
 
-    # Optional agent RAG for LLM playbook path. Reference-first **vlan** / **interface** skip
-    # vector retrieval here (deferred only if we need LLM fallback). ``build_full_context`` is
-    # **off by default for all features** (ANSIBLE_PLAN_AGENT_FULL_CONTEXT=1 to enable).
-    rag_context = ""
-    kb_snippets: list[str] = []
+    # Optional retrieval context for the LLM. The deterministic reference
+    # resolver below still owns template path selection.
     plan_feature_for_rag = str(req.feature or "").strip().lower()
     skip_upfront_vector_rag = plan_feature_for_rag in ("vlan", "interface")
     include_full_ctx = _plan_ansible_include_agent_full_context()
     include_vector_rag = _plan_ansible_include_vector_rag()
-    if _agent is not None and not skip_upfront_vector_rag:
-        if include_full_ctx:
-            try:
-                rag_context = _agent._context.build_full_context(
-                    device_hostnames=resolved_hosts,
-                    query=req.intent_description,
-                )
-            except Exception as exc:
-                logger.warning("Could not fetch RAG context: %s", exc)
-
-        if include_vector_rag:
-            try:
-                if hasattr(_agent, "_retriever") and _agent._retriever:
-                    query = req.intent_description
-                    if req.feature:
-                        query = f"{query} Ansible playbook reference feature {req.feature}"
-                    if effective_vendor:
-                        query = f"{query} vendor {effective_vendor}"
-                    kb_snippets = [
-                        r["text"]
-                        for r in _agent._retriever.retrieve(
-                            query,
-                            k=3,
-                            vendor_filter=effective_vendor or None,
-                            doc_type_filter="ansible_reference",
-                        )
-                    ]
-                    if not kb_snippets:
-                        kb_snippets = [
-                            r["text"]
-                            for r in _agent._retriever.retrieve(query, k=2)
-                        ]
-                    kb_snippets = kb_snippets[:2]
-            except Exception as exc:
-                logger.debug("Vector-RAG retrieval skipped: %s", exc)
+    rag_context = ""
+    kb_snippets: list[str] = []
+    if not skip_upfront_vector_rag:
+        rag_context, kb_snippets = _build_ansible_retrieval_context(
+            intent_description=req.intent_description,
+            feature=req.feature,
+            resolved_hosts=resolved_hosts,
+            effective_vendor=effective_vendor,
+        )
     intent = {
         "description":   req.intent_description,
         "target_hosts":  resolved_hosts,
@@ -3517,39 +3554,13 @@ async def plan_ansible(
 
     if orchestration is None and _agent is not None and skip_upfront_vector_rag:
         # Deferred RAG: reference path missed and we need LLM (e.g. interface VLAN/IP fallback).
-        if include_full_ctx and not rag_context:
-            try:
-                rag_context = _agent._context.build_full_context(
-                    device_hostnames=resolved_hosts,
-                    query=req.intent_description,
-                )
-            except Exception as exc:
-                logger.warning("Could not fetch RAG context (deferred): %s", exc)
-        if include_vector_rag and not kb_snippets:
-            try:
-                if hasattr(_agent, "_retriever") and _agent._retriever:
-                    query = req.intent_description
-                    if req.feature:
-                        query = f"{query} Ansible playbook reference feature {req.feature}"
-                    if effective_vendor:
-                        query = f"{query} vendor {effective_vendor}"
-                    kb_snippets = [
-                        r["text"]
-                        for r in _agent._retriever.retrieve(
-                            query,
-                            k=3,
-                            vendor_filter=effective_vendor or None,
-                            doc_type_filter="ansible_reference",
-                        )
-                    ]
-                    if not kb_snippets:
-                        kb_snippets = [
-                            r["text"]
-                            for r in _agent._retriever.retrieve(query, k=2)
-                        ]
-                    kb_snippets = kb_snippets[:2]
-            except Exception as exc:
-                logger.debug("Deferred vector-RAG retrieval skipped: %s", exc)
+        if (include_full_ctx or include_vector_rag) and not (rag_context or kb_snippets):
+            rag_context, kb_snippets = _build_ansible_retrieval_context(
+                intent_description=req.intent_description,
+                feature=req.feature,
+                resolved_hosts=resolved_hosts,
+                effective_vendor=effective_vendor,
+            )
 
     if orchestration is None:
         try:
@@ -3718,15 +3729,12 @@ async def plan_ansible_candidates(
     kb_snippets: list[str] = []
     if _agent is not None:
         try:
-            rag_context = _agent._context.build_full_context()
-        except Exception:
-            pass
-        try:
-            if hasattr(_agent, "_retriever") and _agent._retriever:
-                kb_snippets = [
-                    r["text"]
-                    for r in _agent._retriever.retrieve(req.intent_description, k=3)
-                ]
+            rag_context, kb_snippets = _build_ansible_retrieval_context(
+                intent_description=req.intent_description,
+                feature=req.feature,
+                resolved_hosts=resolved_hosts,
+                effective_vendor=req.vendor,
+            )
         except Exception:
             pass
 

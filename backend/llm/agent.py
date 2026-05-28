@@ -95,6 +95,7 @@ class NetworkAgent:
         api_key: Optional[str] = None,
         model: Optional[str] = None,
         retriever=None,
+        retrieval_orchestrator=None,
         proposal_manager: Optional[ProposalManager] = None,
     ):
         """
@@ -131,6 +132,7 @@ class NetworkAgent:
 
         # M21: optional knowledge retriever for hybrid RAG
         self._retriever = retriever
+        self._retrieval = retrieval_orchestrator
 
         # Conversation history (persists across chat() calls)
         self._history: List[LLMMessage] = []
@@ -497,14 +499,14 @@ class NetworkAgent:
             controller_policy=route_plan.get("controller_policy"),
             route_instruction=route_plan.get("instruction", ""),
         )
-        if routing_decision.use_knowledge and self._retriever is not None:
-            knowledge_ctx = self._context.build_knowledge_context(
-                user_message, self._retriever
-            )
-            if knowledge_ctx:
-                per_turn_system = per_turn_system + "\n\n" + knowledge_ctx
-        else:
-            knowledge_ctx = ""
+        knowledge_ctx = ""
+        if routing_decision.use_knowledge:
+            if self._retrieval is None and self._retriever is not None:
+                knowledge_ctx = self._context.build_knowledge_context(
+                    user_message, self._retriever
+                )
+        if knowledge_ctx:
+            per_turn_system = per_turn_system + "\n\n" + knowledge_ctx
 
         # Build full message list (system + history)
         messages = [
@@ -2301,12 +2303,18 @@ class NetworkAgent:
     def _network_context_cache_key(
         routing_decision=None,
         device_hostnames: Optional[List[str]] = None,
+        user_message: Optional[str] = None,
     ) -> str:
         """Produce a compact, hashable cache key based on routing class and target hosts."""
         qc = getattr(routing_decision, "query_class", None) or ""
         hosts = ",".join(sorted(device_hostnames or []))
         use_live = getattr(routing_decision, "use_live_context", True)
-        return f"{qc}|live={use_live}|{hosts}"
+        msg_hash = ""
+        if user_message:
+            import hashlib
+
+            msg_hash = hashlib.sha1(user_message.encode("utf-8", errors="replace")).hexdigest()[:12]
+        return f"{qc}|live={use_live}|{hosts}|{msg_hash}"
 
     def _build_network_context(
         self,
@@ -2317,16 +2325,32 @@ class NetworkAgent:
         cache_key = self._network_context_cache_key(
             routing_decision=routing_decision,
             device_hostnames=device_hostnames,
+            user_message=user_message,
         )
         cached = self._network_context_cache.get(cache_key)
         if cached is not None:
             return cached
 
-        network_context = self._context.build_full_context(
-            device_hostnames=device_hostnames,
-            query=user_message,
-            routing_decision=routing_decision,
-        )
+        if self._retrieval is not None and user_message:
+            try:
+                package = self._retrieval.build_context_package(
+                    query=user_message,
+                    device_hostnames=device_hostnames,
+                )
+                network_context = package.prompt_text
+            except Exception as exc:
+                logger.debug("Retrieval orchestrator context build failed, falling back: %s", exc)
+                network_context = self._context.build_full_context(
+                    device_hostnames=device_hostnames,
+                    query=user_message,
+                    routing_decision=routing_decision,
+                )
+        else:
+            network_context = self._context.build_full_context(
+                device_hostnames=device_hostnames,
+                query=user_message,
+                routing_decision=routing_decision,
+            )
         self._network_context_cache[cache_key] = network_context
         if len(self._network_context_cache) > self._CONTEXT_CACHE_MAXSIZE:
             oldest = next(iter(self._network_context_cache))

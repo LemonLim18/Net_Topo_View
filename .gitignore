@@ -17,6 +17,7 @@ Desktop.ini
 Note
 FRONTEND_CONTEXT.md
 _debug*
+backend/.env
 backend/venv/
 backend/__pycache__/
 backend/drivers/__pycache__/
@@ -36,3 +37,4 @@ backend/chroma_db/
 backend/chroma_db/chroma.sqlite3
 backend/chroma_db/**
 backend/db/netauto.db
+backend/.pytest-tmp/

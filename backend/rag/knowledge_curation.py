@@ -9,11 +9,9 @@ from typing import Any, Iterable, Optional
 CURATION_MANIFEST_FILENAME = "curation_manifest.json"
 
 REQUIRED_DOC_TYPES = (
-    "vendor_doc",
-    "cli_reference",
-    "troubleshooting",
-    "sop",
-    "advisory",
+    "ansible_reference",
+    "live_ops_state",
+    "planned_inventory",
 )
 
 TRUST_LEVEL_ORDER = (

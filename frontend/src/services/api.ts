@@ -354,7 +354,22 @@ export interface PlaybookQAResponse {
 
 export const llmApi = {
   chat: (message: string) =>
-    request<{ role: string; content: string; model: string; type: string; proposal: any | null; intent_meta: any | null }>('/llm/chat', {
+    request<{
+      role: string;
+      content: string;
+      model: string;
+      type: string;
+      proposal: any | null;
+      intent_meta: any | null;
+      grounding_meta?: {
+        answer_scope?: string;
+        freshness_class?: string;
+        confidence?: number;
+        source_used?: string[];
+        source_age?: Array<{ source?: string; age_seconds?: number | null; freshness_class?: string }>;
+        conflicts?: Array<{ code?: string; message?: string }>;
+      };
+    }>('/llm/chat', {
       method: 'POST',
       body: JSON.stringify({ message }),
     }),
@@ -1262,6 +1277,11 @@ export interface RagStatus {
   total_chunks: number;
   total_documents: number;
   chroma_path: string;
+  redis_host?: string;
+  redis_port?: number;
+  redis_online?: boolean;
+  redis_bypassed?: boolean;
+  redis_has_password?: boolean;
 }
 
 export const ragApi = {
@@ -1337,6 +1357,28 @@ export const ragApi = {
       embedded_at?: string;
       reason?: string;
     }>('/rag/state-embedding/trigger', { method: 'POST' }),
+
+  setRedisBypass: (bypass: boolean) =>
+    request<{ status: string; redis_bypassed: boolean }>('/rag/redis/bypass', {
+      method: 'POST',
+      body: JSON.stringify({ bypass }),
+    }),
+
+  updateRedisConfig: (host: string, port: number, password?: string) =>
+    request<{ status: string; message: string }>('/rag/redis/config', {
+      method: 'POST',
+      body: JSON.stringify({ host, port, password }),
+    }),
+
+  deleteNonAnsibleDocuments: () =>
+    request<{ docs_deleted: number; chunks_deleted: number; message: string }>('/rag/documents/non-ansible', {
+      method: 'DELETE',
+    }),
+
+  testRedisActiveConnection: () =>
+    request<{ status: string; message: string }>('/rag/redis/test-active', {
+      method: 'POST',
+    }),
 };
 
 // --- SSH Terminal API ---

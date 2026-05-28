@@ -33,3 +33,4 @@ ansible-lint>=6.22         # optional: playbook linting in builder.py
 jsonschema>=4.0            # VLAN intent schema validation (reference/vlan/intent_schema.json)
 
 influxdb-client
+redis

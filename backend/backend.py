@@ -53,6 +53,7 @@ from llm.vector_store import KnowledgeVectorStore
 from llm.retriever import KnowledgeRetriever
 from llm.ingestion import DocumentIngester
 from rag.api import router as rag_router, setup_rag, setup_context_bundle
+from retrieval import build_retrieval_orchestrator
 from dashboard.api import router as dashboard_router, setup_dashboard
 from device_syslog.api import router as device_syslog_router
 
@@ -158,6 +159,7 @@ _last_crawl_finished_at_monotonic: float = 0.0
 # can feed every fresh crawl result into the agent's RAG cache.
 _db: Optional[DatabaseManager] = None
 _agent: Optional[NetworkAgent] = None
+_retrieval = None
 _vault = None  # CredentialVault — set in lifespan
 _state_embedder = None  # NetworkStateEmbedder — Phase 9
 _syslog_receiver: Optional[SyslogReceiver] = None
@@ -448,6 +450,24 @@ async def _ingest_syslog_event(event: SecurityEvent):
     db = _db or DatabaseManager("db/netauto.db")
     try:
         event_id = _save_security_event(db, event)
+        if _retrieval is not None:
+            try:
+                _retrieval.remember_incident(
+                    str(event_id),
+                    {
+                        "id": event_id,
+                        "event_type": event.event_type,
+                        "severity": event.severity,
+                        "source_ip": event.source_ip,
+                        "dest_ip": event.dest_ip,
+                        "device_id": event.device_id,
+                        "description": event.description,
+                        "status": event.status,
+                        "created_at": event.created_at,
+                    },
+                )
+            except Exception as exc:
+                logger.debug("Could not update retrieval incident memory: %s", exc)
         await _telemetry_broadcast(
             {
                 "event": "security_event",
@@ -509,6 +529,22 @@ async def _ingest_raw_syslog(source_ip: str, raw_message: str):
             mnemonic=parsed.get("mnemonic"),
             message=parsed.get("message"),
         )
+        if _retrieval is not None and resolved_source_host:
+            try:
+                _retrieval.remember_device_snapshot(
+                    resolved_source_host,
+                    {
+                        "source_ip": resolved_source_ip,
+                        "source_host": resolved_source_host,
+                        "severity": parsed.get("severity"),
+                        "facility": parsed.get("facility"),
+                        "mnemonic": parsed.get("mnemonic"),
+                        "message": parsed.get("message"),
+                        "syslog_event_id": row_id,
+                    },
+                )
+            except Exception as exc:
+                logger.debug("Could not update retrieval device snapshot memory: %s", exc)
         await _telemetry_broadcast(
             {
                 "event": "device_syslog_event",
@@ -580,6 +616,11 @@ async def run_crawl_and_broadcast(trigger: str = "periodic"):
             _current_topology_dict = new_topo
             save_topology_to_file(_current_topology_dict, CURRENT_TOPOLOGY_FILE, sort_keys=True)
             _current_topology_json = json.dumps(_current_topology_dict, sort_keys=True)
+            if _retrieval is not None:
+                try:
+                    _retrieval.remember_topology(new_topo)
+                except Exception as exc:
+                    logger.debug("Could not update retrieval topology memory: %s", exc)
 
             # 2b. Keep the agent's RAG cache in sync with every crawl result
             if _db is not None:
@@ -679,7 +720,8 @@ async def lifespan(app: FastAPI):
     from llm.provider import get_llm_provider
 
     _main_llm = get_llm_provider()
-    agent = NetworkAgent(db, retriever=retriever, provider=_main_llm)
+    retrieval = build_retrieval_orchestrator(db_manager=db, retriever=retriever)
+    agent = NetworkAgent(db, retriever=retriever, retrieval_orchestrator=retrieval, provider=_main_llm)
     refresh_state = get_refresh_state_manager()
     refresh_state.register_handler(
         "live_topology",
@@ -703,6 +745,8 @@ async def lifespan(app: FastAPI):
     setup_agent(agent, pipeline=pipeline, vault=vault)  # Inject agent + M4/M15
     setup_dashboard(db)            # Inject DB for dashboard summary
     set_crawl_runner(run_crawl_and_broadcast) # Inject crawl runner to API
+    global _retrieval
+    _retrieval = retrieval
 
     # M4 — Inject DB into approval module so its Depends(_get_db) works at request time
     if _APPROVAL_ENABLED:
@@ -713,7 +757,7 @@ async def lifespan(app: FastAPI):
     _builder = None
     if _ANSIBLE_ENABLED:
         _builder = PlaybookBuilder(_main_llm)
-        setup_ansible(_builder, agent, pipeline, db)
+        setup_ansible(_builder, agent, pipeline, db, retrieval=retrieval)
         logger.info("Ansible orchestration layer initialized (M22)")
 
     # M25 — Phase-2: Agent Plan/Execute and Incidents

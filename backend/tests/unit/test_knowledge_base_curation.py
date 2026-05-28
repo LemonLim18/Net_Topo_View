@@ -40,7 +40,7 @@ class _FakeKnowledgeStore:
             {
                 "doc_id": "doc-1",
                 "doc_name": "01_cisco_ios_xe_ospf_design_baseline.md",
-                "doc_type": "vendor_doc",
+                "doc_type": "planned_inventory",
                 "vendor": "cisco",
                 "platform_family": "ios-xe",
                 "applicable_feature": "ospf,area-design",
@@ -52,7 +52,7 @@ class _FakeKnowledgeStore:
             {
                 "doc_id": "doc-2",
                 "doc_name": "05_change_execution_sop.md",
-                "doc_type": "sop",
+                "doc_type": "planned_inventory",
                 "vendor": "general",
                 "platform_family": "multi-vendor",
                 "applicable_feature": "change-control,rollback",
@@ -64,7 +64,7 @@ class _FakeKnowledgeStore:
             {
                 "doc_id": "doc-3",
                 "doc_name": "04_network_incident_triage_playbook.md",
-                "doc_type": "troubleshooting",
+                "doc_type": "live_ops_state",
                 "vendor": "general",
                 "platform_family": "multi-vendor",
                 "applicable_feature": "incident-response",
@@ -76,7 +76,7 @@ class _FakeKnowledgeStore:
             {
                 "doc_id": "doc-4",
                 "doc_name": "06_security_advisory_assessment_playbook.md",
-                "doc_type": "advisory",
+                "doc_type": "live_ops_state",
                 "vendor": "general",
                 "platform_family": "multi-vendor",
                 "applicable_feature": "security-advisory",
@@ -88,7 +88,7 @@ class _FakeKnowledgeStore:
             {
                 "doc_id": "doc-5",
                 "doc_name": "02_juniper_junos_bgp_triage_reference.md",
-                "doc_type": "cli_reference",
+                "doc_type": "ansible_reference",
                 "vendor": "juniper",
                 "platform_family": "junos",
                 "applicable_feature": "bgp,neighbor-state",
@@ -114,7 +114,7 @@ def test_ingester_applies_curated_metadata_overrides(tmp_path):
 
     result = ingester.ingest_file(
         file_path=str(doc_path),
-        doc_type="vendor_doc",
+        doc_type="planned_inventory",
         vendor="cisco",
         doc_name="ospf-guide.md",
         metadata_overrides={
@@ -149,7 +149,7 @@ def test_manifest_and_sidecar_metadata_resolution(tmp_path):
         kb_dir,
         manifest_file.name,
         KnowledgeDocumentMetadata(
-            doc_type="vendor_doc",
+            doc_type="planned_inventory",
             vendor="cisco",
             platform_family="ios-xe",
             applicable_feature="ospf",
@@ -159,7 +159,7 @@ def test_manifest_and_sidecar_metadata_resolution(tmp_path):
     save_document_metadata(
         sidecar_file,
         KnowledgeDocumentMetadata(
-            doc_type="cli_reference",
+            doc_type="ansible_reference",
             vendor="juniper",
             platform_family="junos",
             applicable_feature="bgp",
@@ -181,7 +181,7 @@ def test_curation_audit_reports_coverage_and_gaps():
         [
             {
                 "doc_name": "ospf-guide.md",
-                "doc_type": "vendor_doc",
+                "doc_type": "planned_inventory",
                 "vendor": "cisco",
                 "platform_family": "ios-xe",
                 "applicable_feature": "ospf",
@@ -189,7 +189,7 @@ def test_curation_audit_reports_coverage_and_gaps():
             },
             {
                 "doc_name": "change-sop.md",
-                "doc_type": "sop",
+                "doc_type": "ansible_reference",
                 "vendor": "general",
                 "platform_family": "multi-vendor",
                 "applicable_feature": "rollback",
@@ -198,9 +198,9 @@ def test_curation_audit_reports_coverage_and_gaps():
         ]
     )
 
-    assert audit["coverage_by_doc_type"]["vendor_doc"] == 1
+    assert audit["coverage_by_doc_type"]["planned_inventory"] == 1
     assert audit["coverage_by_trust_level"]["authoritative"] == 1
-    assert "cli_reference" in audit["missing_doc_types"]
+    assert "live_ops_state" in audit["missing_doc_types"]
     assert audit["warnings"]
 
 
@@ -210,6 +210,6 @@ def test_knowledge_status_includes_curation_audit(monkeypatch):
 
     assert payload["total_documents"] == 5
     assert payload["total_chunks"] == 6
-    assert payload["curation_audit"]["coverage_by_doc_type"]["cli_reference"] == 1
+    assert payload["curation_audit"]["coverage_by_doc_type"]["ansible_reference"] == 1
     assert payload["curation_audit"]["missing_doc_types"] == []
     assert len(payload["documents"]) == 3
