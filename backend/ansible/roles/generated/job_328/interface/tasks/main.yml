@@ -1,0 +1,13 @@
+- name: Dispatch Cisco task set
+  ansible.builtin.include_tasks: cisco.yml
+  when:
+  - inventory_hostname in groups.get('vendor_cisco_ios', [])
+- name: Dispatch Huawei task set
+  ansible.builtin.include_tasks: huawei.yml
+  when:
+  - inventory_hostname in groups.get('vendor_huawei_vrp', [])
+- name: Dispatch Juniper task set
+  ansible.builtin.include_tasks: juniper.yml
+  when:
+  - inventory_hostname in groups.get('vendor_juniper_junos', [])
+  - (ansible_network_os | default('')) in ['junos', 'juniper.device.junos']

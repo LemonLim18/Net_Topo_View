@@ -1,0 +1,4 @@
+---
+- name: Huawei VRP not targeted by this request
+  ansible.builtin.debug:
+    msg: This generated bundle contains a placeholder task file for a non-target vendor.

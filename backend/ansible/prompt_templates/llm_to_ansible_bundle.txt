@@ -53,7 +53,7 @@ You MUST generate a multi-file Ansible bundle with:
 8. Vendor task files must use the correct collection/module family:
    - Cisco IOS: `cisco.ios`. For VLANs use `cisco.ios.ios_vlans` (config list, state: merged). For interface access VLAN use `cisco.ios.ios_l2_interfaces` (config list with name, mode: access, access.vlan). Do NOT use deprecated `cisco.ios.vlan` or `cisco.ios.vlan_interfaces` (removed from the collection).
    - Huawei VRP/CloudEngine: `community.network.ce_config` with `lines` and `parents` for VLAN/interface. Do NOT use `community.network.network_config` (module does not exist).
-   - Juniper: `junipernetworks.junos`
+   - Juniper Junos: use the `juniper.device` collection, not the deprecated bare `junipernetworks.junos` task key. For interfaces use `juniper.device.junos_interfaces`; for VLANs use `juniper.device.junos_vlans` and `juniper.device.junos_l2_interfaces`; for configuration-style tasks use `juniper.device.junos_config`.
 9. Output only supported files for the feature; all listed task files must be present, but files for non-applicable vendors may contain a safe explanatory debug task.
 10. The content must be idempotent and safe for check-mode.
 11. Treat the `Scoped Target Device Inventory` block as authoritative for target devices, vendor resolution, management endpoints, interfaces, roles, sites, and neighbor/link hints.

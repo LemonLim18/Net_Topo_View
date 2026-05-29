@@ -143,7 +143,7 @@ const Header: React.FC<HeaderProps> = ({ theme, setTheme }) => {
                                         <div className="flex-1 min-w-0">
                                             <div className="flex items-center justify-between gap-2">
                                                 <span className="text-xs font-bold truncate">{task.message}</span>
-                                                <span className={`badge badge-[9px] uppercase tracking-wider font-bold py-0.5 px-1
+                                                <span className={`badge badge-[5px] uppercase text-[10px] font-bold py-1 px-1.5
                                                   ${task.status === 'processing'
                                                     ? 'badge-warning text-warning-content'
                                                     : task.status === 'failed'

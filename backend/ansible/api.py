@@ -3473,6 +3473,22 @@ async def plan_ansible(
         intent["secondary_intents"] = list(_plan_secondary_intents)
     _plan_iface_override = explicit_interface_names_from_request_params(req.params) if req.params else []
 
+    # When user/schema provided explicit interfaces for shutdown, always prefer those
+    # concrete names over broad nettopo fallback flags so generated playbook shows
+    # a direct filled interface list (same UX expectation as Cisco/Huawei paths).
+    if (
+        is_interface
+        and schema_action_plan == "shutdown_interface"
+        and _plan_iface_override
+    ):
+        explicit_shutdown = [str(x).strip() for x in _plan_iface_override if str(x).strip()]
+        if explicit_shutdown:
+            intent.setdefault("params", {})
+            intent["params"]["interfaces_to_shutdown"] = explicit_shutdown
+            intent["params"]["interfaces_shutdown_use_nettopo"] = False
+            intent["params"]["interfaces_config_use_nettopo"] = False
+            p_inv = intent["params"]
+
     # Cross-check user-supplied interface names against planned inventory before template fill.
     # ``collect_user_interface_names_from_params`` also reads ``_secondary_intents`` inside ``p_inv``.
     # Top-level ``intent.secondary_intents`` must be passed explicitly (same as preview).
@@ -3515,7 +3531,11 @@ async def plan_ansible(
 
     use_bundle = bool(getattr(builder, "supports_role_bundle", lambda *_: False)(req.feature))
     template_filled = None
-    if not use_bundle:
+    reference_vendor_set = {str(v or "").strip().lower() for v in (vendors or [])}
+    single_vendor_reference_target = len(reference_vendor_set) == 1 and reference_vendor_set.issubset(
+        {"cisco_ios", "huawei_vrp", "juniper_junos"}
+    )
+    if (not use_bundle) or single_vendor_reference_target:
         template_filled = fill_playbook_from_reference(
             feature=req.feature or "",
             vendors=vendors,
@@ -3551,7 +3571,41 @@ async def plan_ansible(
             },
         )
 
-    if template_filled is not None:
+    if template_filled is not None and use_bundle and not single_vendor_reference_target:
+        reference_bundle = builder.build_bundle_from_playbook(
+            intent=intent,
+            playbook_yaml=template_filled,
+            run_id=str(job_id),
+        )
+        validation = await _validate_bundle_candidate(
+            bundle=reference_bundle,
+            intent=intent,
+            job_id=job_id,
+            verify_with_dry_run=req.verify_with_dry_run,
+        )
+        if validation.get("passed", False):
+            orchestration = {
+                "success": True,
+                "bundle": reference_bundle.to_dict(),
+                "playbook": reference_bundle.file_map().get(reference_bundle.normalized_entrypoint(), ""),
+                "attempts_used": 1,
+                "max_attempts": 1,
+                "final_validation": validation,
+                "history": [{"attempt": 1, "passed": True, "issues": []}],
+                "source": "reference_template_bundle",
+            }
+        elif is_vlan or is_interface or is_acl:
+            logger.error("Reference bundle validation failed: %s", validation.get("issues"))
+            raise HTTPException(
+                422,
+                detail={
+                    "message": f"{'VLAN' if is_vlan else ('Interface' if is_interface else 'ACL')} reference bundle failed validation. Fix template or inventory; LLM fallback is disabled for this reference-backed feature.",
+                    "validation_issues": validation.get("issues", []),
+                    "errors": validation.get("errors", []),
+                },
+            )
+
+    if template_filled is not None and orchestration is None:
         # Use reference template as-is; only values (hosts, vlan_id, etc.) were filled. Validate with multi_vendor
         # when playbook has multiple vendor modules so step10 allows cisco/juniper/huawei.
         validation_intent = dict(intent)
@@ -4442,6 +4496,36 @@ def _normalize_refinement_errors(issues: list[dict[str, Any]]) -> list[dict[str,
     return normalized
 
 
+def _bundle_validation_hint(intent: dict, validation: dict[str, Any]) -> str:
+    """Return targeted regeneration guidance for common bundle validation failures."""
+    vendor = str(intent.get("vendor") or "").strip().lower()
+    feature = str(intent.get("feature") or "").strip().lower()
+    errors = [str(item) for item in (validation.get("errors") or [])]
+    joined = "\n".join(errors).lower()
+
+    if "module family" in joined and vendor == "juniper_junos":
+        if feature == "interface":
+            return (
+                "For Juniper interface bundles, regenerate using the exact Juniper reference pattern. "
+                "Use `juniper.device.junos_interfaces` in `tasks/juniper.yml`. "
+                "Do not use the bare task key `junipernetworks.junos`, and do not output only a collection name. "
+                "If you declare `collections: [juniper.device]`, the task key may be the short module name "
+                "`junos_interfaces`; otherwise use the full FQCN `juniper.device.junos_interfaces`."
+            )
+        if feature == "vlan":
+            return (
+                "For Juniper VLAN bundles, use `juniper.device.junos_vlans` and "
+                "`juniper.device.junos_l2_interfaces` (or their short names only when `collections: [juniper.device]` "
+                "is declared). Do not use the bare task key `junipernetworks.junos`."
+            )
+        return (
+            "For Juniper bundles, use explicit Juniper modules from the `juniper.device` collection or valid short "
+            "module names with `collections: [juniper.device]`. Do not use the bare task key `junipernetworks.junos`."
+        )
+
+    return ""
+
+
 def _format_issue_summary(issue: dict[str, Any]) -> str:
     prefix = f"[{issue.get('phase', 'validation')}/{issue.get('rule', 'unknown')}]"
     line = issue.get("line")
@@ -4782,6 +4866,9 @@ async def _build_bundle_with_refinement(
             "Previous bundle validation failed. Regenerate the full bundle and fix these issues only:\n"
             + "\n".join(f"- {item}" for item in validation.get("errors") or [])
         )
+        targeted_hint = _bundle_validation_hint(intent, validation)
+        if targeted_hint:
+            extra_guidance += "\n\nTargeted correction:\n- " + targeted_hint
         current_bundle = await builder.build_bundle_draft(
             intent=intent,
             rag_context=rag_context,

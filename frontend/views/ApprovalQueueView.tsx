@@ -23,6 +23,8 @@ interface QueueItem {
 }
 
 type QueueTab = 'pending' | 'approved' | 'rejected';
+type SortKey = 'id' | 'title' | 'requester' | 'status' | 'review' | 'created_at';
+type SortDir = 'asc' | 'desc';
 
 interface Props {
   setView?: (v: ViewId) => void;
@@ -74,6 +76,32 @@ function normalizeQueueItems(raw: QueueItem[]): QueueItem[] {
   return Array.from(byRequest.values());
 }
 
+function parseCreatedAt(value?: string | null): number {
+  const raw = String(value || '').trim();
+  if (!raw) return 0;
+  const direct = Date.parse(raw);
+  if (!Number.isNaN(direct)) return direct;
+  if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(raw)) {
+    const asUtc = Date.parse(`${raw.replace(' ', 'T')}Z`);
+    if (!Number.isNaN(asUtc)) return asUtc;
+  }
+  return 0;
+}
+
+function formatCreatedAt(value?: string | null): string {
+  const ts = parseCreatedAt(value);
+  if (!ts) return '—';
+  return new Intl.DateTimeFormat(undefined, {
+    year: 'numeric',
+    month: 'numeric',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: true,
+  }).format(new Date(ts));
+}
+
 const statusBadgeClass = (status: string) => {
   if (status === 'approved') return 'badge-success';
   if (status === 'rejected') return 'badge-error';
@@ -113,6 +141,8 @@ const ApprovalQueueView: React.FC<Props> = ({ setView: _setView }) => {
   const [pendingQuote, setPendingQuote] = useState('');
   const [selectionCoords, setSelectionCoords] = useState<{ top: number; left: number } | null>(null);
   const [activeQuote, setActiveQuote] = useState('');
+  const [sortKey, setSortKey] = useState<SortKey>('created_at');
+  const [sortDir, setSortDir] = useState<SortDir>('desc');
 
   const loadTab = useCallback(async (tab: QueueTab) => {
     setLoading((prev) => ({ ...prev, [tab]: true }));
@@ -347,7 +377,30 @@ const ApprovalQueueView: React.FC<Props> = ({ setView: _setView }) => {
   );
 
   const tabItems = items[activeTab];
+  const sortedTabItems = useMemo(() => {
+    const list = [...tabItems];
+    list.sort((a, b) => {
+      let cmp = 0;
+      if (sortKey === 'id') cmp = a.id - b.id;
+      else if (sortKey === 'title') cmp = (a.title || '').localeCompare(b.title || '');
+      else if (sortKey === 'requester') cmp = (a.requester || '').localeCompare(b.requester || '');
+      else if (sortKey === 'status') cmp = statusDisplayLabel(a.status).localeCompare(statusDisplayLabel(b.status));
+      else if (sortKey === 'review') cmp = (a.review_comment || '').localeCompare(b.review_comment || '');
+      else cmp = parseCreatedAt(a.created_at) - parseCreatedAt(b.created_at);
+      return sortDir === 'asc' ? cmp : -cmp;
+    });
+    return list;
+  }, [tabItems, sortDir, sortKey]);
   const tabLoading = loading[activeTab] && tabItems.length === 0;
+  const toggleSort = (key: SortKey) => {
+    if (sortKey === key) {
+      setSortDir((prev) => (prev === 'asc' ? 'desc' : 'asc'));
+      return;
+    }
+    setSortKey(key);
+    setSortDir('asc');
+  };
+  const sortIndicator = (key: SortKey) => (sortKey === key ? (sortDir === 'asc' ? ' ▲' : ' ▼') : '');
 
   return (
     <div className="h-full overflow-auto bg-base-200 p-4 md:p-6 space-y-5">
@@ -419,17 +472,17 @@ const ApprovalQueueView: React.FC<Props> = ({ setView: _setView }) => {
           <table className="table table-sm w-full">
             <thead className="bg-base-200">
               <tr>
-                <th>ID</th>
-                <th>Title</th>
-                <th>Requester</th>
-                <th>Status</th>
-                <th>Review</th>
-                <th>Created</th>
+                <th><button type="button" className="font-semibold hover:underline" onClick={() => toggleSort('id')}>ID{sortIndicator('id')}</button></th>
+                <th><button type="button" className="font-semibold hover:underline" onClick={() => toggleSort('title')}>Title{sortIndicator('title')}</button></th>
+                <th><button type="button" className="font-semibold hover:underline" onClick={() => toggleSort('requester')}>Requester{sortIndicator('requester')}</button></th>
+                <th><button type="button" className="font-semibold hover:underline" onClick={() => toggleSort('status')}>Status{sortIndicator('status')}</button></th>
+                <th><button type="button" className="font-semibold hover:underline" onClick={() => toggleSort('review')}>Review{sortIndicator('review')}</button></th>
+                <th><button type="button" className="font-semibold hover:underline" onClick={() => toggleSort('created_at')}>Created{sortIndicator('created_at')}</button></th>
                 <th className="w-56">Actions</th>
               </tr>
             </thead>
             <tbody>
-              {tabItems.map((item) => (
+              {sortedTabItems.map((item) => (
                 <tr key={`${item.type}-${item.id}`} className="hover">
                   <td className="font-mono text-xs">#{item.id}</td>
                   <td className="max-w-xs truncate font-medium" title={item.title}>{item.title}</td>
@@ -460,9 +513,7 @@ const ApprovalQueueView: React.FC<Props> = ({ setView: _setView }) => {
                       <span className="opacity-40">No review note</span>
                     )}
                   </td>
-                  <td className="text-xs opacity-60">
-                    {item.created_at ? new Date(item.created_at).toLocaleString() : '—'}
-                  </td>
+                  <td className="text-xs opacity-60">{formatCreatedAt(item.created_at)}</td>
                   <td>
                     <div className={`flex items-center gap-1 ${activeTab === 'pending' ? 'flex-nowrap whitespace-nowrap' : 'flex-wrap'}`}>
                       <button

@@ -4,13 +4,19 @@
 # - interfaces_config: list of { name, enabled? } (optional; preferred)
 # - interfaces_to_shutdown: list of interface names (shutdown-only fallback)
 - name: Configure interfaces (Juniper Junos)
-  hosts: "{{ target_hosts | default('all') }}"
+  hosts: "{{ target_hosts }}"
   gather_facts: no
   ignore_unreachable: true
   vars:
-    interfaces_config: "{{ interfaces_config | default([]) }}"
-    interfaces_to_shutdown: "{{ interfaces_to_shutdown | default(nettopo_interfaces | default([]) | map(attribute='name') | list) }}"
+    interfaces_config: {{ interfaces_config_json }}
     interfaces_admin_enabled: "{{ ((interfaces_admin_enabled | default(false) | string | trim | lower) in ['1', 'true', 'yes', 'on']) | string | lower }}"
+{% if interfaces_shutdown_use_nettopo %}
+    {% raw %}
+    interfaces_to_shutdown: "{{ nettopo_interfaces | default([]) | rejectattr('ip_address', 'equalto', (hostvars[inventory_hostname].ansible_host | default(''))) | map(attribute='name') | map('trim') | reject('equalto', '') | reject('match', '(?i).*(management|mgmt|meth|vty|console).*') | list }}"
+    {% endraw %}
+{% else %}
+    interfaces_to_shutdown: {{ interfaces_to_shutdown_json }}
+{% endif %}
   tasks:
 {% raw %}
     - name: Configure interface (Juniper Junos)

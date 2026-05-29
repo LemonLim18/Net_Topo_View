@@ -125,6 +125,54 @@ def _serialize_queue_item(item_type: str, row, db: DatabaseManager) -> dict:
     }
 
 
+def _queue_item_rank(item: dict) -> tuple[int, str]:
+    """
+    Prefer ansible job entries over generic change-request rows when both represent
+    the same logical approval item.
+    """
+    is_ansible_job = 1 if item.get("type") == "ansible_job" else 0
+    created_at = item.get("created_at", "") or ""
+    return (is_ansible_job, created_at)
+
+
+def _dedupe_queue_items(items: list[dict]) -> list[dict]:
+    """
+    Return a stable deduplicated list for queue rendering.
+    Priority:
+    1) Collapse by request_id (when available) to one canonical row.
+    2) Collapse by visible id to avoid duplicate IDs in UI lists.
+    """
+    by_request: dict[int, dict] = {}
+    passthrough: list[dict] = []
+    for item in items:
+        request_id = item.get("request_id")
+        if isinstance(request_id, int) and request_id > 0:
+            current = by_request.get(request_id)
+            if current is None or _queue_item_rank(item) > _queue_item_rank(current):
+                by_request[request_id] = item
+        else:
+            passthrough.append(item)
+
+    merged = list(by_request.values()) + passthrough
+    by_visible_id: dict[int, dict] = {}
+    out: list[dict] = []
+    for item in sorted(merged, key=lambda x: x.get("created_at", "") or "", reverse=True):
+        visible_id = item.get("id")
+        if not isinstance(visible_id, int):
+            out.append(item)
+            continue
+        current = by_visible_id.get(visible_id)
+        if current is None:
+            by_visible_id[visible_id] = item
+            out.append(item)
+            continue
+        if _queue_item_rank(item) > _queue_item_rank(current):
+            idx = out.index(current)
+            out[idx] = item
+            by_visible_id[visible_id] = item
+    return out
+
+
 @router.post("/{request_id}/approve")
 async def approve_request(
     request_id: int,
@@ -259,7 +307,8 @@ async def list_approval_queue(
     except Exception as e:
         logger.debug("Could not fetch %s ansible jobs: %s", status_filter, e)
 
-    items.sort(key=lambda x: x.get("created_at", ""), reverse=True)
+    items = _dedupe_queue_items(items)
+    items.sort(key=lambda x: x.get("created_at", "") or "", reverse=True)
     return {
         "items": items[:limit],
         "total": len(items),

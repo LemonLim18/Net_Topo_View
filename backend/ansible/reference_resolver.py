@@ -756,8 +756,31 @@ def get_template_vars(
         interfaces_config = list(normalized_i.get("interfaces_config") or [])
         interfaces_to_shutdown = list(normalized_i.get("interfaces_to_shutdown") or [])
         params_x = intent.get("params") or {}
+        raw_shutdown = params_x.get("interfaces_to_shutdown")
+        explicit_shutdown_from_params: List[str] = []
+        if isinstance(raw_shutdown, list):
+            explicit_shutdown_from_params = [
+                _strip_device_prefix_from_iface_name(str(x).strip(), target_hosts)
+                for x in raw_shutdown
+                if str(x).strip()
+            ]
+        elif isinstance(raw_shutdown, str) and raw_shutdown.strip():
+            explicit_shutdown_from_params = [
+                _strip_device_prefix_from_iface_name(x.strip(), target_hosts)
+                for x in raw_shutdown.split(",")
+                if x.strip()
+            ]
+        if explicit_shutdown_from_params:
+            interfaces_to_shutdown = explicit_shutdown_from_params
         use_nettopo_shutdown = bool(params_x.get("interfaces_shutdown_use_nettopo"))
         use_nettopo_config = bool(params_x.get("interfaces_config_use_nettopo"))
+        # Explicit interface selections from user/schema always win over broad
+        # "all interfaces via nettopo" fallback flags.
+        if interfaces_to_shutdown:
+            use_nettopo_shutdown = False
+            use_nettopo_config = False
+        if interfaces_config:
+            use_nettopo_config = False
         # Optional: admin-up vs admin-down behavior for shutdown-style templates.
         # When omitted, templates default to admin-down (disabled).
         interfaces_admin_enabled = params_x.get("interfaces_admin_enabled")

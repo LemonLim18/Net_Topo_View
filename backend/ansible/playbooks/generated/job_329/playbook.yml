@@ -1,0 +1,13 @@
+- name: Configure interfaces (Juniper Junos)
+  hosts: Juniper_Acc_4
+  gather_facts: false
+  vars:
+    interfaces_config: []
+    interfaces_admin_enabled: 'false'
+    interfaces_to_shutdown: '{{ nettopo_interfaces | default([]) | rejectattr(''ip_address'',
+      ''equalto'', (hostvars[inventory_hostname].ansible_host | default(''''))) |
+      map(attribute=''name'') | map(''trim'') | reject(''equalto'', '''') | reject(''match'',
+      ''(?i).*(management|mgmt|meth|vty|console).*'') | list }}'
+  ignore_unreachable: true
+  roles:
+  - generated/job_329/interface

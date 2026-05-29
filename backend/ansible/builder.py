@@ -19,7 +19,7 @@ import subprocess
 import tempfile
 import yaml
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Optional, Sequence
 
 from ansible.bundle_artifacts import AnsibleArtifactBundle, AnsibleArtifactFile, parse_bundle_response
 from config_engine.safety import validate_playbook_yaml
@@ -52,6 +52,14 @@ def repair_playbook_yaml(yaml_text: str) -> str:
     return repaired
 
 
+def _mask_jinja2_for_yaml_parse(text: str) -> str:
+    return re.sub(r"\{\{.*?\}\}", _J2_PLACEHOLDER, text, flags=re.DOTALL)
+
+
+def _normalize_literal_j2_for_parse(text: str) -> str:
+    return text.replace(_J2_PLACEHOLDER, _LITERAL_J2_REPLACEMENT_FOR_PARSE)
+
+
 PROMPT_TEMPLATE = (
     Path(__file__).parent / "prompt_templates" / "llm_to_ansible.txt"
 ).read_text()
@@ -67,6 +75,16 @@ _RAG_CONTEXT_MAX_CHARS  = 6000
 _KB_SNIPPETS_MAX        = 3
 _KB_SNIPPET_MAX_CHARS   = 1200
 SUPPORTED_ROLE_BUNDLE_FEATURES = frozenset({"vlan", "interface", "acl", "routing"})
+_J2_PLACEHOLDER = "__J2__"
+_LITERAL_J2_REPLACEMENT_FOR_PARSE = "JINJA_VAR"
+_ENTRYPOINT_RESERVED_KEYS = {"name", "hosts", "gather_facts", "vars", "serial", "collections", "connection"}
+_VENDOR_TASK_FILE_NAMES = {
+    "cisco_ios": "cisco.yml",
+    "cisco_nxos": "cisco.yml",
+    "cisco_xr": "cisco.yml",
+    "huawei_vrp": "huawei.yml",
+    "juniper_junos": "juniper.yml",
+}
 
 
 class PlaybookBuildError(RuntimeError):
@@ -215,14 +233,10 @@ class PlaybookBuilder:
                     "LLM did not return valid bundle JSON or a single YAML playbook. "
                     "Expected a ```json ... ``` block with entrypoint_path and files, or a ```yaml ... ``` playbook."
                 ) from e
-            run_suffix = str(run_id or "unknown")
-            entrypoint_path = f"playbooks/generated/job_{run_suffix}/playbook.yml"
-            return AnsibleArtifactBundle(
-                entrypoint_path=entrypoint_path,
-                files=[
-                    AnsibleArtifactFile(path=entrypoint_path, content=playbook_yaml, kind="playbook"),
-                ],
-                manifest={"generator": "fallback_single_playbook", "run_id": run_suffix},
+            return self._synthesize_role_bundle_from_playbook(
+                intent=intent,
+                playbook_yaml=playbook_yaml,
+                run_id=run_id,
             )
 
     def validate_playbook(self, intent: dict, playbook_yaml: str) -> dict[str, Any]:
@@ -355,6 +369,180 @@ class PlaybookBuilder:
         if not extracted:
             raise PlaybookBuildError("LLM returned an empty YAML code block")
         return extracted
+
+    def build_bundle_from_playbook(
+        self,
+        *,
+        intent: dict,
+        playbook_yaml: str,
+        run_id: Optional[str],
+    ) -> AnsibleArtifactBundle:
+        """Convert a filled single-play reference into the generated role-bundle shape."""
+        return self._synthesize_role_bundle_from_playbook(
+            intent=intent,
+            playbook_yaml=playbook_yaml,
+            run_id=run_id,
+        )
+
+    def _synthesize_role_bundle_from_playbook(
+        self,
+        *,
+        intent: dict,
+        playbook_yaml: str,
+        run_id: Optional[str],
+    ) -> AnsibleArtifactBundle:
+        run_suffix = str(run_id or "unknown")
+        feature = str(intent.get("feature") or "generated").strip().lower() or "generated"
+        role_root = f"roles/generated/job_{run_suffix}/{feature}"
+        entrypoint_path = f"playbooks/generated/job_{run_suffix}/playbook.yml"
+        vendor = str(intent.get("vendor") or "").strip().lower()
+        vendor_task_file = _VENDOR_TASK_FILE_NAMES.get(vendor, "juniper.yml")
+
+        parsed_playbook = self._parse_playbook_loose(playbook_yaml)
+        first_play = parsed_playbook[0] if parsed_playbook and isinstance(parsed_playbook[0], dict) else {}
+        vendor_tasks = list(first_play.get("tasks") or [])
+        if not vendor_tasks:
+            raise PlaybookBuildError(
+                "Fallback YAML playbook did not contain tasks that can be converted into a generated role bundle."
+            )
+
+        entrypoint_yaml = self._render_entrypoint_playbook(
+            first_play=first_play,
+            entrypoint_role=f"generated/job_{run_suffix}/{feature}",
+            target_hosts=list(intent.get("target_hosts") or []),
+            feature=feature,
+        )
+        main_tasks_yaml = self._render_dispatch_tasks(vendor_task_file)
+
+        placeholder_tasks = {
+            "cisco.yml": self._render_placeholder_vendor_task("Cisco IOS"),
+            "huawei.yml": self._render_placeholder_vendor_task("Huawei VRP"),
+            "juniper.yml": self._render_placeholder_vendor_task("Juniper Junos"),
+        }
+        placeholder_tasks[vendor_task_file] = yaml.safe_dump(
+            vendor_tasks,
+            sort_keys=False,
+            allow_unicode=False,
+        ).strip() + "\n"
+
+        files = [
+            AnsibleArtifactFile(path=entrypoint_path, content=entrypoint_yaml, kind="playbook"),
+            AnsibleArtifactFile(path=f"{role_root}/tasks/main.yml", content=main_tasks_yaml, kind="task"),
+        ]
+        for name in ("cisco.yml", "huawei.yml", "juniper.yml"):
+            files.append(
+                AnsibleArtifactFile(
+                    path=f"{role_root}/tasks/{name}",
+                    content=placeholder_tasks[name],
+                    kind="task",
+                )
+            )
+
+        logger.info(
+            "Synthesized fallback role bundle from single playbook: vendor=%s feature=%s run_id=%s",
+            vendor or "unknown",
+            feature,
+            run_suffix,
+        )
+        return AnsibleArtifactBundle(
+            entrypoint_path=entrypoint_path,
+            files=files,
+            manifest={
+                "generator": "fallback_role_bundle",
+                "run_id": run_suffix,
+                "vendor_hint": vendor,
+                "feature": feature,
+            },
+        )
+
+    def _parse_playbook_loose(self, playbook_yaml: str) -> list[dict[str, Any]]:
+        try:
+            parsed = yaml.safe_load(playbook_yaml)
+        except yaml.YAMLError:
+            yaml_for_parse = _mask_jinja2_for_yaml_parse(_normalize_literal_j2_for_parse(playbook_yaml))
+            try:
+                parsed = yaml.safe_load(yaml_for_parse)
+            except yaml.YAMLError as exc:
+                raise PlaybookBuildError(f"Fallback bundle conversion could not parse YAML: {exc}") from exc
+        if not isinstance(parsed, list) or not parsed:
+            raise PlaybookBuildError("Fallback bundle conversion requires a non-empty YAML play list.")
+        normalized: list[dict[str, Any]] = []
+        for play in parsed:
+            if isinstance(play, dict):
+                normalized.append(play)
+        if not normalized:
+            raise PlaybookBuildError("Fallback bundle conversion requires at least one mapping play.")
+        return normalized
+
+    def _render_entrypoint_playbook(
+        self,
+        *,
+        first_play: dict[str, Any],
+        entrypoint_role: str,
+        target_hosts: Sequence[str],
+        feature: str,
+    ) -> str:
+        hosts_value = str(first_play.get("hosts") or "").strip()
+        if not hosts_value:
+            hosts_value = ", ".join(str(item).strip() for item in target_hosts if str(item).strip()) or "all"
+        play: dict[str, Any] = {
+            "name": str(first_play.get("name") or f"Generated {feature} orchestration"),
+            "hosts": hosts_value,
+            "gather_facts": bool(first_play.get("gather_facts", False)),
+        }
+        for key in ("serial", "connection", "collections", "vars"):
+            if key in first_play:
+                play[key] = first_play.get(key)
+        extra_keys = {
+            key: value
+            for key, value in first_play.items()
+            if key not in _ENTRYPOINT_RESERVED_KEYS and key not in {"tasks", "pre_tasks", "post_tasks"}
+        }
+        play.update(extra_keys)
+        play["roles"] = [entrypoint_role]
+        return yaml.safe_dump([play], sort_keys=False, allow_unicode=False).strip() + "\n"
+
+    @staticmethod
+    def _render_dispatch_tasks(selected_vendor_task_file: str) -> str:
+        dispatch = [
+            {
+                "name": "Dispatch Cisco task set",
+                "ansible.builtin.include_tasks": "cisco.yml",
+                "when": [
+                    "inventory_hostname in groups.get('vendor_cisco_ios', [])",
+                ],
+            },
+            {
+                "name": "Dispatch Huawei task set",
+                "ansible.builtin.include_tasks": "huawei.yml",
+                "when": [
+                    "inventory_hostname in groups.get('vendor_huawei_vrp', [])",
+                ],
+            },
+            {
+                "name": "Dispatch Juniper task set",
+                "ansible.builtin.include_tasks": "juniper.yml",
+                "when": [
+                    "inventory_hostname in groups.get('vendor_juniper_junos', [])",
+                ],
+            },
+        ]
+        if selected_vendor_task_file == "cisco.yml":
+            dispatch[0]["when"].append("(ansible_network_os | default('')) in ['ios', 'cisco.ios.ios']")
+        elif selected_vendor_task_file == "huawei.yml":
+            dispatch[1]["when"].append("(ansible_network_os | default('')) in ['ce', 'vrp', 'huawei.vrp.vrp']")
+        elif selected_vendor_task_file == "juniper.yml":
+            dispatch[2]["when"].append("(ansible_network_os | default('')) in ['junos', 'juniper.device.junos']")
+        return yaml.safe_dump(dispatch, sort_keys=False, allow_unicode=False).strip() + "\n"
+
+    @staticmethod
+    def _render_placeholder_vendor_task(label: str) -> str:
+        return (
+            "---\n"
+            f"- name: {label} not targeted by this request\n"
+            "  ansible.builtin.debug:\n"
+            "    msg: This generated bundle contains a placeholder task file for a non-target vendor.\n"
+        )
 
     def _render_prompt(
         self,

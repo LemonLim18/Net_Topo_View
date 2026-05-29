@@ -771,6 +771,7 @@ const AnsibleStudioView: React.FC<AnsibleStudioViewProps> = ({ user }) => {
             onPlaybookReady={handlePlaybookReady}
             onOpenFile={(path) => handleFileOpen({ path, name: path.split('/').pop() ?? path })}
             activeJob={job}
+            user={user}
           />
         </div>
       </div>

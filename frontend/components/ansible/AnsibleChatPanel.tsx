@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react'
 import { createPortal } from 'react-dom';
 import ReactMarkdown from 'react-markdown';
 import { DiffEditor } from '@monaco-editor/react';
-import { Send, Loader2, Bot, Sparkles, AlertCircle, FileCode, ChevronRight, Paperclip, X, TriangleAlert, ChevronDown, Check, Undo2, Square, History, Plus, Trash2, RefreshCw } from 'lucide-react';
+import { Send, Loader2, Bot, Sparkles, AlertCircle, FileCode, ChevronRight, Paperclip, X, TriangleAlert, ChevronDown, Check, Undo2, Square, History, Plus, Trash2, RefreshCw, User as UserIcon } from 'lucide-react';
 import PremiumLoaderOverlay from '../PremiumLoaderOverlay';
 import { v4 as uuidv4 } from 'uuid';
 import { ansibleApi, llmApi, netboxApi, ragApi } from '../../src/services/api';
@@ -14,6 +14,7 @@ import {
 import { parseNativeVlanNumberFromPrompt, userPromptSuggestsNativeVlanIntent } from '../../src/utils/vlanPromptHints';
 import type { LlmRuntimeState } from '../../src/services/api';
 import type { AnsibleGeneratedArtifactFile, AnsibleMessage, AnsibleJob, AnsibleProposedEdit, ChatSession } from '../../typesLLM';
+import type { User } from '../../types';
 import { PlaybookStudioOverlay, type IntentSchemaInspectorPayload } from './PlaybookStudioOverlay';
 import {
   DEFAULT_LLM_PROVIDER,
@@ -240,6 +241,7 @@ interface AnsibleChatPanelProps {
   }) => void;
   onOpenFile:      (path: string) => void;
   activeJob:       AnsibleJob | null;
+  user?:           User | null;
 }
 
 // ── Lightweight intent parser ─────────────────────────────────────────────────
@@ -796,6 +798,7 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
   onPlaybookReady,
   onOpenFile,
   activeJob: _activeJob,
+  user,
 }) => {
   void _activeJob;
   const initialStoredSessions = useMemo(() => loadStoredAnsibleSessions(), []);
@@ -3052,7 +3055,29 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
               /* User message */
               <div className="px-3 py-2 bg-base-300">
                 <div className="flex items-center gap-2 mb-1">
-                  <div className="w-4 h-4 rounded-full bg-primary flex items-center justify-center text-[9px] text-primary-content font-bold shrink-0">U</div>
+                  {(() => {
+                    if (user?.avatar) {
+                      if (user.avatar.startsWith('avatar-')) {
+                        return (
+                          <div className="w-4 h-4 rounded-full bg-primary flex items-center justify-center text-primary-content shrink-0">
+                            <UserIcon strokeWidth={3} className="w-2.5 h-2.5" />
+                          </div>
+                        );
+                      }
+                      return (
+                        <img
+                          src={user.avatar}
+                          alt="Profile"
+                          className="w-4 h-4 rounded-full object-cover border border-base-content/20 shadow-sm shrink-0"
+                        />
+                      );
+                    }
+                    return (
+                      <div className="w-4 h-4 rounded-full bg-primary flex items-center justify-center text-[9px] text-primary-content font-bold shrink-0">
+                        {user?.username ? user.username.charAt(0).toUpperCase() : 'U'}
+                      </div>
+                    );
+                  })()}
                   <span className="text-[11px] font-semibold text-base-content">You</span>
                   <span className="text-[10px] text-base-content/50">{new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
                 </div>

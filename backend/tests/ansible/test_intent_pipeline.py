@@ -92,6 +92,7 @@ from ansible.intent_validation import (
     merge_prompt_aware_disambiguation_for_schema,
 )
 from ansible.reference_resolver import fill_playbook_from_reference
+from ansible.reference_resolver import get_template_vars
 
 
 def test_parse_vlan_database_params_from_text():
@@ -1213,6 +1214,36 @@ def test_reference_fill_juniper_interface_renders_successfully():
     rendered = fill_playbook_from_reference("interface", ["juniper_junos"], intent)
     assert isinstance(rendered, str) and rendered
     assert "juniper.device.junos_interfaces" in rendered
+
+
+def test_reference_fill_juniper_interface_uses_json_var_injection_for_shutdown_lists():
+    intent = {
+        "target_hosts": ["Juniper_Acc_4"],
+        "params": {
+            "interfaces_to_shutdown": ["ge-0/0/1"],
+            "target_hosts": ["Juniper_Acc_4"],
+            "target_devices": ["Juniper_Acc_4"],
+        },
+    }
+    rendered = fill_playbook_from_reference("interface", ["juniper_junos"], intent)
+    assert isinstance(rendered, str) and rendered
+    assert "interfaces_config: []" in rendered
+    assert 'interfaces_to_shutdown: ["ge-0/0/1"]' in rendered or "interfaces_to_shutdown:\n  - ge-0/0/1" in rendered
+
+
+def test_juniper_template_vars_keep_explicit_shutdown_list_when_nettopo_flag_is_set():
+    intent = {
+        "target_hosts": ["Juniper_Acc_4"],
+        "params": {
+            "interfaces_to_shutdown": ["ge-0/0/1"],
+            "interfaces_shutdown_use_nettopo": True,
+            "target_hosts": ["Juniper_Acc_4"],
+            "target_devices": ["Juniper_Acc_4"],
+        },
+    }
+    vars_out = get_template_vars("interface", intent, "")
+    assert vars_out.get("interfaces_shutdown_use_nettopo") is False
+    assert vars_out.get("interfaces_to_shutdown_json") == '["ge-0/0/1"]'
 
 
 def test_correct_interface_l3_coerces_routed_from_cidr_prompt():

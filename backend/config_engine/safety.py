@@ -116,6 +116,26 @@ _CISCO_IOS_COLLECTION_SHORT_NAMES: frozenset = frozenset({
     "ios_vrf", "ios_ntp_access_group", "ios_ospfv2", "ios_ospfv3",
 })
 
+_JUNIPER_JUNOS_COLLECTION_SHORT_NAMES: frozenset = frozenset({
+    "junos_interfaces",
+    "junos_vlans",
+    "junos_l2_interfaces",
+    "junos_l3_interfaces",
+    "junos_config",
+    "junos_command",
+    "junos_facts",
+    "junos_acl_interfaces",
+    "junos_acl_entries",
+    "junos_static_routes",
+    "junos_prefix_lists",
+    "junos_bgp_global",
+    "junos_bgp_address_family",
+    "junos_bgp_neighbor",
+    "junos_ospf_interfaces",
+    "junos_ospfv2",
+    "junos_ospfv3",
+})
+
 _CLI_PLAYBOOK_COLLECTIONS: Dict[str, Sequence[str]] = {
     "huawei_vrp": ("community.network.", "ansible.netcommon."),
 }
@@ -128,6 +148,14 @@ _MULTI_VENDOR_PREFIXES: Sequence[str] = (
     "community.network.",
     "ansible.netcommon.",
 )
+
+_VENDOR_TASK_FILENAME_MAP: Dict[str, str] = {
+    "cisco_ios": "cisco.yml",
+    "cisco_nxos": "cisco.yml",
+    "cisco_xr": "cisco.yml",
+    "huawei_vrp": "huawei.yml",
+    "juniper_junos": "juniper.yml",
+}
 
 _HARD_CODED_SECRET_PATTERNS: Tuple[Tuple[str, re.Pattern[str], str], ...] = (
     (
@@ -438,6 +466,9 @@ def validate_playbook_yaml(
         if (vendor == "cisco_ios" or vendor == "multi_vendor") and execution_engine == ExecutionAction.ANSIBLE_NATIVE.value:
             if m in _CISCO_IOS_COLLECTION_SHORT_NAMES:
                 return True
+        if (vendor == "juniper_junos" or vendor == "multi_vendor") and execution_engine == ExecutionAction.ANSIBLE_NATIVE.value:
+            if m in _JUNIPER_JUNOS_COLLECTION_SHORT_NAMES:
+                return True
         return False
 
     if expected_prefixes:
@@ -581,9 +612,26 @@ def validate_playbook_bundle(
         add_error(f"Execution engine '{execution_engine}' is incompatible with vendor '{vendor}'.")
 
     task_files = [path for path in file_map if "/tasks/" in path]
-    add_check("role_task_files_present", len(task_files) >= 4, ", ".join(sorted(task_files)))
-    if len(task_files) < 4:
-        add_error("Bundle must contain role task files for main/cisco/huawei/juniper.")
+    task_filenames = {Path(path).name for path in task_files}
+    required_task_filenames: set[str] = {"main.yml"}
+    if str(vendor or "").strip().lower() == "multi_vendor":
+        required_task_filenames.update({"cisco.yml", "huawei.yml", "juniper.yml"})
+    else:
+        required_task_filenames.add(
+            _VENDOR_TASK_FILENAME_MAP.get(str(vendor or "").strip().lower(), "juniper.yml")
+        )
+    missing_task_files = sorted(required_task_filenames - task_filenames)
+    add_check(
+        "role_task_files_present",
+        len(missing_task_files) == 0,
+        ", ".join(sorted(task_files)),
+    )
+    if missing_task_files:
+        add_error(
+            "Bundle is missing required role task file(s): "
+            + ", ".join(missing_task_files)
+            + "."
+        )
 
     module_keys: List[str] = []
 
@@ -595,11 +643,21 @@ def validate_playbook_bundle(
                 collect_task_keys(task.get("block") or [])
                 collect_task_keys(task.get("rescue") or [])
                 continue
+            action_val = task.get("action")
+            if isinstance(action_val, str):
+                action_mod = action_val.strip().split()[0]
+                if action_mod:
+                    module_keys.append(str(action_mod))
+            elif isinstance(action_val, dict):
+                action_mod = str(action_val.get("module") or action_val.get("__ansible_module__") or "").strip()
+                if action_mod:
+                    module_keys.append(action_mod)
             for key in task.keys():
                 if key in {"name", "when", "vars", "register", "delegate_to", "tags"}:
                     continue
                 module_keys.append(str(key))
 
+    # Collect modules from role task files.
     for path in task_files:
         try:
             content = str(file_map[path].get("content") or "")
@@ -610,6 +668,18 @@ def validate_playbook_bundle(
             continue
         if isinstance(parsed, list):
             collect_task_keys(parsed)
+
+    # Also collect modules declared directly in entrypoint tasks/pre/post tasks.
+    try:
+        if isinstance(plays, list):
+            for play in plays:
+                if not isinstance(play, dict):
+                    continue
+                collect_task_keys(play.get("tasks") or [])
+                collect_task_keys(play.get("pre_tasks") or [])
+                collect_task_keys(play.get("post_tasks") or [])
+    except Exception:
+        pass
 
     expected_prefixes = ()
     if execution_engine == ExecutionAction.ANSIBLE_NATIVE.value:
@@ -622,6 +692,8 @@ def validate_playbook_bundle(
             return True
         if vendor == "cisco_ios" and execution_engine == ExecutionAction.ANSIBLE_NATIVE.value:
             return m in _CISCO_IOS_COLLECTION_SHORT_NAMES
+        if vendor == "juniper_junos" and execution_engine == ExecutionAction.ANSIBLE_NATIVE.value:
+            return m in _JUNIPER_JUNOS_COLLECTION_SHORT_NAMES
         return False
 
     if expected_prefixes:

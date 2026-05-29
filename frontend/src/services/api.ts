@@ -19,11 +19,31 @@ async function request<T>(endpoint: string, options?: RequestInit): Promise<T> {
     const errorBody = await response.json().catch(() => ({}));
     const detail = errorBody.detail;
     let message = `API Error: ${response.statusText}`;
+    const _issueText = (x: any): string => {
+      if (x == null) return '';
+      if (typeof x === 'string') return x;
+      if (typeof x === 'number' || typeof x === 'boolean') return String(x);
+      if (typeof x === 'object') {
+        if (typeof x.message === 'string' && x.message.trim()) return x.message.trim();
+        try {
+          return JSON.stringify(x);
+        } catch {
+          return String(x);
+        }
+      }
+      return String(x);
+    };
+
     if (detail != null) {
       if (typeof detail === 'string') message = detail;
       else if (typeof detail === 'object' && detail.message) {
         message = detail.message;
-        if (Array.isArray(detail.issues) && detail.issues.length) message += '\n' + detail.issues.join('\n');
+        if (Array.isArray(detail.issues) && detail.issues.length) {
+          const rendered = detail.issues
+            .map((issue: any) => _issueText(issue))
+            .filter((line: string) => Boolean(line && line.trim()));
+          if (rendered.length) message += '\n' + rendered.join('\n');
+        }
       }
     }
     const err: any = new Error(message);
