@@ -170,10 +170,11 @@ const JobStatusBar: React.FC<JobStatusBarProps> = ({
     if (tab === 'audit') fetchAudit();
   }, [tab, fetchJobs, fetchAudit]);
 
-  // No early return for !job - we want to show the 'inactive' pipeline.
-  // Prefer explicit backend step statuses when available; they are more accurate than coarse job.stage.
-  const currentStageIdx = job ? STAGES.findIndex(s => s.key === job.stage) : -1;
+  let currentStageIdx = job ? STAGES.findIndex(s => s.key === job.stage) : -1;
   const jobStatus = job?.status;
+  if (jobStatus === 'approved' && currentStageIdx === 1) {
+    currentStageIdx = 2; // Move current stage to 'apply' since approval is done
+  }
   const stageStatusMap: Record<string, string> = {};
   for (const st of job?.steps || []) {
     const key = String(st.stage || '').trim().toLowerCase();
