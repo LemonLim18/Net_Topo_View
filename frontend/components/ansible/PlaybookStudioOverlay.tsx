@@ -673,6 +673,60 @@ export function PlaybookStudioOverlay({
     }
   }, [step]);
 
+  const categoryOptions = Array.from(
+    new Set([
+      ...Object.keys(FEATURES_DISPLAY),
+      ...availablePaths.map((p) => String(p.feature || '').trim()).filter(Boolean),
+    ]),
+  )
+    .filter((name) => !categories.includes(name))
+    .sort((a, b) => (FEATURES_DISPLAY[a] ?? a).localeCompare(FEATURES_DISPLAY[b] ?? b, undefined, { sensitivity: 'base' }));
+
+  const plannedDeviceOptions = Array.from(
+    new Set([
+      ...targetHosts,
+      ...((plannedAllInterfacesPreview?.devices || []).map((d) => String(d.hostname || '').trim()).filter(Boolean)),
+      ...((interfacesForSelection?.devices || []).map((d) => String(d.hostname || '').trim()).filter(Boolean)),
+    ]),
+  ).sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
+
+  const plannedInterfaceOptions = Array.from(
+    new Set(
+      (
+        (plannedAllInterfacesPreview?.devices || []).length > 0
+          ? (plannedAllInterfacesPreview?.devices || [])
+          : (interfacesForSelection?.devices || [])
+      )
+        .filter((device) => {
+          const hostname = String(device.hostname || '').trim();
+          return targetHosts.length === 0 || targetHosts.includes(hostname);
+        })
+        .flatMap((device) =>
+          (device.interfaces || [])
+            .map((iface) => String(iface.name || '').trim())
+            .filter(Boolean),
+        ),
+    ),
+  ).sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
+
+  useEffect(() => {
+    if (newCategory && !categoryOptions.includes(newCategory)) {
+      setNewCategory('');
+    }
+  }, [categoryOptions, newCategory]);
+
+  useEffect(() => {
+    if (newTargetHost && !plannedDeviceOptions.includes(newTargetHost)) {
+      setNewTargetHost('');
+    }
+  }, [newTargetHost, plannedDeviceOptions]);
+
+  useEffect(() => {
+    if (newTargetInterface && !plannedInterfaceOptions.includes(newTargetInterface)) {
+      setNewTargetInterface('');
+    }
+  }, [newTargetInterface, plannedInterfaceOptions]);
+
   const removeRef = (path: string) => {
     setSelectedRefs((prev) => prev.filter((r) => r.path !== path));
   };
@@ -1278,9 +1332,20 @@ export function PlaybookStudioOverlay({
                       <button type="button" className="hover:bg-primary-content/20 rounded-full p-0.5" onClick={() => removeCategory(c)} aria-label={`Remove ${c}`}><X className="w-3 h-3" /></button>
                     </span>
                   ))}
-                  <input type="text" placeholder="Add category..." className="input input-bordered input-xs w-28" value={newCategory} onChange={(e) => setNewCategory(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && (e.preventDefault(), addCategory())} />
-                  <button type="button" className="btn btn-ghost btn-xs gap-0.5" onClick={addCategory}><Plus className="w-3 h-3" /> Add</button>
-                  {categories.length === 0 && !newCategory && <span className="text-sm text-base-content/50">No category yet — add one or continue</span>}
+                  <select
+                    className="select select-bordered select-xs w-40"
+                    value={newCategory}
+                    onChange={(e) => setNewCategory(e.target.value)}
+                  >
+                    <option value="">Choose a category...</option>
+                    {categoryOptions.map((option) => (
+                      <option key={option} value={option}>
+                        {FEATURES_DISPLAY[option] ?? option}
+                      </option>
+                    ))}
+                  </select>
+                  <button type="button" className="btn btn-ghost btn-xs gap-0.5" onClick={addCategory} disabled={!newCategory}><Plus className="w-3 h-3" /> Add</button>
+                  {categories.length === 0 && !newCategory && <span className="text-sm text-base-content/50">No category yet — choose one from the list</span>}
                 </div>
                 {!policyApproved && categories.length > 0 && (
                   <p className="text-xs text-warning mt-2 flex items-center gap-1">
@@ -1485,9 +1550,35 @@ export function PlaybookStudioOverlay({
                       <button type="button" className="hover:bg-base-content/20 rounded-full p-0.5" onClick={() => setTargetHosts((prev) => prev.filter((x) => x !== h))} aria-label={`Remove ${h}`}><X className="w-3 h-3" /></button>
                     </span>
                   ))}
-                  <input type="text" placeholder="Add device or host..." className="input input-bordered input-xs w-36" value={newTargetHost} onChange={(e) => setNewTargetHost(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && (e.preventDefault(), (() => { const v = newTargetHost.trim(); if (v && !targetHosts.includes(v)) { setTargetHosts((p) => [...p, v]); setNewTargetHost(''); } })())} />
-                  <button type="button" className="btn btn-ghost btn-xs gap-0.5" onClick={() => { const v = newTargetHost.trim(); if (v && !targetHosts.includes(v)) { setTargetHosts((p) => [...p, v]); setNewTargetHost(''); } }}><Plus className="w-3 h-3" /> Add</button>
-                  {targetHosts.length === 0 && !newTargetHost && <span className="text-sm text-base-content/50">No devices — playbook will target &quot;all&quot;</span>}
+                  <select
+                    className="select select-bordered select-xs w-44"
+                    value={newTargetHost}
+                    onChange={(e) => setNewTargetHost(e.target.value)}
+                  >
+                    <option value="">Choose a device or host...</option>
+                    {plannedDeviceOptions
+                      .filter((host) => !targetHosts.includes(host))
+                      .map((host) => (
+                        <option key={host} value={host}>
+                          {host}
+                        </option>
+                      ))}
+                  </select>
+                  <button
+                    type="button"
+                    className="btn btn-ghost btn-xs gap-0.5"
+                    onClick={() => {
+                      const v = newTargetHost.trim();
+                      if (v && !targetHosts.includes(v)) {
+                        setTargetHosts((p) => [...p, v]);
+                        setNewTargetHost('');
+                      }
+                    }}
+                    disabled={!newTargetHost}
+                  >
+                    <Plus className="w-3 h-3" /> Add
+                  </button>
+                  {targetHosts.length === 0 && !newTargetHost && <span className="text-sm text-base-content/50">No devices selected — playbook will target &quot;all&quot;</span>}
                 </div>
               </div>
               {categories.map((c) => c.toLowerCase()).includes('interface') && (
@@ -1510,92 +1601,46 @@ export function PlaybookStudioOverlay({
                         </button>
                       </span>
                     ))}
-                    {plannedAllInterfacesPreview?.devices?.length ? (
-                      <div className="w-full">
-                        <div className="dropdown dropdown-end">
-                          <label tabIndex={0} className="btn btn-ghost btn-xs gap-0.5 cursor-pointer">
-                            <Plus className="w-3 h-3" /> Add
-                          </label>
-                          <div
-                            tabIndex={0}
-                            className="dropdown-content menu p-2 shadow bg-base-100 rounded-box max-h-48 overflow-y-auto w-72"
-                          >
-                            {Array.from(
-                              new Set(
-                                plannedAllInterfacesPreview.devices.flatMap((d) =>
-                                  (d.interfaces || [])
-                                    .map((i) => String(i.name || '').trim())
-                                    .filter(Boolean)
-                                )
-                              )
-                            )
-                              .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }))
-                              .map((name) => {
-                                const checked = targetInterfaces.includes(name);
-                                return (
-                                  <li key={name} className="p-1.5">
-                                    <label className="flex items-center gap-2 cursor-pointer">
-                                      <input
-                                        type="checkbox"
-                                        checked={checked}
-                                        onChange={() => {
-                                          setTargetInterfaces((prev) => {
-                                            const next = new Set(prev);
-                                            if (next.has(name)) next.delete(name);
-                                            else next.add(name);
-                                            return Array.from(next);
-                                          });
-                                        }}
-                                      />
-                                      <span className="text-xs font-mono">{name}</span>
-                                    </label>
-                                  </li>
-                                );
-                              })}
-                            {targetInterfaces.length === 0 ? (
-                              <li className="text-xs opacity-70 p-1.5">No interfaces selected yet</li>
-                            ) : null}
-                          </div>
-                        </div>
-                      </div>
-                    ) : (
-                      <>
-                        <input
-                          type="text"
-                          placeholder="Add interface..."
-                          className="input input-bordered input-xs w-36 font-mono"
-                          value={newTargetInterface}
-                          onChange={(e) => setNewTargetInterface(e.target.value)}
-                          onKeyDown={(e) =>
-                            e.key === 'Enter' &&
-                            (e.preventDefault(),
-                              (() => {
-                                const v = newTargetInterface.trim();
-                                if (v && !targetInterfaces.includes(v)) {
-                                  setTargetInterfaces((p) => [...p, v]);
-                                  setNewTargetInterface('');
-                                }
-                              })())
-                          }
-                        />
-                        <button
-                          type="button"
-                          className="btn btn-ghost btn-xs gap-0.5"
-                          onClick={() => {
-                            const v = newTargetInterface.trim();
-                            if (v && !targetInterfaces.includes(v)) {
-                              setTargetInterfaces((p) => [...p, v]);
-                              setNewTargetInterface('');
-                            }
-                          }}
-                        >
-                          <Plus className="w-3 h-3" /> Add
-                        </button>
-                        {targetInterfaces.length === 0 && !newTargetInterface ? (
-                          <span className="text-sm text-base-content/50">No interfaces selected</span>
-                        ) : null}
-                      </>
-                    )}
+                    <select
+                      className="select select-bordered select-xs w-44 font-mono"
+                      value={newTargetInterface}
+                      onChange={(e) => setNewTargetInterface(e.target.value)}
+                      disabled={plannedInterfaceOptions.length === 0}
+                    >
+                      <option value="">
+                        {plannedInterfaceOptions.length > 0
+                          ? 'Choose an interface...'
+                          : 'No planned interfaces available'}
+                      </option>
+                      {plannedInterfaceOptions
+                        .filter((name) => !targetInterfaces.includes(name))
+                        .map((name) => (
+                          <option key={name} value={name}>
+                            {name}
+                          </option>
+                        ))}
+                    </select>
+                    <button
+                      type="button"
+                      className="btn btn-ghost btn-xs gap-0.5"
+                      onClick={() => {
+                        const v = newTargetInterface.trim();
+                        if (v && !targetInterfaces.includes(v)) {
+                          setTargetInterfaces((p) => [...p, v]);
+                          setNewTargetInterface('');
+                        }
+                      }}
+                      disabled={!newTargetInterface}
+                    >
+                      <Plus className="w-3 h-3" /> Add
+                    </button>
+                    {targetInterfaces.length === 0 && !newTargetInterface ? (
+                      <span className="text-sm text-base-content/50">
+                        {plannedInterfaceOptions.length > 0
+                          ? 'No interfaces selected'
+                          : 'Select target devices first or refresh planned context'}
+                      </span>
+                    ) : null}
                   </div>
                 </div>
               )}
