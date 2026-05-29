@@ -1133,6 +1133,15 @@ class DatabaseManager:
             )
             return cur.rowcount > 0
 
+    def update_snapshot_owner(self, snapshot_id: int, owner_username: Optional[str]) -> bool:
+        """Set or backfill the owner for a config snapshot."""
+        with self._connect() as conn:
+            cur = conn.execute(
+                "UPDATE config_snapshots SET owner_username = ? WHERE id = ?",
+                (owner_username, snapshot_id),
+            )
+            return cur.rowcount > 0
+
     # =============================================================
     # COMPLIANCE: Policies, audit, results, jobs  (persistent)
     # =============================================================

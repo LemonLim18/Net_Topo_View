@@ -292,7 +292,9 @@ const ConfigBackupView: React.FC = () => {
                                 {s.owner_username}
                               </span>
                             ) : (
-                              <span className="opacity-40 italic">—</span>
+                              <span className="badge badge-ghost badge-sm text-[11px] opacity-70">
+                                Unassigned
+                              </span>
                             )}
                           </td>
                           <td className="py-4">

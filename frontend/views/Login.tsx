@@ -1,5 +1,5 @@
 import React, { useMemo, useState, useRef } from 'react';
-import { Lock, User as UserIcon, UserPlus, ShieldCheck, Sparkles, Mail, Upload, ArrowLeft, HelpCircle } from 'lucide-react';
+import { Lock, User as UserIcon, Mail, Upload, ArrowLeft, HelpCircle, Eye, EyeOff } from 'lucide-react';
 import type { User } from '../types';
 import { normalizeUserRole } from '../types';
 import { authApi } from '../src/services/api';
@@ -11,6 +11,74 @@ interface LoginProps {
 
 const PRESETS = ['avatar-1', 'avatar-2', 'avatar-3', 'avatar-4'];
 
+/* ── Decorative SVG art overlay for the left panel ───────────────────── */
+const DecorativeArt: React.FC = () => (
+  <svg
+    className="absolute inset-0 w-full h-full pointer-events-none"
+    viewBox="0 0 500 600"
+    fill="none"
+    xmlns="http://www.w3.org/2000/svg"
+    preserveAspectRatio="xMidYMid slice"
+  >
+    {/* Large organic blob */}
+    <path
+      d="M-30 100 C50 50,180 20,250 80 C320 140,380 60,420 120 C460 180,500 300,440 380 C380 460,280 500,200 460 C120 420,30 480,-20 400 Z"
+      fill="rgba(255,255,255,0.06)"
+    />
+    {/* Secondary blob */}
+    <path
+      d="M350 0 C400 40,500 100,480 200 C460 300,520 350,500 400 L500 0 Z"
+      fill="rgba(255,255,255,0.05)"
+    />
+
+    {/* Topographic / wavy contour lines */}
+    <path d="M-10 520 C60 480,140 510,200 490 C260 470,320 500,400 480 C440 472,480 490,520 480" stroke="rgba(255,255,255,0.18)" strokeWidth="1.5" fill="none" />
+    <path d="M-10 500 C50 460,130 490,190 470 C250 450,310 480,390 460 C430 452,470 470,520 460" stroke="rgba(255,255,255,0.14)" strokeWidth="1.5" fill="none" />
+    <path d="M-10 480 C40 440,120 470,180 450 C240 430,300 460,380 440 C420 432,460 450,520 440" stroke="rgba(255,255,255,0.10)" strokeWidth="1.5" fill="none" />
+
+    {/* Wavy lines at top-right */}
+    <path d="M280 40 C300 60,340 30,370 50 C400 70,430 40,470 60 C490 70,510 50,530 60" stroke="rgba(255,255,255,0.12)" strokeWidth="1.2" fill="none" />
+    <path d="M300 55 C320 75,360 45,390 65 C420 85,450 55,490 75" stroke="rgba(255,255,255,0.09)" strokeWidth="1.2" fill="none" />
+
+    {/* Cross / plus signs */}
+    <g stroke="rgba(255,255,255,0.35)" strokeWidth="2" strokeLinecap="round">
+      <line x1="60" y1="50" x2="60" y2="70" />
+      <line x1="50" y1="60" x2="70" y2="60" />
+    </g>
+    <g stroke="rgba(255,255,255,0.25)" strokeWidth="2" strokeLinecap="round">
+      <line x1="100" y1="430" x2="100" y2="450" />
+      <line x1="90" y1="440" x2="110" y2="440" />
+    </g>
+    <g stroke="rgba(255,255,255,0.20)" strokeWidth="1.5" strokeLinecap="round">
+      <line x1="380" y1="320" x2="380" y2="340" />
+      <line x1="370" y1="330" x2="390" y2="330" />
+    </g>
+
+    {/* Circles */}
+    <circle cx="240" cy="90" r="8" stroke="rgba(255,255,255,0.22)" strokeWidth="1.5" fill="none" />
+    <circle cx="55" cy="380" r="10" stroke="rgba(255,255,255,0.18)" strokeWidth="1.5" fill="none" />
+    <circle cx="420" cy="160" r="5" stroke="rgba(255,255,255,0.15)" strokeWidth="1.2" fill="none" />
+
+    {/* Dot cluster grid */}
+    {[0, 1, 2, 3, 4].map(r =>
+      [0, 1, 2, 3].map(c => (
+        <circle
+          key={`dot-${r}-${c}`}
+          cx={300 + c * 8}
+          cy={10 + r * 8}
+          r="1.5"
+          fill="rgba(255,255,255,0.3)"
+        />
+      ))
+    )}
+
+    {/* Scattered dots */}
+    <circle cx="160" cy="140" r="2" fill="rgba(255,255,255,0.20)" />
+    <circle cx="350" cy="250" r="2" fill="rgba(255,255,255,0.15)" />
+    <circle cx="80" cy="300" r="2.5" fill="rgba(255,255,255,0.12)" />
+  </svg>
+);
+
 const Login: React.FC<LoginProps> = ({ onLogin }) => {
   const [mode, setMode] = useState<'signin' | 'signup' | 'forgot'>('signin');
   
@@ -18,6 +86,12 @@ const Login: React.FC<LoginProps> = ({ onLogin }) => {
   const [username, setUsername] = useState('admin');
   const [password, setPassword] = useState('');
   
+  // Password Visibility States
+  const [showPassword, setShowPassword] = useState(false);
+  const [showConfirmPassword, setShowConfirmPassword] = useState(false);
+  const [showResetNewPassword, setShowResetNewPassword] = useState(false);
+  const [showResetConfirmPassword, setShowResetConfirmPassword] = useState(false);
+
   // Registration State
   const [fullName, setFullName] = useState('');
   const [email, setEmail] = useState('');
@@ -38,20 +112,36 @@ const Login: React.FC<LoginProps> = ({ onLogin }) => {
   const [dragOver, setDragOver] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Password strength check helpers
+  // Password strength helpers
   const passwordStrength = useMemo(() => {
-    if (!password) return { score: 0, text: 'No Password', color: 'bg-neutral-content/20' };
+    if (!password) return { score: 0, text: 'No Password', color: 'bg-base-content/10', textColor: 'text-base-content/40' };
     let score = 0;
     if (password.length >= 6) score += 1;
     if (/[a-zA-Z]/.test(password)) score += 1;
     if (/[0-9]/.test(password)) score += 1;
     if (/[^A-Za-z0-9]/.test(password)) score += 1;
 
-    if (score <= 1) return { score, text: 'Weak', color: 'bg-error' };
-    if (score === 2) return { score, text: 'Fair', color: 'bg-warning' };
-    if (score === 3) return { score, text: 'Good', color: 'bg-info' };
-    return { score, text: 'Strong', color: 'bg-success' };
+    if (score <= 1) return { score, text: 'Weak', color: 'bg-error', textColor: 'text-error' };
+    if (score === 2) return { score, text: 'Fair', color: 'bg-warning', textColor: 'text-warning' };
+    if (score === 3) return { score, text: 'Good', color: 'bg-info', textColor: 'text-info' };
+    return { score, text: 'Strong', color: 'bg-success', textColor: 'text-success' };
   }, [password]);
+
+  /* ── Left-panel dynamic content based on mode ──────────────────────── */
+  const panelContent = useMemo(() => {
+    if (mode === 'signup') return {
+      title: 'Create your profile.',
+      subtitle: 'Register your authorized credentials to access the operations dashboard.',
+    };
+    if (mode === 'forgot') return {
+      title: 'Recover access.',
+      subtitle: 'Verify your identity to securely reset your credentials.',
+    };
+    return {
+      title: 'Welcome back!',
+      subtitle: 'Sign in to access your network operations dashboard.',
+    };
+  }, [mode]);
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -143,7 +233,7 @@ const Login: React.FC<LoginProps> = ({ onLogin }) => {
         finishLogin(response);
       }
     } catch (err: any) {
-      Toast.error(mode === 'signin' ? 'Login Failed' : 'Signup Failed', err.message || 'Request failed');
+      Toast.error(mode === 'signin' ? 'Login Failed' : 'Registration Failed', err.message || 'Request failed');
       setLoading(false);
     }
   };
@@ -204,412 +294,376 @@ const Login: React.FC<LoginProps> = ({ onLogin }) => {
     }
   };
 
+  /* ── Shared input classes ──────────────────────────────────────────── */
+  const inputCls = 'w-full h-11 rounded-full border border-base-content/15 bg-base-100 pl-10 pr-10 text-sm text-base-content placeholder:text-base-content/35 outline-none transition-colors focus:border-primary';
+  const inputSmCls = 'w-full h-9 rounded-full border border-base-content/15 bg-base-100 px-4 text-xs text-base-content placeholder:text-base-content/35 outline-none transition-colors focus:border-primary';
+  const inputSmIconCls = 'w-full h-9 rounded-full border border-base-content/15 bg-base-100 pl-9 pr-4 text-xs text-base-content placeholder:text-base-content/35 outline-none transition-colors focus:border-primary';
+  const labelCls = 'block text-[10px] font-bold uppercase tracking-wider text-base-content/50 mb-1';
+  const iconLeftCls = 'absolute left-3.5 top-1/2 -translate-y-1/2 text-base-content/30 pointer-events-none';
+  const eyeBtnCls = 'absolute right-3 top-1/2 -translate-y-1/2 text-base-content/30 hover:text-base-content/60 transition-colors';
+
   return (
-    <div className="relative h-screen w-screen overflow-hidden bg-base-300 flex items-center justify-center">
-      
-      {/* Dynamic Ambient Glows */}
-      <style>{`
-        @keyframes float-slow-1 {
-          0%, 100% { transform: translate(0, 0) scale(1); }
-          50% { transform: translate(50px, 30px) scale(1.1); }
-        }
-        @keyframes float-slow-2 {
-          0%, 100% { transform: translate(0, 0) scale(1); }
-          50% { transform: translate(-40px, -60px) scale(1.15); }
-        }
-        .ambient-glowing-blob-1 {
-          animation: float-slow-1 12s ease-in-out infinite;
-        }
-        .ambient-glowing-blob-2 {
-          animation: float-slow-2 15s ease-in-out infinite;
-        }
-      `}</style>
-      
-      <div className="absolute inset-0 pointer-events-none overflow-hidden">
-        <div className="absolute -top-32 -left-24 h-96 w-96 rounded-full bg-primary/20 blur-[100px] ambient-glowing-blob-1" />
-        <div className="absolute -bottom-32 -right-24 h-96 w-96 rounded-full bg-secondary/20 blur-[100px] ambient-glowing-blob-2" />
-        <div className="absolute top-1/3 left-1/2 h-80 w-80 -translate-x-1/2 -translate-y-1/2 rounded-full bg-accent/10 blur-[90px]" />
-      </div>
+    <div className="min-h-screen w-full flex items-center justify-center bg-base-300 p-4 font-[Plus_Jakarta_Sans,sans-serif]">
 
-      <div className="relative z-10 w-full max-w-5xl mx-auto px-4 flex justify-center items-center">
-        <div className="grid grid-cols-1 lg:grid-cols-[1.1fr,0.9fr] gap-8 items-stretch w-full max-h-[90vh] bg-base-100/60 border border-base-content/10 shadow-2xl backdrop-blur-md rounded-3xl overflow-hidden p-6 md:p-8">
-          
-          {/* Left panel info (visible on large screen) */}
-          <section className="hidden lg:flex flex-col justify-between border-r border-base-content/10 pr-8 py-2">
-            <div>
-              <div className="mb-5 inline-flex items-center gap-2 rounded-full border border-primary/40 bg-primary/10 px-3 py-1 text-xs font-bold uppercase tracking-[0.14em] text-primary">
-                <Sparkles className="h-3.5 w-3.5" />
-                Network Automation Platform
-              </div>
-              <h1 className="text-3xl font-black leading-tight text-base-content">
-                Secure Access to CogniShield Ops
-              </h1>
-              <p className="mt-4 text-xs leading-6 text-base-content/70">
-                Unified control for intent-driven automation, compliance workflows, and deployment approvals across your network infrastructure.
-              </p>
-              
-              <div className="mt-8 space-y-4">
-                <div className="flex items-start gap-3 rounded-2xl border border-base-content/10 bg-base-100/70 p-3 shadow-sm hover:shadow transition-shadow">
-                  <ShieldCheck className="mt-0.5 h-4 w-4 text-success shrink-0" />
-                  <div>
-                    <p className="text-xs font-bold">Role-based Access Protection</p>
-                    <p className="text-[11px] text-base-content/65 mt-0.5">Strict separation of Operator, Engineer, and Admin policies.</p>
-                  </div>
-                </div>
-                <div className="flex items-start gap-3 rounded-2xl border border-base-content/10 bg-base-100/70 p-3 shadow-sm hover:shadow transition-shadow">
-                  <ShieldCheck className="mt-0.5 h-4 w-4 text-success shrink-0" />
-                  <div>
-                    <p className="text-xs font-bold">Self-Service Account Recovery</p>
-                    <p className="text-[11px] text-base-content/65 mt-0.5">Restore password access immediately using secure challenge hashing.</p>
-                  </div>
-                </div>
-              </div>
-            </div>
+      {/* ── Card Container ──────────────────────────────────────────── */}
+      <div className="w-full max-w-[920px] grid grid-cols-1 md:grid-cols-2 rounded-2xl overflow-hidden shadow-2xl">
 
-            <div className="pt-4">
-              <div className="divider text-[10px] uppercase tracking-[0.12em] text-base-content/45 mt-0 mb-4">Default System Accounts</div>
-              <div className="grid grid-cols-2 gap-2 text-[10px] text-base-content/75">
-                <div className="bg-base-100/80 rounded-xl px-3 py-2 border border-base-content/5 shadow-sm text-center">
-                  <span className="font-semibold block">Administrator</span>
-                  <span className="font-mono text-primary mt-0.5 block">admin / admin</span>
-                </div>
-                <div className="bg-base-100/80 rounded-xl px-3 py-2 border border-base-content/5 shadow-sm text-center">
-                  <span className="font-semibold block">Default Engineer</span>
-                  <span className="font-mono text-primary mt-0.5 block">engineer / engineer</span>
-                </div>
-              </div>
-            </div>
-          </section>
+        {/* ── LEFT PANEL: decorative, theme-primary gradient ────────── */}
+        <div className="relative hidden md:flex flex-col justify-center bg-gradient-to-br from-primary via-primary to-primary/80 px-10 py-12 overflow-hidden min-h-[480px]">
+          <DecorativeArt />
 
-          {/* Form Content */}
-          <section className="flex flex-col justify-center overflow-y-auto max-h-[80vh] px-1">
-            <div className="flex items-center gap-3 mb-6">
-              <div className="rounded-2xl border border-base-content/10 bg-base-100 p-2 shadow-md">
-                <img src="/logo.png" alt="CogniShield" className="h-10 w-10 object-contain" />
-              </div>
-              <div className="text-left">
-                <h2 className="text-xl font-black leading-none">CogniShield</h2>
-                <p className="text-[10px] uppercase tracking-[0.12em] text-base-content/50 mt-1">Campus Controller</p>
-              </div>
-            </div>
+          <div className="relative z-10">
+            <h1 className="text-[28px] font-extrabold text-primary-content leading-tight mb-3">
+              {panelContent.title}
+            </h1>
+            <p className="text-sm text-primary-content/75 leading-relaxed max-w-[280px]">
+              {panelContent.subtitle}
+            </p>
+          </div>
+        </div>
 
-            {mode !== 'forgot' && (
-              <div className="mb-5 rounded-xl border border-base-content/10 bg-base-200/50 p-1 flex">
-                <button
-                  type="button"
-                  className={`flex-1 btn btn-xs h-8 rounded-lg border-0 text-xs ${mode === 'signin' ? 'btn-primary shadow-sm' : 'btn-ghost hover:bg-base-200'}`}
-                  onClick={() => setMode('signin')}
-                >
-                  Sign In
+        {/* ── RIGHT PANEL: form ─────────────────────────────────────── */}
+        <div className="flex flex-col justify-center bg-base-100 px-8 py-10 md:px-11 md:py-10 overflow-y-auto max-h-[92vh]">
+
+          {/* Mobile-only branding */}
+          <div className="flex items-center gap-2.5 mb-5 md:hidden">
+            <img src="/logo.png" alt="CogniShield" className="h-8 w-8 object-contain" />
+            <span className="font-bold text-base text-primary">CogniShield</span>
+          </div>
+
+          {/* ─── SIGN IN ─────────────────────────────────────────── */}
+          {mode === 'signin' && (
+            <form onSubmit={handleSubmit} className="flex flex-col gap-5">
+              <h2 className="text-2xl font-extrabold text-base-content mb-0.5">Sign In</h2>
+
+              {/* Username */}
+              <div className="relative">
+                <span className={iconLeftCls}><UserIcon size={16} /></span>
+                <input
+                  type="text"
+                  placeholder="Username or email"
+                  value={username}
+                  onChange={(e) => setUsername(e.target.value)}
+                  required
+                  className={inputCls}
+                />
+              </div>
+
+              {/* Password */}
+              <div className="relative">
+                <span className={iconLeftCls}><Lock size={16} /></span>
+                <input
+                  type={showPassword ? 'text' : 'password'}
+                  placeholder="Password"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  required
+                  className={inputCls}
+                />
+                <button type="button" onClick={() => setShowPassword(!showPassword)} className={eyeBtnCls}>
+                  {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
                 </button>
+              </div>
+
+              {/* Remember me + Forgot password */}
+              <div className="flex items-center justify-between text-xs text-base-content/60">
+                <label className="flex items-center gap-1.5 cursor-pointer select-none">
+                  <input type="checkbox" className="checkbox checkbox-xs checkbox-primary rounded" />
+                  Remember me
+                </label>
                 <button
                   type="button"
-                  className={`flex-1 btn btn-xs h-8 rounded-lg border-0 text-xs ${mode === 'signup' ? 'btn-primary shadow-sm' : 'btn-ghost hover:bg-base-200'}`}
+                  onClick={() => setMode('forgot')}
+                  className="font-semibold text-primary hover:underline"
+                >
+                  Forgot password?
+                </button>
+              </div>
+
+              {/* Submit */}
+              <button
+                type="submit"
+                disabled={loading}
+                className="w-full h-11 rounded-full bg-primary text-primary-content text-sm font-semibold shadow-md hover:brightness-110 active:scale-[0.98] transition-all disabled:opacity-60"
+              >
+                {loading ? <span className="loading loading-spinner loading-sm" /> : 'Sign In'}
+              </button>
+
+              {/* Register link */}
+              <p className="text-center text-xs text-base-content/45 mt-1">
+                Authorized personnel?{' '}
+                <button
+                  type="button"
                   onClick={() => setMode('signup')}
+                  className="font-bold text-primary hover:underline"
                 >
-                  Sign Up
+                  Register an Account
                 </button>
-              </div>
-            )}
+              </p>
+            </form>
+          )}
 
-            {mode === 'signin' && (
-              <form onSubmit={handleSubmit} className="space-y-4 text-left">
-                <div className="form-control">
-                  <label className="label py-1"><span className="label-text text-[11px] font-bold uppercase tracking-wider text-base-content/60">Username</span></label>
-                  <label className="input input-bordered flex h-11 w-full items-center gap-2 rounded-xl bg-base-100 border-base-content/10 focus-within:border-primary/50">
-                    <UserIcon className="h-4 w-4 opacity-50 text-primary" />
-                    <input
-                      type="text"
-                      className="grow text-sm"
-                      placeholder="Enter username"
-                      value={username}
-                      onChange={(e) => setUsername(e.target.value)}
-                    />
-                  </label>
-                </div>
+          {/* ─── SIGN UP (Registration) ──────────────────────────── */}
+          {mode === 'signup' && (
+            <form onSubmit={handleSubmit} className="flex flex-col gap-3.5 overflow-y-auto max-h-[calc(92vh-80px)] pr-1 scrollbar-thin">
+              <h2 className="text-xl font-extrabold text-base-content">Register Account</h2>
+              <p className="text-xs text-base-content/45 -mt-1 mb-1">Registration is restricted to authorized admin and engineer roles.</p>
 
-                <div className="form-control">
-                  <div className="flex justify-between items-center">
-                    <label className="label py-1"><span className="label-text text-[11px] font-bold uppercase tracking-wider text-base-content/60">Password</span></label>
-                    <button 
-                      type="button" 
-                      onClick={() => setMode('forgot')}
-                      className="text-xs text-primary hover:underline font-semibold"
-                    >
-                      Forgot Password?
-                    </button>
-                  </div>
-                  <label className="input input-bordered flex h-11 w-full items-center gap-2 rounded-xl bg-base-100 border-base-content/10 focus-within:border-primary/50">
-                    <Lock className="h-4 w-4 opacity-50 text-primary" />
-                    <input
-                      type="password"
-                      className="grow text-sm"
-                      placeholder="Enter password"
-                      value={password}
-                      onChange={(e) => setPassword(e.target.value)}
-                    />
-                  </label>
-                </div>
-
-                <button type="submit" className="btn btn-primary h-11 w-full rounded-xl mt-2 text-sm shadow-md" disabled={loading}>
-                  {loading ? <span className="loading loading-spinner" /> : 'Sign In'}
-                </button>
-              </form>
-            )}
-
-            {mode === 'signup' && (
-              <form onSubmit={handleSubmit} className="space-y-3.5 text-left max-h-[50vh] overflow-y-auto pr-1.5 scrollbar-thin">
-                
-                {/* Profile Picture Uploader */}
-                <div className="bg-base-200/40 p-3 rounded-xl border border-base-content/5 space-y-2.5">
-                  <span className="text-[10px] font-bold uppercase tracking-wider text-base-content/60 block">Avatar Selection / File Upload</span>
-                  <div className="flex items-center gap-4">
+              {/* Avatar section */}
+              <div className="bg-base-200/50 border border-base-content/5 rounded-xl p-3.5">
+                <span className="text-[9px] font-bold uppercase tracking-wider text-base-content/50 block mb-2.5">Profile Avatar</span>
+                <div className="flex items-center gap-3.5">
+                  <div className="shrink-0">
                     {avatar ? (
                       PRESETS.includes(avatar) ? (
-                        <div className="w-14 h-14 rounded-full bg-primary/20 text-primary flex items-center justify-center border border-primary/30 shrink-0">
-                          <UserIcon className="w-7 h-7" />
+                        <div className="w-11 h-11 rounded-full bg-primary/15 text-primary flex items-center justify-center border border-primary/25">
+                          <UserIcon size={20} />
                         </div>
                       ) : (
-                        <img src={avatar} alt="Preview" className="w-14 h-14 rounded-full object-cover border border-base-content/20 shrink-0 shadow-sm" />
+                        <img src={avatar} alt="Preview" className="w-11 h-11 rounded-full object-cover border border-base-content/15" />
                       )
                     ) : (
-                      <div className="w-14 h-14 rounded-full bg-neutral text-neutral-content flex items-center justify-center text-xl font-bold border border-base-content/10 shrink-0">
-                        ?
-                      </div>
+                      <div className="w-11 h-11 rounded-full bg-base-300 text-base-content/40 flex items-center justify-center text-base font-bold border border-base-content/10">?</div>
                     )}
-                    
-                    <div className="grow space-y-2">
-                      <div 
-                        className={`border border-dashed rounded-lg p-2.5 text-center cursor-pointer transition-all flex flex-col items-center justify-center ${
-                          dragOver ? 'border-primary bg-primary/5' : 'border-base-content/20 hover:border-primary/50'
-                        }`}
-                        onClick={() => fileInputRef.current?.click()}
-                        onDragOver={handleDragOver}
-                        onDragLeave={handleDragLeave}
-                        onDrop={handleDrop}
-                      >
-                        <Upload className="w-4 h-4 opacity-60 text-primary mb-0.5" />
-                        <span className="text-[10px] font-semibold">Upload file or drag/drop</span>
-                        <input type="file" ref={fileInputRef} className="hidden" accept="image/*" onChange={handleFileChange} />
-                      </div>
-                      
-                      <div className="flex gap-1">
-                        {PRESETS.map((p, idx) => (
-                          <button
-                            key={p}
-                            type="button"
-                            className={`btn btn-xxs h-5 min-h-0 text-[9px] rounded px-1.5 ${avatar === p ? 'btn-primary' : 'btn-outline btn-ghost'}`}
-                            onClick={() => setAvatar(p)}
-                          >
-                            P{idx + 1}
-                          </button>
-                        ))}
-                        {avatar && (
-                          <button
-                            type="button"
-                            className="btn btn-xxs h-5 min-h-0 btn-outline btn-error rounded px-1.5 ml-auto"
-                            onClick={() => setAvatar('')}
-                          >
-                            Clear
-                          </button>
-                        )}
-                      </div>
-                    </div>
                   </div>
-                </div>
 
-                <div className="grid grid-cols-2 gap-3">
-                  <div className="form-control">
-                    <label className="label py-0.5"><span className="label-text text-[10px] font-bold uppercase tracking-wider text-base-content/60">Username</span></label>
-                    <input
-                      type="text"
-                      className="input input-bordered h-9 text-xs rounded-lg bg-base-100 border-base-content/10"
-                      placeholder="engineer01"
-                      value={username}
-                      onChange={(e) => setUsername(e.target.value)}
-                    />
-                  </div>
-                  <div className="form-control">
-                    <label className="label py-0.5"><span className="label-text text-[10px] font-bold uppercase tracking-wider text-base-content/60">Full Name</span></label>
-                    <input
-                      type="text"
-                      className="input input-bordered h-9 text-xs rounded-lg bg-base-100 border-base-content/10"
-                      placeholder="John Doe"
-                      value={fullName}
-                      onChange={(e) => setFullName(e.target.value)}
-                    />
-                  </div>
-                </div>
-
-                <div className="form-control">
-                  <label className="label py-0.5"><span className="label-text text-[10px] font-bold uppercase tracking-wider text-base-content/60">Email Address</span></label>
-                  <label className="input input-bordered flex h-9 w-full items-center gap-2 rounded-lg bg-base-100 border-base-content/10">
-                    <Mail className="h-3.5 w-3.5 opacity-50 text-primary" />
-                    <input
-                      type="email"
-                      className="grow text-xs"
-                      placeholder="email@company.com"
-                      value={email}
-                      onChange={(e) => setEmail(e.target.value)}
-                    />
-                  </label>
-                </div>
-
-                <div className="grid grid-cols-2 gap-3">
-                  <div className="form-control">
-                    <label className="label py-0.5"><span className="label-text text-[10px] font-bold uppercase tracking-wider text-base-content/60">Password</span></label>
-                    <input
-                      type="password"
-                      className="input input-bordered h-9 text-xs rounded-lg bg-base-100 border-base-content/10"
-                      placeholder="Password"
-                      value={password}
-                      onChange={(e) => setPassword(e.target.value)}
-                    />
-                  </div>
-                  <div className="form-control">
-                    <label className="label py-0.5"><span className="label-text text-[10px] font-bold uppercase tracking-wider text-base-content/60">Confirm Password</span></label>
-                    <input
-                      type="password"
-                      className="input input-bordered h-9 text-xs rounded-lg bg-base-100 border-base-content/10"
-                      placeholder="Confirm"
-                      value={confirmPassword}
-                      onChange={(e) => setConfirmPassword(e.target.value)}
-                    />
-                  </div>
-                </div>
-
-                {/* Password Strength Indicator */}
-                {password && (
-                  <div className="space-y-1">
-                    <div className="flex justify-between text-[9px] font-bold">
-                      <span className="opacity-60">Password Strength:</span>
-                      <span className={passwordStrength.color === 'bg-error' ? 'text-error' : passwordStrength.color === 'bg-warning' ? 'text-warning' : 'text-success'}>
-                        {passwordStrength.text}
-                      </span>
-                    </div>
-                    <div className="w-full h-1.5 bg-base-content/10 rounded-full overflow-hidden">
-                      <div 
-                        className={`h-full transition-all duration-300 ${passwordStrength.color}`} 
-                        style={{ width: `${(passwordStrength.score / 4) * 100}%` }}
-                      />
-                    </div>
-                    <p className="text-[8px] opacity-50 leading-tight">Password must be at least 6 characters and contain both letters and digits.</p>
-                  </div>
-                )}
-
-                {/* Security Question Config */}
-                <div className="p-3 bg-base-200/40 border border-base-content/5 rounded-xl space-y-2">
-                  <span className="text-[10px] font-bold uppercase tracking-wider text-base-content/60 block flex items-center gap-1">
-                    <HelpCircle className="w-3.5 h-3.5 text-warning" /> Configure Recovery Question
-                  </span>
-                  <div className="space-y-2">
-                    <select 
-                      className="select select-bordered select-sm w-full rounded-lg text-xs h-8 min-h-0 py-0"
-                      value={securityQuestion}
-                      onChange={(e) => setSecurityQuestion(e.target.value)}
+                  <div className="flex-1 space-y-2">
+                    <div
+                      onClick={() => fileInputRef.current?.click()}
+                      onDragOver={handleDragOver}
+                      onDragLeave={handleDragLeave}
+                      onDrop={handleDrop}
+                      className={`border border-dashed rounded-lg p-2 text-center cursor-pointer transition-all ${
+                        dragOver ? 'border-primary bg-primary/5' : 'border-base-content/15 hover:border-primary/40'
+                      }`}
                     >
-                      <option value="">Select a recovery question...</option>
-                      <option value="What was the name of your first pet?">What was the name of your first pet?</option>
-                      <option value="In what city were you born?">In what city were you born?</option>
-                      <option value="What is your favorite book?">What is your favorite book?</option>
-                      <option value="What was your childhood nickname?">What was your childhood nickname?</option>
-                    </select>
-                    <input
-                      type="text"
-                      className="input input-bordered h-8 text-xs rounded-lg bg-base-100 border-base-content/10 w-full"
-                      placeholder="Your answer"
-                      value={securityAnswer}
-                      onChange={(e) => setSecurityAnswer(e.target.value)}
-                    />
+                      <Upload size={13} className="mx-auto mb-0.5 opacity-50 text-primary" />
+                      <span className="text-[10px] font-semibold text-base-content/50">Upload or Drag Photo</span>
+                      <input type="file" ref={fileInputRef} className="hidden" accept="image/*" onChange={handleFileChange} />
+                    </div>
+
+                    <div className="flex gap-1.5 items-center flex-wrap">
+                      {PRESETS.map((p, idx) => (
+                        <button
+                          key={p}
+                          type="button"
+                          onClick={() => setAvatar(p)}
+                          className={`w-7 h-7 rounded-full text-[10px] font-bold flex items-center justify-center transition-all border ${
+                            avatar === p
+                              ? 'bg-primary border-primary text-primary-content'
+                              : 'border-base-content/10 bg-base-100 hover:bg-base-200 text-base-content/60'
+                          }`}
+                        >
+                          P{idx + 1}
+                        </button>
+                      ))}
+                      {avatar && (
+                        <button
+                          type="button"
+                          className="text-[9px] font-bold text-error hover:underline ml-auto"
+                          onClick={() => setAvatar('')}
+                        >
+                          Clear
+                        </button>
+                      )}
+                    </div>
                   </div>
                 </div>
-
-                <button type="submit" className="btn btn-primary h-10 w-full rounded-xl text-xs mt-2 shadow-md" disabled={loading}>
-                  {loading ? <span className="loading loading-spinner" /> : 'Create Account'}
-                </button>
-              </form>
-            )}
-
-            {mode === 'forgot' && (
-              <div className="space-y-4 text-left">
-                <button 
-                  type="button" 
-                  onClick={() => { setMode('signin'); setResetStep(1); }} 
-                  className="inline-flex items-center gap-1.5 text-xs text-primary hover:underline font-bold mb-2"
-                >
-                  <ArrowLeft className="w-3.5 h-3.5" /> Back to Sign In
-                </button>
-
-                {resetStep === 1 ? (
-                  <form onSubmit={handleFetchResetQuestion} className="space-y-4">
-                    <p className="text-xs opacity-75">Enter your username below. We will retrieve your security recovery question to reset your password.</p>
-                    <div className="form-control">
-                      <label className="label py-1"><span className="label-text text-[11px] font-bold uppercase tracking-wider text-base-content/60">Username</span></label>
-                      <label className="input input-bordered flex h-11 w-full items-center gap-2 rounded-xl bg-base-100 border-base-content/10">
-                        <UserIcon className="h-4 w-4 opacity-50 text-primary" />
-                        <input
-                          type="text"
-                          className="grow text-sm"
-                          placeholder="Enter your username"
-                          value={resetUsername}
-                          onChange={(e) => setResetUsername(e.target.value)}
-                        />
-                      </label>
-                    </div>
-                    <button type="submit" className="btn btn-primary h-11 w-full rounded-xl shadow-md" disabled={loading}>
-                      {loading ? <span className="loading loading-spinner" /> : 'Get Security Question'}
-                    </button>
-                  </form>
-                ) : (
-                  <form onSubmit={handlePerformPasswordReset} className="space-y-3.5">
-                    <div className="bg-base-200/50 p-3 rounded-xl border border-base-content/5 space-y-1">
-                      <span className="text-[10px] font-bold uppercase tracking-wider opacity-60">Security Recovery Question</span>
-                      <p className="text-xs font-bold text-base-content">{resetQuestion}</p>
-                    </div>
-
-                    <div className="form-control">
-                      <label className="label py-0.5"><span className="label-text text-[10px] font-bold uppercase tracking-wider text-base-content/60">Your Answer</span></label>
-                      <input
-                        type="password"
-                        className="input input-bordered h-9 text-xs rounded-lg bg-base-100 border-base-content/10 w-full"
-                        placeholder="Type answer here"
-                        value={resetAnswer}
-                        onChange={(e) => setResetAnswer(e.target.value)}
-                      />
-                    </div>
-
-                    <div className="grid grid-cols-2 gap-3">
-                      <div className="form-control">
-                        <label className="label py-0.5"><span className="label-text text-[10px] font-bold uppercase tracking-wider text-base-content/60">New Password</span></label>
-                        <input
-                          type="password"
-                          className="input input-bordered h-9 text-xs rounded-lg bg-base-100 border-base-content/10"
-                          placeholder="New password"
-                          value={resetNewPassword}
-                          onChange={(e) => setResetNewPassword(e.target.value)}
-                        />
-                      </div>
-                      <div className="form-control">
-                        <label className="label py-0.5"><span className="label-text text-[10px] font-bold uppercase tracking-wider text-base-content/60">Confirm Password</span></label>
-                        <input
-                          type="password"
-                          className="input input-bordered h-9 text-xs rounded-lg bg-base-100 border-base-content/10"
-                          placeholder="Confirm"
-                          value={resetConfirmPassword}
-                          onChange={(e) => setResetConfirmPassword(e.target.value)}
-                        />
-                      </div>
-                    </div>
-
-                    <button type="submit" className="btn btn-primary h-11 w-full rounded-xl shadow-md mt-2" disabled={loading}>
-                      {loading ? <span className="loading loading-spinner" /> : 'Reset Password'}
-                    </button>
-                  </form>
-                )}
               </div>
-            )}
 
-          </section>
+              {/* Username + Full Name */}
+              <div className="grid grid-cols-2 gap-2.5">
+                <div>
+                  <label className={labelCls}>Username</label>
+                  <input type="text" placeholder="engineer01" value={username} onChange={(e) => setUsername(e.target.value)} required className={inputSmCls} />
+                </div>
+                <div>
+                  <label className={labelCls}>Full Name</label>
+                  <input type="text" placeholder="John Doe" value={fullName} onChange={(e) => setFullName(e.target.value)} required className={inputSmCls} />
+                </div>
+              </div>
+
+              {/* Email */}
+              <div>
+                <label className={labelCls}>Email Address</label>
+                <div className="relative">
+                  <span className="absolute left-3 top-1/2 -translate-y-1/2 text-base-content/30 pointer-events-none"><Mail size={14} /></span>
+                  <input type="email" placeholder="email@company.com" value={email} onChange={(e) => setEmail(e.target.value)} required className={inputSmIconCls} />
+                </div>
+              </div>
+
+              {/* Passwords */}
+              <div className="grid grid-cols-2 gap-2.5">
+                <div>
+                  <label className={labelCls}>Password</label>
+                  <div className="relative">
+                    <input type={showPassword ? 'text' : 'password'} placeholder="Password" value={password} onChange={(e) => setPassword(e.target.value)} required className={`${inputSmCls} pr-8`} />
+                    <button type="button" onClick={() => setShowPassword(!showPassword)} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-base-content/30 hover:text-base-content/60">
+                      {showPassword ? <EyeOff size={14} /> : <Eye size={14} />}
+                    </button>
+                  </div>
+                </div>
+                <div>
+                  <label className={labelCls}>Confirm Password</label>
+                  <div className="relative">
+                    <input type={showConfirmPassword ? 'text' : 'password'} placeholder="Confirm" value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} required className={`${inputSmCls} pr-8`} />
+                    <button type="button" onClick={() => setShowConfirmPassword(!showConfirmPassword)} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-base-content/30 hover:text-base-content/60">
+                      {showConfirmPassword ? <EyeOff size={14} /> : <Eye size={14} />}
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              {/* Password strength */}
+              {password && (
+                <div className="bg-base-200/50 rounded-lg border border-base-content/5 p-2 space-y-1">
+                  <div className="flex justify-between text-[9px] font-bold">
+                    <span className="text-base-content/40">Strength:</span>
+                    <span className={passwordStrength.textColor}>{passwordStrength.text}</span>
+                  </div>
+                  <div className="w-full h-1 bg-base-content/10 rounded-full overflow-hidden">
+                    <div className={`h-full rounded-full transition-all duration-300 ${passwordStrength.color}`} style={{ width: `${(passwordStrength.score / 4) * 100}%` }} />
+                  </div>
+                </div>
+              )}
+
+              {/* Security question */}
+              <div className="bg-base-200/50 border border-base-content/5 rounded-xl p-3 space-y-2">
+                <span className="text-[9px] font-bold uppercase tracking-wider text-base-content/50 flex items-center gap-1">
+                  <HelpCircle size={13} className="text-warning" /> Recovery Question
+                </span>
+                <select
+                  value={securityQuestion}
+                  onChange={(e) => setSecurityQuestion(e.target.value)}
+                  required
+                  className="w-full h-8 rounded-full border border-base-content/15 bg-base-100 px-3 text-xs text-base-content outline-none focus:border-primary"
+                >
+                  <option value="">Select recovery question...</option>
+                  <option value="What was the name of your first pet?">What was the name of your first pet?</option>
+                  <option value="In what city were you born?">In what city were you born?</option>
+                  <option value="What is your favorite book?">What is your favorite book?</option>
+                  <option value="What was your childhood nickname?">What was your childhood nickname?</option>
+                </select>
+                <input
+                  type="text"
+                  placeholder="Your answer"
+                  value={securityAnswer}
+                  onChange={(e) => setSecurityAnswer(e.target.value)}
+                  required
+                  className="w-full h-8 rounded-full border border-base-content/15 bg-base-100 px-4 text-xs text-base-content placeholder:text-base-content/35 outline-none focus:border-primary"
+                />
+              </div>
+
+              {/* Submit */}
+              <button
+                type="submit"
+                disabled={loading}
+                className="w-full h-10 rounded-full bg-primary text-primary-content text-xs font-semibold shadow-md hover:brightness-110 active:scale-[0.98] transition-all disabled:opacity-60 mt-1"
+              >
+                {loading ? <span className="loading loading-spinner loading-sm" /> : 'Submit Registration'}
+              </button>
+
+              <p className="text-center text-xs text-base-content/45">
+                Already have an account?{' '}
+                <button type="button" onClick={() => setMode('signin')} className="font-bold text-primary hover:underline">
+                  Sign In
+                </button>
+              </p>
+            </form>
+          )}
+
+          {/* ─── FORGOT PASSWORD ─────────────────────────────────── */}
+          {mode === 'forgot' && (
+            <div className="flex flex-col gap-4">
+              <button
+                type="button"
+                onClick={() => { setMode('signin'); setResetStep(1); }}
+                className="inline-flex items-center gap-1 text-xs font-bold text-primary hover:underline self-start mb-1"
+              >
+                <ArrowLeft size={15} /> Back to Sign In
+              </button>
+
+              {resetStep === 1 ? (
+                <form onSubmit={handleFetchResetQuestion} className="flex flex-col gap-4">
+                  <div>
+                    <h2 className="text-2xl font-extrabold text-base-content">Reset Password</h2>
+                    <p className="text-xs text-base-content/45 mt-1">Enter your username to retrieve your security question.</p>
+                  </div>
+                  <div className="relative">
+                    <span className={iconLeftCls}><UserIcon size={16} /></span>
+                    <input
+                      type="text"
+                      placeholder="Enter your username"
+                      value={resetUsername}
+                      onChange={(e) => setResetUsername(e.target.value)}
+                      required
+                      className={inputCls}
+                    />
+                  </div>
+                  <button
+                    type="submit"
+                    disabled={loading}
+                    className="w-full h-11 rounded-full bg-primary text-primary-content text-sm font-semibold shadow-md hover:brightness-110 active:scale-[0.98] transition-all disabled:opacity-60"
+                  >
+                    {loading ? <span className="loading loading-spinner loading-sm" /> : 'Retrieve Question'}
+                  </button>
+                </form>
+              ) : (
+                <form onSubmit={handlePerformPasswordReset} className="flex flex-col gap-4">
+                  <div>
+                    <h2 className="text-2xl font-extrabold text-base-content">Verify Identity</h2>
+                    <p className="text-xs text-base-content/45 mt-1">Answer the security question and set a new password.</p>
+                  </div>
+
+                  <div className="bg-base-200/60 border border-base-content/5 rounded-xl p-3.5 space-y-1">
+                    <span className="text-[9px] font-bold uppercase tracking-wider text-base-content/40">Security Question</span>
+                    <p className="text-xs font-bold text-base-content">{resetQuestion}</p>
+                  </div>
+
+                  <div>
+                    <label className={labelCls}>Your Answer</label>
+                    <input
+                      type="password"
+                      placeholder="Type your answer"
+                      value={resetAnswer}
+                      onChange={(e) => setResetAnswer(e.target.value)}
+                      required
+                      className={`${inputCls} pl-4`}
+                    />
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-2.5">
+                    <div>
+                      <label className={labelCls}>New Password</label>
+                      <div className="relative">
+                        <input type={showResetNewPassword ? 'text' : 'password'} placeholder="New password" value={resetNewPassword} onChange={(e) => setResetNewPassword(e.target.value)} required className={`${inputSmCls} pr-8`} />
+                        <button type="button" onClick={() => setShowResetNewPassword(!showResetNewPassword)} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-base-content/30 hover:text-base-content/60">
+                          {showResetNewPassword ? <EyeOff size={14} /> : <Eye size={14} />}
+                        </button>
+                      </div>
+                    </div>
+                    <div>
+                      <label className={labelCls}>Confirm Password</label>
+                      <div className="relative">
+                        <input type={showResetConfirmPassword ? 'text' : 'password'} placeholder="Confirm" value={resetConfirmPassword} onChange={(e) => setResetConfirmPassword(e.target.value)} required className={`${inputSmCls} pr-8`} />
+                        <button type="button" onClick={() => setShowResetConfirmPassword(!showResetConfirmPassword)} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-base-content/30 hover:text-base-content/60">
+                          {showResetConfirmPassword ? <EyeOff size={14} /> : <Eye size={14} />}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+
+                  <button
+                    type="submit"
+                    disabled={loading}
+                    className="w-full h-11 rounded-full bg-primary text-primary-content text-sm font-semibold shadow-md hover:brightness-110 active:scale-[0.98] transition-all disabled:opacity-60"
+                  >
+                    {loading ? <span className="loading loading-spinner loading-sm" /> : 'Reset Password'}
+                  </button>
+                </form>
+              )}
+            </div>
+          )}
 
         </div>
       </div>

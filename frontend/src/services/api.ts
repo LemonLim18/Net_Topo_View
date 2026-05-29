@@ -906,6 +906,16 @@ export interface ConfigBackupCaptureResponse {
   captured_at: string;
   message: string;
 }
+export interface ConfigBackupRestoreResponse {
+  snapshot_id: number;
+  device_id: number;
+  hostname: string;
+  vendor: string;
+  backup_snapshot_id?: number | null;
+  restored_snapshot_id?: number | null;
+  commands_applied: number;
+  message: string;
+}
 export interface ConfigBackupExplainResponse {
   snapshot_id: number;
   model: string;
@@ -920,6 +930,10 @@ export const networkConfigBackupApi = {
     request<ConfigBackupCaptureResponse>('/network/config-backup/capture', {
       method: 'POST',
       body: JSON.stringify({ device_id: deviceId, description: description || null }),
+    }),
+  restoreSnapshot: (snapshotId: number) =>
+    request<ConfigBackupRestoreResponse>(`/network/config-backup/snapshots/${snapshotId}/restore`, {
+      method: 'POST',
     }),
   explainSnapshot: (snapshotId: number) =>
     request<ConfigBackupExplainResponse>(`/network/config-backup/snapshots/${snapshotId}/explain`, { method: 'POST' }),

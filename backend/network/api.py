@@ -149,6 +149,7 @@ class SnapshotItem(BaseModel):
     description: Optional[str] = None
     config_preview: str  # first ~200 chars
     config_size: int     # length of config_text
+    owner_username: Optional[str] = None
 
 
 class CaptureResponse(BaseModel):
@@ -156,6 +157,17 @@ class CaptureResponse(BaseModel):
     device_id: int
     hostname: str
     captured_at: str
+    message: str
+
+
+class RestoreResponse(BaseModel):
+    snapshot_id: int
+    device_id: int
+    hostname: str
+    vendor: str
+    backup_snapshot_id: Optional[int] = None
+    restored_snapshot_id: Optional[int] = None
+    commands_applied: int
     message: str
 
 
@@ -258,6 +270,14 @@ async def list_snapshots(
             owner_username=owner_username,
             is_admin=is_admin,
         )
+        if owner_username and owner_username != "anonymous":
+            for snap in history:
+                if getattr(snap, "id", None) and not getattr(snap, "owner_username", None):
+                    try:
+                        db.update_snapshot_owner(snap.id, owner_username)
+                        snap.owner_username = owner_username
+                    except Exception:
+                        logger.debug("Could not backfill owner for snapshot %s", getattr(snap, "id", None))
         return [
             SnapshotItem(
                 id=s.id,
@@ -266,6 +286,7 @@ async def list_snapshots(
                 description=getattr(s, "description", None),
                 config_preview=(s.config_text or "")[:200].replace("\r", ""),
                 config_size=len(s.config_text or ""),
+                owner_username=getattr(s, "owner_username", None),
             )
             for s in history
             if s.id is not None
@@ -472,6 +493,12 @@ async def capture_snapshot(body: CaptureRequest, user: dict = Depends(require_en
                 captured_dt = datetime.fromisoformat(latest.captured_at)
                 diff = (datetime.utcnow() - captured_dt).total_seconds()
                 if diff < 5.0:
+                    if not getattr(latest, "owner_username", None) and user.get("username"):
+                        try:
+                            db.update_snapshot_owner(latest.id, user.get("username"))
+                            latest.owner_username = user.get("username")
+                        except Exception:
+                            logger.debug("Could not backfill owner on recent snapshot %s", latest.id)
                     logger.info(
                         "Returning existing snapshot #%d for device %d (captured %.1fs ago) to prevent redundant duplicate",
                         latest.id, body.device_id, diff
@@ -513,6 +540,12 @@ async def capture_snapshot(body: CaptureRequest, user: dict = Depends(require_en
 
     # Fetch the snapshot to get captured_at
     snap = db.get_config_snapshot(snapshot_id)
+    if snap is not None and not getattr(snap, "owner_username", None) and user.get("username"):
+        try:
+            db.update_snapshot_owner(snapshot_id, user.get("username"))
+            snap = db.get_config_snapshot(snapshot_id)
+        except Exception:
+            logger.debug("Could not persist owner for snapshot %s after capture", snapshot_id)
     captured_at = snap.captured_at if snap else ""
 
     return CaptureResponse(
@@ -522,6 +555,53 @@ async def capture_snapshot(body: CaptureRequest, user: dict = Depends(require_en
         captured_at=captured_at,
         message=f"Stored running-config snapshot for {device.hostname}. Use for backup/restore.",
     )
+
+
+@router.post("/config-backup/snapshots/{snapshot_id}/restore", response_model=RestoreResponse)
+async def restore_snapshot(snapshot_id: int, user: dict = Depends(require_engineer)):
+    """
+    Apply a stored snapshot back to the live device.
+
+    Safety behavior:
+    - checks snapshot ownership / admin access
+    - captures a fresh safety backup before restore
+    - currently enabled only for Cisco IOS/IOS-XE and Huawei VRP
+    """
+
+    def _run() -> RestoreResponse:
+        db = _db()
+        snap = db.get_config_snapshot(snapshot_id)
+        if snap is None:
+            raise HTTPException(404, f"Snapshot {snapshot_id} not found")
+
+        username = user.get("username")
+        if not getattr(snap, "owner_username", None) and username and username != "anonymous":
+            try:
+                db.update_snapshot_owner(snapshot_id, username)
+                snap.owner_username = username
+            except Exception:
+                logger.debug("Could not backfill owner before restore for snapshot %s", snapshot_id)
+
+        if user.get("role") != "admin" and snap.owner_username != username:
+            raise HTTPException(403, "Access to this snapshot is restricted to its owner and administrators.")
+
+        sm = _snapshot_manager()
+        try:
+            result = sm.restore_snapshot(snapshot_id, owner_username=username)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc).strip() or "Snapshot restore could not be performed")
+        except HTTPException:
+            raise
+        except Exception as exc:
+            msg = str(exc).strip() or "Unknown restore failure"
+            raise HTTPException(502, f"Failed to restore snapshot #{snapshot_id}: {msg}")
+
+        return RestoreResponse(**result)
+
+    try:
+        return await run_in_threadpool(_run)
+    except HTTPException:
+        raise
 
 
 # ---------------------------------------------------------------------------
