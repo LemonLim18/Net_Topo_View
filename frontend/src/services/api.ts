@@ -75,6 +75,7 @@ export interface OnboardingGenerateResponse {
   config: string;
   filename: string;
   is_override?: boolean;
+  override_ignored?: boolean;
 }
 
 export interface ZtpPublishRequestPayload {

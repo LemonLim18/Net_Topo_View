@@ -921,6 +921,34 @@ def _normalize_day0_params(params: Dict[str, Any]) -> Dict[str, Any]:
     return normalized
 
 
+def _config_uses_management_interface(config_text: str, management_interface: Optional[str]) -> bool:
+    expected = str(management_interface or "").strip()
+    if not expected:
+        return True
+    # Look for interface configuration statements to avoid matching disabled discovery interfaces
+    # Juniper: 'set interfaces <name> ' or 'interfaces <name>.'
+    # Cisco/Huawei: 'interface <name>'
+    pattern = rf"(?:set interfaces\s+|interface\s+){re.escape(expected)}(?:\s|\.|$)"
+    return re.search(pattern, str(config_text or ""), flags=re.IGNORECASE) is not None
+
+def _is_override_stale(config_text: str, device: Any) -> bool:
+    # 1. Check management interface configuration
+    if not _config_uses_management_interface(config_text, getattr(device, "management_interface", None)):
+        return True
+    
+    # 2. Check hostname presence (case-insensitive)
+    hostname = str(getattr(device, "hostname", "") or "").strip()
+    if hostname and hostname.lower() not in config_text.lower():
+        return True
+        
+    # 3. Check management IP presence (ignore if empty or 0.0.0.0)
+    mgmt_ip = str(getattr(device, "management_ip", "") or "").strip()
+    if mgmt_ip and mgmt_ip != "0.0.0.0" and mgmt_ip not in config_text:
+        return True
+        
+    return False
+
+
 def _common_services_template_params(profile: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "snmp_community": profile.get("snmp_community"),
@@ -963,7 +991,13 @@ def _generate_day0_config_for_device(db: DatabaseManager, device: Any, config_ov
         saved_override = None
 
     if saved_override and str(saved_override.get("config_text") or "").strip():
-        return str(saved_override["config_text"])
+        override_config = str(saved_override["config_text"])
+        if not _is_override_stale(override_config, device):
+            return override_config
+        logger.info(
+            "Ignoring stale Day-0 override for ZTP publish device '%s': inventory info has changed.",
+            getattr(device, "hostname", device.id),
+        )
 
     effective_common = get_effective_profile(
         db._db_path,

@@ -159,6 +159,7 @@ def _sync_created_device_to_netbox(device_id: int) -> None:
             ssh_password=device.ssh_password,
             serial=device.serial_number,
             os_version=device.os_version,
+            management_interface=device.management_interface,
         )
         if nb_dev and getattr(nb_dev, "id", None):
             current = db.get_device_by_id(device_id)
@@ -195,6 +196,7 @@ def _sync_updated_device_to_netbox(device_id: int, original_hostname: str) -> No
             ssh_password=device.ssh_password,
             serial=device.serial_number,
             os_version=device.os_version,
+            management_interface=device.management_interface,
         )
         if nb_dev and getattr(nb_dev, "id", None) and not device.netbox_id:
             current = db.get_device_by_id(device_id)

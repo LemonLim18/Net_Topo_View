@@ -12,6 +12,7 @@ Flow
 from __future__ import annotations
 
 import logging
+import re
 import sqlite3
 import time
 from typing import Dict, Optional
@@ -48,6 +49,34 @@ def _db() -> DatabaseManager:
     return DatabaseManager(DB_PATH)
 
 
+def _config_uses_management_interface(config_text: str, management_interface: Optional[str]) -> bool:
+    expected = str(management_interface or "").strip()
+    if not expected:
+        return True
+    # Look for interface configuration statements to avoid matching disabled discovery interfaces
+    # Juniper: 'set interfaces <name> ' or 'interfaces <name>.'
+    # Cisco/Huawei: 'interface <name>'
+    pattern = rf"(?:set interfaces\s+|interface\s+){re.escape(expected)}(?:\s|\.|$)"
+    return re.search(pattern, str(config_text or ""), flags=re.IGNORECASE) is not None
+
+def _is_override_stale(config_text: str, device: Any) -> bool:
+    # 1. Check management interface configuration
+    if not _config_uses_management_interface(config_text, getattr(device, "management_interface", None)):
+        return True
+    
+    # 2. Check hostname presence (case-insensitive)
+    hostname = str(getattr(device, "hostname", "") or "").strip()
+    if hostname and hostname.lower() not in config_text.lower():
+        return True
+        
+    # 3. Check management IP presence (ignore if empty or 0.0.0.0)
+    mgmt_ip = str(getattr(device, "management_ip", "") or "").strip()
+    if mgmt_ip and mgmt_ip != "0.0.0.0" and mgmt_ip not in config_text:
+        return True
+        
+    return False
+
+
 # ---------------------------------------------------------------------------
 # Response models
 # ---------------------------------------------------------------------------
@@ -66,6 +95,7 @@ class GenerateResponse(BaseModel):
     config:   str
     filename: str   # suggested download filename
     is_override: bool = False
+    override_ignored: bool = False
 
 
 class Day0OverrideSaveRequest(BaseModel):
@@ -146,9 +176,17 @@ async def generate_for_device(device_id: int):
         raise HTTPException(404, f"Device {device_id} not found in inventory")
 
     override = db.get_onboarding_day0_override(device.id)
+    override_ignored = False
     if override and str(override.get("config_text") or "").strip():
-        filename = str(override.get("filename") or "").strip() or f"{device.hostname}_day0_config.txt"
-        return GenerateResponse(config=str(override["config_text"]), filename=filename, is_override=True)
+        override_config = str(override["config_text"])
+        if not _is_override_stale(override_config, device):
+            filename = str(override.get("filename") or "").strip() or f"{device.hostname}_day0_config.txt"
+            return GenerateResponse(config=override_config, filename=filename, is_override=True)
+        override_ignored = True
+        logger.info(
+            "Ignoring stale Day-0 override for device '%s': inventory info has changed.",
+            device.hostname,
+        )
 
     # Merge inherited common services defaults (global -> site -> role -> device).
     effective_common = get_effective_profile(
@@ -179,7 +217,7 @@ async def generate_for_device(device_id: int):
 
     logger.info("Day-0 config generated for device '%s'", device.hostname)
 
-    return GenerateResponse(config=config, filename=filename, is_override=False)
+    return GenerateResponse(config=config, filename=filename, is_override=False, override_ignored=override_ignored)
 
 
 @router.post("/day0/{device_id}/override")
@@ -430,7 +468,7 @@ def _is_virtual_or_management_interface(name: str, mgmt_interface: Optional[str]
         return True
     if mgmt_normalized and normalized == mgmt_normalized:
         return True
-    return normalized.startswith(("vlan", "vlanif", "loopback", "lo", "null", "fxp", "meth"))
+    return normalized.startswith(("vlan", "vlanif", "loopback", "lo", "null", "fxp", "meth", "management"))
 
 
 def _discovery_interfaces_for_device(db: DatabaseManager, device) -> list[str]:

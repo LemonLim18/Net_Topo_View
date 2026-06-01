@@ -345,13 +345,8 @@ def sync_telegraf_config(
     inventory_devices = _inventory_devices_for_telegraf(db)
     vendor_agents = _group_vendor_agents(inventory_devices)
     desired_targets = sorted(set(vendor_agents.get("cisco", []) + vendor_agents.get("huawei", []) + vendor_agents.get("juniper", [])))
-    # Local artifact for observability: comments-only summary of managed vendor agents
-    rendered = (
-        "# NetTopoView managed vendor agent lists (source-of-truth from local DB)\n"
-        f"# snmp_cisco: {vendor_agents.get('cisco', [])}\n"
-        f"# snmp_huawei: {vendor_agents.get('huawei', [])}\n"
-        f"# snmp_juniper: {vendor_agents.get('juniper', [])}\n"
-    )
+    generator = TelegrafConfigGenerator()
+    rendered = generator.generate_device_include(inventory_devices)
     TelegrafConfigGenerator().write(rendered, local_path)
     result: Dict[str, Any] = {
         "local_config_path": local_path,
@@ -383,6 +378,11 @@ def sync_telegraf_config(
         "TELEGRAF_REMOTE_MANAGED_INCLUDE_PATH",
         "/etc/telegraf/telegraf.d/20-nettopoview-devices-snmp.conf",
     ).strip()
+    remote_mode = os.getenv("TELEGRAF_REMOTE_MODE", "include").strip().lower()
+    if remote_mode in {"main", "main_config", "agents_only"}:
+        remote_mode = "main_agents_only"
+    if remote_mode not in {"include", "main_agents_only"}:
+        remote_mode = "include"
     remote_config_dir = os.getenv("TELEGRAF_REMOTE_CONFIG_DIR", "/etc/telegraf/telegraf.d").strip()
     test_cmd = os.getenv(
         "TELEGRAF_REMOTE_TEST_CMD",
@@ -417,9 +417,10 @@ def sync_telegraf_config(
             allow_agent=False,
             look_for_keys=False,
         )
+        target_path = remote_config_path if remote_mode == "main_agents_only" else remote_include_path
         remote_existing_text = _read_remote_file(
             client,
-            remote_config_path,
+            target_path,
             allow_sudo=use_sudo,
             sudo_password=remote_pass,
         )
@@ -431,8 +432,8 @@ def sync_telegraf_config(
         result["added_targets"] = sorted(desired_set - current_set)
         result["removed_targets"] = sorted(current_set - desired_set)
 
-        backup_path = f"{remote_config_path}.bak-{datetime.utcnow().strftime('%Y%m%d%H%M%S')}"
-        backup_cmd = f"if [ -f {shlex.quote(remote_config_path)} ]; then cp {shlex.quote(remote_config_path)} {shlex.quote(backup_path)}; fi"
+        backup_path = f"{target_path}.bak-{datetime.utcnow().strftime('%Y%m%d%H%M%S')}"
+        backup_cmd = f"if [ -f {shlex.quote(target_path)} ]; then cp {shlex.quote(target_path)} {shlex.quote(backup_path)}; fi"
         backup_res = _run_ssh_command(
             client,
             backup_cmd,
@@ -442,42 +443,71 @@ def sync_telegraf_config(
         if not backup_res.get("ok"):
             result["backup_error"] = backup_res.get("stderr") or backup_res.get("stdout")
 
-        patched_main, updated_blocks = patch_telegraf_main_agents_only(remote_existing_text or "", vendor_agents)
-        result["patched_blocks"] = updated_blocks
-        result["mode"] = "agents_only_main_config"
-        if not any(updated_blocks.values()):
-            result["message"] = (
-                "No vendor SNMP blocks were matched in telegraf.conf. "
-                "Expected block names: snmp_cisco, snmp_huawei, snmp_juniper."
-            )
-            result["deployed"] = False
-            return result
+        if remote_mode == "main_agents_only":
+            patched_main, updated_blocks = patch_telegraf_main_agents_only(remote_existing_text or "", vendor_agents)
+            result["patched_blocks"] = updated_blocks
+            result["mode"] = "main_agents_only"
+            if not any(updated_blocks.values()):
+                result["message"] = (
+                    "No vendor SNMP blocks were matched in telegraf.conf. "
+                    "Expected block names: snmp_cisco, snmp_huawei, snmp_juniper. "
+                    "Set TELEGRAF_REMOTE_MODE=include to manage only the telegraf.d drop-in."
+                )
+                result["deployed"] = False
+                return result
+            remote_content = patched_main
+        else:
+            result["mode"] = "include"
+            remote_content = rendered
+            if posixpath.normpath(remote_include_path) == posixpath.normpath(remote_config_path):
+                result["message"] = (
+                    "Remote deploy refused: TELEGRAF_REMOTE_MANAGED_INCLUDE_PATH must not equal "
+                    "TELEGRAF_REMOTE_CONFIG_PATH in include mode."
+                )
+                result["deployed"] = False
+                return result
+            if posixpath.basename(remote_include_path) == "telegraf.conf":
+                result["message"] = (
+                    "Remote deploy refused: managed include path points at a main telegraf.conf file. "
+                    "Use /etc/telegraf/telegraf.d/20-nettopoview-devices-snmp.conf."
+                )
+                result["deployed"] = False
+                return result
+            if "[agent]" in remote_content or "[[outputs." in remote_content:
+                result["message"] = (
+                    "Remote deploy refused: generated include unexpectedly contains agent/output sections."
+                )
+                result["deployed"] = False
+                return result
 
         write_res = _write_remote_file(
             client,
-            remote_config_path,
-            patched_main,
+            target_path,
+            remote_content,
             allow_sudo=use_sudo,
             sudo_password=remote_pass,
         )
         if not write_res.get("ok"):
             raise RuntimeError(write_res.get("stderr") or write_res.get("message") or "Remote config write failed")
-        # Keep managed include path in sync with current mode to avoid stale confusion.
-        include_note = (
-            "# NetTopoView managed mode: agents-only patching in /etc/telegraf/telegraf.conf\n"
-            "# This file is intentionally not used for SNMP blocks.\n"
-            "# Vendor agents are updated in named blocks: snmp_cisco, snmp_huawei, snmp_juniper.\n"
-        )
-        include_write_res = _write_remote_file(
-            client,
-            remote_include_path,
-            include_note,
-            allow_sudo=use_sudo,
-            sudo_password=remote_pass,
-        )
-        result["include_note_written"] = bool(include_write_res.get("ok"))
-        if not include_write_res.get("ok"):
-            result["include_note_error"] = include_write_res.get("stderr") or include_write_res.get("message")
+
+        if remote_mode == "include":
+            result["remote_main_config_untouched"] = True
+        else:
+            include_note = (
+                "# NetTopoView managed mode: agents-only patching in /etc/telegraf/telegraf.conf\n"
+                "# This file is intentionally not used for SNMP blocks.\n"
+                "# Vendor agents are updated in named blocks: snmp_cisco, snmp_huawei, snmp_juniper.\n"
+            )
+            include_write_res = _write_remote_file(
+                client,
+                remote_include_path,
+                include_note,
+                allow_sudo=use_sudo,
+                sudo_password=remote_pass,
+            )
+            result["include_note_written"] = bool(include_write_res.get("ok"))
+            if not include_write_res.get("ok"):
+                result["include_note_error"] = include_write_res.get("stderr") or include_write_res.get("message")
         result["deployed"] = True
 
         if validate_on_sync:
@@ -494,7 +524,7 @@ def sync_telegraf_config(
                 if backup_path:
                     rollback_cmd = (
                         f"if [ -f {shlex.quote(backup_path)} ]; then cp {shlex.quote(backup_path)} "
-                        f"{shlex.quote(remote_config_path)}; fi"
+                        f"{shlex.quote(target_path)}; fi"
                     )
                     rollback_res = _run_ssh_command(
                         client,
@@ -539,7 +569,11 @@ def sync_telegraf_config(
 
         result["remote_main_config_path"] = remote_config_path
         result["remote_managed_include_path"] = remote_include_path
-        result["message"] = f"Telegraf remote main-config agents patch completed on {remote_host}."
+        result["message"] = (
+            f"Telegraf remote include sync completed on {remote_host}."
+            if remote_mode == "include"
+            else f"Telegraf remote main-config agents patch completed on {remote_host}."
+        )
         return result
     except Exception as exc:
         result["error"] = str(exc)

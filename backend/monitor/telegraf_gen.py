@@ -62,14 +62,14 @@ STATIC_VENDOR_HINTS: Dict[str, str] = {
 
 def classify_vendor(ip: str, sys_descr: str = "") -> str:
     """Return 'cisco' | 'huawei' | 'juniper' | 'generic'."""
-    # 1. Check static hints first
-    if ip in STATIC_VENDOR_HINTS:
-        return STATIC_VENDOR_HINTS[ip]
-    # 2. Fall back to sysDescr keyword matching
+    # Prefer live inventory/sysDescr data. Static hints are only a lab fallback,
+    # otherwise reused management IPs can be assigned to the wrong vendor block.
     lower = sys_descr.lower()
     for keyword, vendor in VENDOR_MAP.items():
         if keyword in lower:
             return vendor
+    if ip in STATIC_VENDOR_HINTS:
+        return STATIC_VENDOR_HINTS[ip]
     return "generic"
 
 

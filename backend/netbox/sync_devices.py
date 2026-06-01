@@ -141,10 +141,16 @@ class DeviceSyncer:
                 ssh_user = nb_ssh_user if nb_ssh_user else (existing.ssh_user if existing else None)
                 ssh_password = nb_ssh_password if nb_ssh_password else (existing.ssh_password if existing else None)
                 ssh_port = existing.ssh_port if existing else 22
+                
+                # Preserve local fields not stored in standard NetBox properties
+                management_interface = existing.management_interface if existing else None
+                oob_gateway_ip = existing.oob_gateway_ip if existing else None
 
                 device = Device(
                     hostname=hostname,
                     management_ip=final_mgmt_ip,
+                    management_interface=management_interface,
+                    oob_gateway_ip=oob_gateway_ip,
                     vendor=final_vendor,
                     model=final_model,
                     status=status,

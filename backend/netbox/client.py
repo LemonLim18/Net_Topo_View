@@ -479,7 +479,8 @@ class NetBoxClient:
                       ssh_user: str = None,
                       ssh_password: str = None,
                       serial: str = None,
-                      os_version: str = None):
+                      os_version: str = None,
+                      management_interface: str = None):
         """Create a device in NetBox.
 
         Auto-creates all prerequisite objects (Site, Manufacturer,
@@ -495,7 +496,7 @@ class NetBoxClient:
             if existing:
                 logger.info(f"Device '{name}' already exists in NetBox (id={existing.id})")
                 if mgmt_ip:
-                    self._assign_management_ip(existing, mgmt_ip, mgmt_mask)
+                    self._assign_management_ip(existing, mgmt_ip, mgmt_mask, management_interface=management_interface)
                 
                 # Update serial if provided
                 if serial:
@@ -535,7 +536,7 @@ class NetBoxClient:
 
             # Optionally assign management IP
             if mgmt_ip and result:
-                self._assign_management_ip(result, mgmt_ip, mgmt_mask)
+                self._assign_management_ip(result, mgmt_ip, mgmt_mask, management_interface=management_interface)
             self._set_device_custom_fields(result, ssh_user, ssh_password, os_version)
             return result
         except Exception as e:
@@ -552,13 +553,14 @@ class NetBoxClient:
                       ssh_user: str = None,
                       ssh_password: str = None,
                       serial: str = None,
-                      os_version: str = None):
+                      os_version: str = None,
+                      management_interface: str = None):
         """Update an existing device in NetBox. Optionally sync SSH credentials to custom fields."""
         if not self.api: return None
         try:
             device = self.api.dcim.devices.get(name=original_name or name)
             if not device:
-                return self.create_device(name, mgmt_ip, mgmt_mask, vendor, model, site, role, ssh_user, ssh_password, serial, os_version)
+                return self.create_device(name, mgmt_ip, mgmt_mask, vendor, model, site, role, ssh_user, ssh_password, serial, os_version, management_interface=management_interface)
 
             updates = {}
             if site:
@@ -589,7 +591,7 @@ class NetBoxClient:
                 logger.info(f"Updated device '{name}' in NetBox with {list(updates.keys())}")
 
             if mgmt_ip:
-                self._assign_management_ip(device, mgmt_ip, mgmt_mask)
+                self._assign_management_ip(device, mgmt_ip, mgmt_mask, management_interface=management_interface)
             self._set_device_custom_fields(device, ssh_user, ssh_password, os_version)
             return device
         except Exception as e:
@@ -766,9 +768,10 @@ class NetBoxClient:
             logger.error(f"Error creating cable: {e}")
             return None
 
-    def _assign_management_ip(self, device, mgmt_ip: str, mgmt_mask: str = None):
-        """Legacy helper for setting primary management IP."""
-        return self.assign_ip_to_interface(device.name, "Management", mgmt_ip, subnet_mask=mgmt_mask, set_as_primary=True)
+    def _assign_management_ip(self, device, mgmt_ip: str, mgmt_mask: str = None, management_interface: str = None):
+        """Assign management IP to the device's management interface in NetBox."""
+        iface_name = str(management_interface or "").strip() or "Management"
+        return self.assign_ip_to_interface(device.name, iface_name, mgmt_ip, subnet_mask=mgmt_mask, set_as_primary=True)
 
     def delete_device_by_name(self, name: str):
         """Delete a device from NetBox by name (best-effort)."""

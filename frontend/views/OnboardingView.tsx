@@ -5,6 +5,7 @@ import type { ViewId } from '../types';
 import {
   authApi,
   onboardingApi,
+  netboxApi,
   type OnboardingDeviceSummary,
   type ZtpPublishJob,
   type ZtpPublishJobItem,
@@ -44,6 +45,29 @@ const OnboardingView: React.FC<{ setView: (id: ViewId) => void }> = ({ setView }
   const [devices, setDevices]         = useState<OnboardingDeviceSummary[]>([]);
   const [loadingDevices, setLoadingDevices] = useState(false);
   const [selected, setSelected]       = useState<OnboardingDeviceSummary | null>(null);
+  const [isSyncing, setIsSyncing]     = useState(false);
+
+  const handleSyncAndRefresh = async () => {
+    setIsSyncing(true);
+    setError('');
+    try {
+      const res = await netboxApi.syncFromNetbox();
+      if (res.status === 'success') {
+        const ifaceMsg = (res as any).interface_count ? `, ${(res as any).interface_count} interfaces` : '';
+        Toast.success('Synced', `Synced ${res.synced_count ?? 0} devices${ifaceMsg} from NetBox`);
+      } else if (res.status === 'skipped') {
+        Toast.warning('Sync skipped', (res as any).reason || 'no connection');
+      } else {
+        Toast.success('Sync completed');
+      }
+      await fetchDevices();
+    } catch (e: any) {
+      setError(e.message ?? 'Failed to sync devices');
+      await fetchDevices();
+    } finally {
+      setIsSyncing(false);
+    }
+  };
   const [selectedDeviceIds, setSelectedDeviceIds] = useState<number[]>([]);
   const [persistedSelectedDeviceId]   = useState<number | null>(() => {
     const raw = Number(localStorage.getItem(ONBOARDING_SELECTED_DEVICE_KEY));
@@ -184,6 +208,12 @@ const OnboardingView: React.FC<{ setView: (id: ViewId) => void }> = ({ setView }
       setFilename(data.filename);
       setEditorBaseConfig(data.config);
       setShowEditorModal(true);
+      if (data.override_ignored) {
+        Toast.info(
+          'Generated from current inventory',
+          'A saved Day-0 override used a different management interface, so it was ignored.',
+        );
+      }
     } catch (e: any) {
       setError(e.message ?? 'Failed to generate config');
     } finally {
@@ -212,8 +242,8 @@ const OnboardingView: React.FC<{ setView: (id: ViewId) => void }> = ({ setView }
   const handleRevertToDefault = async () => {
     if (!selected) return;
     const ok = await Confirm.ask(
-      `Revert ${selected.hostname} to default Day-0 config?`,
-      'This will discard the saved override (if any) and reload the generated default configuration.'
+      `Refresh config for ${selected.hostname} from inventory?`,
+      'This will discard any saved manual edits (overrides) and reload a fresh configuration generated from the latest device inventory context.'
     );
     if (!ok) return;
 
@@ -225,9 +255,9 @@ const OnboardingView: React.FC<{ setView: (id: ViewId) => void }> = ({ setView }
       setConfig(fresh.config);
       setFilename(fresh.filename);
       setEditorBaseConfig(fresh.config);
-      Toast.success('Reverted', `Default Day-0 config reloaded for ${selected.hostname}`);
+      Toast.success('Refreshed', `Configuration regenerated and loaded from inventory for ${selected.hostname}`);
     } catch (e: any) {
-      setError(e.message ?? 'Failed to revert config');
+      setError(e.message ?? 'Failed to refresh config');
     } finally {
       setSavingOverride(false);
     }
@@ -736,14 +766,19 @@ const OnboardingView: React.FC<{ setView: (id: ViewId) => void }> = ({ setView }
                     Back
                   </button>
                   <div className="flex gap-2">
-                    <button
-                      className="btn btn-outline btn-sm"
+                    {/* <button
+                      className="btn btn-outline btn-sm gap-1"
                       onClick={handleRevertToDefault}
                       disabled={!selected || savingOverride}
-                      title="Restore generated default config"
+                      title="Regenerate config using the latest device inventory details and discard any saved override"
                     >
-                      {savingOverride ? <span className="loading loading-spinner loading-xs" /> : 'Revert'}
-                    </button>
+                      {savingOverride ? (
+                        <span className="loading loading-spinner loading-xs" />
+                      ) : (
+                        <RefreshCw className="h-3.5 w-3.5" />
+                      )}
+                      Refresh from Inventory
+                    </button> */}
                     <button
                       className="btn btn-outline btn-sm"
                       onClick={handleSaveOverride}
@@ -785,10 +820,11 @@ const OnboardingView: React.FC<{ setView: (id: ViewId) => void }> = ({ setView }
               <h2 className="card-title text-base">Select a Planned Device</h2>
               <button
                 className="btn btn-ghost btn-xs gap-1"
-                onClick={fetchDevices}
-                disabled={loadingDevices}
+                onClick={handleSyncAndRefresh}
+                disabled={loadingDevices || isSyncing}
+                title="Sync latest devices from NetBox and refresh list"
               >
-                <RefreshCw className={`h-3.5 w-3.5 ${loadingDevices ? 'animate-spin' : ''}`} />
+                <RefreshCw className={`h-3.5 w-3.5 ${loadingDevices || isSyncing ? 'animate-spin' : ''}`} />
                 Refresh
               </button>
             </div>

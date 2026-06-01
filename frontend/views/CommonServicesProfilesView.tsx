@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
-import { Layers, Save, Trash2, RefreshCw, Download, X, AlertTriangle, Clock, Server, Upload, Rocket, Eye } from 'lucide-react';
-import { authApi, commonServicesApi, onboardingApi, syslogApi, monitorApi, type ZtpPublishJob } from '../src/services/api';
+import { Layers, Save, Trash2, RefreshCw, Download, X, Server, Upload, Rocket, Eye } from 'lucide-react';
+import { authApi, commonServicesApi, onboardingApi, type ZtpPublishJob } from '../src/services/api';
 import { Confirm, Toast } from '../src/utils/swal';
 import { formatIpInput, isValidIp } from '../src/utils/validation';
 
@@ -45,12 +45,6 @@ const CommonServicesProfilesView: React.FC = () => {
   const [manifestModalOpen, setManifestModalOpen] = useState(false);
   const [publishLoading, setPublishLoading] = useState(false);
   const [manifestLoading, setManifestLoading] = useState(false);
-  const [recentSyslogEvents, setRecentSyslogEvents] = useState<any[]>([]);
-  const [syslogSources, setSyslogSources] = useState<any[]>([]);
-  const [selectedSyslogDevice, setSelectedSyslogDevice] = useState('');
-  const [syslogEventsLoading, setSyslogEventsLoading] = useState(false);
-  const [syslogSyncLoading, setSyslogSyncLoading] = useState(false);
-  const [telegrafSyncLoading, setTelegrafSyncLoading] = useState(false);
   const [testSyslogLoading, setTestSyslogLoading] = useState(false);
   const [testNtpLoading, setTestNtpLoading] = useState(false);
 
@@ -100,67 +94,10 @@ const CommonServicesProfilesView: React.FC = () => {
     }
   };
 
-  const loadRecentSyslogEvents = async () => {
-    setSyslogEventsLoading(true);
-    try {
-      const events = await syslogApi.listEvents(80, selectedSyslogDevice || undefined);
-      setRecentSyslogEvents(Array.isArray(events) ? events : []);
-    } catch {
-      setRecentSyslogEvents([]);
-    } finally {
-      setSyslogEventsLoading(false);
-    }
-  };
-
-  const loadSyslogSources = async () => {
-    try {
-      const res = await syslogApi.listSources(200);
-      setSyslogSources(Array.isArray(res?.items) ? res.items : []);
-    } catch {
-      setSyslogSources([]);
-    }
-  };
-
-  const handleSyncSyslogServer = async () => {
-    const ok = await Confirm.ask(
-      'Sync syslog server config?',
-      'This will connect to the configured server and update syslog service configuration based on current inventory.',
-    );
-    if (!ok) return;
-    setSyslogSyncLoading(true);
-    try {
-      const res = await syslogApi.syncServer('hostname');
-      if (res?.synced) {
-        Toast.success(res.message || 'Syslog server sync completed');
-      } else {
-        Toast.error('Syslog sync incomplete', res?.message || 'Check backend settings and credentials');
-      }
-      loadSyslogSources();
-    } catch (e: any) {
-      Toast.error('Syslog sync failed', e?.message || 'Unable to sync syslog server');
-    } finally {
-      setSyslogSyncLoading(false);
-    }
-  };
-
   useEffect(() => {
     loadProfile();
     loadLatestPublishJob();
-    loadSyslogSources();
-    loadRecentSyslogEvents();
   }, []);
-
-  useEffect(() => {
-    const intervalId = window.setInterval(() => {
-      loadSyslogSources();
-      loadRecentSyslogEvents();
-    }, 10000);
-    return () => window.clearInterval(intervalId);
-  }, []);
-
-  useEffect(() => {
-    loadRecentSyslogEvents();
-  }, [selectedSyslogDevice]);
 
   useEffect(() => {
     localStorage.setItem(ONBOARDING_ZTP_TARGET_IP_KEY, targetServerIp);
@@ -359,8 +296,6 @@ const CommonServicesProfilesView: React.FC = () => {
     try {
       const res: any = await commonServicesApi.testSyslog();
       Toast.success('Syslog test sent', `Sent to ${res.host}:${res.port}`);
-      // Refresh recent events after a short delay so incoming messages may appear
-      setTimeout(() => loadRecentSyslogEvents(), 1200);
     } catch (e: any) {
       Toast.error('Syslog test failed', e?.message || 'Unable to send test syslog');
     } finally {
@@ -395,23 +330,6 @@ const CommonServicesProfilesView: React.FC = () => {
       Toast.error('View manifest failed', e.message || 'Failed to load manifest');
     } finally {
       setManifestLoading(false);
-    }
-  };
-
-  const handleSyncTelegraf = async () => {
-    const ok = await Confirm.ask(
-      'Sync Telegraf target config?',
-      'This will regenerate and deploy monitoring target configuration to the configured server.',
-    );
-    if (!ok) return;
-    setTelegrafSyncLoading(true);
-    try {
-      const res: any = await monitorApi.updateConfig(true);
-      Toast.success('Telegraf sync', res?.message || 'Telegraf sync completed');
-    } catch (e: any) {
-      Toast.error('Telegraf sync failed', e?.message || 'Unable to sync Telegraf config');
-    } finally {
-      setTelegrafSyncLoading(false);
     }
   };
 
@@ -717,80 +635,7 @@ const CommonServicesProfilesView: React.FC = () => {
           </div>
         )}
 
-        {/* ─── Full-width: Recent Syslog Events ─── */}
-        <div className="card shadow-xl border border-base-300 bg-gradient-to-br from-base-100 via-base-100 to-base-200/70">
-          <div className="card-body gap-4">
-            <div className="flex items-center justify-between">
-              <h2 className="card-title text-base flex items-center gap-2">
-                <AlertTriangle className="h-4 w-4 text-warning" />
-                Recent Syslog Events
-              </h2>
-              <div className="flex items-center gap-2">
-                <button className="btn btn-ghost btn-sm" onClick={loadRecentSyslogEvents} disabled={syslogEventsLoading}>
-                  <RefreshCw className="w-3.5 h-3.5" />
-                </button>
-                <button className="btn btn-outline btn-sm" onClick={handleSyncTelegraf} disabled={telegrafSyncLoading}>
-                  {telegrafSyncLoading ? <span className="loading loading-spinner loading-xs" /> : null}
-                  Sync Telegraf
-                </button>
-                <button className="btn btn-outline btn-sm" onClick={handleSyncSyslogServer} disabled={syslogSyncLoading}>
-                  {syslogSyncLoading ? <span className="loading loading-spinner loading-xs" /> : null}
-                  Sync Server
-                </button>
-              </div>
-            </div>
 
-            <div className="flex items-center gap-2">
-              <span className="text-xs opacity-70">View</span>
-              <select
-                className="select select-bordered select-sm w-full"
-                value={selectedSyslogDevice}
-                onChange={(e) => setSelectedSyslogDevice(e.target.value)}
-              >
-                <option value="">All Devices (Aggregate)</option>
-                {syslogSources.map((source: any) => {
-                  const label = source?.device_hostname || source?.source_host || source?.source_ip || 'unknown';
-                  const value = source?.device_hostname || source?.source_ip || '';
-                  return (
-                    <option key={`${source?.source_ip || 'unknown'}-${source?.device_hostname || ''}`} value={value}>
-                      {label}{source?.source_ip ? ` (${source.source_ip})` : ''} · {source?.event_count || 0}
-                    </option>
-                  );
-                })}
-              </select>
-            </div>
-
-            {recentSyslogEvents.length === 0 ? (
-              <div className="rounded-lg border border-dashed border-base-300 bg-base-100/60 px-4 py-4 text-sm opacity-70">
-                No syslog events yet. Ensure your devices are sending syslog to the configured server/port and trigger traffic.
-              </div>
-            ) : (
-              <div className="space-y-2 max-h-60 overflow-y-auto">
-                {recentSyslogEvents.map((evt: any) => (
-                  <div key={evt.id} className="rounded border border-base-300 bg-base-200/40 px-3 py-2 text-xs">
-                    <div className="flex items-center justify-between gap-2">
-                      <div className="flex items-center gap-2 min-w-0">
-                        <span className={`badge badge-xs ${String(evt.severity || '').toLowerCase() === 'critical' ? 'badge-error' : String(evt.severity || '').toLowerCase() === 'high' ? 'badge-warning' : String(evt.severity || '').toLowerCase() === 'medium' ? 'badge-info' : 'badge-ghost'}`}>
-                          {evt.severity || 'info'}
-                        </span>
-                        <span className="font-semibold truncate">{evt.mnemonic || evt.facility || 'syslog'}</span>
-                      </div>
-                      <span className="opacity-50 flex items-center gap-1 shrink-0">
-                        <Clock className="h-3 w-3" />
-                        {evt.created_at || '-'}
-                      </span>
-                    </div>
-                    <div className="mt-1 opacity-70 break-words">
-                      <span className="font-semibold">{evt.device_hostname || evt.source_host || 'unknown device'}</span>
-                      {evt.source_ip ? <span className="ml-2 font-mono">{evt.source_ip}</span> : null}
-                      {evt.message ? <span className="ml-2">{evt.message}</span> : <span className="ml-2">{evt.raw_message}</span>}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        </div>
       </div>
     </div>
   );

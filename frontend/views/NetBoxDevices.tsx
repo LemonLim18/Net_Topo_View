@@ -549,7 +549,13 @@ const NetBoxDevices: React.FC = () => {
     try {
       const ifaceRes = await netboxApi.listInterfaces(d.id);
       const targetName = String(d.management_interface || '').trim().toLowerCase();
-      const target = (ifaceRes.interfaces || []).find((iface) => String(iface.name || '').trim().toLowerCase() === targetName);
+      const target = (ifaceRes.interfaces || []).find(
+        (iface) => String(iface.name || '').trim().toLowerCase() === targetName,
+      ) || (targetName && targetName !== 'management'
+        ? (ifaceRes.interfaces || []).find(
+          (iface) => String(iface.name || '').trim().toLowerCase() === 'management',
+        )
+        : undefined);
       managementMac = target?.mac_address || '';
     } catch {
       managementMac = '';
@@ -578,27 +584,43 @@ const NetBoxDevices: React.FC = () => {
     setShowModal(true);
   };
 
-  const syncManagementInterfaceMac = async (deviceId: number, managementInterface: string, managementMac: string) => {
+  const syncManagementInterfaceRecord = async (
+    deviceId: number,
+    managementInterface: string,
+    managementMac: string,
+    previousManagementInterface?: string | null,
+  ) => {
     const ifaceName = String(managementInterface || '').trim();
     const mac = String(managementMac || '').trim();
-    if (!ifaceName || !mac) return;
+    if (!ifaceName) return;
 
     const ifaceRes = await netboxApi.listInterfaces(deviceId);
+    const previousName = String(previousManagementInterface || '').trim();
     const existing = (ifaceRes.interfaces || []).find(
       (iface) => String(iface.name || '').trim().toLowerCase() === ifaceName.toLowerCase(),
     );
+    const previous = previousName && previousName.toLowerCase() !== ifaceName.toLowerCase()
+      ? (ifaceRes.interfaces || []).find(
+        (iface) => String(iface.name || '').trim().toLowerCase() === previousName.toLowerCase(),
+      )
+      : undefined;
+    const payload = {
+      name: ifaceName,
+      ip_address: form.management_ip,
+      subnet_mask: form.management_subnet_mask,
+      mac_address: mac || undefined,
+      status: 'unknown',
+    };
 
     if (existing) {
       await netboxApi.updateInterface(deviceId, existing.id, {
+        ...payload,
         name: existing.name,
-        mac_address: mac,
       });
+    } else if (previous) {
+      await netboxApi.updateInterface(deviceId, previous.id, payload);
     } else {
-      await netboxApi.createInterface(deviceId, {
-        name: ifaceName,
-        mac_address: mac,
-        status: 'unknown',
-      });
+      await netboxApi.createInterface(deviceId, payload);
     }
   };
 
@@ -651,11 +673,11 @@ const NetBoxDevices: React.FC = () => {
           status: form.status,
           role: form.role,
           ssh_user: form.ssh_user,
-          ssh_password: form.ssh_password,
+          ssh_password: form.ssh_password || undefined,
           ssh_port: form.ssh_port ? Number(form.ssh_port) : undefined,
         });
         try {
-          await syncManagementInterfaceMac(updated.id, managementInterface, form.management_mac);
+          await syncManagementInterfaceRecord(updated.id, managementInterface, form.management_mac, selected?.management_interface);
         } catch (macErr: any) {
           Toast.warning('Device updated', `Management MAC not saved: ${macErr?.message || 'unknown error'}`);
         }
@@ -680,11 +702,11 @@ const NetBoxDevices: React.FC = () => {
           status: form.status,
           role: form.role,
           ssh_user: form.ssh_user,
-          ssh_password: form.ssh_password,
+          ssh_password: form.ssh_password || undefined,
           ssh_port: form.ssh_port ? Number(form.ssh_port) : undefined,
         });
         try {
-          await syncManagementInterfaceMac(created.id, managementInterface, form.management_mac);
+          await syncManagementInterfaceRecord(created.id, managementInterface, form.management_mac);
         } catch (macErr: any) {
           Toast.warning('Device added', `Management MAC not saved: ${macErr?.message || 'unknown error'}`);
         }
@@ -1455,7 +1477,8 @@ const NetBoxDevices: React.FC = () => {
                   <span className="label-text">SSH Password</span>
                   <span className="label-text-alt opacity-50">{isEditing ? 'leave blank to keep existing' : ''}</span>
                 </div>
-                <input type="password" className="input input-bordered w-full" placeholder="••••••••"
+                <input type="password" className="input input-bordered w-full"
+                  placeholder={isEditing ? "Keep existing password" : "Enter SSH password"}
                   value={form.ssh_password} onChange={(e) => setForm({ ...form, ssh_password: e.target.value })} />
               </label>
             </div>
