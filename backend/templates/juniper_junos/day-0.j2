@@ -10,7 +10,10 @@ set system services ssh root-login allow
 set system services ssh protocol-version v2
 #
 set interfaces {{ mgmt_interface }} unit 0 family inet address {{ mgmt_ip }}/{{ mgmt_prefix_len if mgmt_prefix_len is defined else 24 }}
-set routing-options static route 0.0.0.0/0 next-hop {{ gateway }}
+set protocols lldp interface all
+{% for iface in discovery_interfaces | default([]) %}
+delete interfaces {{ iface }} disable
+{% endfor %}
 #
 # ===== Security Zones & Inbound Host Services =====
 set security zones security-zone trust interfaces {{ mgmt_interface }}.0 host-inbound-traffic system-services ping

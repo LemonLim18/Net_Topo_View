@@ -21,6 +21,7 @@ CREATE TABLE IF NOT EXISTS devices (
     management_ip   TEXT,
     management_subnet_mask TEXT,
     management_interface TEXT,
+    oob_gateway_ip  TEXT,
     vendor          TEXT,                       -- cisco_ios | huawei_vrp | juniper_junos
     model           TEXT,
     os_version      TEXT,

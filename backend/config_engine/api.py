@@ -14,6 +14,7 @@ from common_services.service import get_effective_profile
 from config_engine.renderer import TemplateRenderer
 from config_engine.differ import ConfigDiffer
 from config_engine.validator import SyntaxValidator
+from db.manager import DatabaseManager
 
 logger = logging.getLogger("config_engine.api")
 
@@ -26,6 +27,7 @@ _renderer = TemplateRenderer()
 _differ = ConfigDiffer()
 _validator = SyntaxValidator()
 _DB_PATH = "db/netauto.db"
+TEMP_DISABLE_DEFAULT_GATEWAY = True
 
 # ---------------------------------------------------------------------------
 # Request / Response Models
@@ -88,6 +90,11 @@ def _maybe_inject_common_services(params: Dict[str, Any]) -> Dict[str, Any]:
     role = merged.get("role")
     site = merged.get("site")
     effective = get_effective_profile(_DB_PATH, site=site, role=role, device_id=device_id)
+
+    if not TEMP_DISABLE_DEFAULT_GATEWAY and (merged.get("gateway") is None or str(merged.get("gateway")).strip() == "") and device_id is not None:
+        device = DatabaseManager(_DB_PATH).get_device_by_id(device_id)
+        if device and str(device.role or "").strip().lower() == "access" and device.oob_gateway_ip:
+            merged["gateway"] = device.oob_gateway_ip
 
     for key in ("snmp_community", "snmp_location", "snmp_contact", "snmp_host_ip", "syslog_port", "syslog_device_port", "syslog_host_ip", "ntp_server_ip"):
         if (merged.get(key) is None or str(merged.get(key)).strip() == "") and effective.get(key):

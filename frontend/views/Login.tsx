@@ -11,6 +11,47 @@ interface LoginProps {
 
 const PRESETS = ['avatar-1', 'avatar-2', 'avatar-3', 'avatar-4'];
 
+/* ── Floating logo specs (deterministic to avoid layout shift) ───────── */
+const FLOATING_LOGOS = [
+  { x: 5,  y: 8,  size: 62, opacity: 0.14, dur: 11, delay: 0,    rot: 15,  drift: 30  },
+  { x: 78, y: 5,  size: 48, opacity: 0.10, dur: 13, delay: -3,   rot: -20, drift: 20  },
+  { x: 20, y: 70, size: 72, opacity: 0.12, dur: 15, delay: -5,   rot: 10,  drift: 35  },
+  { x: 88, y: 60, size: 54, opacity: 0.16, dur: 12, delay: -1,   rot: -12, drift: 25  },
+  { x: 50, y: 15, size: 40, opacity: 0.09, dur: 17, delay: -7,   rot: 25,  drift: 18  },
+  { x: 35, y: 85, size: 64, opacity: 0.12, dur: 11, delay: -4,   rot: -8,  drift: 28  },
+  { x: 65, y: 40, size: 50, opacity: 0.10, dur: 14, delay: -6,   rot: 18,  drift: 22  },
+  { x: 10, y: 42, size: 44, opacity: 0.11, dur: 16, delay: -9,   rot: -22, drift: 15  },
+  { x: 92, y: 30, size: 56, opacity: 0.08, dur: 13, delay: -2,   rot: 8,   drift: 32  },
+  { x: 55, y: 78, size: 46, opacity: 0.13, dur: 14, delay: -4,   rot: -15, drift: 20  },
+  { x: 42, y: 50, size: 38, opacity: 0.08, dur: 18, delay: -10,  rot: 30,  drift: 12  },
+  { x: 72, y: 88, size: 58, opacity: 0.10, dur: 10, delay: -1,   rot: -5,  drift: 26  },
+];
+
+/* ── Floating Logos Background ───────────────────────────────────────── */
+const FloatingLogos: React.FC = () => (
+  <div className="absolute inset-0 overflow-hidden pointer-events-none z-0">
+    {FLOATING_LOGOS.map((logo, i) => (
+      <img
+        key={i}
+        src="/floating-icon.ico"
+        alt=""
+        draggable={false}
+        className="absolute select-none"
+        style={{
+          left: `${logo.x}%`,
+          top: `${logo.y}%`,
+          width: logo.size,
+          height: logo.size,
+          opacity: logo.opacity,
+          filter: 'grayscale(0.3)',
+          animation: `loginFloat${i % 3} ${logo.dur}s ease-in-out ${logo.delay}s infinite`,
+          transform: `rotate(${logo.rot}deg)`,
+        }}
+      />
+    ))}
+  </div>
+);
+
 /* ── Decorative SVG art overlay for the left panel ───────────────────── */
 const DecorativeArt: React.FC = () => (
   <svg
@@ -303,7 +344,10 @@ const Login: React.FC<LoginProps> = ({ onLogin }) => {
   const eyeBtnCls = 'absolute right-3 top-1/2 -translate-y-1/2 text-base-content/30 hover:text-base-content/60 transition-colors';
 
   return (
-    <div className="min-h-screen w-full flex items-center justify-center bg-base-300 p-4 font-[Plus_Jakarta_Sans,sans-serif]">
+    <div className="relative min-h-screen w-full flex items-center justify-center bg-base-300 p-4 font-[Plus_Jakarta_Sans,sans-serif] overflow-hidden">
+
+      {/* Floating bouncing logo background */}
+      <FloatingLogos />
 
       {/* ── Card Container ──────────────────────────────────────────── */}
       <div className="w-full max-w-[920px] grid grid-cols-1 md:grid-cols-2 rounded-2xl overflow-hidden shadow-2xl">
@@ -667,6 +711,28 @@ const Login: React.FC<LoginProps> = ({ onLogin }) => {
 
         </div>
       </div>
+
+      {/* Keyframe animations for floating logos */}
+      <style>{`
+        @keyframes loginFloat0 {
+          0%, 100% { transform: translateY(0px) translateX(0px) rotate(0deg); }
+          25%      { transform: translateY(-28px) translateX(12px) rotate(6deg); }
+          50%      { transform: translateY(-8px) translateX(-10px) rotate(-4deg); }
+          75%      { transform: translateY(-22px) translateX(6px) rotate(3deg); }
+        }
+        @keyframes loginFloat1 {
+          0%, 100% { transform: translateY(0px) translateX(0px) rotate(0deg); }
+          20%      { transform: translateY(-18px) translateX(-14px) rotate(-5deg); }
+          50%      { transform: translateY(-32px) translateX(8px) rotate(7deg); }
+          80%      { transform: translateY(-12px) translateX(-6px) rotate(-3deg); }
+        }
+        @keyframes loginFloat2 {
+          0%, 100% { transform: translateY(0px) translateX(0px) rotate(0deg); }
+          30%      { transform: translateY(-24px) translateX(16px) rotate(8deg); }
+          60%      { transform: translateY(-6px) translateX(-12px) rotate(-6deg); }
+          85%      { transform: translateY(-20px) translateX(4px) rotate(2deg); }
+        }
+      `}</style>
     </div>
   );
 };

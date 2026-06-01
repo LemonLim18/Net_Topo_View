@@ -23,6 +23,7 @@ class Device:
     management_ip: Optional[str] = None
     management_subnet_mask: Optional[str] = None
     management_interface: Optional[str] = None
+    oob_gateway_ip: Optional[str] = None
     vendor: Optional[str] = None          # cisco_ios | huawei_vrp | juniper_junos
     model: Optional[str] = None
     os_version: Optional[str] = None

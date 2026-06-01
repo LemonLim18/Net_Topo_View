@@ -19,11 +19,6 @@ interface {{ mgmt_interface }}
  ip address {{ mgmt_ip }} {{ subnet_mask }}
  no shutdown
  exit
-!
-{% if gateway %}
-ip default-gateway {{ gateway }}
-!
-{% endif %}
 crypto key generate rsa modulus 2048
 ip ssh version 2
 ip ssh time-out 60
@@ -55,6 +50,16 @@ snmp-server host {{ snmp_host_ip }} version 2c {{ snmp_community }}
 
 lldp run
 cdp run
+
+{% for iface in discovery_interfaces | default([]) %}
+interface {{ iface }}
+ no shutdown
+ lldp transmit
+ lldp receive
+ cdp enable
+ exit
+!
+{% endfor %}
 
 {% if syslog_host_ip %}
 logging host {{ syslog_host_ip }} transport udp port {{ syslog_device_port | default(syslog_port | default(514)) }}

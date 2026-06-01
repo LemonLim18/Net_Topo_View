@@ -8,7 +8,6 @@ interface {{ mgmt_interface }}
  undo shutdown
  quit
 #
-#
 aaa
  local-user {{ ssh_user }} password irreversible-cipher {{ ssh_password }}
  local-user {{ ssh_user }} level 3
@@ -28,6 +27,16 @@ user-interface vty 0 4
  idle-timeout 30 0
  quit
 #
+lldp enable
+lldp mdn enable
+#
+{% for iface in discovery_interfaces | default([]) %}
+interface {{ iface }}
+ undo shutdown
+ lldp enable
+ quit
+#
+{% endfor %}
 {% if snmp_community %}
 snmp-agent
 snmp-agent sys-info version v2c
@@ -47,9 +56,6 @@ snmp-agent target-host trap address udp-domain {{ snmp_host_ip }} params securit
 netconf
     protocol inbound ssh port 830
     work-mode yang
-
-lldp enable
-lldp mdn enable
 
 {% endif %}
 {% if syslog_host_ip %}

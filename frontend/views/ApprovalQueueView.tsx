@@ -1,4 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import {
   CheckCircle, Clock, Eye, ListChecks, RefreshCw, User, XCircle,
 } from 'lucide-react';
@@ -43,6 +45,14 @@ const EMPTY_QUEUE_ITEMS: Record<QueueTab, QueueItem[]> = {
   approved: [],
   rejected: [],
 };
+
+const MarkdownText: React.FC<{ children?: string }> = ({ children }) => (
+  <div className="prose prose-sm prose-invert max-w-none prose-p:my-1 prose-ul:my-1 prose-li:my-0 prose-strong:text-base-content">
+    <ReactMarkdown remarkPlugins={[remarkGfm]}>
+      {children || ''}
+    </ReactMarkdown>
+  </div>
+);
 
 function readCachedQueueItems(): Record<QueueTab, QueueItem[]> {
   try {
@@ -696,16 +706,16 @@ const ApprovalQueueView: React.FC<Props> = ({ setView: _setView }) => {
                           {/* Explanation */}
                           <div className="space-y-1.5">
                             <h4 className="text-[10px] font-bold uppercase tracking-wider text-base-content/45 select-none">Playbook Explanation</h4>
-                            <div className="text-xs leading-relaxed text-base-content/85 p-3 rounded-lg border bg-base-200/20 whitespace-pre-wrap font-sans select-text">
-                              {analysis.explanation}
+                            <div className="text-xs leading-relaxed text-base-content/85 p-3 rounded-lg border bg-base-200/20 font-sans select-text">
+                              <MarkdownText>{analysis.explanation}</MarkdownText>
                             </div>
                           </div>
 
                           {/* Operational Impact Explanation */}
                           <div className="space-y-1.5">
                             <h4 className="text-[10px] font-bold uppercase tracking-wider text-base-content/45 select-none">Operational Impact Details</h4>
-                            <div className="text-xs leading-relaxed text-base-content/85 p-3 rounded-lg border bg-base-200/20 whitespace-pre-wrap font-sans select-text">
-                              {analysis.operational_explanation}
+                            <div className="text-xs leading-relaxed text-base-content/85 p-3 rounded-lg border bg-base-200/20 font-sans select-text">
+                              <MarkdownText>{analysis.operational_explanation}</MarkdownText>
                             </div>
                           </div>
 

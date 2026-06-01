@@ -158,6 +158,7 @@ class DatabaseManager:
             ("devices", "role", "TEXT DEFAULT 'network-device'"),
             ("devices", "management_subnet_mask", "TEXT"),
             ("devices", "management_interface", "TEXT"),
+            ("devices", "oob_gateway_ip", "TEXT"),
             ("devices", "netbox_id", "INTEGER"),
             ("users", "full_name", "TEXT"),
             ("users", "email", "TEXT"),
@@ -778,13 +779,13 @@ class DatabaseManager:
             if row:
                 conn.execute(
                     """UPDATE devices
-                       SET hostname = ?, management_ip = ?, management_subnet_mask = ?, management_interface = ?, vendor = ?, model = ?,
+                       SET hostname = ?, management_ip = ?, management_subnet_mask = ?, management_interface = ?, oob_gateway_ip = ?, vendor = ?, model = ?,
                            os_version = ?, serial_number = ?, status = ?,
                            role = ?, source = ?, last_polled = ?, ssh_user = ?,
                            ssh_password = ?, ssh_port = ?, netbox_id = ?, updated_at = ?
                      WHERE id = ?""",
                     (
-                        device.hostname, device.management_ip, device.management_subnet_mask, device.management_interface, device.vendor, device.model,
+                        device.hostname, device.management_ip, device.management_subnet_mask, device.management_interface, device.oob_gateway_ip, device.vendor, device.model,
                         device.os_version, device.serial_number, device.status,
                         device.role, device.source, device.last_polled or now,
                         device.ssh_user, device.ssh_password, device.ssh_port,
@@ -795,13 +796,13 @@ class DatabaseManager:
             else:
                 cur2 = conn.execute(
                     """INSERT INTO devices
-                       (hostname, management_ip, management_subnet_mask, management_interface, vendor, model, os_version,
+                       (hostname, management_ip, management_subnet_mask, management_interface, oob_gateway_ip, vendor, model, os_version,
                         serial_number, status, role, source, last_polled,
                         ssh_user, ssh_password, ssh_port, netbox_id,
                         created_at, updated_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
-                        device.hostname, device.management_ip, device.management_subnet_mask, device.management_interface, device.vendor,
+                        device.hostname, device.management_ip, device.management_subnet_mask, device.management_interface, device.oob_gateway_ip, device.vendor,
                         device.model, device.os_version, device.serial_number,
                         device.status, device.role, device.source, device.last_polled or now,
                         device.ssh_user, device.ssh_password, device.ssh_port, device.netbox_id,
@@ -854,6 +855,7 @@ class DatabaseManager:
             hostname=row["hostname"],
             management_ip=row["management_ip"],
             management_interface=row["management_interface"] if "management_interface" in keys else None,
+            oob_gateway_ip=row["oob_gateway_ip"] if "oob_gateway_ip" in keys else None,
             vendor=row["vendor"],
             model=row["model"],
             os_version=row["os_version"],

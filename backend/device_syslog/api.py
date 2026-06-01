@@ -105,11 +105,26 @@ async def list_syslog_sources(limit: int = 200):
         limit = 200
 
     query = (
-        "SELECT e.source_ip, COALESCE(e.source_host, '') AS source_host, e.device_id, "
-        "COALESCE(d.hostname, '') AS device_hostname, COUNT(*) AS event_count, MAX(e.created_at) AS last_seen "
-        "FROM device_syslog_events e "
-        "LEFT JOIN devices d ON e.device_id = d.id "
-        "GROUP BY e.source_ip, e.source_host, e.device_id, d.hostname "
+        "WITH resolved AS ("
+        "  SELECT "
+        "    e.source_ip, "
+        "    NULLIF(TRIM(COALESCE(e.source_host, '')), '') AS source_host, "
+        "    COALESCE(e.device_id, d_by_ip.id) AS device_id, "
+        "    NULLIF(TRIM(COALESCE(d_by_id.hostname, d_by_ip.hostname, '')), '') AS device_hostname, "
+        "    e.created_at "
+        "  FROM device_syslog_events e "
+        "  LEFT JOIN devices d_by_id ON e.device_id = d_by_id.id "
+        "  LEFT JOIN devices d_by_ip ON e.source_ip = d_by_ip.management_ip "
+        ") "
+        "SELECT "
+        "  source_ip, "
+        "  COALESCE(MAX(source_host), '') AS source_host, "
+        "  MAX(device_id) AS device_id, "
+        "  COALESCE(MAX(device_hostname), '') AS device_hostname, "
+        "  COUNT(*) AS event_count, "
+        "  MAX(created_at) AS last_seen "
+        "FROM resolved "
+        "GROUP BY source_ip, COALESCE(device_hostname, source_host, source_ip, 'unknown') "
         "ORDER BY last_seen DESC LIMIT ?"
     )
     try:

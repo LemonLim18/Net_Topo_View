@@ -68,6 +68,8 @@ const ROLE_OPTIONS = [
   { value: 'firewall', label: 'Firewall' },
 ];
 
+const TEMP_HIDE_DEFAULT_GATEWAY = true;
+
 const MGMT_INTERFACE_TYPES: Record<string, string[]> = {
   cisco_ios__core: ['GigabitEthernet', 'Loopback'],
   cisco_ios__distribution: ['Ethernet', 'GigabitEthernet', 'Vlan', 'Loopback'],
@@ -89,6 +91,11 @@ const getManagementInterfaceTypeOptions = (vendor: string, role: string): string
     .find(([key]) => key.startsWith(`${v}__`))?.[1];
   if (byVendor && byVendor.length > 0) return byVendor;
   return ['GigabitEthernet'];
+};
+
+const isAccessSwitchRole = (role: string | null | undefined): boolean => {
+  const normalized = String(role || '').trim().toLowerCase();
+  return normalized === 'access' || normalized === 'access-switch';
 };
 
 const splitManagementInterface = (full: string, options: string[]): { type: string; suffix: string } => {
@@ -224,6 +231,7 @@ const EMPTY_FORM = {
   management_subnet_mask: '255.255.255.0',
   management_interface_type: 'GigabitEthernet',
   management_interface_suffix: '0/0',
+  oob_gateway_ip: '',
   management_mac: '',
   vendor: '',
   model: '',
@@ -354,6 +362,21 @@ const NetBoxDevices: React.FC = () => {
     }
   }, [refreshDevices, selected?.id]);
 
+  const clearCachedInterfaces = useCallback((deviceId: number) => {
+    setInterfaces([]);
+    try {
+      const cachedRaw = localStorage.getItem(NETBOX_INTERFACES_CACHE_KEY);
+      if (!cachedRaw) return;
+      const cacheObj = JSON.parse(cachedRaw);
+      if (!cacheObj || typeof cacheObj !== 'object') return;
+      delete cacheObj[String(deviceId)];
+      delete cacheObj[deviceId];
+      localStorage.setItem(NETBOX_INTERFACES_CACHE_KEY, JSON.stringify(cacheObj));
+    } catch {
+      // Ignore cache cleanup errors.
+    }
+  }, []);
+
   const fetchInterfaces = useCallback(async (deviceId: number, updateCache = false) => {
     // 1. Try to load from cache immediately to avoid spinner
     let cacheFound = false;
@@ -391,11 +414,16 @@ const NetBoxDevices: React.FC = () => {
       }
 
     } catch (e: any) {
+      if (e?.status === 404 || String(e?.message || '').toLowerCase().includes('device not found')) {
+        clearCachedInterfaces(deviceId);
+        setSelected((current) => (current?.id === deviceId ? null : current));
+        return;
+      }
       Toast.error('Failed to load interfaces', e.message);
     } finally {
       setLoadingIfaces(false);
     }
-  }, []);
+  }, [clearCachedInterfaces]);
 
   const fetchLinks = useCallback(async (updateCache = false) => {
     try {
@@ -409,9 +437,22 @@ const NetBoxDevices: React.FC = () => {
   useEffect(() => {
     if (!selected && persistedSelectedDeviceId && devices.length > 0) {
       const restored = devices.find(d => d.id === persistedSelectedDeviceId) || null;
-      if (restored) setSelected(restored);
+      if (restored) {
+        setSelected(restored);
+      } else {
+        localStorage.removeItem(NETBOX_SELECTED_DEVICE_KEY);
+        clearCachedInterfaces(persistedSelectedDeviceId);
+      }
     }
-  }, [devices, persistedSelectedDeviceId, selected]);
+  }, [devices, persistedSelectedDeviceId, selected, clearCachedInterfaces]);
+
+  useEffect(() => {
+    if (!selected || isGlobalLoading) return;
+    if (!devices.some((device) => device.id === selected.id)) {
+      clearCachedInterfaces(selected.id);
+      setSelected(null);
+    }
+  }, [devices, selected, isGlobalLoading, clearCachedInterfaces]);
 
   useEffect(() => {
     if (selected) {
@@ -519,6 +560,7 @@ const NetBoxDevices: React.FC = () => {
       management_subnet_mask: d.management_subnet_mask || '255.255.255.0',
       management_interface_type: parsedMgmt.type,
       management_interface_suffix: parsedMgmt.suffix,
+      oob_gateway_ip: d.oob_gateway_ip || '',
       management_mac: managementMac,
       vendor: d.vendor || '',
       model: d.model || '',
@@ -573,6 +615,10 @@ const NetBoxDevices: React.FC = () => {
       setFormError('Management Subnet Mask is invalid (must be 0-32 or a valid dot-decimal mask)');
       return;
     }
+    if (!TEMP_HIDE_DEFAULT_GATEWAY && isAccessSwitchRole(form.role) && form.oob_gateway_ip && !isValidIp(form.oob_gateway_ip)) {
+      setFormError('OOB default gateway IP is invalid (must be 4 octets between 0 and 255)');
+      return;
+    }
     if (form.management_mac && !isValidMac(form.management_mac)) {
       setFormError('Management MAC address is invalid (must be 12 hexadecimal characters, e.g. aa:bb:cc:dd:ee:ff)');
       return;
@@ -581,6 +627,7 @@ const NetBoxDevices: React.FC = () => {
     setIsActionLoading(true);
 
     const managementInterface = composeManagementInterface(form.management_interface_type, form.management_interface_suffix);
+    const oobGatewayIp = !TEMP_HIDE_DEFAULT_GATEWAY && isAccessSwitchRole(form.role) ? form.oob_gateway_ip : undefined;
 
     try {
       if (isEditing && editId !== null) {
@@ -589,6 +636,7 @@ const NetBoxDevices: React.FC = () => {
           management_ip: form.management_ip,
           management_subnet_mask: form.management_subnet_mask,
           management_interface: managementInterface,
+          oob_gateway_ip: oobGatewayIp,
           vendor: form.vendor,
           model: form.model,
           os_version: form.os_version,
@@ -617,6 +665,7 @@ const NetBoxDevices: React.FC = () => {
           management_ip: form.management_ip,
           management_subnet_mask: form.management_subnet_mask,
           management_interface: managementInterface,
+          oob_gateway_ip: oobGatewayIp,
           vendor: form.vendor,
           model: form.model,
           os_version: form.os_version,
@@ -662,6 +711,7 @@ const NetBoxDevices: React.FC = () => {
       if (res.netbox_sync_pending) {
         Toast.info('Deleted locally', res.netbox_message || 'NetBox delete is running in background.');
       }
+      clearCachedInterfaces(d.id);
       if (selected?.id === d.id) setSelected(null);
       fetchDevices(true); // Mutation (Delete) -> Update cache
     } catch (e: any) {
@@ -850,6 +900,7 @@ const NetBoxDevices: React.FC = () => {
     ? interfaces.find((i) => i.name === selected.management_interface)
     : undefined;
   const selectedSubnetMaskDisplay = selected?.management_subnet_mask || selectedMgmtInterface?.subnet_mask || '—';
+  const showOobGatewayField = !TEMP_HIDE_DEFAULT_GATEWAY && isAccessSwitchRole(form.role);
 
   // -----------------------------------------------------------------------
   //  Render
@@ -1057,6 +1108,9 @@ const NetBoxDevices: React.FC = () => {
                     <DetailRow label="Management IP" value={selected.management_ip || '—'} mono />
                     <DetailRow label="Management Interface" value={selected.management_interface || '—'} mono />
                     <DetailRow label="Subnet Mask" value={selectedSubnetMaskDisplay} mono />
+                    {!TEMP_HIDE_DEFAULT_GATEWAY && isAccessSwitchRole(selected.role) && (
+                      <DetailRow label="OOB Default Gateway" value={selected.oob_gateway_ip || '-'} mono />
+                    )}
                     <DetailRow label="Vendor" value={vendorLabel(selected.vendor)} />
                     <DetailRow label="Role" value={ROLE_OPTIONS.find(r => r.value === selected.role)?.label || selected.role} />
                     <DetailRow label="Model" value={selected.model || '—'} />
@@ -1274,6 +1328,22 @@ const NetBoxDevices: React.FC = () => {
                   </label>
                 </div>
               </div>
+
+              {showOobGatewayField && (
+                <label className="form-control w-full">
+                  <div className="label">
+                    <span className="label-text">OOB Default Gateway</span>
+                    <span className="label-text-alt opacity-60">Used during Day-0</span>
+                  </div>
+                  <input
+                    type="text"
+                    className="input input-bordered w-full"
+                    placeholder="e.g. 192.168.1.1"
+                    value={form.oob_gateway_ip}
+                    onChange={(e) => setForm({ ...form, oob_gateway_ip: formatIpInput(e.target.value) })}
+                  />
+                </label>
+              )}
 
               <label className="form-control w-full">
                 <div className="label"><span className="label-text">Management Interface</span></div>

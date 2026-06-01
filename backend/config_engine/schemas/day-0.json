@@ -3,7 +3,6 @@
     "hostname",
     "mgmt_ip",
     "subnet_mask",
-    "gateway",
     "mgmt_interface",
     "vendor",
     "ssh_user",
@@ -26,9 +25,9 @@
       "type": "integer",
       "description": "Management prefix length for platforms that prefer CIDR"
     },
-    "gateway": {
-      "type": "string",
-      "description": "Default gateway"
+    "discovery_interfaces": {
+      "type": "array",
+      "description": "Inventory interfaces to enable during Day-0 LLDP/CDP discovery"
     },
     "mgmt_interface": {
       "type": "string",

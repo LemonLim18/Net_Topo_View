@@ -162,8 +162,9 @@ async def generate_for_device(device_id: int):
         "hostname":       device.hostname,
         "mgmt_ip":        device.management_ip or "0.0.0.0",
         "subnet_mask":    device.management_subnet_mask or "255.255.255.0",
-        "gateway":        _guess_gateway(device.management_ip),
+        "gateway":        _resolve_gateway(device),
         "mgmt_interface": (device.management_interface or _default_mgmt_iface(device.vendor, device.role)),
+        "discovery_interfaces": _discovery_interfaces_for_device(db, device),
         "vendor":         device.vendor or "cisco_ios",
         "role":           device.role or "network-device",
         "ssh_user":       device.ssh_user or "admin",
@@ -412,6 +413,41 @@ def _guess_gateway(mgmt_ip: Optional[str]) -> str:
         return f"{parts[0]}.{parts[1]}.{parts[2]}.1"
     except Exception:
         return "0.0.0.0"
+
+
+def _resolve_gateway(device) -> str:
+    role = str(getattr(device, "role", "") or "").strip().lower()
+    if role != "access":
+        return ""
+    configured = str(getattr(device, "oob_gateway_ip", None) or "").strip()
+    return configured or _guess_gateway(getattr(device, "management_ip", None))
+
+
+def _is_virtual_or_management_interface(name: str, mgmt_interface: Optional[str]) -> bool:
+    normalized = str(name or "").strip().lower()
+    mgmt_normalized = str(mgmt_interface or "").strip().lower()
+    if not normalized:
+        return True
+    if mgmt_normalized and normalized == mgmt_normalized:
+        return True
+    return normalized.startswith(("vlan", "vlanif", "loopback", "lo", "null", "fxp", "meth"))
+
+
+def _discovery_interfaces_for_device(db: DatabaseManager, device) -> list[str]:
+    if not getattr(device, "id", None):
+        return []
+    interfaces = db.get_interfaces_for_device(int(device.id))
+    result: list[str] = []
+    for iface in interfaces:
+        name = str(getattr(iface, "name", "") or "").strip()
+        status = str(getattr(iface, "status", "") or "").strip().lower()
+        if status in {"down", "disabled", "shutdown", "admin-down"}:
+            continue
+        if _is_virtual_or_management_interface(name, getattr(device, "management_interface", None)):
+            continue
+        if name not in result:
+            result.append(name)
+    return result
 
 
 def _default_mgmt_iface(vendor: Optional[str], role: Optional[str] = None) -> str:

@@ -561,7 +561,7 @@ const FloatingInventoryOverlay: React.FC<{ onClose: () => void }> = ({ onClose }
       >
         <div className="flex items-center gap-2 font-bold text-base-200 text-sm">
           <Terminal className="w-4 h-4" />
-          <span>Network Ops Center Overlay</span>
+          <span>Network Quick Assistant</span>
         </div>
         <div className="flex items-center gap-1">
           <GripHorizontal className="w-4 h-4 opacity-50" />
@@ -581,30 +581,30 @@ const FloatingInventoryOverlay: React.FC<{ onClose: () => void }> = ({ onClose }
           <Database className="w-3.5 h-3.5" />
           INVENTORY
         </button>
-        <button 
+        {/* <button 
           onClick={() => setActiveTab('ollama')}
           className={`min-w-[72px] flex-1 p-2.5 flex items-center justify-center gap-1.5 text-[10px] font-bold transition-colors
             ${activeTab === 'ollama' ? 'bg-base-100 text-secondary border-b-2 border-secondary' : 'hover:bg-base-200 opacity-60'}`}
         >
           <Cpu className="w-3.5 h-3.5" />
           GENERAL AI
-        </button>
+        </button> */}
         <button 
           onClick={() => setActiveTab('inventory_ai')}
           className={`min-w-[72px] flex-1 p-2.5 flex items-center justify-center gap-1.5 text-[10px] font-bold transition-colors
             ${activeTab === 'inventory_ai' ? 'bg-base-100 text-accent border-b-2 border-accent' : 'hover:bg-base-200 opacity-60'}`}
         >
           <Bot className="w-3.5 h-3.5" />
-          NETWORK AI
+          INVENTORY AI
         </button>
-        <button 
+        {/* <button 
           onClick={() => setActiveTab('system_ai')}
           className={`min-w-[72px] flex-1 p-2.5 flex items-center justify-center gap-1.5 text-[10px] font-bold transition-colors
             ${activeTab === 'system_ai' ? 'bg-base-100 text-success border-b-2 border-success' : 'hover:bg-base-200 opacity-60'}`}
         >
           <Activity className="w-3.5 h-3.5" />
           SYSTEM AI
-        </button>
+        </button> */}
       </div>
 
       {/* Content Area */}

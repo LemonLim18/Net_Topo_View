@@ -1,4 +1,5 @@
 import pytest
+from types import SimpleNamespace
 
 from config_engine.renderer import TemplateRenderer
 from onboarding import api as onboarding_api
@@ -88,6 +89,45 @@ def test_normalize_day0_params_adds_prefix_len():
     normalized = onboarding_api._normalize_day0_params(raw)
 
     assert normalized["mgmt_prefix_len"] == 24
+
+
+def test_resolve_gateway_prefers_access_device_gateway_value():
+    device = SimpleNamespace(role="access", oob_gateway_ip="192.168.10.254", management_ip="192.168.1.48")
+
+    assert onboarding_api._resolve_gateway(device) == "192.168.10.254"
+
+
+def test_resolve_gateway_falls_back_to_access_management_subnet_dot_one():
+    device = SimpleNamespace(role="access", oob_gateway_ip="", management_ip="192.168.1.48")
+
+    assert onboarding_api._resolve_gateway(device) == "192.168.1.1"
+
+
+def test_resolve_gateway_is_empty_for_non_access_roles():
+    device = SimpleNamespace(role="distribution", oob_gateway_ip="192.168.10.254", management_ip="192.168.1.48")
+
+    assert onboarding_api._resolve_gateway(device) == ""
+
+
+def test_cisco_day0_enables_registered_discovery_interfaces():
+    rendered = TemplateRenderer().render("cisco_ios", "day-0", {
+        "hostname": "SW1",
+        "mgmt_ip": "192.168.1.43",
+        "subnet_mask": "255.255.255.0",
+        "gateway": "192.168.1.1",
+        "mgmt_interface": "Vlan1",
+        "vendor": "cisco_ios",
+        "role": "access",
+        "ssh_user": "admin",
+        "ssh_password": "pw",
+        "port": 22,
+        "discovery_interfaces": ["Ethernet0/1"],
+    })
+
+    assert "interface Ethernet0/1" in rendered
+    assert " no shutdown" in rendered
+    assert " lldp transmit" in rendered
+    assert " cdp enable" in rendered
 
 
 def test_render_day0_config_falls_back_to_legacy_generator(monkeypatch):

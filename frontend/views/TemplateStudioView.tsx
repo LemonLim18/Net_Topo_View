@@ -27,6 +27,7 @@ const TEMPLATE_VARIABLES_KEY = 'templateStudio.variables';
 const TEMPLATE_GIT_HEIGHT_KEY = 'templateStudio.gitTerminalHeight';
 const TEMPLATE_GIT_MIN_KEY = 'templateStudio.gitTerminalMinimized';
 const TEMPLATE_EDITOR_LANGUAGE = 'nettopo-jinja';
+const HIDDEN_TEMPLATE_FIELDS = new Set(['gateway']);
 
 const TEMPLATE_SCOPE_OPTIONS = [
   { value: 'shared', label: 'Shared (all roles)' },
@@ -361,7 +362,9 @@ const TemplateStudioView: React.FC = () => {
     if (!activeTab) return [] as string[];
     const extracted = extractTemplateVariables(activeTab.content);
     const schemaKeys = Object.keys(schemaProperties);
-    return Array.from(new Set([...schemaKeys, ...extracted])).sort((a, b) => a.localeCompare(b));
+    return Array.from(new Set([...schemaKeys, ...extracted]))
+      .filter((field) => !HIDDEN_TEMPLATE_FIELDS.has(field))
+      .sort((a, b) => a.localeCompare(b));
   }, [activeTab, schemaProperties]);
 
   // -----------------------------------------------------------------------
@@ -728,7 +731,7 @@ const TemplateStudioView: React.FC = () => {
 
     // Validate required fields
     const errors: Record<string, string> = {};
-    const requiredFields = activeSchema?.required || [];
+    const requiredFields = (activeSchema?.required || []).filter((field: string) => !HIDDEN_TEMPLATE_FIELDS.has(field));
     const params: Record<string, any> = {};
     
     requiredFields.forEach((field: string) => {
@@ -745,6 +748,11 @@ const TemplateStudioView: React.FC = () => {
         params[field] = coerceSchemaValue(raw, fieldSchema);
       } catch (error: any) {
         errors[field] = error?.message || 'Invalid value';
+      }
+    });
+    HIDDEN_TEMPLATE_FIELDS.forEach((field) => {
+      if (schemaProperties[field]) {
+        params[field] = '';
       }
     });
 

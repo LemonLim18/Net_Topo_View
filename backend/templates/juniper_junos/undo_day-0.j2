@@ -2,7 +2,6 @@
 configure
 #
 delete interfaces {{ mgmt_interface }} unit 0 family inet address {{ mgmt_ip }}/{{ mgmt_prefix_len if mgmt_prefix_len is defined else 24 }}
-delete routing-options static route 0.0.0.0/0 next-hop {{ gateway }}
 delete system login user {{ ssh_user }}
 delete system services ssh
 #

@@ -754,6 +754,7 @@ export interface DeviceRecord {
   management_ip: string | null;
   management_subnet_mask: string | null;
   management_interface: string | null;
+  oob_gateway_ip: string | null;
   vendor: string | null;
   model: string | null;
   os_version: string | null;
@@ -989,6 +990,7 @@ export const netboxApi = {
     management_ip?: string;
     management_subnet_mask?: string;
     management_interface?: string;
+    oob_gateway_ip?: string;
     vendor?: string;
     model?: string;
     os_version?: string;
@@ -1009,6 +1011,7 @@ export const netboxApi = {
     management_ip?: string;
     management_subnet_mask?: string;
     management_interface?: string;
+    oob_gateway_ip?: string;
     vendor?: string;
     model?: string;
     os_version?: string;

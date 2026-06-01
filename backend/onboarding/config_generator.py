@@ -51,6 +51,8 @@ class OnboardingConfigGenerator:
         common_services = self._cisco_common_services(p)
         role = str(p.get("role") or "").strip().lower()
         routing_block = "ip routing\n!\n" if role == "distribution" else ""
+        gateway_block = f"ip default-gateway {p['gateway']}\n!\n" if p.get("gateway") else ""
+        discovery_block = self._cisco_discovery_interfaces(p)
         return f"""\
 ! ===== Day-0 Bootstrap: {p['hostname']} (Cisco IOS) =====
 enable
@@ -63,8 +65,10 @@ hostname {p['hostname']}
  no shutdown
  exit
 !
-ip default-gateway {p['gateway']}
+{gateway_block}lldp run
+cdp run
 !
+{discovery_block}
 username {p['ssh_user']} privilege 15 secret {p['ssh_password']}
 !
 ip domain-name mgmt.local
@@ -117,6 +121,8 @@ write memory
 
     def _huawei_vrp(self, p: dict) -> str:
         common_services = self._huawei_common_services(p)
+        gateway_block = f"ip route-static 0.0.0.0 0.0.0.0 {p['gateway']}\n#\n" if p.get("gateway") else ""
+        discovery_block = self._huawei_discovery_interfaces(p)
         return f"""\
 # ===== Day-0 Bootstrap: {p['hostname']} (Huawei VRP) =====
 system-view
@@ -128,8 +134,10 @@ interface {p['mgmt_interface']}
  undo shutdown
  quit
 #
-ip route-static 0.0.0.0 0.0.0.0 {p['gateway']}
+{gateway_block}lldp enable
+lldp mdn enable
 #
+{discovery_block}
 stelnet server enable
 #
 aaa
@@ -159,6 +167,8 @@ save force
     def _juniper_junos(self, p: dict) -> str:
         prefix_len = self._prefix_from_mask(p['subnet_mask'])
         common_services = self._juniper_common_services(p)
+        gateway_line = f"set routing-options static route 0.0.0.0/0 next-hop {p['gateway']}\n" if p.get("gateway") else ""
+        discovery_block = self._juniper_discovery_interfaces(p)
         return f"""\
 # ===== Day-0 Bootstrap: {p['hostname']} (Juniper JunOS) =====
 configure
@@ -171,7 +181,8 @@ set system services ssh root-login allow
 set system services ssh protocol-version v2
 #
 set interfaces {p['mgmt_interface']} unit 0 family inet address {p['mgmt_ip']}/{prefix_len}
-set routing-options static route 0.0.0.0/0 next-hop {p['gateway']}
+{gateway_line}set protocols lldp interface all
+{discovery_block}
 #
 {common_services}
 commit and-quit
@@ -216,6 +227,21 @@ commit and-quit
         return "\n".join(lines)
 
     @staticmethod
+    def _cisco_discovery_interfaces(p: dict) -> str:
+        lines = []
+        for iface in p.get("discovery_interfaces") or []:
+            lines.extend([
+                f"interface {iface}",
+                " no shutdown",
+                " lldp transmit",
+                " lldp receive",
+                " cdp enable",
+                " exit",
+                "!",
+            ])
+        return "\n".join(lines) + ("\n" if lines else "")
+
+    @staticmethod
     def _huawei_common_services(p: dict) -> str:
         lines = []
         snmp_community = p.get("snmp_community")
@@ -234,6 +260,19 @@ commit and-quit
         return "\n".join(lines)
 
     @staticmethod
+    def _huawei_discovery_interfaces(p: dict) -> str:
+        lines = []
+        for iface in p.get("discovery_interfaces") or []:
+            lines.extend([
+                f"interface {iface}",
+                " undo shutdown",
+                " lldp enable",
+                " quit",
+                "#",
+            ])
+        return "\n".join(lines) + ("\n" if lines else "")
+
+    @staticmethod
     def _juniper_common_services(p: dict) -> str:
         lines = []
         snmp_community = p.get("snmp_community")
@@ -250,3 +289,10 @@ commit and-quit
         if p.get("ntp_server_ip"):
             lines.append(f"set system ntp server {p['ntp_server_ip']}")
         return "\n".join(lines)
+
+    @staticmethod
+    def _juniper_discovery_interfaces(p: dict) -> str:
+        lines = []
+        for iface in p.get("discovery_interfaces") or []:
+            lines.append(f"delete interfaces {iface} disable")
+        return "\n".join(lines) + ("\n" if lines else "")

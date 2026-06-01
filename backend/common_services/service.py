@@ -179,7 +179,7 @@ def upsert_profile(scope_type: str, scope_value: str, payload: Dict[str, Any], d
                     scope_type, scope_value, snmp_community, snmp_location, snmp_contact, snmp_host_ip,
                     syslog_port, syslog_device_port, syslog_servers_json, ntp_servers_json, syslog_host_ip, ntp_server_ip, updated_at
                 )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
             ON CONFLICT(scope_type, scope_value) DO UPDATE SET
                 snmp_community = excluded.snmp_community,
                 snmp_location = excluded.snmp_location,
@@ -286,7 +286,6 @@ def get_effective_profile(
             if "snmp_host_ip" in row.keys() and row["snmp_host_ip"]:
                 merged["snmp_host_ip"] = row["snmp_host_ip"]
                 sources["snmp_host_ip"] = label
-
             syslog_port = row["syslog_port"] if "syslog_port" in row.keys() else None
             try:
                 if syslog_port is not None and str(syslog_port).strip() != "":

@@ -19,6 +19,8 @@ import ConfigDiff from '../components/ConfigDiff';
 import ApprovalDialog from '../components/ApprovalDialog';
 import { Toast } from '../src/utils/swal';
 
+const HIDDEN_TEMPLATE_FIELDS = new Set(['gateway']);
+
 // ---------- Types ----------
 interface TemplateInfo {
   vendor: string;
@@ -114,6 +116,7 @@ const Configuration: React.FC = () => {
       const initial: Record<string, any> = {};
       if (s.properties) {
         Object.entries(s.properties).forEach(([key, prop]: [string, any]) => {
+          if (HIDDEN_TEMPLATE_FIELDS.has(key)) return;
           if (prop.default !== undefined) {
             initial[key] = prop.default;
           } else if (prop.type === 'boolean') {
@@ -141,7 +144,13 @@ const Configuration: React.FC = () => {
     setIsRendering(true);
     try {
       setRenderError(null);
-      const result = await configApi.render(selectedVendor, selectedFeature, params);
+      const renderParams = { ...params };
+      HIDDEN_TEMPLATE_FIELDS.forEach((field) => {
+        if (schema?.properties?.[field]) {
+          renderParams[field] = '';
+        }
+      });
+      const result = await configApi.render(selectedVendor, selectedFeature, renderParams);
       setGeneratedConfig(result.config);
       setUndoConfig(result.undo_config);
       Toast.success('Config rendered');
@@ -196,6 +205,7 @@ const Configuration: React.FC = () => {
 
   // ---------- Param input field renderer ----------
   const renderParamField = (key: string, prop: SchemaProperty) => {
+    if (HIDDEN_TEMPLATE_FIELDS.has(key)) return null;
     const required = schema?.required?.includes(key);
     const value = params[key];
 
@@ -405,11 +415,13 @@ const Configuration: React.FC = () => {
                       <Settings className="h-4 w-4 text-secondary" />
                       Parameters
                       <span className="badge badge-ghost badge-sm">
-                        {Object.keys(schema.properties).length} fields
+                        {Object.keys(schema.properties).filter((key) => !HIDDEN_TEMPLATE_FIELDS.has(key)).length} fields
                       </span>
                     </h3>
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                      {Object.entries(schema.properties).map(([key, prop]) =>
+                      {Object.entries(schema.properties)
+                        .filter(([key]) => !HIDDEN_TEMPLATE_FIELDS.has(key))
+                        .map(([key, prop]) =>
                         renderParamField(key, prop as SchemaProperty)
                       )}
                     </div>
@@ -610,7 +622,14 @@ const Configuration: React.FC = () => {
                         Schema: {browserFeature}
                       </h3>
                       <pre className="bg-base-300 rounded-lg p-4 text-xs font-mono overflow-x-auto max-h-96 overflow-y-auto">
-                        {JSON.stringify(selectedSchemaSource, null, 2)}
+                        {JSON.stringify({
+                          ...selectedSchemaSource,
+                          required: (selectedSchemaSource.required || []).filter((key: string) => !HIDDEN_TEMPLATE_FIELDS.has(key)),
+                          properties: Object.fromEntries(
+                            Object.entries(selectedSchemaSource.properties || {})
+                              .filter(([key]) => !HIDDEN_TEMPLATE_FIELDS.has(key))
+                          ),
+                        }, null, 2)}
                       </pre>
                     </div>
                   </div>
@@ -629,7 +648,9 @@ const Configuration: React.FC = () => {
                               </tr>
                             </thead>
                             <tbody>
-                              {Object.entries(selectedSchemaSource.properties).map(([key, prop]: [string, any]) => (
+                              {Object.entries(selectedSchemaSource.properties)
+                                .filter(([key]) => !HIDDEN_TEMPLATE_FIELDS.has(key))
+                                .map(([key, prop]: [string, any]) => (
                                 <tr key={key}>
                                   <td className="font-mono text-xs">{key}</td>
                                   <td><span className="badge badge-sm badge-ghost">{prop.type}</span></td>

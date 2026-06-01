@@ -8,9 +8,6 @@ interface {{ mgmt_interface }}
  ip address {{ mgmt_ip }} {{ subnet_mask }}
  no shutdown
  exit
-!
-ip default-gateway {{ gateway }}
-!
 username {{ ssh_user }} privilege 15 secret {{ ssh_password }}
 !
 ip domain-name mgmt.local
@@ -27,6 +24,18 @@ line vty 0 4
 !
 service password-encryption
 !
+lldp run
+cdp run
+!
+{% for iface in discovery_interfaces | default([]) %}
+interface {{ iface }}
+ no shutdown
+ lldp transmit
+ lldp receive
+ cdp enable
+ exit
+!
+{% endfor %}
 netconf-yang
 restconf
 !

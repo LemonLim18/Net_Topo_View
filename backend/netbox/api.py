@@ -299,6 +299,7 @@ class DeviceCreate(BaseModel):
     management_ip: Optional[str] = None
     management_subnet_mask: Optional[str] = None
     management_interface: Optional[str] = None
+    oob_gateway_ip: Optional[str] = None
     vendor: Optional[str] = None
     model: Optional[str] = None
     os_version: Optional[str] = None
@@ -314,6 +315,7 @@ class DeviceUpdate(BaseModel):
     management_ip: Optional[str] = None
     management_subnet_mask: Optional[str] = None
     management_interface: Optional[str] = None
+    oob_gateway_ip: Optional[str] = None
     vendor: Optional[str] = None
     model: Optional[str] = None
     os_version: Optional[str] = None
@@ -360,6 +362,7 @@ def _device_dict(d: Device) -> dict:
         "management_ip": d.management_ip,
         "management_subnet_mask": d.management_subnet_mask,
         "management_interface": d.management_interface,
+        "oob_gateway_ip": d.oob_gateway_ip,
         "vendor": d.vendor,
         "model": d.model,
         "os_version": d.os_version,
@@ -517,6 +520,7 @@ async def create_device(body: DeviceCreate, background_tasks: BackgroundTasks):
         management_ip=body.management_ip,
         management_subnet_mask=body.management_subnet_mask,
         management_interface=body.management_interface,
+        oob_gateway_ip=body.oob_gateway_ip,
         vendor=body.vendor,
         model=body.model,
         os_version=body.os_version,
@@ -571,6 +575,7 @@ async def update_device(device_id: int, body: DeviceUpdate, background_tasks: Ba
         management_ip=mgmt_ip,
         management_subnet_mask=body.management_subnet_mask if body.management_subnet_mask is not None else existing.management_subnet_mask,
         management_interface=body.management_interface if body.management_interface is not None else existing.management_interface,
+        oob_gateway_ip=body.oob_gateway_ip if body.oob_gateway_ip is not None else existing.oob_gateway_ip,
         vendor=vendor,
         netbox_id=existing.netbox_id,
         model=model,
