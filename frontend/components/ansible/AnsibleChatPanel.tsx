@@ -6,7 +6,7 @@ import { Send, Loader2, Bot, Sparkles, AlertCircle, FileCode, ChevronRight, Pape
 import PremiumLoaderOverlay from '../PremiumLoaderOverlay';
 import { v4 as uuidv4 } from 'uuid';
 import { ansibleApi, llmApi, netboxApi, ragApi } from '../../src/services/api';
-import { Toast } from '../../src/utils/swal';
+import { Toast, Confirm } from '../../src/utils/swal';
 import {
   buildPlannedInventoryPreselectChips,
   preselectPlannedInventoryInterfacesByDevice,
@@ -1072,7 +1072,12 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
     setHistoryOpen(false);
   }, [currentSessionId, resetTransientChatState, sessions]);
 
-  const handleDeleteSession = useCallback((sessionId: string) => {
+  const handleDeleteSession = useCallback(async (sessionId: string) => {
+    const ok = await Confirm.ask(
+      'Delete Ansible chat session?',
+      'This removes the saved session from chat history.',
+    );
+    if (!ok) return;
     ansibleApi.deleteChatSession(sessionId).catch(() => {
       // keep local deletion even if backend cleanup fails
     });
@@ -2779,9 +2784,9 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
     onOpenFile,
   }: {
     edits: AnsibleProposedEdit[];
-    onKeepFile: (path: string, suggested: string) => void;
+    onKeepFile: (path: string, suggested: string) => void | Promise<void>;
     onUndoFile: (path: string) => void;
-    onKeepAll: () => void;
+    onKeepAll: () => void | Promise<void>;
     onUndoAll: () => void;
     onOpenFile: (path: string) => void;
   }) {
@@ -4381,7 +4386,12 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
                   {msg.proposedEdits && msg.proposedEdits.length > 0 && (
                     <ProposedEditsBlock
                       edits={msg.proposedEdits}
-                      onKeepFile={(path, suggested) => {
+                      onKeepFile={async (path, suggested) => {
+                        const ok = await Confirm.ask(
+                          'Apply proposed file edit?',
+                          `This will overwrite ${path} with the suggested content.`,
+                        );
+                        if (!ok) return;
                         ansibleApi.writeFile(path, suggested).then(() => {
                           setMessages((prev) =>
                             prev.map((m) =>
@@ -4401,7 +4411,13 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
                           )
                         )
                       }
-                      onKeepAll={() => {
+                      onKeepAll={async () => {
+                        const count = msg.proposedEdits?.length ?? 0;
+                        const ok = await Confirm.ask(
+                          `Apply ${count} proposed file edit(s)?`,
+                          'This will overwrite each listed file with the suggested content.',
+                        );
+                        if (!ok) return;
                         Promise.all(
                           msg.proposedEdits!.map((e) => ansibleApi.writeFile(e.path, e.suggested))
                         ).then(() =>

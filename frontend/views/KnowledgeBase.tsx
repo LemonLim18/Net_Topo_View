@@ -276,6 +276,12 @@ const KnowledgeBase: React.FC = () => {
     if (doc.doc_type === 'ansible_reference') {
       const ok = await promptAnsibleDeletePassword();
       if (!ok) return;
+    } else {
+      const ok = await Confirm.danger(
+        `Delete ${doc.doc_name || doc.doc_id}?`,
+        'This permanently removes the document chunks and source record from the knowledge base.',
+      );
+      if (!ok) return;
     }
 
     setDeletingId(doc.doc_id);

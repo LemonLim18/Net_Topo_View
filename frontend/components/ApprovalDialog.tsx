@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { 
+import {
   ShieldCheck, 
   AlertTriangle, 
   Loader2, 
@@ -9,7 +9,7 @@ import {
   X
 } from 'lucide-react';
 import { deployApi } from '../src/services/api';
-import { Toast } from '../src/utils/swal';
+import { Toast, Confirm } from '../src/utils/swal';
 
 interface ApprovalDialogProps {
   isOpen: boolean;
@@ -47,6 +47,11 @@ const ApprovalDialog: React.FC<ApprovalDialogProps> = ({
       Toast.warning('Missing Fields', 'All device connection fields are required.');
       return;
     }
+    const ok = await Confirm.danger(
+      `Deploy ${feature} to ${host}?`,
+      'This will create a change request, create a job, plan it, and execute the generated configuration on the live device.',
+    );
+    if (!ok) return;
 
     setIsDeploying(true);
     setDeployStatus('idle');

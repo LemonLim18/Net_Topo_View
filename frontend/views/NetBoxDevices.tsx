@@ -624,6 +624,13 @@ const NetBoxDevices: React.FC = () => {
       return;
     }
     setFormError(null);
+    if (isEditing && editId !== null) {
+      const ok = await Confirm.ask(
+        `Save changes to ${form.hostname}?`,
+        'This updates the local inventory and may trigger a NetBox sync.',
+      );
+      if (!ok) return;
+    }
     setIsActionLoading(true);
 
     const managementInterface = composeManagementInterface(form.management_interface_type, form.management_interface_suffix);
@@ -722,6 +729,12 @@ const NetBoxDevices: React.FC = () => {
   };
 
   const handleSync = async () => {
+    const ok = await Confirm.ask(
+      'Sync devices from NetBox?',
+      'This refreshes local inventory from NetBox and may update cached device and interface records.',
+    );
+    if (!ok) return;
+
     setIsSyncing(true);
     try {
       const res = await netboxApi.syncFromNetbox();
@@ -787,6 +800,13 @@ const NetBoxDevices: React.FC = () => {
     }
     if (!selected) return;
     setIfaceFormError(null);
+    if (isEditingIface && editIfaceId) {
+      const ok = await Confirm.ask(
+        `Save changes to interface ${ifaceForm.name}?`,
+        'This updates the interface record in the selected device inventory.',
+      );
+      if (!ok) return;
+    }
     try {
       if (isEditingIface && editIfaceId) {
         await netboxApi.updateInterface(selected.id, editIfaceId, {
@@ -865,6 +885,14 @@ const NetBoxDevices: React.FC = () => {
       return;
     }
     setLinkFormError(null);
+    const srcDevice = devices.find((d) => d.id === linkForm.src_device_id)?.hostname || 'source device';
+    const dstDevice = devices.find((d) => d.id === linkForm.dst_device_id)?.hostname || 'destination device';
+    const ok = await Confirm.ask(
+      `Create link ${srcDevice} -> ${dstDevice}?`,
+      'This adds a manual topology link to the inventory source of truth.',
+    );
+    if (!ok) return;
+
     try {
       await netboxApi.createLink({
         src_device_id: linkForm.src_device_id,

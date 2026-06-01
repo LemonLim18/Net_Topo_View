@@ -122,6 +122,11 @@ const CommonServicesProfilesView: React.FC = () => {
   };
 
   const handleSyncSyslogServer = async () => {
+    const ok = await Confirm.ask(
+      'Sync syslog server config?',
+      'This will connect to the configured server and update syslog service configuration based on current inventory.',
+    );
+    if (!ok) return;
     setSyslogSyncLoading(true);
     try {
       const res = await syslogApi.syncServer('hostname');
@@ -218,6 +223,11 @@ const CommonServicesProfilesView: React.FC = () => {
       Toast.error('Save failed', 'Server credential username and password are required');
       return;
     }
+    const ok = await Confirm.ask(
+      'Save server credential?',
+      `This stores or replaces the "${credentialLabel}" credential for remote service operations.`,
+    );
+    if (!ok) return;
     setServerCredentialSaving(true);
     try {
       await onboardingApi.setServerCredential(username, serverCredentialPassword, credentialLabel);
@@ -297,6 +307,12 @@ const CommonServicesProfilesView: React.FC = () => {
       Toast.error('Validation failed', 'NTP Server IP is invalid');
       return;
     }
+    const ok = await Confirm.ask(
+      'Save global common services profile?',
+      'These values become the global defaults for SNMP, Syslog, and NTP generation.',
+    );
+    if (!ok) return;
+
     setIsSaving(true);
     try {
       const payload = {
@@ -383,6 +399,11 @@ const CommonServicesProfilesView: React.FC = () => {
   };
 
   const handleSyncTelegraf = async () => {
+    const ok = await Confirm.ask(
+      'Sync Telegraf target config?',
+      'This will regenerate and deploy monitoring target configuration to the configured server.',
+    );
+    if (!ok) return;
     setTelegrafSyncLoading(true);
     try {
       const res: any = await monitorApi.updateConfig(true);

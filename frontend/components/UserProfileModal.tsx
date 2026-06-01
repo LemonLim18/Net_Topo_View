@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { X, User as UserIcon, Mail, ShieldAlert, Key, Upload, CheckCircle2, AlertTriangle, HelpCircle } from 'lucide-react';
 import { authApi } from '../src/services/api';
-import { Toast } from '../src/utils/swal';
+import { Toast, Confirm } from '../src/utils/swal';
 import type { User } from '../types';
 
 interface UserProfileModalProps {
@@ -102,6 +102,16 @@ const UserProfileModal: React.FC<UserProfileModalProps> = ({ user, onClose, onUp
         Toast.error('Weak Password', 'New password must be at least 6 characters and contain letters and numbers');
         return;
       }
+    }
+
+    if (newPassword || (securityQuestion && securityAnswer)) {
+      const ok = await Confirm.ask(
+        'Update account security?',
+        newPassword
+          ? 'This will change your account password and any supplied recovery question details.'
+          : 'This will update your account recovery question details.',
+      );
+      if (!ok) return;
     }
 
     setLoading(true);

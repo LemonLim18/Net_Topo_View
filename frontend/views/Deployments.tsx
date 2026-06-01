@@ -94,6 +94,11 @@ const Deployments: React.FC = () => {
   }, [activeTab]);
 
   const handleExecute = async (job: Job) => {
+    const ok = await Confirm.danger(
+      `Execute deployment job #${job.id}?`,
+      'This will push the deployment job to the configured target using stored connection details.',
+    );
+    if (!ok) return;
     setIsLoading(true);
     try {
       await deployApi.executeJob(job.id, {
@@ -128,7 +133,7 @@ const Deployments: React.FC = () => {
 
   // --- Proposal Actions ---
   const handleRollbackProposal = async (proposal: Proposal) => {
-    const ok = await Confirm.ask(
+    const ok = await Confirm.danger(
       'Rollback Configuration',
       `Rollback configuration on ${proposal.target_device}?`
     );

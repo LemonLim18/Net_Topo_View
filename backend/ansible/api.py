@@ -20,10 +20,13 @@ import logging
 import difflib
 import re
 import asyncio
+import copy
 import os
 import shutil
 import stat
 import ipaddress
+import threading
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
@@ -111,6 +114,61 @@ from ansible.planning_context import (
 from config_engine.safety import validate_playbook_yaml
 
 logger = logging.getLogger("ansible.api")
+
+
+_PREVIEW_CACHE_DEFAULT_TTL_SECONDS = 45.0
+_PREVIEW_CACHE_DEFAULT_MAX_ENTRIES = 128
+_preview_cache_lock = threading.RLock()
+_preview_parse_context_cache: Dict[Tuple[Any, ...], Tuple[float, str]] = {}
+_preview_intent_parse_cache: Dict[Tuple[Any, ...], Tuple[float, str]] = {}
+_preview_planning_context_cache: Dict[Tuple[Any, ...], Tuple[float, Dict[str, Any]]] = {}
+
+
+def _preview_cache_ttl_seconds() -> float:
+    try:
+        return max(0.0, float(os.getenv("ANSIBLE_PREVIEW_CACHE_TTL_SEC", _PREVIEW_CACHE_DEFAULT_TTL_SECONDS)))
+    except (TypeError, ValueError):
+        return _PREVIEW_CACHE_DEFAULT_TTL_SECONDS
+
+
+def _preview_cache_max_entries() -> int:
+    try:
+        return max(1, int(os.getenv("ANSIBLE_PREVIEW_CACHE_MAX_ENTRIES", _PREVIEW_CACHE_DEFAULT_MAX_ENTRIES)))
+    except (TypeError, ValueError):
+        return _PREVIEW_CACHE_DEFAULT_MAX_ENTRIES
+
+
+def _preview_cache_get(cache: Dict[Tuple[Any, ...], Tuple[float, Any]], key: Tuple[Any, ...]) -> Any:
+    ttl = _preview_cache_ttl_seconds()
+    if ttl <= 0:
+        return None
+    now = time.monotonic()
+    with _preview_cache_lock:
+        item = cache.get(key)
+        if item is None:
+            return None
+        ts, value = item
+        if now - ts > ttl:
+            cache.pop(key, None)
+            return None
+        cache.pop(key, None)
+        cache[key] = (ts, value)
+        return value
+
+
+def _preview_cache_put(cache: Dict[Tuple[Any, ...], Tuple[float, Any]], key: Tuple[Any, ...], value: Any) -> None:
+    if _preview_cache_ttl_seconds() <= 0:
+        return
+    max_entries = _preview_cache_max_entries()
+    with _preview_cache_lock:
+        cache.pop(key, None)
+        while len(cache) >= max_entries:
+            cache.pop(next(iter(cache)), None)
+        cache[key] = (time.monotonic(), value)
+
+
+def _preview_cache_db_key(db_manager: Any) -> int:
+    return id(db_manager) if db_manager is not None else 0
 
 
 def _client_supplied_ospf_process_id(params: Optional[Dict[str, Any]]) -> bool:
@@ -1794,6 +1852,14 @@ def _provider_for_request(provider: Optional[str], model: Optional[str], ollama_
 def _build_intent_parse_context(intent_description: str) -> str:
     if _db is None:
         return ""
+    cache_key = (
+        "intent_parse_context",
+        _preview_cache_db_key(_db),
+        str(intent_description or "").strip(),
+    )
+    cached = _preview_cache_get(_preview_parse_context_cache, cache_key)
+    if cached is not None:
+        return str(cached)
     try:
         from rag.context_bundle import ContextBundleBuilder
 
@@ -1811,10 +1877,85 @@ def _build_intent_parse_context(intent_description: str) -> str:
             include_freshness_warnings=True,
             query=intent_description,
         )
-        return bundle.to_prompt_text()
+        context_text = bundle.to_prompt_text()
+        _preview_cache_put(_preview_parse_context_cache, cache_key, context_text)
+        return context_text
     except Exception as exc:
         logger.warning("Could not build intent parse context: %s", exc)
         return ""
+
+
+def _preview_parse_intent_json(
+    intent_description: str,
+    provider: Optional[str],
+    model: Optional[str],
+    ollama_base_url: Optional[str],
+) -> str:
+    from llm.intent import IntentParser
+
+    provider_obj_key = (
+        id(getattr(_agent, "_provider", None)) if _agent is not None else 0,
+        id(getattr(_builder, "_provider", None)) if _builder is not None else 0,
+    )
+    cache_key = (
+        "intent_parse",
+        _preview_cache_db_key(_db),
+        str(provider or "").strip(),
+        str(model or "").strip(),
+        str(ollama_base_url or "").strip(),
+        os.getenv("INTENT_PIPELINE_V2", "true").lower(),
+        os.getenv("INTENT_USE_LEGACY_PARSER", "").lower(),
+        provider_obj_key,
+        str(intent_description or "").strip(),
+    )
+    cached = _preview_cache_get(_preview_intent_parse_cache, cache_key)
+    if cached is not None:
+        logger.debug("Preview intent parser cache hit")
+        return str(cached)
+
+    parser = IntentParser(
+        provider=_provider_for_request(provider, model, ollama_base_url),
+        db_manager=_db,
+    )
+    raw_json = parser.parse(
+        intent_description,
+        topology_context=_build_intent_parse_context(intent_description),
+    )
+    _preview_cache_put(_preview_intent_parse_cache, cache_key, raw_json)
+    return raw_json
+
+
+def _build_scoped_planning_context_preview_cached(
+    db_manager: Any,
+    hostnames: List[str],
+    *,
+    vendor_filter: Optional[str] = None,
+    query: Optional[str] = None,
+    feature: Optional[str] = None,
+) -> Dict[str, Any]:
+    clean_hosts = tuple(str(h).strip() for h in (hostnames or []) if str(h).strip())
+    cache_key = (
+        "preview_planning_context",
+        _preview_cache_db_key(db_manager),
+        clean_hosts,
+        normalize_vendor(vendor_filter) or "",
+        str(feature or "").strip(),
+        str(query or "").strip(),
+    )
+    cached = _preview_cache_get(_preview_planning_context_cache, cache_key)
+    if cached is not None:
+        logger.debug("Preview planning context cache hit")
+        return copy.deepcopy(cached)
+
+    context = build_scoped_planning_context(
+        db_manager,
+        list(clean_hosts),
+        vendor_filter=vendor_filter,
+        query=query,
+        feature=feature,
+    )
+    _preview_cache_put(_preview_planning_context_cache, cache_key, copy.deepcopy(context))
+    return context
 
 
 def _policy_validate_intent(intent_json: str, user_role: str) -> dict[str, Any]:
@@ -6045,7 +6186,7 @@ def _preview_parse_and_rag(
     Parse intent (lightweight: no policy raise) and run RAG for ansible_reference.
     Returns (categories, references, parsed_intent_dict, policy_approved, reasoning_steps, resolved_hosts).
     """
-    from llm.intent import IntentParser, IntentType, ParsedIntent
+    from llm.intent import IntentType, ParsedIntent
 
     categories: list[str] = []
     parsed_dict: dict = {}
@@ -6099,14 +6240,12 @@ def _preview_parse_and_rag(
         return cleaned
 
     try:
-        parser = IntentParser(
-            provider=_provider_for_request(provider, model, ollama_base_url),
-            db_manager=_db,
-        )
         parsed = ParsedIntent.model_validate_json(
-            parser.parse(
+            _preview_parse_intent_json(
                 intent_description,
-                topology_context=_build_intent_parse_context(intent_description),
+                provider,
+                model,
+                ollama_base_url,
             )
         )
         if feature or parsed.feature:
@@ -6685,6 +6824,7 @@ async def preview_intent(
     RAG would use, so the UI can show an overlay and let the user remove irrelevant
     refs or confirm before calling create-and-plan.
     """
+    _preview_started = time.perf_counter()
     categories, references, parsed_intent, policy_approved, reasoning, resolved_hosts = _preview_parse_and_rag(
         intent_description=req.intent_description,
         target_hosts=req.target_hosts,
@@ -7072,7 +7212,7 @@ async def preview_intent(
             if resolved_hosts and _db is not None:
                 try:
                     planning_context_for_resolve = await run_in_threadpool(
-                        build_scoped_planning_context,
+                        _build_scoped_planning_context_preview_cached,
                         _db,
                         resolved_hosts,
                         feature=str(parsed_intent.get("feature") or ""),
@@ -7497,7 +7637,7 @@ async def preview_intent(
         try:
             if planning_context_preview is None:
                 planning_context_preview = await run_in_threadpool(
-                    build_scoped_planning_context,
+                    _build_scoped_planning_context_preview_cached,
                     _db,
                     resolved_hosts,
                     feature="interface",
@@ -7625,7 +7765,7 @@ async def preview_intent(
                 else "vlan"
             )
             planning_context_preview = await run_in_threadpool(
-                build_scoped_planning_context,
+                _build_scoped_planning_context_preview_cached,
                 _db,
                 resolved_hosts,
                 feature=pf,
@@ -7827,7 +7967,7 @@ async def preview_intent(
                     else "vlan"
                 )
                 pc = await run_in_threadpool(
-                    build_scoped_planning_context,
+                    _build_scoped_planning_context_preview_cached,
                     _db,
                     resolved_hosts,
                     feature=feat_pc,
@@ -7888,7 +8028,7 @@ async def preview_intent(
             planning_context_vlan = planning_context_preview
             if planning_context_vlan is None:
                 planning_context_vlan = await run_in_threadpool(
-                    build_scoped_planning_context,
+                    _build_scoped_planning_context_preview_cached,
                     _db,
                     resolved_hosts,
                     feature="vlan",
@@ -7944,7 +8084,7 @@ async def preview_intent(
             pc_trunk = planning_context_preview
             if pc_trunk is None:
                 pc_trunk = await run_in_threadpool(
-                    build_scoped_planning_context,
+                    _build_scoped_planning_context_preview_cached,
                     _db,
                     resolved_hosts,
                     feature="vlan",
@@ -8391,6 +8531,15 @@ async def preview_intent(
     except Exception as exc:
         logger.debug("build_intent_schema_inspector_payload failed: %s", exc, exc_info=True)
         intent_schema_inspector = {"slices": [], "error": str(exc)}
+
+    logger.info(
+        "Ansible preview-intent completed in %sms (skip_rag=%s, targets=%s, params_disambiguation=%s, interfaces_disambiguation=%s)",
+        int((time.perf_counter() - _preview_started) * 1000),
+        bool(req.skip_rag),
+        len(resolved_hosts or []),
+        bool(params_disambiguation),
+        bool(interfaces_disambiguation),
+    )
 
     return {
         "categories": categories,

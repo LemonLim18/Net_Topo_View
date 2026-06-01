@@ -26,7 +26,7 @@ import { ChatInput } from '../components/ChatInput';
 import { MessageBubble } from '../components/MessageBubble';
 import { LLMRuntimeSelector } from '../components/LLMRuntimeSelector';
 import { llmApi, proposalApi } from '../src/services/api';
-import { Toast } from '../src/utils/swal';
+import { Toast, Confirm } from '../src/utils/swal';
 
 import type { AppDomain } from '../types';
 
@@ -1095,6 +1095,11 @@ const GeminiChat: React.FC<AIChatProps> = ({ domain }) => {
 
   const handleAcceptProposal = async (review: ProposalReviewInput) => {
     if (!currentProposal) return;
+    const ok = await Confirm.ask(
+      'Approve AI proposal?',
+      `This will approve the reviewed configuration for ${currentProposal.target_device}. Accepted and rejected diff lines will be recorded.`,
+    );
+    if (!ok) return;
     setIsDeploying(true);
 
     try {
@@ -1160,6 +1165,11 @@ const GeminiChat: React.FC<AIChatProps> = ({ domain }) => {
 
   const handleRejectProposal = async () => {
     if (!currentProposal) return;
+    const ok = await Confirm.ask(
+      'Reject AI proposal?',
+      'This marks the current proposal as rejected and clears it from the chat review flow.',
+    );
+    if (!ok) return;
 
     try {
       await proposalApi.reject(currentProposal.id);
@@ -1179,6 +1189,11 @@ const GeminiChat: React.FC<AIChatProps> = ({ domain }) => {
 
   const handleRollbackProposal = async () => {
     if (!currentProposal) return;
+    const ok = await Confirm.danger(
+      `Rollback proposal on ${currentProposal.target_device}?`,
+      'This will request rollback of the deployed configuration associated with this proposal.',
+    );
+    if (!ok) return;
     setIsRollingBack(true);
 
     try {
@@ -1211,7 +1226,12 @@ const GeminiChat: React.FC<AIChatProps> = ({ domain }) => {
     chatAbortRef.current?.abort();
   };
 
-  const handleDeleteChat = (id: string) => {
+  const handleDeleteChat = async (id: string) => {
+    const ok = await Confirm.ask(
+      'Delete chat session?',
+      'This removes the session from the sidebar and clears the backend chat context.',
+    );
+    if (!ok) return;
     setSessions(prev => prev.filter(s => s.id !== id));
     if (currentSessionId === id) {
         startNewChat();

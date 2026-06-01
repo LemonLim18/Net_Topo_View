@@ -5,7 +5,7 @@ import type { IntentSchema, IntentSchemaOperation, IntentSchemaField } from '../
 import IntentTreePanel from '../components/intent_parser/IntentTreePanel';
 import IntentGraphCanvas from '../components/intent_parser/IntentGraphCanvas';
 import { Link as LinkIcon } from 'lucide-react';
-import { Toast } from '../src/utils/swal';
+import { Toast, Confirm } from '../src/utils/swal';
 
 type ParserTab = 'tree' | 'category' | 'operation';
 type ParserNodeSelection = { type: string; category?: string; operation?: string; parameter?: string } | null;
@@ -431,13 +431,16 @@ const IntentParserView: React.FC = () => {
     Toast.success('Intent Parser', `Created ${categoryName}.`);
   };
 
-  const handleDeleteCategory = () => {
+  const handleDeleteCategory = async () => {
     if (!selectedCategoryName) return;
     if (schema.categories.length <= 1) {
       Toast.warning('Cannot delete', 'At least one category is required.');
       return;
     }
-    const ok = window.confirm(`Delete category ${selectedCategoryName}?`);
+    const ok = await Confirm.danger(
+      `Delete category ${selectedCategoryName}?`,
+      'This removes the category from the local intent parser schema.',
+    );
     if (!ok) return;
 
     setSchema((prev) => {

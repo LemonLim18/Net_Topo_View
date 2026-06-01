@@ -19,6 +19,7 @@ import {
   ChevronUp,
 } from 'lucide-react';
 import { sdnApi, type SDNControllerDetail } from '../src/services/api';
+import { Confirm, Toast } from '../src/utils/swal';
 import type { ViewId } from '../types';
 
 interface Props {
@@ -60,18 +61,28 @@ export default function SDNDashboardView({ setView: _setView }: Props) {
   }, [fetchControllers]);
 
   const handleCreate = async () => {
+    const ok = await Confirm.ask(
+      'Create SDN controller?',
+      'This saves a new controller registration and connection details.',
+    );
+    if (!ok) return;
     try {
       await sdnApi.create(form);
       setShowAdd(false);
       setForm({ name: '', controller_type: 'opendaylight', url: '', username: '', password: '', verify_ssl: false });
       fetchControllers();
     } catch (e: any) {
-      alert(e.message || 'Failed to create controller');
+      Toast.error('Create failed', e.message || 'Failed to create controller');
     }
   };
 
   const handleUpdate = async () => {
     if (editId === null) return;
+    const ok = await Confirm.ask(
+      'Update SDN controller?',
+      'This will modify the saved controller connection details.',
+    );
+    if (!ok) return;
     try {
       await sdnApi.update(editId, {
         name: form.name || undefined,
@@ -83,21 +94,31 @@ export default function SDNDashboardView({ setView: _setView }: Props) {
       setEditId(null);
       fetchControllers();
     } catch (e: any) {
-      alert(e.message || 'Failed to update controller');
+      Toast.error('Update failed', e.message || 'Failed to update controller');
     }
   };
 
   const handleDelete = async (id: number) => {
-    if (!confirm('Delete this SDN controller?')) return;
+    const ok = await Confirm.danger(
+      'Delete this SDN controller?',
+      'This removes the controller registration from the app.',
+    );
+    if (!ok) return;
     try {
       await sdnApi.delete(id);
       fetchControllers();
     } catch (e: any) {
-      alert(e.message || 'Failed to delete');
+      Toast.error('Delete failed', e.message || 'Failed to delete');
     }
   };
 
   const handleSync = async (id: number) => {
+    const ok = await Confirm.ask(
+      'Sync SDN controller?',
+      'This connects to the controller and refreshes its topology data.',
+    );
+    if (!ok) return;
+
     setSyncingId(id);
     try {
       const result = await sdnApi.sync(id);
@@ -107,7 +128,7 @@ export default function SDNDashboardView({ setView: _setView }: Props) {
       }));
       fetchControllers();
     } catch (e: any) {
-      alert(e.message || 'Sync failed');
+      Toast.error('Sync failed', e.message || 'Sync failed');
     } finally {
       setSyncingId(null);
     }

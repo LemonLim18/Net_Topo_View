@@ -20,7 +20,7 @@ import {
   ClipboardList
 } from 'lucide-react';
 import { llmApi, proposalApi } from '../src/services/api';
-import { Toast } from '../src/utils/swal';
+import { Toast, Confirm } from '../src/utils/swal';
 import { LLMRuntimeSelector } from './LLMRuntimeSelector';
 import type { AppDomain } from '../types';
 
@@ -719,6 +719,11 @@ const AIAgentPanel: React.FC<AIAgentPanelProps> = ({
   // ---- Accept & Deploy ----
   const handleAccept = async (review: ProposalReviewInput) => {
     if (!currentProposal) return;
+    const ok = await Confirm.ask(
+      'Approve AI proposal?',
+      `This will approve the reviewed configuration for ${currentProposal.target_device}. Accepted and rejected diff lines will be recorded.`,
+    );
+    if (!ok) return;
     setIsDeploying(true);
 
     try {
@@ -789,6 +794,11 @@ const AIAgentPanel: React.FC<AIAgentPanelProps> = ({
   // ---- Reject proposal ----
   const handleReject = async () => {
     if (!currentProposal) return;
+    const ok = await Confirm.ask(
+      'Reject proposal?',
+      'This marks the proposal as rejected and clears it from the current agent flow.',
+    );
+    if (!ok) return;
 
     try {
       await proposalApi.reject(currentProposal.id);
@@ -810,6 +820,11 @@ const AIAgentPanel: React.FC<AIAgentPanelProps> = ({
   // ---- Rollback deployed config ----
   const handleRollback = async () => {
     if (!currentProposal) return;
+    const ok = await Confirm.danger(
+      `Rollback proposal on ${currentProposal.target_device}?`,
+      'This will request rollback of the deployed configuration associated with this proposal.',
+    );
+    if (!ok) return;
     setIsRollingBack(true);
 
     try {

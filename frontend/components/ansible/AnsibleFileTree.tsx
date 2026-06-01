@@ -301,7 +301,7 @@ const AnsibleFileTree: React.FC<AnsibleFileTreeProps> = ({ onFileOpen, selectedP
     const msg = e?.message || 'Operation failed';
     if (e?.status === 403) {
       setError(`Permission denied: ${msg}`);
-      alert(`Permission denied: ${msg}`);
+      Toast.error('Permission denied', msg);
       return;
     }
     setError(msg);
@@ -408,6 +408,11 @@ const AnsibleFileTree: React.FC<AnsibleFileTreeProps> = ({ onFileOpen, selectedP
           uploaded += 1;
         } catch (e: any) {
           if (e?.status === 409) {
+            const ok = await Confirm.ask(
+              `Overwrite ${target}?`,
+              'A file already exists at this path. Uploading will replace its content.',
+            );
+            if (!ok) continue;
             await ansibleApi.writeFile(target, text);
             uploaded += 1;
           } else {
@@ -443,6 +448,14 @@ const AnsibleFileTree: React.FC<AnsibleFileTreeProps> = ({ onFileOpen, selectedP
         return;
       }
       const toPath = `${parent}/${trimmed}`.replace(/\/+/g, '/');
+      const ok = await Confirm.ask(
+        'Rename file or folder?',
+        `${path} -> ${toPath}`,
+      );
+      if (!ok) {
+        setRenamingNode(null);
+        return;
+      }
       try {
         await ansibleApi.renamePath(path, toPath);
         setRenamingNode(null);

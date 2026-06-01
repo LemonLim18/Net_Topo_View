@@ -312,6 +312,16 @@ const OnboardingView: React.FC<{ setView: (id: ViewId) => void }> = ({ setView }
       setError('ZTP Target Server IP is invalid (must be 4 octets between 0 and 255)');
       return;
     }
+    const publishDetails = [
+      `${deviceIds.length} device(s)`,
+      dryRun ? 'dry run only' : 'writes files to the ZTP server',
+      restartServices ? 'restarts services' : '',
+      resetLeases ? 'resets DHCP leases' : '',
+    ].filter(Boolean).join(', ');
+    const ok = dryRun
+      ? await Confirm.ask('Run ZTP publish dry run?', publishDetails)
+      : await Confirm.danger('Publish configuration to ZTP server?', publishDetails);
+    if (!ok) return;
     setPublishLoading(true);
     setError('');
     try {
@@ -364,6 +374,11 @@ const OnboardingView: React.FC<{ setView: (id: ViewId) => void }> = ({ setView }
       setError('Server credential username and password are required');
       return;
     }
+    const ok = await Confirm.ask(
+      'Save ZTP server credential?',
+      `This stores or replaces the "${credentialLabel}" credential used to publish configs to the ZTP server.`,
+    );
+    if (!ok) return;
     setServerCredentialSaving(true);
     setError('');
     try {

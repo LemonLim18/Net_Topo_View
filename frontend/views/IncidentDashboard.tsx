@@ -14,6 +14,7 @@ import {
   FileCode,
 } from 'lucide-react';
 import { incidentApi } from '../src/services/api';
+import { Confirm } from '../src/utils/swal';
 
 /* ─── Types ─────────────────────────────────────────────────────── */
 
@@ -144,6 +145,11 @@ const IncidentDashboard: React.FC = () => {
   // Actions
   const handleApprove = async () => {
     if (!selected) return;
+    const ok = await Confirm.ask(
+      `Approve incident ${selected.id}?`,
+      'This marks the remediation as approved and allows execution.',
+    );
+    if (!ok) return;
     setActionLoading('approve');
     try {
       await incidentApi.approveIncident(selected.id);
@@ -156,6 +162,11 @@ const IncidentDashboard: React.FC = () => {
 
   const handleDismiss = async () => {
     if (!selected) return;
+    const ok = await Confirm.ask(
+      `Dismiss incident ${selected.id}?`,
+      'This closes the incident without executing the proposed remediation.',
+    );
+    if (!ok) return;
     setActionLoading('dismiss');
     try {
       await incidentApi.dismissIncident(selected.id);
@@ -168,6 +179,11 @@ const IncidentDashboard: React.FC = () => {
 
   const handleResolve = async () => {
     if (!selected) return;
+    const ok = await Confirm.ask(
+      `Mark incident ${selected.id} as resolved?`,
+      'This records the incident as resolved in the incident workflow.',
+    );
+    if (!ok) return;
     setActionLoading('resolve');
     try {
       await incidentApi.resolveIncident(selected.id);
@@ -180,6 +196,11 @@ const IncidentDashboard: React.FC = () => {
 
   const handleExecute = async () => {
     if (!selected) return;
+    const ok = await Confirm.danger(
+      `Execute remediation for ${selected.id}?`,
+      'This will run the approved remediation playbook. Confirm the impact and rollback plan before proceeding.',
+    );
+    if (!ok) return;
     setActionLoading('execute');
     setExecuteResult(null);
     try {

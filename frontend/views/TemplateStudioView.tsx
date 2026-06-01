@@ -685,6 +685,12 @@ const TemplateStudioView: React.FC = () => {
 
   const saveTemplate = async () => {
     if (!activeTab || !activeTab.isDirty) return;
+    const ok = await Confirm.ask(
+      `Save ${activeTab.vendor}/${activeTab.feature}.j2?`,
+      'This overwrites the template source file on disk.',
+    );
+    if (!ok) return;
+
     try {
       await configApi.saveTemplateSource(activeTab.vendor, activeTab.feature, activeTab.content);
       setTabs(prev =>

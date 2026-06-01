@@ -103,6 +103,11 @@ const PolicyBuilder: React.FC<PolicyBuilderProps> = ({
           onRequestScan ? undefined : 'Open Compliance → Overview to run a global scan when ready.',
         );
       } else {
+        const ok = await Confirm.ask(
+          `Save changes to policy ${selected.policy_id}?`,
+          'This updates the compliance policy used for future scans and drift evaluation.',
+        );
+        if (!ok) return;
         const updated = await policyApi.update(selected.policy_id, selected);
         setSelected(updated.policy);
         Toast.success(
@@ -125,6 +130,11 @@ const PolicyBuilder: React.FC<PolicyBuilderProps> = ({
 
   const onDelete = async () => {
     if (!selected.policy_id) return;
+    const ok = await Confirm.danger(
+      `Delete policy ${selected.policy_id}?`,
+      'This removes the policy from the active policy list.',
+    );
+    if (!ok) return;
     try {
       await policyApi.remove(selected.policy_id);
       Toast.success('Policy deleted');
@@ -149,8 +159,16 @@ const PolicyBuilder: React.FC<PolicyBuilderProps> = ({
 
   const onToggle = async () => {
     if (!selected.policy_id) return;
+    const nextState = !selected.enabled;
+    const ok = await Confirm.ask(
+      `${nextState ? 'Enable' : 'Disable'} policy ${selected.policy_id}?`,
+      nextState
+        ? 'This policy will be included in future compliance evaluation.'
+        : 'This policy will be excluded from future compliance evaluation.',
+    );
+    if (!ok) return;
     try {
-      const out = await policyApi.update(selected.policy_id, { enabled: !selected.enabled });
+      const out = await policyApi.update(selected.policy_id, { enabled: nextState });
       setSelected(out.policy);
       Toast.success(out.policy.enabled ? 'Policy enabled' : 'Policy disabled');
       await reload();

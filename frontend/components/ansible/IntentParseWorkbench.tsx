@@ -13,7 +13,7 @@ import {
   Trash2,
 } from 'lucide-react';
 import { ansibleApi } from '../../src/services/api';
-import { Toast } from '../../src/utils/swal';
+import { Toast, Confirm } from '../../src/utils/swal';
 
 type ViewMode = 'tree' | 'category' | 'operation' | 'preview';
 
@@ -233,10 +233,13 @@ const IntentParseWorkbench: React.FC<{ userRole?: string }> = ({ userRole = 'vie
   }, [selectedCategory, view, draftCategoryKey]);
 
   const trySelectCategory = useCallback(
-    (key: string) => {
+    async (key: string) => {
       if (key === selectedCategory) return;
       if (isDirty) {
-        const ok = window.confirm('Discard unsaved schema changes for the current category?');
+        const ok = await Confirm.ask(
+          'Discard unsaved schema changes?',
+          'This will switch categories and lose unsaved edits in the current category.',
+        );
         if (!ok) return;
       }
       setSelectedCategory(key);
@@ -295,7 +298,10 @@ const IntentParseWorkbench: React.FC<{ userRole?: string }> = ({ userRole = 'vie
   const createCategory = useCallback(async () => {
     if (!isAdmin) return;
     if (isDirty) {
-      const ok = window.confirm('Discard unsaved schema changes before creating a new category?');
+      const ok = await Confirm.ask(
+        'Discard unsaved schema changes?',
+        'This will lose unsaved edits before creating a new category.',
+      );
       if (!ok) return;
     }
     const keyInput = window.prompt('New category key (letters, numbers, _ or -)', '');
@@ -328,10 +334,16 @@ const IntentParseWorkbench: React.FC<{ userRole?: string }> = ({ userRole = 'vie
   const deleteCategory = useCallback(async () => {
     if (!isAdmin || !selectedCategory) return;
     if (isDirty) {
-      const ok = window.confirm('Discard unsaved schema changes before deleting this category?');
+      const ok = await Confirm.ask(
+        'Discard unsaved schema changes?',
+        'Unsaved edits will be lost before the category is deleted.',
+      );
       if (!ok) return;
     }
-    const ok = window.confirm(`Delete category "${selectedCategory}"? This removes its YAML file.`);
+    const ok = await Confirm.danger(
+      `Delete category "${selectedCategory}"?`,
+      'This removes its YAML file and reloads the intent catalog.',
+    );
     if (!ok) return;
     try {
       await ansibleApi.deleteIntentCategory(selectedCategory);
@@ -408,8 +420,12 @@ const IntentParseWorkbench: React.FC<{ userRole?: string }> = ({ userRole = 'vie
     pendingSelectOp.current = null;
   }, [draft]);
 
-  const removeOperation = useCallback((opName: string) => {
-    if (!window.confirm(`Delete operation "${opName}" from this category file?`)) return;
+  const removeOperation = useCallback(async (opName: string) => {
+    const ok = await Confirm.danger(
+      `Delete operation "${opName}"?`,
+      'This removes the operation from the current category draft. Save the category to persist the change.',
+    );
+    if (!ok) return;
     setDraft((prev) => {
       if (!prev) return prev;
       const next = structuredClone(prev);

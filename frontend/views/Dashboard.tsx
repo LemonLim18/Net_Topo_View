@@ -17,7 +17,7 @@ import { API_CONFIG } from '../src/config';
 import { topologyApi, netboxApi, type DeviceRecord, type InterfaceRecord, type LinkRecord } from '../src/services/api';
 import { useDeviceContext } from '../contexts/DeviceContext';
 import { Terminal, Info, RefreshCw, Cable, AlertTriangle, Loader2 } from 'lucide-react';
-import { Toast } from '../src/utils/swal';
+import { Toast, Confirm } from '../src/utils/swal';
 import { sshApi } from '../src/services/api';
 import PremiumLoaderOverlay from '../components/PremiumLoaderOverlay';
 import { validateLinkInterfaceCompatibility } from '../src/utils/linkValidation';
@@ -818,6 +818,14 @@ const Dashboard: React.FC = () => {
             return;
         }
         setLinkFormError(null);
+        const srcDevice = connectDevices.find((d) => d.id === linkForm.src_device_id)?.hostname || 'source device';
+        const dstDevice = connectDevices.find((d) => d.id === linkForm.dst_device_id)?.hostname || 'destination device';
+        const ok = await Confirm.ask(
+            `Create link ${srcDevice} -> ${dstDevice}?`,
+            'This adds a manual topology link to NetBox and refreshes the planned topology.',
+        );
+        if (!ok) return;
+
         setIsNetboxOpLoading(true);
         setNetboxOpMessage('Creating link in NetBox and refreshing topology...');
         try {
@@ -984,7 +992,12 @@ const Dashboard: React.FC = () => {
         setEditIfaceFormError('IP address is invalid (must be 4 octets between 0 and 255)');
         return;
       }
-      
+      const ok = await Confirm.ask(
+        `Update interface ${editingIface.name}?`,
+        'This updates the interface IP address in NetBox and refreshes the planned topology.',
+      );
+      if (!ok) return;
+
       try {
         setIsNetboxOpLoading(true);
         setNetboxOpMessage('Updating interface in NetBox...');

@@ -6,7 +6,7 @@ import AnsibleChatPanel                             from '../components/ansible/
 import SSHConnectModal                              from '../components/SSHConnectModal';
 import type { SSHTab }                              from '../components/SSHTerminalPanel';
 import { ansibleApi, configApi, sshApi }            from '../src/services/api';
-import { Toast }                                    from '../src/utils/swal';
+import { Toast, Confirm }                           from '../src/utils/swal';
 import PremiumLoaderOverlay                         from '../components/PremiumLoaderOverlay';
 import type {
   AnsibleTab, AnsibleJob, AnsibleCheckResult, AnsibleGeneratedArtifactFile, AnsibleOutputSession,
@@ -478,6 +478,13 @@ const AnsibleStudioView: React.FC<AnsibleStudioViewProps> = ({ user }) => {
       (st === 'pending_approval' ||
         st === 'submitted' ||
         (st === 'pending' && stg === 'approve'));
+    const ok = await Confirm.ask(
+      isResend ? `Resubmit Job #${activeJobId} for approval?` : `Submit Job #${activeJobId} for approval?`,
+      isResend
+        ? 'This will update the approval audit trail and place the job back in the approval flow.'
+        : 'This sends the checked playbook to the Approval Queue for reviewer decision.',
+    );
+    if (!ok) return;
     await ansibleApi.submitForApproval(activeJobId);
     setJob((prev) => {
       if (!prev || prev.jobId !== activeJobId) return prev;
@@ -495,6 +502,11 @@ const AnsibleStudioView: React.FC<AnsibleStudioViewProps> = ({ user }) => {
   // ── Deploy (SSE) ─────────────────────────────────────────────────────────
   const handleDeploy = useCallback(async () => {
     if (!activeJobId) return;
+    const ok = await Confirm.danger(
+      `Execute Job #${activeJobId}?`,
+      'This will run the approved playbook against the target device(s). Confirm that approval, check output, and rollback plan are acceptable.',
+    );
+    if (!ok) return;
     setSseLines([]);
     setIsStreaming(true);
     const deploySessionId = `deploy-${activeJobId}-${Date.now()}`;

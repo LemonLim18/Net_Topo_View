@@ -1,6 +1,7 @@
 import React, { useState, useMemo } from 'react';
 import type { D3Link, D3Node } from '../types';
 import { Trash2 } from 'lucide-react';
+import { Confirm } from '../src/utils/swal';
 
 interface TopologyTableProps {
   links: D3Link[];
@@ -85,11 +86,13 @@ const TopologyTable: React.FC<TopologyTableProps> = ({ links, onNodeClick, onDel
                     <td className="text-right">
                         {link.netboxLinkId && onDeleteLink && (
                             <button 
-                                onClick={(e) => {
+                                onClick={async (e) => {
                                     e.stopPropagation();
-                                    if (confirm('Are you sure you want to delete this link?')) {
-                                        onDeleteLink(link.netboxLinkId!);
-                                    }
+                                    const ok = await Confirm.danger(
+                                        'Delete link from NetBox?',
+                                        `${sourceId} ${link.sourceInterface || ''} -> ${targetId} ${link.targetInterface || ''}`,
+                                    );
+                                    if (ok) onDeleteLink(link.netboxLinkId!);
                                 }}
                                 className="btn btn-ghost btn-xs text-error hover:bg-error/10"
                                 title="Delete Link from NetBox"
