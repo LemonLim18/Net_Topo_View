@@ -210,7 +210,7 @@ const Sidebar: React.FC<SidebarProps> = ({ currentView, setView, user, onLogout,
         </SectionHeader>
 
         <SectionHeader
-          label="Safety/Monitoring/Policy"
+          label="Monitoring & Assurance"
           icon={ShieldCheck}
           iconColor="text-secondary"
           open={automationOpen}

@@ -81,28 +81,16 @@ def _queue_status_where(status_filter: str) -> tuple[str, str]:
         return "status = 'approved'", "j.status = 'approved'"
     if normalized == "rejected":
         return "status = 'rejected'", "j.status = 'rejected'"
-    return "status = 'pending_approval'", "j.stage = 'approve' AND j.status IN ('pending', 'pending_approval')"
+    return "status = 'pending_approval'", "cr.status = 'pending_approval' AND j.status IN ('pending', 'pending_approval')"
 
 
 def _change_request_hide_if_ansible_job_exists_sql(status_filter: str) -> str:
     """
-    Ansible Studio creates both a change_request and a jobs row. Listing both produced
-    duplicate queue lines; the job row carries ansible_entrypoint_path for preview/check.
-    Hide the parent change_request when a matching job is already shown for the tab.
+    Ansible Studio creates both a change_request and a jobs row.
+    Always hide the parent change_request when a matching job exists,
+    so that only the job row is shown in the approval queue.
     """
-    normalized = (status_filter or "pending").strip().lower()
-    if normalized == "pending":
-        sub = (
-            "SELECT request_id FROM jobs WHERE request_id IS NOT NULL "
-            "AND stage = 'approve' AND status IN ('pending', 'pending_approval')"
-        )
-    elif normalized == "approved":
-        sub = "SELECT request_id FROM jobs WHERE request_id IS NOT NULL AND status = 'approved'"
-    elif normalized == "rejected":
-        sub = "SELECT request_id FROM jobs WHERE request_id IS NOT NULL AND status = 'rejected'"
-    else:
-        return ""
-    return f" AND id NOT IN ({sub})"
+    return " AND id NOT IN (SELECT request_id FROM jobs WHERE request_id IS NOT NULL)"
 
 
 def _serialize_queue_item(item_type: str, row, db: DatabaseManager) -> dict:

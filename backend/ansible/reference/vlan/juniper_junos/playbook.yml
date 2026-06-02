@@ -1,56 +1,85 @@
 ---
-# Juniper Junos only. Same behavior as multi_vendor: VLAN-only when no interfaces; data-driven interfaces when intent has them.
-# Variables: vlan_id, vlan_name, target_hosts, interfaces_config_with_vlan (from get_template_vars).
+# Juniper Junos only. Use CLI config lines through junos_config to avoid
+# Junos XML/resource-module incompatibilities on older releases.
 - name: Configure VLANs on access switches
   hosts: "{{ target_hosts }}"
   gather_facts: no
   ignore_unreachable: true
   tasks:
     - name: Ensure VLAN {{ vlan_id }} exists (Juniper Junos)
-      juniper.device.junos_vlans:
-        config:
-          - name: "{{ vlan_name }}"
-            vlan_id: "{{ vlan_id }}"
-        state: merged
+      juniper.device.junos_config:
+        lines:
+          - set vlans {{ vlan_name }} vlan-id {{ vlan_id }}
       when: inventory_hostname in groups.get('vendor_juniper_junos', [])
 
 {% if interfaces_config_with_vlan_use_nettopo | default(false) %}
 {% set iface_names = nettopo_interfaces | default([]) | rejectattr('ip_address', 'equalto', (hostvars[inventory_hostname].ansible_host | default(''))) | map(attribute='name') | map('trim') | reject('equalto', '') | reject('match', '(?i).*(management|mgmt|meth|vty|console).*') | list %}
-    - name: Configure interfaces (Juniper Junos) [all interfaces]
-      juniper.device.junos_l2_interfaces:
-        config:
 {% if (interfaces_binding_mode | default('access')) == 'access' %}
 {% for ifn in iface_names %}
-          - name: "{{ ifn }}"
-            mode: access
-            access:
-              vlan: "{{ vlan_id }}"
+    - name: Configure {{ ifn }} as access VLAN {{ vlan_id }} (Juniper Junos)
+      juniper.device.junos_config:
+        lines:
+          - set interfaces {{ ifn }} unit 0 family ethernet-switching port-mode access
+          - set interfaces {{ ifn }} unit 0 family ethernet-switching vlan members {{ vlan_name }}
+      when: inventory_hostname in groups.get('vendor_juniper_junos', [])
 {% endfor %}
 {% else %}
 {% if interfaces_binding_trunk_allowed_vlans is string and interfaces_binding_trunk_allowed_vlans == 'all' %}
-{% set trunk_vlans_csv = 'all' %}
+{% set trunk_vlans_cli = 'all' %}
 {% elif interfaces_binding_trunk_allowed_vlans is iterable and interfaces_binding_trunk_allowed_vlans is not string and interfaces_binding_trunk_allowed_vlans | length > 0 %}
-{% set trunk_vlans_csv = interfaces_binding_trunk_allowed_vlans | map('string') | join(',') %}
+{% set trunk_vlans_cli = '[ ' + (interfaces_binding_trunk_allowed_vlans | map('string') | join(' ')) + ' ]' %}
 {% else %}
-{% set trunk_vlans_csv = vlan_id|string %}
+{% set trunk_vlans_cli = '[ ' + vlan_name + ' ]' %}
 {% endif %}
 {% for ifn in iface_names %}
-          - name: "{{ ifn }}"
-            mode: trunk
-            trunk:
-              allowed_vlans: "{{ trunk_vlans_csv }}"
+    - name: Configure {{ ifn }} as trunk carrying VLAN {{ vlan_id }} (Juniper Junos)
+      juniper.device.junos_config:
+        lines:
+          - set interfaces {{ ifn }} unit 0 family ethernet-switching port-mode trunk
+          - set interfaces {{ ifn }} unit 0 family ethernet-switching vlan members {{ trunk_vlans_cli }}
 {% if interfaces_binding_trunk_native_vlan is defined and interfaces_binding_trunk_native_vlan is not none %}
-              native_vlan: {{ interfaces_binding_trunk_native_vlan }}
+          - set interfaces {{ ifn }} native-vlan-id {{ interfaces_binding_trunk_native_vlan }}
 {% endif %}
+      when: inventory_hostname in groups.get('vendor_juniper_junos', [])
 {% endfor %}
 {% endif %}
-        state: merged
-      when: inventory_hostname in groups.get('vendor_juniper_junos', [])
 {% elif interfaces_config_with_vlan | length > 0 %}
-    - name: Configure interfaces (Juniper Junos)
-      juniper.device.junos_l2_interfaces:
-        config:
-{{ interfaces_config_with_vlan_yaml }}
-        state: merged
-      when: inventory_hostname in groups.get('vendor_juniper_junos', [])
+{% for iface in interfaces_config_with_vlan %}
+{% set iface_name = iface.name %}
+{% set iface_mode = iface.mode | default('access') %}
+{% if iface_mode == 'access' %}
+{% set iface_member = vlan_name if (iface.access.vlan | string) == (vlan_id | string) else (iface.access.vlan | string) %}
+    - name: Configure {{ iface_name }} as access VLAN {{ iface.access.vlan }} (Juniper Junos)
+      juniper.device.junos_config:
+        lines:
+          - set interfaces {{ iface_name }} unit 0 family ethernet-switching port-mode access
+          - set interfaces {{ iface_name }} unit 0 family ethernet-switching vlan members {{ iface_member }}
+      when:
+        - inventory_hostname in groups.get('vendor_juniper_junos', [])
+{% if iface.target_host is defined and iface.target_host %}
+        - inventory_hostname == "{{ iface.target_host }}"
+{% endif %}
+{% else %}
+{% if iface.trunk.allowed_vlans is string and iface.trunk.allowed_vlans == 'all' %}
+{% set trunk_member = 'all' %}
+{% elif iface.trunk.allowed_vlans is string and (iface.trunk.allowed_vlans | trim) %}
+{% set trunk_member = '[ ' + (iface.trunk.allowed_vlans | replace(',', ' ')) + ' ]' %}
+{% else %}
+{% set trunk_member = '[ ' + vlan_name + ' ]' %}
+{% endif %}
+    - name: Configure {{ iface_name }} as trunk carrying VLANs (Juniper Junos)
+      juniper.device.junos_config:
+        lines:
+          - set interfaces {{ iface_name }} unit 0 family ethernet-switching port-mode trunk
+          - set interfaces {{ iface_name }} unit 0 family ethernet-switching vlan members {{ trunk_member }}
+{% if iface.trunk.native_vlan is defined and iface.trunk.native_vlan is not none %}
+          - set interfaces {{ iface_name }} native-vlan-id {{ iface.trunk.native_vlan }}
+{% endif %}
+      when:
+        - inventory_hostname in groups.get('vendor_juniper_junos', [])
+{% if iface.target_host is defined and iface.target_host %}
+        - inventory_hostname == "{{ iface.target_host }}"
+{% endif %}
+{% endif %}
+{% endfor %}
 {% endif %}

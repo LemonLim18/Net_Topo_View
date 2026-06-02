@@ -117,7 +117,7 @@ All core intent features now have official references under `reference/` and are
 
 **VLAN multi-vendor template:** `vlan/multi_vendor/` provides a single-play pattern (hosts: access_switches, when: per vendor, ignore_unreachable: true) and correct module usage for Cisco, Huawei, and Juniper. Use for “configure VLAN on all access switches” with mixed vendors.
 
-**Interface multi-vendor template:** `interface/multi_vendor/` (reference: job_42) provides the pattern for shutdown/enable interfaces: single play, all tasks inline, `interfaces_to_shutdown` from `nettopo_interfaces`, correct modules per vendor (`cisco.ios.ios_interfaces`, `community.network.ce_config`, `juniper.device.junos_interfaces`). Use for "shutdown interfaces on [host or group]" with mixed vendors.
+**Interface multi-vendor template:** `interface/multi_vendor/` (reference: job_42) provides the pattern for shutdown/enable interfaces: single play, all tasks inline, `interfaces_to_shutdown` from `nettopo_interfaces`, correct modules per vendor (`cisco.ios.ios_interfaces`, `community.network.ce_config`, `juniper.device.junos_config`). Use for "shutdown interfaces on [host or group]" with mixed vendors.
 
 ---
 
@@ -147,4 +147,4 @@ When a generated playbook is wrong for a feature/vendor, improve the correspondi
 
 - When you confirm a playbook for a vendor, set **Status:** in `reference.md` to “Confirmed” and sync the working play into `playbook.yml`.  
 - For Huawei, always document: use `community.network.ce_config`; do **not** use `community.network.network_config` (module does not exist).  
-- For Juniper, use `juniper.device` (e.g. `junos_vlans`, `junos_l2_interfaces`); avoid deprecated `junipernetworks.junos`.
+- For Juniper, use `juniper.device.junos_config` for interface and VLAN/interface-binding flows on older Junos releases; avoid deprecated `junipernetworks.junos` and avoid resource-module XML mappings when legacy devices reject them.

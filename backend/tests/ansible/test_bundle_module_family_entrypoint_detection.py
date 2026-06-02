@@ -16,11 +16,9 @@ def test_bundle_module_family_accepts_juniper_module_in_entrypoint_tasks():
                     "  gather_facts: false\n"
                     "  tasks:\n"
                     "    - name: Shutdown interface\n"
-                    "      juniper.device.junos_interfaces:\n"
-                    "        config:\n"
-                    "          - name: ge-0/0/1\n"
-                    "            enabled: false\n"
-                    "        state: merged\n"
+                    "      juniper.device.junos_config:\n"
+                    "        lines:\n"
+                    "          - set interfaces ge-0/0/1 disable\n"
                     "  roles:\n"
                     "    - generated/job_326/interface\n"
                 ),
@@ -88,11 +86,9 @@ def test_single_vendor_juniper_bundle_requires_only_main_and_juniper_tasks():
                 "kind": "task",
                 "content": (
                     "- name: Shutdown interface\n"
-                    "  juniper.device.junos_interfaces:\n"
-                    "    config:\n"
-                    "      - name: ge-0/0/1\n"
-                    "        enabled: false\n"
-                    "    state: merged\n"
+                    "  juniper.device.junos_config:\n"
+                    "    lines:\n"
+                    "      - set interfaces ge-0/0/1 disable\n"
                 ),
             },
         ],
@@ -138,9 +134,9 @@ def test_multi_vendor_bundle_still_requires_all_vendor_task_files():
                 "kind": "task",
                 "content": (
                     "- name: Juniper interface task\n"
-                    "  juniper.device.junos_interfaces:\n"
-                    "    config: []\n"
-                    "    state: merged\n"
+                    "  juniper.device.junos_config:\n"
+                    "    lines:\n"
+                    "      - set interfaces ge-0/0/1 disable\n"
                 ),
             },
         ],

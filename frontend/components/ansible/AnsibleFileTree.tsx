@@ -40,7 +40,81 @@ interface TreeNodeProps {
   renamingName?: string;
   onRenameCommit?: (path: string, newName: string) => void;
   onRenameCancel?: () => void;
+  creatingParentPath?: string | null;
+  creatingType?: 'file' | 'dir' | null;
+  onCreateCommit?: (parentPath: string, name: string, type: 'file' | 'dir') => void;
+  onCreateCancel?: () => void;
 }
+
+interface InlineCreateInputProps {
+  depth: number;
+  type: 'file' | 'dir';
+  onCommit: (name: string) => void;
+  onCancel: () => void;
+}
+
+const InlineCreateInput: React.FC<InlineCreateInputProps> = ({ depth, type, onCommit, onCancel }) => {
+  const [value, setValue] = useState('');
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (inputRef.current) {
+      inputRef.current.focus();
+    }
+  }, []);
+
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      const val = value.trim();
+      if (val) onCommit(val);
+      else onCancel();
+    } else if (e.key === 'Escape') {
+      onCancel();
+    }
+  };
+
+  const handleBlur = () => {
+    const val = value.trim();
+    if (val) onCommit(val);
+    else onCancel();
+  };
+
+  const paddingLeft = `${8 + depth * 14}px`;
+  const iconColor = type === 'dir' ? 'text-yellow-400' : 'text-base-content opacity-50';
+
+  return (
+    <li>
+      <div
+        className="flex items-center gap-1.5 w-full px-1.5 py-0 rounded text-sm bg-base-300 border border-primary h-[22px]"
+        style={{ paddingLeft }}
+      >
+        {type === 'dir' ? (
+          <>
+            <ChevronRight className="h-3 w-3 opacity-0 shrink-0" />
+            <Folder className={`h-3.5 w-3.5 shrink-0 ${iconColor}`} />
+          </>
+        ) : value.endsWith('.json') ? (
+          <FileJson className={`h-3.5 w-3.5 shrink-0 ${iconColor}`} />
+        ) : (
+          <FileCode2 className={`h-3.5 w-3.5 shrink-0 ${iconColor}`} />
+        )}
+        <input
+          ref={inputRef}
+          type="text"
+          value={value}
+          onChange={(e) => setValue(e.target.value)}
+          onKeyDown={handleKeyDown}
+          onBlur={handleBlur}
+          onClick={(e) => e.stopPropagation()}
+          className="flex-1 min-w-0 bg-transparent border-none outline-none text-sm py-0 h-full truncate"
+          placeholder={type === 'file' ? 'filename.yml' : 'foldername'}
+          aria-label="Create name"
+        />
+      </div>
+    </li>
+  );
+};
 
 const WRITABLE_ROOTS = new Set(['playbooks', 'inventory']);
 const READONLY_ROOTS = new Set(['roles', 'awx', 'reference', 'Test_Reference']);
@@ -73,8 +147,19 @@ const TreeNode: React.FC<TreeNodeProps> = ({
   renamingName = '',
   onRenameCommit,
   onRenameCancel,
+  creatingParentPath = null,
+  creatingType = null,
+  onCreateCommit,
+  onCreateCancel,
 }) => {
-  const [open, setOpen] = useState(defaultOpen);
+  const isCreatingHere = creatingParentPath === node.path;
+  const [open, setOpen] = useState(defaultOpen || isCreatingHere);
+
+  useEffect(() => {
+    if (isCreatingHere) {
+      setOpen(true);
+    }
+  }, [isCreatingHere]);
   const [editValue, setEditValue] = useState(node.name);
   const inputRef = React.useRef<HTMLInputElement>(null);
   const isRenaming = renamingPath === node.path;
@@ -114,7 +199,7 @@ const TreeNode: React.FC<TreeNodeProps> = ({
       <li>
         {isRenaming ? (
           <div
-            className="flex items-center gap-1.5 w-full px-2 py-0.5 rounded text-sm bg-base-300 border border-primary"
+            className="flex items-center gap-1.5 w-full px-1.5 py-0 rounded text-sm bg-base-300 border border-primary h-[22px]"
             style={{ paddingLeft }}
           >
             {open ? <ChevronDown className="h-3 w-3 opacity-50 shrink-0" /> : <ChevronRight className="h-3 w-3 opacity-50 shrink-0" />}
@@ -127,7 +212,7 @@ const TreeNode: React.FC<TreeNodeProps> = ({
               onKeyDown={handleRenameKeyDown}
               onBlur={handleRenameBlur}
               onClick={(e) => e.stopPropagation()}
-              className="flex-1 min-w-0 bg-transparent border-none outline-none text-sm font-medium opacity-80 py-0"
+              className="flex-1 min-w-0 bg-transparent border-none outline-none text-sm font-medium opacity-80 py-0 h-full"
               aria-label="Rename"
             />
           </div>
@@ -157,8 +242,20 @@ const TreeNode: React.FC<TreeNodeProps> = ({
                 renamingName={renamingName}
                 onRenameCommit={onRenameCommit}
                 onRenameCancel={onRenameCancel}
+                creatingParentPath={creatingParentPath}
+                creatingType={creatingType}
+                onCreateCommit={onCreateCommit}
+                onCreateCancel={onCreateCancel}
               />
             ))}
+            {isCreatingHere && (
+              <InlineCreateInput
+                depth={depth + 1}
+                type={creatingType || 'file'}
+                onCommit={(name) => onCreateCommit?.(node.path, name, creatingType || 'file')}
+                onCancel={onCreateCancel}
+              />
+            )}
           </ul>
         )}
       </li>
@@ -183,7 +280,7 @@ const TreeNode: React.FC<TreeNodeProps> = ({
     return (
       <li>
         <div
-          className="flex items-center gap-1.5 w-full px-2 py-0.5 rounded text-sm bg-base-300 border border-primary"
+          className="flex items-center gap-1.5 w-full px-1.5 py-0 rounded text-sm bg-base-300 border border-primary h-[22px]"
           style={{ paddingLeft }}
         >
           <Icon className={`h-3.5 w-3.5 shrink-0 ${iconColor}`} />
@@ -195,7 +292,7 @@ const TreeNode: React.FC<TreeNodeProps> = ({
             onKeyDown={handleRenameKeyDown}
             onBlur={handleRenameBlur}
             onClick={(e) => e.stopPropagation()}
-            className="flex-1 min-w-0 bg-transparent border-none outline-none text-sm py-0 truncate"
+            className="flex-1 min-w-0 bg-transparent border-none outline-none text-sm py-0 h-full truncate"
             aria-label="Rename"
           />
         </div>
@@ -234,6 +331,9 @@ const AnsibleFileTree: React.FC<AnsibleFileTreeProps> = ({ onFileOpen, selectedP
   const [error, setError] = useState<string | null>(null);
   const [showCreateMenu, setShowCreateMenu] = useState(false);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; actions: ContextMenuAction[] } | null>(null);
+  const [creatingNode, setCreatingNode] = useState<{ parentPath: string; type: 'file' | 'dir' } | null>(null);
+
+
   const createMenuRef = useRef<HTMLDivElement>(null);
   const uploadInputRef = useRef<HTMLInputElement>(null);
   const uploadTargetDirRef = useRef<string>('playbooks');
@@ -307,69 +407,51 @@ const AnsibleFileTree: React.FC<AnsibleFileTreeProps> = ({ onFileOpen, selectedP
     setError(msg);
   }, []);
 
-  const askName = useCallback(async (title: string, placeholder: string) => {
-    const res = await Swal.fire({
-      title,
-      input: 'text',
-      inputPlaceholder: placeholder,
-      showCancelButton: true,
-      confirmButtonText: 'Create',
-      cancelButtonText: 'Cancel',
-      buttonsStyling: false,
-      customClass: {
-        popup: '!bg-base-100 !text-base-content !rounded-xl !shadow-2xl',
-        title: '!text-base-content',
-        htmlContainer: '!text-base-content/80',
-        input: 'input input-bordered w-full !bg-base-200 !text-base-content',
-        confirmButton: 'btn btn-primary btn-sm',
-        cancelButton: 'btn btn-ghost btn-sm',
-      },
-      reverseButtons: true,
-      didClose: () => {
-        try { document.body.style.overflow = ''; } catch { /* ignore */ }
-      },
-    });
+  const commitCreate = useCallback(async (parentPath: string, name: string, type: 'file' | 'dir') => {
+    setCreatingNode(null);
+    const trimmed = name.trim();
+    if (!trimmed || trimmed.includes('/') || trimmed.includes('\\')) {
+      return;
+    }
+    const fullPath = `${parentPath}/${trimmed}`.replace(/\/+/g, '/');
+    try {
+      if (type === 'file') {
+        await ansibleApi.createFile(fullPath, '');
+        Toast.successEmphasis('File created', fullPath);
+      } else {
+        await ansibleApi.createFolder(fullPath);
+        Toast.successEmphasis('Folder created', fullPath);
+      }
+      await load();
+    } catch (e: any) {
+      handleApiError(e);
+    }
+  }, [load, handleApiError]);
 
-    const value = (res.value ?? '').toString().trim();
-    if (!res.isConfirmed || !value) return null;
-    return value;
+  const cancelCreate = useCallback(() => {
+    setCreatingNode(null);
   }, []);
+
+
 
   const preferredDir = useCallback(() => {
     if (!selectedPath) return 'playbooks';
-    if (isWritablePath(selectedPath)) {
-      return selectedPath.includes('.') ? getParentDir(selectedPath) || getRoot(selectedPath) : selectedPath;
+    const dir = selectedPath.includes('.') ? getParentDir(selectedPath) || getRoot(selectedPath) : selectedPath;
+    if (canCreateUnder(dir)) {
+      return dir;
     }
     return 'playbooks';
   }, [selectedPath]);
 
-  const createFileAt = useCallback(async (baseDir: string) => {
+  const createFileAt = useCallback((baseDir: string) => {
     if (!canMutatePath(baseDir)) return;
-    const name = await askName('New File', 'e.g. main.yml');
-    if (!name) return;
-    const filePath = `${baseDir}/${name}`.replace(/\/+/g, '/');
-    try {
-      await ansibleApi.createFile(filePath, '');
-      await load();
-      Toast.successEmphasis('File created', filePath);
-    } catch (e: any) {
-      handleApiError(e);
-    }
-  }, [askName, handleApiError, load]);
+    setCreatingNode({ parentPath: baseDir, type: 'file' });
+  }, []);
 
-  const createFolderAt = useCallback(async (baseDir: string) => {
+  const createFolderAt = useCallback((baseDir: string) => {
     if (!canMutatePath(baseDir)) return;
-    const name = await askName('New Folder', 'e.g. site-west');
-    if (!name) return;
-    const folderPath = `${baseDir}/${name}`.replace(/\/+/g, '/');
-    try {
-      await ansibleApi.createFolder(folderPath);
-      await load();
-      Toast.successEmphasis('Folder created', folderPath);
-    } catch (e: any) {
-      handleApiError(e);
-    }
-  }, [askName, handleApiError, load]);
+    setCreatingNode({ parentPath: baseDir, type: 'dir' });
+  }, []);
 
   const deletePath = useCallback(async (path: string, isDir: boolean) => {
     if (!canMutatePath(path)) return;
@@ -602,6 +684,10 @@ const AnsibleFileTree: React.FC<AnsibleFileTreeProps> = ({ onFileOpen, selectedP
               renamingName={renamingNode?.name ?? ''}
               onRenameCommit={commitRename}
               onRenameCancel={cancelRename}
+              creatingParentPath={creatingNode?.parentPath ?? null}
+              creatingType={creatingNode?.type ?? null}
+              onCreateCommit={commitCreate}
+              onCreateCancel={cancelCreate}
             />
           ))}
         </ul>

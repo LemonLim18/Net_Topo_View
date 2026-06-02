@@ -50,8 +50,13 @@ const ContextMenu: React.FC<ContextMenuProps> = ({ x, y, actions, onClose }) => 
       {actions.map((action, i) => (
         <li key={i}>
           <button
-            className="flex items-center gap-2 text-sm"
+            className={`flex items-center gap-2 text-sm w-full px-3 py-2 rounded transition-colors text-left ${
+              action.disabled
+                ? 'opacity-40 cursor-not-allowed text-base-content/50'
+                : 'hover:bg-base-300 active:bg-base-300'
+            }`}
             onClick={() => {
+              if (action.disabled) return;
               action.onClick();
               onClose();
             }}

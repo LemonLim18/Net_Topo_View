@@ -89,12 +89,16 @@ function normalizeQueueItems(raw: QueueItem[]): QueueItem[] {
 function parseCreatedAt(value?: string | null): number {
   const raw = String(value || '').trim();
   if (!raw) return 0;
-  const direct = Date.parse(raw);
-  if (!Number.isNaN(direct)) return direct;
-  if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(raw)) {
-    const asUtc = Date.parse(`${raw.replace(' ', 'T')}Z`);
-    if (!Number.isNaN(asUtc)) return asUtc;
+  // If the string already has timezone info (+xx:xx or Z), parse as-is
+  if (/[Zz]$/.test(raw) || /[+-]\d{2}:\d{2}$/.test(raw)) {
+    const ts = Date.parse(raw);
+    if (!Number.isNaN(ts)) return ts;
   }
+  // Bare datetime string (no tz) — always treat as UTC by appending Z
+  // Handles both "2026-06-02T11:31:19" and "2026-06-02 11:31:19" formats
+  const normalized = raw.replace(' ', 'T').replace(/\.\d+$/, '');
+  const asUtc = Date.parse(`${normalized}Z`);
+  if (!Number.isNaN(asUtc)) return asUtc;
   return 0;
 }
 
@@ -151,7 +155,7 @@ const ApprovalQueueView: React.FC<Props> = ({ setView: _setView }) => {
   const [pendingQuote, setPendingQuote] = useState('');
   const [selectionCoords, setSelectionCoords] = useState<{ top: number; left: number } | null>(null);
   const [activeQuote, setActiveQuote] = useState('');
-  const [sortKey, setSortKey] = useState<SortKey>('created_at');
+  const [sortKey, setSortKey] = useState<SortKey>('id');
   const [sortDir, setSortDir] = useState<SortDir>('desc');
 
   const loadTab = useCallback(async (tab: QueueTab) => {

@@ -16,7 +16,7 @@ Use this pattern when one playbook targets **all access switches** (Cisco, Huawe
 
 - **Cisco IOS:** `cisco.ios.ios_vlans` with `config:` as a **list** (e.g. `config: [ { vlan_id: '200', name: 'TEST', state: active } ]`). Do NOT use `vlans:` dict; with `state: merged` the module requires `config` or the task fails. Each task must have `when: inventory_hostname in groups.get('vendor_cisco_ios', [])` so it runs only on Cisco hosts (never run Cisco modules on Juniper/Huawei). `cisco.ios.ios_l2_interfaces` with `config: [ { name: GigabitEthernet0/1, mode: access, access: { vlan: '200' } }, ... ]`.
 - **Huawei VRP:** `community.network.ce_config` with `lines` and `parents` (e.g. `vlan batch 200`, `vlan 200`, `name TEST`; then per-interface `parents: interface GigabitEthernet1/0/1`, `lines: port link-type access`, `port default vlan 200`). Do NOT use `community.network.network_config`.
-- **Juniper Junos:** `juniper.device.junos_vlans` with `config: [ { name: TEST, vlan_id: '200' } ]`. `juniper.device.junos_l2_interfaces` with `config: [ { name: ge-0/0/0, access: { vlan: '200' } }, ... ]`. Use `juniper.device` (not deprecated `junipernetworks.junos`).
+- **Juniper Junos:** `juniper.device.junos_config` with CLI `set` lines for VLAN creation and interface binding. Prefer direct CLI rendering over `junos_vlans` / `junos_l2_interfaces` on older Junos releases.
 
 ## Inventory
 

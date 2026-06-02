@@ -124,11 +124,9 @@ def test_juniper_native_bundle_accepts_juniper_device_collection():
                 "kind": "task",
                 "content": (
                     "- name: Shutdown Juniper interface\n"
-                    "  juniper.device.junos_interfaces:\n"
-                    "    config:\n"
-                    "      - name: ge-0/0/1\n"
-                    "        enabled: false\n"
-                    "    state: merged\n"
+                    "  juniper.device.junos_config:\n"
+                    "    lines:\n"
+                    "      - set interfaces ge-0/0/1 disable\n"
                 ),
             },
         ],
@@ -187,11 +185,9 @@ def test_juniper_native_bundle_accepts_short_module_name_with_collections():
                     "- name: Shutdown Juniper interface\n"
                     "  collections:\n"
                     "    - juniper.device\n"
-                    "  junos_interfaces:\n"
-                    "    config:\n"
-                    "      - name: ge-0/0/1\n"
-                    "        enabled: false\n"
-                    "    state: merged\n"
+                    "  junos_config:\n"
+                    "    lines:\n"
+                    "      - set interfaces ge-0/0/1 disable\n"
                 ),
             },
         ],

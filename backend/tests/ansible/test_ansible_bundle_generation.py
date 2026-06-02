@@ -218,11 +218,9 @@ def test_build_bundle_draft_synthesizes_role_bundle_from_yaml_only_juniper_respo
         "    interfaces_to_shutdown: \"{{ interfaces_to_shutdown | default([]) }}\"\n"
         "  tasks:\n"
         "    - name: Shutdown interface (Juniper Junos)\n"
-        "      juniper.device.junos_interfaces:\n"
-        "        config:\n"
-        "          - name: \"{{ item }}\"\n"
-        "            enabled: false\n"
-        "        state: merged\n"
+        "      juniper.device.junos_config:\n"
+        "        lines:\n"
+        "          - \"{{ 'set interfaces ' ~ item ~ ' disable' }}\"\n"
         "      loop: \"{{ interfaces_to_shutdown | default([]) }}\"\n"
         "      when:\n"
         "        - inventory_hostname in groups.get('vendor_juniper_junos', [])\n"
@@ -248,7 +246,7 @@ def test_build_bundle_draft_synthesizes_role_bundle_from_yaml_only_juniper_respo
     assert bundle.normalized_entrypoint() == "playbooks/generated/job_323/playbook.yml"
     assert "roles/generated/job_323/interface/tasks/main.yml" in file_map
     assert "roles/generated/job_323/interface/tasks/juniper.yml" in file_map
-    assert "juniper.device.junos_interfaces" in file_map["roles/generated/job_323/interface/tasks/juniper.yml"]
+    assert "juniper.device.junos_config" in file_map["roles/generated/job_323/interface/tasks/juniper.yml"]
     assert "roles:" in file_map[bundle.normalized_entrypoint()]
     assert "generated/job_323/interface" in file_map[bundle.normalized_entrypoint()]
 
@@ -374,11 +372,9 @@ def test_plan_ansible_uses_reference_bundle_for_juniper_interface(tmp_path, monk
             "  gather_facts: false\n"
             "  tasks:\n"
             "    - name: Shutdown interface (Juniper Junos)\n"
-            "      juniper.device.junos_interfaces:\n"
-            "        config:\n"
-            "          - name: ge-0/0/1\n"
-            "            enabled: false\n"
-            "        state: merged\n"
+            "      juniper.device.junos_config:\n"
+            "        lines:\n"
+            "          - set interfaces ge-0/0/1 disable\n"
         ),
     )
 
@@ -402,4 +398,4 @@ def test_plan_ansible_uses_reference_bundle_for_juniper_interface(tmp_path, monk
     assert response["artifact_type"] == "playbook"
     assert response["entrypoint_path"] == "generated/job_1/playbook.yml"
     assert response["files"] == []
-    assert "juniper.device.junos_interfaces" in response["playbook"]
+    assert "juniper.device.junos_config" in response["playbook"]

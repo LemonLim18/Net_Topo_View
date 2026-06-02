@@ -4656,15 +4656,15 @@ def _bundle_validation_hint(intent: dict, validation: dict[str, Any]) -> str:
         if feature == "interface":
             return (
                 "For Juniper interface bundles, regenerate using the exact Juniper reference pattern. "
-                "Use `juniper.device.junos_interfaces` in `tasks/juniper.yml`. "
+                "Use `juniper.device.junos_config` with CLI `set`/`delete` lines in `tasks/juniper.yml`. "
                 "Do not use the bare task key `junipernetworks.junos`, and do not output only a collection name. "
                 "If you declare `collections: [juniper.device]`, the task key may be the short module name "
-                "`junos_interfaces`; otherwise use the full FQCN `juniper.device.junos_interfaces`."
+                "`junos_config`; otherwise use the full FQCN `juniper.device.junos_config`."
             )
         if feature == "vlan":
             return (
-                "For Juniper VLAN bundles, use `juniper.device.junos_vlans` and "
-                "`juniper.device.junos_l2_interfaces` (or their short names only when `collections: [juniper.device]` "
+                "For Juniper VLAN bundles, use `juniper.device.junos_config` with CLI `set` lines for VLAN creation "
+                "and interface binding (or the short name `junos_config` only when `collections: [juniper.device]` "
                 "is declared). Do not use the bare task key `junipernetworks.junos`."
             )
         return (
@@ -9286,7 +9286,7 @@ async def create_from_template(
         "cisco_ios":     ("cisco.ios.ios_config",   "commands"),
         "cisco_xe":      ("cisco.ios.ios_config",   "commands"),
         "huawei_vrp":    ("community.network.ce_config", "lines"),
-        "juniper_junos": ("junipernetworks.junos.junos_config", "lines"),
+        "juniper_junos": ("juniper.device.junos_config", "lines"),
     }
     module_name, lines_key = MODULE_MAP.get(req.vendor, ("cisco.ios.ios_config", "commands"))
     config_lines = [l for l in config_text.splitlines() if l.strip()]

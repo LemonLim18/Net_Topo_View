@@ -21,11 +21,9 @@
   when: "'huawei' in (ansible_network_os | default('')) or 'ce' in (ansible_network_os | default(''))"
 
 - name: Ensure VLAN exists (Juniper Junos)
-  juniper.device.junos_vlans:
-    config:
-      - name: "{{ vlan.name | default('') }}"
-        vlan_id: "{{ vlan.id }}"
-    state: merged
+  juniper.device.junos_config:
+    lines:
+      - set vlans {{ vlan.name | default('VLAN' ~ (vlan.id | string)) }} vlan-id {{ vlan.id }}
   when: "'junos' in (ansible_network_os | default('')) or 'juniper' in (ansible_network_os | default(''))"
 
 # --- Build L2 config from schema-shaped interfaces (only when user provided interfaces) ---
@@ -75,11 +73,37 @@
     - (item.mode | default('access')) == 'access'
     - "'huawei' in (ansible_network_os | default('')) or 'ce' in (ansible_network_os | default(''))"
 
-- name: Configure L2 interfaces (Juniper Junos)
-  juniper.device.junos_l2_interfaces:
-    config: "{{ _l2_config }}"
-    state: merged
+- name: Configure access interfaces (Juniper Junos)
+  juniper.device.junos_config:
+    lines:
+      - set interfaces {{ item.name }} unit 0 family ethernet-switching port-mode access
+      - set interfaces {{ item.name }} unit 0 family ethernet-switching vlan members {{ vlan.name | default(vlan.id | string) }}
+  loop: "{{ interfaces | default([]) }}"
   when:
     - interfaces | default([]) | length > 0
-    - _l2_config | default([]) | length > 0
+    - (item.mode | default('access')) == 'access'
+    - "'junos' in (ansible_network_os | default('')) or 'juniper' in (ansible_network_os | default(''))"
+
+- name: Configure trunk interfaces (Juniper Junos)
+  juniper.device.junos_config:
+    lines: "{{ [
+      ('set interfaces ' ~ item.name ~ ' unit 0 family ethernet-switching port-mode trunk'),
+      ('set interfaces ' ~ item.name ~ ' unit 0 family ethernet-switching vlan members ' ~ _juniper_trunk_members),
+      (('set interfaces ' ~ item.name ~ ' native-vlan-id ' ~ (item.native_vlan | string)) if (item.native_vlan is defined and item.native_vlan is not none) else '')
+    ] | reject('equalto', '') | list }}"
+  vars:
+    _juniper_trunk_members: >-
+      {{
+        'all'
+        if (item.allowed_vlans is defined and item.allowed_vlans is string and (item.allowed_vlans | lower == 'all'))
+        else (
+          '[ ' ~ ((item.allowed_vlans | default([]) | map('string') | join(' ')) | trim) ~ ' ]'
+          if (item.allowed_vlans is defined and item.allowed_vlans is not string and (item.allowed_vlans | default([]) | length > 0))
+          else ('[ ' ~ (vlan.name | default(vlan.id | string)) ~ ' ]')
+        )
+      }}
+  loop: "{{ interfaces | default([]) }}"
+  when:
+    - interfaces | default([]) | length > 0
+    - (item.mode | default('access')) == 'trunk'
     - "'junos' in (ansible_network_os | default('')) or 'juniper' in (ansible_network_os | default(''))"

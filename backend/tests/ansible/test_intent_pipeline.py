@@ -1156,7 +1156,7 @@ def test_reference_fill_multi_vendor_vlan_keeps_interfaces_per_target_vendor():
     assert isinstance(rendered, str) and rendered
     assert "cisco.ios.ios_vlans" in rendered
     assert "community.network.ce_config" in rendered
-    assert "juniper.device.junos_vlans" in rendered
+    assert "juniper.device.junos_config" in rendered
     assert rendered.count("Configure Ethernet0/2 as access VLAN 43") == 1
     assert rendered.count("Configure GigabitEthernet1/0/2 as access VLAN 43") == 1
     assert rendered.count("Configure ge-0/0/3 as access VLAN 43") == 1
@@ -1256,7 +1256,7 @@ def test_reference_fill_juniper_interface_renders_successfully():
     }
     rendered = fill_playbook_from_reference("interface", ["juniper_junos"], intent)
     assert isinstance(rendered, str) and rendered
-    assert "juniper.device.junos_interfaces" in rendered
+    assert "juniper.device.junos_config" in rendered
 
 
 def test_reference_fill_juniper_interface_uses_json_var_injection_for_shutdown_lists():
