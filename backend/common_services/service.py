@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional
 
 ALLOWED_SCOPES = {"global", "site", "role", "device"}
 DEFAULT_DB_PATH = "db/netauto.db"
+DEFAULT_HUAWEI_SNMP_COMMUNITY = os.getenv("SNMP_HUAWEI_COMMUNITY", "CogniShield@Lab2026").strip() or "CogniShield@Lab2026"
 
 
 def _connect(db_path: str):
@@ -251,7 +252,7 @@ def get_effective_profile(
 
     merged: Dict[str, Any] = {
         "snmp_community": None,
-        "snmp_huawei_community": None,
+        "snmp_huawei_community": DEFAULT_HUAWEI_SNMP_COMMUNITY,
         "snmp_location": None,
         "snmp_contact": None,
         "snmp_host_ip": None,
@@ -262,7 +263,7 @@ def get_effective_profile(
     }
     sources: Dict[str, Optional[str]] = {
         "snmp_community": None,
-        "snmp_huawei_community": None,
+        "snmp_huawei_community": "static:huawei-default",
         "snmp_location": None,
         "snmp_contact": None,
         "snmp_host_ip": None,

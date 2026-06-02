@@ -55,7 +55,12 @@ async def get_profile_by_scope(scope_type: str, scope_value: str):
 @router.put("/profiles/{scope_type}/{scope_value}")
 async def save_profile(scope_type: str, scope_value: str, body: CommonServicesPayload):
     try:
-        return upsert_profile(scope_type, scope_value, body.model_dump(), db_path=DEFAULT_DB_PATH)
+        return upsert_profile(
+            scope_type,
+            scope_value,
+            body.model_dump(exclude_unset=True),
+            db_path=DEFAULT_DB_PATH,
+        )
     except ValueError as exc:
         raise HTTPException(400, str(exc))
 
