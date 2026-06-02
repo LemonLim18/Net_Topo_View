@@ -49,6 +49,8 @@ CREATE TABLE IF NOT EXISTS interfaces (
     subnet_mask     TEXT,
     mac_address     TEXT,
     speed           TEXT,
+    interface_type  TEXT    DEFAULT 'l2',      -- l2 | l3
+    is_management   BOOLEAN DEFAULT 0,
     status          TEXT    DEFAULT 'unknown',  -- up | down | admin-down | unknown
     created_at      TEXT    DEFAULT (datetime('now')),
     updated_at      TEXT    DEFAULT (datetime('now')),
@@ -309,6 +311,7 @@ CREATE TABLE IF NOT EXISTS common_service_profiles (
     scope_type          TEXT NOT NULL,            -- global | site | role | device
     scope_value         TEXT NOT NULL,
     snmp_community      TEXT,
+    snmp_huawei_community TEXT,
     snmp_location       TEXT,
     snmp_contact        TEXT,
     snmp_host_ip        TEXT,

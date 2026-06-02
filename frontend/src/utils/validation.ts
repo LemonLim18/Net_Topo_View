@@ -87,6 +87,40 @@ export const isValidSubnetMask = (mask: string): boolean => {
   return isValidIp(mask);
 };
 
+export const subnetMaskToPrefix = (mask: string): number | null => {
+  if (!isValidSubnetMask(mask)) return null;
+  if (!mask.includes('.')) return parseInt(mask, 10);
+  const parts = mask.split('.').map((part) => parseInt(part, 10));
+  const bits = parts.map((part) => part.toString(2).padStart(8, '0')).join('');
+  if (!/^1*0*$/.test(bits)) return null;
+  return bits.indexOf('0') === -1 ? 32 : bits.indexOf('0');
+};
+
+const ipv4ToNumber = (ip: string): number | null => {
+  if (!isValidIp(ip)) return null;
+  return ip.split('.').reduce((acc, part) => ((acc << 8) + parseInt(part, 10)) >>> 0, 0);
+};
+
+const numberToIpv4 = (value: number): string => (
+  [24, 16, 8, 0].map((shift) => ((value >>> shift) & 255)).join('.')
+);
+
+export const validateUsableHostIp = (ip: string, mask: string, label = 'IP address'): string | null => {
+  if (!ip.trim()) return `${label} is required`;
+  if (!mask.trim()) return 'Subnet mask is required';
+  if (!isValidIp(ip)) return `${label} is invalid`;
+  const prefix = subnetMaskToPrefix(mask);
+  if (prefix === null) return 'Subnet mask is invalid';
+  const ipNum = ipv4ToNumber(ip);
+  if (ipNum === null) return `${label} is invalid`;
+  const maskNum = prefix === 0 ? 0 : (0xffffffff << (32 - prefix)) >>> 0;
+  const network = (ipNum & maskNum) >>> 0;
+  const broadcast = (network | (~maskNum >>> 0)) >>> 0;
+  if (ipNum === network) return `${label} cannot be the network address (${numberToIpv4(network)})`;
+  if (ipNum === broadcast) return `${label} cannot be the broadcast address (${numberToIpv4(broadcast)})`;
+  return null;
+};
+
 export const formatMacInput = (value: string): string => {
   // Remove all non-hex characters
   let hexOnly = value.replace(/[^0-9a-fA-F]/g, '');

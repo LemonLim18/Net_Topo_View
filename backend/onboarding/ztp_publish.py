@@ -952,6 +952,7 @@ def _is_override_stale(config_text: str, device: Any) -> bool:
 def _common_services_template_params(profile: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "snmp_community": profile.get("snmp_community"),
+        "snmp_huawei_community": profile.get("snmp_huawei_community"),
         "snmp_location": profile.get("snmp_location"),
         "snmp_contact": profile.get("snmp_contact"),
         "snmp_host_ip": profile.get("snmp_host_ip"),

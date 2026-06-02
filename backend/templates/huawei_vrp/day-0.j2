@@ -37,12 +37,12 @@ interface {{ iface }}
  quit
 #
 {% endfor %}
-{% if snmp_community %}
+{% set effective_snmp_community = snmp_huawei_community | default(snmp_community, true) %}
+{% if effective_snmp_community %}
 snmp-agent
 snmp-agent sys-info version v2c
 snmp-agent mib-view included ALL_ACCESS iso
-snmp-agent community read {{ snmp_community }} mib-view ALL_ACCESS
-snmp-agent community write {{ snmp_community }} mib-view ALL_ACCESS
+snmp-agent community read cipher {{ effective_snmp_community }} mib-view ALL_ACCESS
 {% if snmp_location %}
 snmp-agent sys-info location {{ snmp_location }}
 {% endif %}
@@ -50,7 +50,7 @@ snmp-agent sys-info location {{ snmp_location }}
 snmp-agent sys-info contact {{ snmp_contact }}
 {% endif %}
 {% if snmp_host_ip %}
-snmp-agent target-host trap address udp-domain {{ snmp_host_ip }} params securityname {{ snmp_community }} v2c
+snmp-agent target-host trap address udp-domain {{ snmp_host_ip }} params securityname {{ effective_snmp_community }} v2c
 {% endif %}
 #
 netconf

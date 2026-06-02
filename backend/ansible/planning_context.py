@@ -201,6 +201,8 @@ def build_scoped_planning_context(
                     "ip_address": iface.ip_address,
                     "subnet_mask": iface.subnet_mask,
                     "mac_address": iface.mac_address,
+                    "interface_type": getattr(iface, "interface_type", "l2"),
+                    "is_management": bool(getattr(iface, "is_management", False)),
                     "status": iface.status,
                 }
                 for iface in db_manager.get_interfaces_for_device(db_device.id)

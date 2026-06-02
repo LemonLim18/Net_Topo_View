@@ -26,6 +26,7 @@ def _db() -> DatabaseManager:
 
 class CommonServicesPayload(BaseModel):
     snmp_community: Optional[str] = None
+    snmp_huawei_community: Optional[str] = None
     snmp_location: Optional[str] = None
     snmp_contact: Optional[str] = None
     snmp_host_ip: Optional[str] = None

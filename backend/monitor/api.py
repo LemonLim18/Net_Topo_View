@@ -38,7 +38,16 @@ INFLUX_MEASUREMENTS = [
     "snmp_system",
     "snmp_cisco",
     "snmp_huawei",
+    "cisco_cpu",
+    "cisco_memory",
+    "huawei_cpu",
+    "huawei_memory",
+    "huawei_health",
+    "juniper_cpu",
+    "juniper_memory",
     "interface",
+    "ifTable",
+    "snmp_interfaces",
     "interface_packet_stats",
 ]
 
@@ -130,11 +139,11 @@ MAX_ESTIMATED_PACKET_BYTES = 896.0
 
 METRIC_DEFS: Dict[str, Dict[str, List[str]]] = {
     "cpu": {
-        "measurements": ["snmp", "snmp_cisco", "snmp_huawei", "cisco_cpu", "huawei_cpu"],
+        "measurements": ["snmp", "snmp_cisco", "snmp_huawei", "cisco_cpu", "huawei_cpu", "huawei_health"],
         "fields": ["cpmCPUTotal5minRev", "cpmCPUTotal5min", "cpu_5min", "cpu_usage", "cpu_load", "hwEntityCpuUsage"],
     },
     "memory": {
-        "measurements": ["snmp", "snmp_cisco", "snmp_huawei", "cisco_memory", "huawei_memory"],
+        "measurements": ["snmp", "snmp_cisco", "snmp_huawei", "cisco_memory", "huawei_memory", "huawei_health"],
         "fields": ["ciscoMemoryPoolUsed", "cisco_mem_used", "mem_used", "mem_usage_pct", "hwEntityMemUsage"],
     },
     "memory_free": {
@@ -146,19 +155,19 @@ METRIC_DEFS: Dict[str, Dict[str, List[str]]] = {
         "fields": ["cisco_mem_total"],
     },
     "interface_traffic": {
-        "measurements": ["interface", "snmp_interfaces", "snmp"],
+        "measurements": ["interface", "ifTable", "snmp_interfaces", "snmp"],
         "fields": ["ifHCInOctets", "ifInOctets"],
     },
     "interface_out": {
-        "measurements": ["interface", "snmp_interfaces", "snmp"],
+        "measurements": ["interface", "ifTable", "snmp_interfaces", "snmp"],
         "fields": ["ifHCOutOctets", "ifOutOctets"],
     },
     "errors": {
-        "measurements": ["interface", "snmp_interfaces", "snmp"],
+        "measurements": ["interface", "ifTable", "snmp_interfaces", "snmp"],
         "fields": ["ifInErrors", "ifOutErrors", "errors"],
     },
     "discards": {
-        "measurements": ["interface", "snmp_interfaces", "snmp"],
+        "measurements": ["interface", "ifTable", "snmp_interfaces", "snmp"],
         "fields": ["ifInDiscards", "ifOutDiscards", "discards"],
     },
     "oper_status": {
@@ -1315,7 +1324,10 @@ from(bucket: "{INFLUXDB_BUCKET}")
     try:
         db = DatabaseManager("db/netauto.db")
         with db._connect() as conn:
-            query = "SELECT hostname, mgmt_ip, status, vendor, model, os_version, last_polled FROM devices"
+            query = (
+                "SELECT hostname, management_ip AS mgmt_ip, status, vendor, model, "
+                "os_version, last_polled FROM devices"
+            )
             if device:
                 query += " WHERE hostname = ?"
                 rows = conn.execute(query, (device,)).fetchall()
@@ -1467,17 +1479,82 @@ def _get_metric_history_batch_sync(
 
 
 def _get_device_metrics_summary_sync(limit: int = 50):
-    devices = []
+    inventory_devices = []
+
+    def _norm_device_key(value: Any) -> str:
+        text = str(value or "").strip().lower()
+        return text.split(":")[0] if text else ""
+
+    def _device_key_candidates(value: Any) -> List[str]:
+        text = _norm_device_key(value)
+        if not text:
+            return []
+        keys = [text]
+        if "." in text:
+            keys.append(text.split(".", 1)[0])
+        return keys
+
+    def _build_inventory_index(devices: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+        index: Dict[str, Dict[str, Any]] = {}
+        for device in devices:
+            for field in ("mgmt_ip", "hostname", "sysname"):
+                for key in _device_key_candidates(device.get(field)):
+                    index.setdefault(key, device)
+        return index
+
+    def _find_inventory_match(
+        record: Dict[str, Any],
+        index: Dict[str, Dict[str, Any]],
+    ) -> Optional[Dict[str, Any]]:
+        for field in ("mgmt_ip", "hostname", "sysname"):
+            for key in _device_key_candidates(record.get(field)):
+                match = index.get(key)
+                if match:
+                    return match
+        return None
+
+    def _merge_live_with_inventory(
+        live_record: Dict[str, Any],
+        inventory_record: Optional[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        merged = dict(live_record)
+        if not inventory_record:
+            return merged
+
+        live_ip = str(merged.get("mgmt_ip") or "").strip()
+        inventory_ip = str(inventory_record.get("mgmt_ip") or "").strip()
+        if inventory_ip and (not live_ip or live_ip == merged.get("hostname")):
+            merged["mgmt_ip"] = inventory_ip
+
+        if inventory_record.get("hostname") and (
+            not merged.get("hostname")
+            or merged.get("hostname") == live_record.get("mgmt_ip")
+            or _norm_device_key(merged.get("hostname")) == _norm_device_key(live_record.get("mgmt_ip"))
+        ):
+            merged["hostname"] = inventory_record.get("hostname")
+
+        for key in ("vendor", "model", "os_version"):
+            if inventory_record.get(key) and not merged.get(key):
+                merged[key] = inventory_record.get(key)
+
+        if not merged.get("sysname") and inventory_record.get("hostname"):
+            merged["sysname"] = inventory_record.get("hostname")
+
+        # A record returned by Influx/Telegraf is live telemetry, even if the
+        # inventory status is still "planned" or stale.
+        merged["status"] = "up"
+        return merged
+
     try:
         db = DatabaseManager("db/netauto.db")
         with db._connect() as conn:
             rows = conn.execute(
-                "SELECT id, hostname, mgmt_ip, status, vendor, model, os_version, last_polled "
+                "SELECT id, hostname, management_ip AS mgmt_ip, status, vendor, model, os_version, last_polled "
                 "FROM devices ORDER BY hostname LIMIT ?",
-                (limit,),
+                (max(limit, 500),),
             ).fetchall()
             for r in rows:
-                devices.append({
+                inventory_devices.append({
                     "hostname": r["hostname"],
                     "mgmt_ip": r["mgmt_ip"],
                     "status": r["status"] or "unknown",
@@ -1502,11 +1579,28 @@ def _get_device_metrics_summary_sync(limit: int = 50):
         except Exception as exc:
             logger.debug("InfluxDB enrichment failed: %s", exc)
 
-    if not devices and influx_device_map:
-        fallback_devices = list(influx_device_map.values())
-        fallback_devices.sort(key=lambda d: (d.get("hostname") or d.get("mgmt_ip") or ""))
-        return {"devices": fallback_devices[:limit], "source": "influxdb"}
+    inventory_index = _build_inventory_index(inventory_devices)
+    if influx_device_map:
+        live_devices: List[Dict[str, Any]] = []
+        seen: Set[str] = set()
+        for live_record in influx_device_map.values():
+            merged = _merge_live_with_inventory(
+                live_record,
+                _find_inventory_match(live_record, inventory_index),
+            )
+            key = _norm_device_key(merged.get("mgmt_ip") or merged.get("hostname"))
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            live_devices.append(merged)
 
+        live_devices.sort(key=lambda d: (d.get("hostname") or d.get("mgmt_ip") or ""))
+        return {"devices": live_devices[:limit], "source": "influxdb+sqlite"}
+
+    if INFLUXDB_TOKEN:
+        return {"devices": [], "source": "influxdb"}
+
+    devices = inventory_devices
     for d in devices:
         ip = d.get("mgmt_ip") or ""
         host = d.get("hostname") or ""

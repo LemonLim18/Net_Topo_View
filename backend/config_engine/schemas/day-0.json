@@ -61,6 +61,10 @@
       "type": "string",
       "description": "SNMP community string inherited from common services profile"
     },
+    "snmp_huawei_community": {
+      "type": "string",
+      "description": "Huawei-specific SNMP community override inherited from common services profile"
+    },
     "snmp_location": {
       "type": "string",
       "description": "SNMP location"

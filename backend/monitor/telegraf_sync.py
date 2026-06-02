@@ -432,17 +432,6 @@ def sync_telegraf_config(
         result["added_targets"] = sorted(desired_set - current_set)
         result["removed_targets"] = sorted(current_set - desired_set)
 
-        backup_path = f"{target_path}.bak-{datetime.utcnow().strftime('%Y%m%d%H%M%S')}"
-        backup_cmd = f"if [ -f {shlex.quote(target_path)} ]; then cp {shlex.quote(target_path)} {shlex.quote(backup_path)}; fi"
-        backup_res = _run_ssh_command(
-            client,
-            backup_cmd,
-            use_sudo=use_sudo,
-            sudo_password=remote_pass,
-        )
-        if not backup_res.get("ok"):
-            result["backup_error"] = backup_res.get("stderr") or backup_res.get("stdout")
-
         if remote_mode == "main_agents_only":
             patched_main, updated_blocks = patch_telegraf_main_agents_only(remote_existing_text or "", vendor_agents)
             result["patched_blocks"] = updated_blocks
@@ -456,6 +445,12 @@ def sync_telegraf_config(
                 result["deployed"] = False
                 return result
             remote_content = patched_main
+            if remote_content == (remote_existing_text or ""):
+                result["message"] = "Telegraf main-config agents already match desired inventory; remote write skipped."
+                result["deployed"] = False
+                result["validated"] = True
+                result["restarted"] = False
+                return result
         else:
             result["mode"] = "include"
             remote_content = rendered
@@ -466,6 +461,24 @@ def sync_telegraf_config(
                 )
                 result["deployed"] = False
                 return result
+            if remote_content == (remote_existing_text or ""):
+                result["remote_main_config_untouched"] = True
+                result["message"] = "Telegraf managed include already matches desired inventory; remote write skipped."
+                result["deployed"] = False
+                result["validated"] = True
+                result["restarted"] = False
+                return result
+
+        backup_path = f"{target_path}.bak-{datetime.utcnow().strftime('%Y%m%d%H%M%S')}"
+        backup_cmd = f"if [ -f {shlex.quote(target_path)} ]; then cp {shlex.quote(target_path)} {shlex.quote(backup_path)}; fi"
+        backup_res = _run_ssh_command(
+            client,
+            backup_cmd,
+            use_sudo=use_sudo,
+            sudo_password=remote_pass,
+        )
+        if not backup_res.get("ok"):
+            result["backup_error"] = backup_res.get("stderr") or backup_res.get("stdout")
             if posixpath.basename(remote_include_path) == "telegraf.conf":
                 result["message"] = (
                     "Remote deploy refused: managed include path points at a main telegraf.conf file. "

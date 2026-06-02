@@ -765,6 +765,8 @@ class ContextBundleBuilder:
                                 "ip_address": iface.get("ip_address"),
                                 "subnet_mask": iface.get("subnet_mask"),
                                 "type": iface.get("type"),
+                                "interface_type": iface.get("interface_type") or iface.get("type"),
+                                "is_management": bool(iface.get("is_management")),
                                 "mac_address": iface.get("mac_address"),
                             })
                     except Exception:
@@ -949,7 +951,8 @@ class ContextBundleBuilder:
             if hostnames and len(hostnames) <= 10:
                 for host in hostnames:
                     ifaces = conn.execute(
-                        "SELECT i.name, i.ip_address, i.mac_address, i.status "
+                        "SELECT i.name, i.ip_address, i.subnet_mask, i.mac_address, i.status, "
+                        "i.interface_type, i.is_management "
                         "FROM interfaces i JOIN devices d ON i.device_id = d.id "
                         "WHERE d.hostname = ? LIMIT 20",
                         (host,),

@@ -648,6 +648,8 @@ def _make_inventory_lookup_fn():
                 if not dev or not getattr(dev, "id", None):
                     continue
                 for iface in _db.get_interfaces_for_device(dev.id):
+                    if getattr(iface, "is_management", False):
+                        continue
                     if getattr(iface, "name", None):
                         names.append(iface.name)
             if not names:
@@ -667,6 +669,8 @@ def _inventory_normalized_iface_names_for_hosts(hosts: List[str]) -> Set[str]:
         if not dev or not getattr(dev, "id", None):
             continue
         for iface in _db.get_interfaces_for_device(dev.id):
+            if getattr(iface, "is_management", False):
+                continue
             nm = getattr(iface, "name", None) or ""
             if nm:
                 out.add(normalize_interface_name(nm))
@@ -5729,6 +5733,8 @@ _MGMT_INTERFACE_SUBSTRINGS = ("management", "mgmt", "meth", "vty", "console")
 
 def _is_management_interface(iface: dict, device_management_ip: Optional[str]) -> bool:
     """True if this interface should be treated as management (excluded from shutdown list)."""
+    if bool(iface.get("is_management")):
+        return True
     name = str(iface.get("name") or iface.get("interface") or "").strip().lower()
     if not name:
         return False

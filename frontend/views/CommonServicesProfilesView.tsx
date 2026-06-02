@@ -13,6 +13,7 @@ const ONBOARDING_ZTP_RESET_LEASES_KEY = 'onboarding.ztpResetLeases';
 
 const CommonServicesProfilesView: React.FC = () => {
   const [snmpCommunity, setSnmpCommunity] = useState('');
+  const [snmpHuaweiCommunity, setSnmpHuaweiCommunity] = useState('');
   const [snmpLocation, setSnmpLocation] = useState('');
   const [snmpContact, setSnmpContact] = useState('');
   const [snmpHostIp, setSnmpHostIp] = useState('');
@@ -53,6 +54,7 @@ const CommonServicesProfilesView: React.FC = () => {
     try {
       const profile = await commonServicesApi.getProfile(GLOBAL_SCOPE_TYPE, GLOBAL_SCOPE_VALUE);
       setSnmpCommunity(profile.snmp_community || '');
+      setSnmpHuaweiCommunity(profile.snmp_huawei_community || '');
       setSnmpLocation(profile.snmp_location || '');
       setSnmpContact(profile.snmp_contact || '');
       setSnmpHostIp(profile.snmp_host_ip || '');
@@ -62,6 +64,7 @@ const CommonServicesProfilesView: React.FC = () => {
       setNtpServerIp(profile.ntp_server_ip || '');
     } catch {
       setSnmpCommunity('');
+      setSnmpHuaweiCommunity('');
       setSnmpLocation('');
       setSnmpContact('');
       setSnmpHostIp('');
@@ -254,6 +257,7 @@ const CommonServicesProfilesView: React.FC = () => {
     try {
       const payload = {
         snmp_community: snmpCommunity.trim() || null,
+        snmp_huawei_community: snmpHuaweiCommunity.trim() || null,
         snmp_location: snmpLocation.trim() || null,
         snmp_contact: snmpContact.trim() || null,
         snmp_host_ip: snmpHostIp.trim() || null,
@@ -368,9 +372,15 @@ const CommonServicesProfilesView: React.FC = () => {
               <div className="divider text-xs opacity-70 my-1">SNMP</div>
               <div className="grid grid-cols-2 gap-3">
                 <label className="form-control flex flex-col gap-1">
-                  <div className="label"><span className="label-text">Community Name</span></div>
+                  <div className="label"><span className="label-text">Default Community Name</span></div>
                   <input className="input input-bordered input-sm" value={snmpCommunity} onChange={(e) => setSnmpCommunity(e.target.value)} placeholder="public" />
                 </label>
+                <label className="form-control flex flex-col gap-1">
+                  <div className="label"><span className="label-text">Huawei Community Override</span></div>
+                  <input className="input input-bordered input-sm" value={snmpHuaweiCommunity} onChange={(e) => setSnmpHuaweiCommunity(e.target.value)} placeholder="CogniShield@Lab2026" />
+                </label>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
                 <label className="form-control flex flex-col gap-1">
                   <div className="label"><span className="label-text">SNMP Host IP</span></div>
                   <input className="input input-bordered input-sm" value={snmpHostIp} onChange={(e) => setSnmpHostIp(formatIpInput(e.target.value))} placeholder="192.168.1.250" />

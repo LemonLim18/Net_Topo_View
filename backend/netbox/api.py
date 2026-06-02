@@ -334,6 +334,8 @@ class InterfaceCreate(BaseModel):
     subnet_mask: Optional[str] = None
     mac_address: Optional[str] = None
     speed: Optional[str] = None
+    interface_type: str = "l2"
+    is_management: bool = False
     status: str = "unknown"
 
 class InterfaceUpdate(BaseModel):
@@ -342,6 +344,8 @@ class InterfaceUpdate(BaseModel):
     subnet_mask: Optional[str] = None
     mac_address: Optional[str] = None
     speed: Optional[str] = None
+    interface_type: Optional[str] = None
+    is_management: Optional[bool] = None
     status: Optional[str] = None
 
 class LinkCreate(BaseModel):
@@ -419,12 +423,63 @@ def _normalize_mask_to_prefix(mask_raw: Optional[str]) -> Optional[int]:
         return None
 
 
+def _normalize_interface_type(raw: Optional[str]) -> str:
+    value = str(raw or "l2").strip().lower()
+    if value in {"l3", "layer3", "layer-3", "routed"}:
+        return "l3"
+    return "l2"
+
+
+def _validate_host_ip_and_mask(ip_raw: Optional[str], mask_raw: Optional[str], *, field_label: str) -> tuple[Optional[str], Optional[str]]:
+    ip_txt = str(ip_raw or "").strip()
+    mask_txt = str(mask_raw or "").strip()
+    if not ip_txt and not mask_txt:
+        return None, None
+    if not ip_txt:
+        raise HTTPException(400, f"{field_label} IP address is required")
+    if not mask_txt:
+        raise HTTPException(400, f"{field_label} subnet mask is required")
+    ip_txt, mask_txt = _parse_cidr(ip_txt, mask_txt)
+    pfx = _normalize_mask_to_prefix(mask_txt)
+    if pfx is None:
+        raise HTTPException(400, f"{field_label} subnet mask is invalid")
+    try:
+        iface = ipaddress.IPv4Interface(f"{ip_txt}/{pfx}")
+    except ValueError as exc:
+        raise HTTPException(400, f"{field_label} IP address is invalid: {exc}") from exc
+    network = iface.network
+    if iface.ip == network.network_address:
+        raise HTTPException(400, f"{field_label} IP address cannot be the network address ({network.network_address})")
+    if iface.ip == network.broadcast_address:
+        raise HTTPException(400, f"{field_label} IP address cannot be the broadcast address ({network.broadcast_address})")
+    if network.prefixlen <= 30 and (iface.ip not in network.hosts()):
+        raise HTTPException(400, f"{field_label} IP address must be a usable host address in {network}")
+    return str(iface.ip), str(iface.network.netmask)
+
+
+def _validate_device_management_address(ip_raw: Optional[str], mask_raw: Optional[str]) -> tuple[Optional[str], Optional[str]]:
+    if not str(ip_raw or "").strip() and not str(mask_raw or "").strip():
+        return None, None
+    return _validate_host_ip_and_mask(ip_raw, mask_raw, field_label="Management")
+
+
+def _prepare_interface_address(
+    interface_type: str,
+    ip_raw: Optional[str],
+    mask_raw: Optional[str],
+) -> tuple[Optional[str], Optional[str]]:
+    if interface_type == "l2":
+        return None, None
+    return _validate_host_ip_and_mask(ip_raw, mask_raw, field_label="Interface")
+
+
 def _interface_network_tuple(iface_row: sqlite3.Row) -> tuple[str, Optional[ipaddress.IPv4Network]]:
     """Return inferred layer (l2/l3) and IPv4 network when available."""
+    explicit_type = _normalize_interface_type(iface_row["interface_type"] if "interface_type" in iface_row.keys() else None)
     ip_txt = str(iface_row["ip_address"] or "").strip()
     mask_txt = str(iface_row["subnet_mask"] or "").strip()
 
-    if not ip_txt:
+    if explicit_type == "l2" or not ip_txt:
         return "l2", None
 
     # Treat any interface with an IP as routed/L3 and require mask for subnet checks.
@@ -514,13 +569,15 @@ async def create_device(body: DeviceCreate, background_tasks: BackgroundTasks):
     if existing:
         raise HTTPException(409, f"Device with hostname '{body.hostname}' already exists (id={existing.id})")
 
+    mgmt_ip, mgmt_mask = _validate_device_management_address(body.management_ip, body.management_subnet_mask)
+
     # NetBox sync is pushed in background to keep CRUD responsive.
     status = body.status or "planned"
 
     device = Device(
         hostname=body.hostname,
-        management_ip=body.management_ip,
-        management_subnet_mask=body.management_subnet_mask,
+        management_ip=mgmt_ip,
+        management_subnet_mask=mgmt_mask,
         management_interface=body.management_interface,
         oob_gateway_ip=body.oob_gateway_ip,
         vendor=body.vendor,
@@ -548,7 +605,7 @@ async def create_device(body: DeviceCreate, background_tasks: BackgroundTasks):
     out = _device_dict(created)
     out["netbox_synced"] = False
     out["netbox_sync_pending"] = True
-    out["netbox_message"] = "Device saved locally. NetBox sync is running in background."
+    out["netbox_message"] = "Inventory saved successfully. NetBox sync is running in background."
     return out
 
 
@@ -567,6 +624,8 @@ async def update_device(device_id: int, body: DeviceUpdate, background_tasks: Ba
     new_status = body.status if body.status is not None else existing.status
     hostname = body.hostname if body.hostname is not None else existing.hostname
     mgmt_ip = body.management_ip if body.management_ip is not None else existing.management_ip
+    mgmt_mask = body.management_subnet_mask if body.management_subnet_mask is not None else existing.management_subnet_mask
+    mgmt_ip, mgmt_mask = _validate_device_management_address(mgmt_ip, mgmt_mask)
     vendor = body.vendor if body.vendor is not None else existing.vendor
     model = body.model if body.model is not None else existing.model
     role = body.role if body.role is not None else existing.role
@@ -575,7 +634,7 @@ async def update_device(device_id: int, body: DeviceUpdate, background_tasks: Ba
         id=device_id,
         hostname=hostname,
         management_ip=mgmt_ip,
-        management_subnet_mask=body.management_subnet_mask if body.management_subnet_mask is not None else existing.management_subnet_mask,
+        management_subnet_mask=mgmt_mask,
         management_interface=body.management_interface if body.management_interface is not None else existing.management_interface,
         oob_gateway_ip=body.oob_gateway_ip if body.oob_gateway_ip is not None else existing.oob_gateway_ip,
         vendor=vendor,
@@ -604,7 +663,7 @@ async def update_device(device_id: int, body: DeviceUpdate, background_tasks: Ba
     out = _device_dict(updated)
     out["netbox_synced"] = False
     out["netbox_sync_pending"] = True
-    out["netbox_message"] = "Device updated locally. NetBox sync is running in background."
+    out["netbox_message"] = "Inventory updated successfully. NetBox sync is running in background."
     return out
 
 
@@ -677,8 +736,11 @@ async def list_interfaces(device_id: int):
         ).fetchall()
         
         interfaces = []
+        management_name = str(d.management_interface or "").strip().lower()
         for r in rows:
             iface = dict(r)
+            if management_name and str(iface.get("name") or "").strip().lower() == management_name:
+                iface["is_management"] = True
             # Build the connected_to object if a link exists
             if r["link_id"]:
                 if r["id"] == r["src_interface_id"]:
@@ -713,14 +775,17 @@ async def create_interface(device_id: int, body: InterfaceCreate, background_tas
 
     conn = _raw_conn()
     try:
-        # Auto-parse CIDR if provided
-        ip_addr, sub_mask = _parse_cidr(body.ip_address, body.subnet_mask)
-        
+        interface_type = _normalize_interface_type(body.interface_type)
+        ip_addr, sub_mask = _prepare_interface_address(interface_type, body.ip_address, body.subnet_mask)
+        if body.is_management:
+            conn.execute("UPDATE interfaces SET is_management = 0 WHERE device_id = ?", (device_id,))
+
         cur = conn.execute(
-            """INSERT INTO interfaces (device_id, name, ip_address, subnet_mask, mac_address, speed, status)
-               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            """INSERT INTO interfaces (device_id, name, ip_address, subnet_mask, mac_address, speed,
+                                      interface_type, is_management, status)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (device_id, body.name, ip_addr, sub_mask,
-             body.mac_address, body.speed, body.status),
+             body.mac_address, body.speed, interface_type, 1 if body.is_management else 0, body.status),
         )
         conn.commit()
         
@@ -728,8 +793,8 @@ async def create_interface(device_id: int, body: InterfaceCreate, background_tas
         try:
             nb = NetBoxClient.get_client()
             if nb and nb.api:
-                if body.ip_address:
-                    nb.assign_ip_to_interface(d.hostname, body.name, body.ip_address)
+                if ip_addr:
+                    nb.assign_ip_to_interface(d.hostname, body.name, ip_addr, sub_mask)
                 else:
                     nb.get_or_create_interface(d.hostname, body.name)
                 if body.mac_address:
@@ -753,10 +818,6 @@ async def create_interface(device_id: int, body: InterfaceCreate, background_tas
             summary=f"interface created: {d.hostname}:{body.name}",
             metadata={"hostname": d.hostname, "interface": body.name, "operation": "create_interface"},
         )
-        background_tasks.add_task(
-            _sync_telegraf_targets_after_inventory_change,
-            f"create_interface:{d.hostname}:{body.name}",
-        )
         return dict(row)
     except sqlite3.IntegrityError:
         raise HTTPException(409, f"Interface '{body.name}' already exists on this device")
@@ -778,19 +839,21 @@ async def update_interface(device_id: int, iface_id: int, body: InterfaceUpdate,
             raise HTTPException(404, "Interface not found")
 
         # Auto-parse CIDR if provided in the IP address update
+        new_type = _normalize_interface_type(body.interface_type if body.interface_type is not None else existing["interface_type"])
         new_ip = body.ip_address if body.ip_address is not None else existing["ip_address"]
         new_mask = body.subnet_mask if body.subnet_mask is not None else existing["subnet_mask"]
-        
-        # Only auto-parse if the IP address itself is being changed in this request
-        if body.ip_address is not None:
-            new_ip, parsed_mask = _parse_cidr(new_ip, body.subnet_mask)
-            if parsed_mask:
-                new_mask = parsed_mask
+        new_ip, new_mask = _prepare_interface_address(new_type, new_ip, new_mask)
+        new_is_management = bool(body.is_management) if body.is_management is not None else bool(existing["is_management"])
+        if new_is_management:
+            conn.execute(
+                "UPDATE interfaces SET is_management = 0 WHERE device_id = ? AND id <> ?",
+                (device_id, iface_id),
+            )
 
         conn.execute(
             """UPDATE interfaces
                SET name = ?, ip_address = ?, subnet_mask = ?, mac_address = ?,
-                   speed = ?, status = ?, updated_at = datetime('now')
+                   speed = ?, interface_type = ?, is_management = ?, status = ?, updated_at = datetime('now')
              WHERE id = ?""",
             (
                 body.name if body.name is not None else existing["name"],
@@ -798,6 +861,8 @@ async def update_interface(device_id: int, iface_id: int, body: InterfaceUpdate,
                 new_mask,
                 body.mac_address if body.mac_address is not None else existing["mac_address"],
                 body.speed if body.speed is not None else existing["speed"],
+                new_type,
+                1 if new_is_management else 0,
                 body.status if body.status is not None else existing["status"],
                 iface_id,
             ),
@@ -846,10 +911,6 @@ async def update_interface(device_id: int, iface_id: int, body: InterfaceUpdate,
                 "operation": "update_interface",
             },
         )
-        background_tasks.add_task(
-            _sync_telegraf_targets_after_inventory_change,
-            f"update_interface:{(device.hostname if device else device_id)}:{row['name']}",
-        )
         return dict(row)
     finally:
         conn.close()
@@ -889,10 +950,6 @@ async def delete_interface(device_id: int, iface_id: int, background_tasks: Back
                 "interface": existing["name"],
                 "operation": "delete_interface",
             },
-        )
-        background_tasks.add_task(
-            _sync_telegraf_targets_after_inventory_change,
-            f"delete_interface:{(device.hostname if device else device_id)}:{existing['name']}",
         )
         return {"deleted": True, "id": iface_id}
     finally:
@@ -947,11 +1004,11 @@ async def create_link(body: LinkCreate):
             raise HTTPException(404, "Source or destination device not found")
 
         src_row = conn.execute(
-            "SELECT id, name, ip_address, subnet_mask FROM interfaces WHERE id = ? AND device_id = ?",
+            "SELECT id, name, ip_address, subnet_mask, interface_type FROM interfaces WHERE id = ? AND device_id = ?",
             (body.src_interface_id, body.src_device_id),
         ).fetchone()
         dst_row = conn.execute(
-            "SELECT id, name, ip_address, subnet_mask FROM interfaces WHERE id = ? AND device_id = ?",
+            "SELECT id, name, ip_address, subnet_mask, interface_type FROM interfaces WHERE id = ? AND device_id = ?",
             (body.dst_interface_id, body.dst_device_id),
         ).fetchone()
         if not src_row or not dst_row:

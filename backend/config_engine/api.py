@@ -96,7 +96,7 @@ def _maybe_inject_common_services(params: Dict[str, Any]) -> Dict[str, Any]:
         if device and str(device.role or "").strip().lower() == "access" and device.oob_gateway_ip:
             merged["gateway"] = device.oob_gateway_ip
 
-    for key in ("snmp_community", "snmp_location", "snmp_contact", "snmp_host_ip", "syslog_port", "syslog_device_port", "syslog_host_ip", "ntp_server_ip"):
+    for key in ("snmp_community", "snmp_huawei_community", "snmp_location", "snmp_contact", "snmp_host_ip", "syslog_port", "syslog_device_port", "syslog_host_ip", "ntp_server_ip"):
         if (merged.get(key) is None or str(merged.get(key)).strip() == "") and effective.get(key):
             merged[key] = effective.get(key)
     # Backward-compatible template variable: keep syslog_port device-facing for rendering.

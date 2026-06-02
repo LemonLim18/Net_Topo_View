@@ -274,13 +274,19 @@ def _inventory_records_from_local_db() -> List[Dict[str, Any]]:
     for device in _db_manager.get_all_devices():
         devices.append(
             {
+                "id": device.id,
                 "hostname": device.hostname,
                 "management_ip": device.management_ip,
+                "management_subnet_mask": getattr(device, "management_subnet_mask", None),
+                "management_interface": getattr(device, "management_interface", None),
                 "vendor": device.vendor,
                 "model": device.model,
+                "os_version": getattr(device, "os_version", None),
+                "serial_number": getattr(device, "serial_number", None),
                 "status": device.status,
                 "role": device.role,
                 "source": device.source or "local_db",
+                "inventory_authority": "local_db",
                 "updated_at": device.updated_at or device.created_at or device.last_polled,
             }
         )
@@ -308,7 +314,7 @@ def _enrich_inventory_record(record: Dict[str, Any]) -> Dict[str, Any]:
     if not record or not record.get("hostname"):
         return record
 
-    source = record.get("source", "local_db")
+    source = record.get("inventory_authority") or record.get("source", "local_db")
     hostname = record["hostname"]
 
     # Initialize empty slots
@@ -343,10 +349,13 @@ def _enrich_inventory_record(record: Dict[str, Any]) -> Dict[str, Any]:
                 local_ifaces = _db_manager.get_interfaces_for_device(dev_id)
                 record["interfaces"] = [
                     {
+                        "id": i.id,
                         "name": i.name,
                         "ip_address": i.ip_address,
                         "subnet_mask": i.subnet_mask,
                         "mac_address": i.mac_address,
+                        "interface_type": getattr(i, "interface_type", "l2") or "l2",
+                        "is_management": bool(getattr(i, "is_management", False)),
                         "status": i.status
                     }
                     for i in local_ifaces

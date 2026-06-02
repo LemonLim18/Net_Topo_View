@@ -32,6 +32,7 @@ import {
   isValidIp,
   isValidSubnetMask,
   isValidMac,
+  validateUsableHostIp,
 } from '../src/utils/validation';
 
 const NETBOX_SELECTED_DEVICE_KEY = 'netbox.selectedDeviceId';
@@ -246,10 +247,12 @@ const EMPTY_FORM = {
 
 const EMPTY_IFACE_FORM = {
   name: '',
+  interface_type: 'l2',
   ip_address: '',
   subnet_mask: '255.255.255.0',
   mac_address: '',
   speed: '',
+  is_management: false,
 };
 
 // ---------------------------------------------------------------------------
@@ -609,6 +612,8 @@ const NetBoxDevices: React.FC = () => {
       ip_address: form.management_ip,
       subnet_mask: form.management_subnet_mask,
       mac_address: mac || undefined,
+      interface_type: 'l3',
+      is_management: true,
       status: 'unknown',
     };
 
@@ -633,8 +638,21 @@ const NetBoxDevices: React.FC = () => {
       setFormError('Management IP address is invalid (must be 4 octets between 0 and 255)');
       return;
     }
+    if (!form.management_ip.trim()) {
+      setFormError('Management IP address is required');
+      return;
+    }
+    if (!form.management_subnet_mask.trim()) {
+      setFormError('Management subnet mask is required');
+      return;
+    }
     if (form.management_subnet_mask && !isValidSubnetMask(form.management_subnet_mask)) {
       setFormError('Management Subnet Mask is invalid (must be 0-32 or a valid dot-decimal mask)');
+      return;
+    }
+    const managementHostError = validateUsableHostIp(form.management_ip, form.management_subnet_mask, 'Management IP address');
+    if (managementHostError) {
+      setFormError(managementHostError);
       return;
     }
     if (!TEMP_HIDE_DEFAULT_GATEWAY && isAccessSwitchRole(form.role) && form.oob_gateway_ip && !isValidIp(form.oob_gateway_ip)) {
@@ -683,7 +701,7 @@ const NetBoxDevices: React.FC = () => {
         }
         Toast.success(`Device "${updated.hostname}" updated`);
         if (updated.netbox_sync_pending) {
-          Toast.info('Saved locally', updated.netbox_message || 'NetBox sync is running in background.');
+          Toast.success('Saved successfully', updated.netbox_message || 'Inventory saved. NetBox sync is running in background.');
         } else if (updated.netbox_synced === false) {
           Toast.warning('Saved locally', updated.netbox_error || 'NetBox sync failed. Check NETBOX_URL and NETBOX_TOKEN.');
         }
@@ -712,7 +730,7 @@ const NetBoxDevices: React.FC = () => {
         }
         Toast.success(`Device "${created.hostname}" added`, `ID ${created.id}`);
         if (created.netbox_sync_pending) {
-          Toast.info('Saved locally', created.netbox_message || 'NetBox sync is running in background.');
+          Toast.success('Saved successfully', created.netbox_message || 'Inventory saved. NetBox sync is running in background.');
         } else if (created.netbox_synced === false) {
           Toast.warning('Saved locally', created.netbox_error || 'NetBox sync failed. Check NETBOX_URL and NETBOX_TOKEN.');
         }
@@ -792,10 +810,12 @@ const NetBoxDevices: React.FC = () => {
   const handleEditInterface = (iface: InterfaceRecord) => {
     setIfaceForm({
       name: iface.name,
+      interface_type: iface.interface_type || (iface.ip_address ? 'l3' : 'l2'),
       ip_address: iface.ip_address || '',
       subnet_mask: iface.subnet_mask || '255.255.255.0',
       mac_address: iface.mac_address || '',
       speed: iface.speed || '',
+      is_management: !!iface.is_management,
     });
     setIsEditingIface(true);
     setEditIfaceId(iface.id);
@@ -808,12 +828,15 @@ const NetBoxDevices: React.FC = () => {
       setIfaceFormError('Interface name is required');
       return;
     }
-    if (ifaceForm.ip_address && !isValidIp(ifaceForm.ip_address)) {
-      setIfaceFormError('IP address is invalid (must be 4 octets between 0 and 255)');
+    if (ifaceForm.interface_type === 'l3' && ifaceIpInlineError) {
+      setIfaceFormError(ifaceIpInlineError);
       return;
     }
-    if (ifaceForm.subnet_mask && !isValidSubnetMask(ifaceForm.subnet_mask)) {
-      setIfaceFormError('Subnet Mask is invalid (must be 0-32 or a valid dot-decimal mask)');
+    if (ifaceForm.interface_type === 'l2' && (ifaceForm.ip_address || ifaceForm.subnet_mask)) {
+      setIfaceForm({ ...ifaceForm, ip_address: '', subnet_mask: '' });
+    }
+    if (ifaceForm.interface_type === 'l3' && ifaceForm.subnet_mask && !isValidSubnetMask(ifaceForm.subnet_mask)) {
+      setIfaceFormError('Subnet mask is invalid (must be 0-32 or a valid dot-decimal mask)');
       return;
     }
     if (ifaceForm.mac_address && !isValidMac(ifaceForm.mac_address)) {
@@ -833,19 +856,23 @@ const NetBoxDevices: React.FC = () => {
       if (isEditingIface && editIfaceId) {
         await netboxApi.updateInterface(selected.id, editIfaceId, {
           name: ifaceForm.name,
-          ip_address: ifaceForm.ip_address,
-          subnet_mask: ifaceForm.subnet_mask,
+          ip_address: ifaceForm.interface_type === 'l3' ? ifaceForm.ip_address : '',
+          subnet_mask: ifaceForm.interface_type === 'l3' ? ifaceForm.subnet_mask : '',
           mac_address: ifaceForm.mac_address,
           speed: ifaceForm.speed,
+          interface_type: ifaceForm.interface_type,
+          is_management: ifaceForm.is_management,
         });
         Toast.success(`Interface "${ifaceForm.name}" updated`);
       } else {
         await netboxApi.createInterface(selected.id, {
           name: ifaceForm.name,
-          ip_address: ifaceForm.ip_address,
-          subnet_mask: ifaceForm.subnet_mask,
+          ip_address: ifaceForm.interface_type === 'l3' ? ifaceForm.ip_address : '',
+          subnet_mask: ifaceForm.interface_type === 'l3' ? ifaceForm.subnet_mask : '',
           mac_address: ifaceForm.mac_address,
           speed: ifaceForm.speed,
+          interface_type: ifaceForm.interface_type,
+          is_management: ifaceForm.is_management,
         });
         Toast.success(`Interface "${ifaceForm.name}" added`);
       }
@@ -951,6 +978,12 @@ const NetBoxDevices: React.FC = () => {
     : undefined;
   const selectedSubnetMaskDisplay = selected?.management_subnet_mask || selectedMgmtInterface?.subnet_mask || '—';
   const showOobGatewayField = !TEMP_HIDE_DEFAULT_GATEWAY && isAccessSwitchRole(form.role);
+  const managementIpInlineError = form.management_ip || form.management_subnet_mask
+    ? validateUsableHostIp(form.management_ip, form.management_subnet_mask, 'Management IP address')
+    : 'Management IP address is required';
+  const ifaceIpInlineError = ifaceForm.interface_type === 'l3'
+    ? validateUsableHostIp(ifaceForm.ip_address, ifaceForm.subnet_mask, 'Interface IP address')
+    : null;
 
   // -----------------------------------------------------------------------
   //  Render
@@ -1207,6 +1240,7 @@ const NetBoxDevices: React.FC = () => {
                           <thead>
                             <tr>
                               <th>Name</th>
+                              <th>Type</th>
                               <th>IP Address</th>
                               <th>Subnet</th>
                               <th></th>
@@ -1215,7 +1249,11 @@ const NetBoxDevices: React.FC = () => {
                           <tbody>
                             {interfaces.map((iface) => (
                               <tr key={iface.id}>
-                                <td className="font-mono text-xs">{iface.name}</td>
+                                <td className="font-mono text-xs">
+                                  {iface.name}
+                                  {Boolean(iface.is_management) && <span className="badge badge-xs badge-info ml-2">Mgmt</span>}
+                                </td>
+                                <td><span className="badge badge-xs badge-outline">{String(iface.interface_type || 'l2').toUpperCase()}</span></td>
                                 <td className="font-mono text-xs">{iface.ip_address || '—'}</td>
                                 <td className="text-xs">{iface.subnet_mask || '—'}</td>
                                 <td className="text-right flex justify-end gap-1">
@@ -1348,13 +1386,14 @@ const NetBoxDevices: React.FC = () => {
 
               <div className="grid grid-cols-2 gap-3">
                 <label className="form-control w-full">
-                  <div className="label"><span className="label-text">Management IP</span></div>
-                  <input type="text" className="input input-bordered w-full" placeholder="e.g. 192.168.1.1"
+                  <div className="label"><span className="label-text">Management IP <span className="text-error">*</span></span></div>
+                  <input type="text" className={`input input-bordered w-full ${managementIpInlineError ? 'input-error' : ''}`} placeholder="e.g. 192.168.1.1"
                     value={form.management_ip} onChange={(e) => setForm({ ...form, management_ip: formatIpInput(e.target.value) })} />
+                  {managementIpInlineError && <div className="label py-1"><span className="label-text-alt text-error">{managementIpInlineError}</span></div>}
                 </label>
                 <label className="form-control w-full">
-                  <div className="label"><span className="label-text">Subnet Mask</span></div>
-                  <input type="text" className="input input-bordered w-full" placeholder="255.255.255.0"
+                  <div className="label"><span className="label-text">Subnet Mask <span className="text-error">*</span></span></div>
+                  <input type="text" className={`input input-bordered w-full ${managementIpInlineError ? 'input-error' : ''}`} placeholder="255.255.255.0"
                     value={form.management_subnet_mask} onChange={(e) => setForm({ ...form, management_subnet_mask: formatSubnetMaskInput(e.target.value) })} />
                 </label>
               </div>
@@ -1516,20 +1555,41 @@ const NetBoxDevices: React.FC = () => {
                   value={ifaceForm.name}
                   onChange={(e) => setIfaceForm({ ...ifaceForm, name: e.target.value })} />
               </label>
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 gap-3">
                 <label className="form-control w-full">
-                  <div className="label"><span className="label-text">IP Address</span></div>
-                  <input type="text" className="input input-bordered w-full" placeholder="10.0.1.1"
-                    value={ifaceForm.ip_address}
-                    onChange={(e) => setIfaceForm({ ...ifaceForm, ip_address: formatIpInput(e.target.value) })} />
-                </label>
-                <label className="form-control w-full">
-                  <div className="label"><span className="label-text">Subnet Mask</span></div>
-                  <input type="text" className="input input-bordered w-full" placeholder="255.255.255.252"
-                    value={ifaceForm.subnet_mask}
-                    onChange={(e) => setIfaceForm({ ...ifaceForm, subnet_mask: formatSubnetMaskInput(e.target.value) })} />
+                  <div className="label"><span className="label-text">Interface Type</span></div>
+                  <select
+                    className="select select-bordered w-full"
+                    value={ifaceForm.interface_type}
+                    onChange={(e) => setIfaceForm({
+                      ...ifaceForm,
+                      interface_type: e.target.value,
+                      ip_address: e.target.value === 'l2' ? '' : ifaceForm.ip_address,
+                      subnet_mask: e.target.value === 'l2' ? '' : (ifaceForm.subnet_mask || '255.255.255.0'),
+                    })}
+                  >
+                    <option value="l2">L2 Interface</option>
+                    <option value="l3">L3 Interface</option>
+                  </select>
                 </label>
               </div>
+              {ifaceForm.interface_type === 'l3' && (
+                <div className="grid grid-cols-2 gap-3">
+                  <label className="form-control w-full">
+                    <div className="label"><span className="label-text">IP Address <span className="text-error">*</span></span></div>
+                    <input type="text" className={`input input-bordered w-full ${ifaceIpInlineError ? 'input-error' : ''}`} placeholder="10.0.1.1"
+                      value={ifaceForm.ip_address}
+                      onChange={(e) => setIfaceForm({ ...ifaceForm, ip_address: formatIpInput(e.target.value) })} />
+                    {ifaceIpInlineError && <div className="label py-1"><span className="label-text-alt text-error">{ifaceIpInlineError}</span></div>}
+                  </label>
+                  <label className="form-control w-full">
+                    <div className="label"><span className="label-text">Subnet Mask <span className="text-error">*</span></span></div>
+                    <input type="text" className={`input input-bordered w-full ${ifaceIpInlineError ? 'input-error' : ''}`} placeholder="255.255.255.252"
+                      value={ifaceForm.subnet_mask}
+                      onChange={(e) => setIfaceForm({ ...ifaceForm, subnet_mask: formatSubnetMaskInput(e.target.value) })} />
+                  </label>
+                </div>
+              )}
               <div className="grid grid-cols-2 gap-3">
                 {/* <label className="form-control w-full">
                   <div className="label"><span className="label-text">MAC Address</span></div>
@@ -1596,7 +1656,7 @@ const NetBoxDevices: React.FC = () => {
                   disabled={!linkForm.src_device_id}
                 >
                   <option value={0}>Select interface (optional)…</option>
-                  {srcInterfaces.filter(i => i.name !== 'Management').map(i => (
+                  {srcInterfaces.filter(i => !i.is_management).map(i => (
                     <option key={i.id} value={i.id}>{i.name} {i.ip_address ? `(${i.ip_address})` : ''}</option>
                   ))}
                 </select>
@@ -1628,7 +1688,7 @@ const NetBoxDevices: React.FC = () => {
                   disabled={!linkForm.dst_device_id}
                 >
                   <option value={0}>Select interface (optional)…</option>
-                  {dstInterfaces.filter(i => i.name !== 'Management').map(i => (
+                  {dstInterfaces.filter(i => !i.is_management).map(i => (
                     <option key={i.id} value={i.id}>{i.name} {i.ip_address ? `(${i.ip_address})` : ''}</option>
                   ))}
                 </select>

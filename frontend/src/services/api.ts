@@ -780,6 +780,7 @@ export interface CommonServicesProfile {
   scope_type: 'global' | 'site' | 'role' | 'device';
   scope_value: string;
   snmp_community: string | null;
+  snmp_huawei_community: string | null;
   snmp_location: string | null;
   snmp_contact: string | null;
   snmp_host_ip: string | null;
@@ -802,6 +803,7 @@ export const commonServicesApi = {
     scopeValue: string,
     payload: {
       snmp_community?: string | null;
+      snmp_huawei_community?: string | null;
       snmp_location?: string | null;
       snmp_contact?: string | null;
       snmp_host_ip?: string | null;
@@ -839,6 +841,7 @@ export const commonServicesApi = {
       device_id: number | null;
       effective: {
         snmp_community: string | null;
+        snmp_huawei_community: string | null;
         snmp_location: string | null;
         snmp_contact: string | null;
         snmp_host_ip: string | null;
@@ -861,6 +864,8 @@ export interface InterfaceRecord {
   subnet_mask: string | null;
   mac_address: string | null;
   speed: string | null;
+  interface_type: 'l2' | 'l3' | string;
+  is_management: boolean;
   status: string;
   connected_to?: { device: { id: number; name: string }; interface: { id: number; name: string } } | null;
   created_at: string | null;
@@ -1048,6 +1053,8 @@ export const netboxApi = {
     subnet_mask?: string;
     mac_address?: string;
     speed?: string;
+    interface_type?: 'l2' | 'l3' | string;
+    is_management?: boolean;
     status?: string;
   }) =>
     request<InterfaceRecord>(`/netbox/devices/${deviceId}/interfaces`, {
@@ -1061,6 +1068,8 @@ export const netboxApi = {
     subnet_mask?: string;
     mac_address?: string;
     speed?: string;
+    interface_type?: 'l2' | 'l3' | string;
+    is_management?: boolean;
     status?: string;
   }) =>
     request<InterfaceRecord>(`/netbox/devices/${deviceId}/interfaces/${ifaceId}`, {

@@ -172,13 +172,27 @@ class DeviceSyncer:
                 # --- Sync interfaces for this device ---
                 nb_device_id = nb_dev.id
                 nb_ifaces = self.nb_client.get_interfaces_for_device(nb_device_id)
+                existing_interfaces = {
+                    iface.name: iface
+                    for iface in self.db.get_interfaces_for_device(device_id)
+                    if iface.name
+                }
                 for nb_iface in nb_ifaces:
+                    existing_iface = existing_interfaces.get(nb_iface["name"])
+                    ip_address = nb_iface.get("ip_address")
+                    subnet_mask = nb_iface.get("subnet_mask")
+                    interface_type = "l3" if ip_address else (
+                        existing_iface.interface_type if existing_iface else "l2"
+                    )
+                    is_management = bool(existing_iface.is_management) if existing_iface else False
                     iface = Interface(
                         device_id=device_id,
                         name=nb_iface["name"],
-                        ip_address=nb_iface.get("ip_address"),
-                        subnet_mask=nb_iface.get("subnet_mask"),
+                        ip_address=ip_address,
+                        subnet_mask=subnet_mask,
                         mac_address=nb_iface.get("mac_address"),
+                        interface_type=interface_type,
+                        is_management=is_management,
                         status="active" if nb_iface.get("ip_address") else "unknown",
                     )
                     self.db.upsert_interface(iface)

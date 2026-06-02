@@ -11,6 +11,12 @@ import os
 import re
 from typing import Dict, List, Optional, Tuple
 
+try:
+    from common_services.service import DEFAULT_DB_PATH, get_effective_profile
+except Exception:  # pragma: no cover - generator can still run standalone
+    DEFAULT_DB_PATH = "db/netauto.db"
+    get_effective_profile = None  # type: ignore[assignment]
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -60,7 +66,7 @@ STATIC_VENDOR_HINTS: Dict[str, str] = {
 }
 
 
-def classify_vendor(ip: str, sys_descr: str = "") -> str:
+def classify_vendor(ip: str, sys_descr: str = "", *, allow_static_hint: bool = True) -> str:
     """Return 'cisco' | 'huawei' | 'juniper' | 'generic'."""
     # Prefer live inventory/sysDescr data. Static hints are only a lab fallback,
     # otherwise reused management IPs can be assigned to the wrong vendor block.
@@ -68,7 +74,7 @@ def classify_vendor(ip: str, sys_descr: str = "") -> str:
     for keyword, vendor in VENDOR_MAP.items():
         if keyword in lower:
             return vendor
-    if ip in STATIC_VENDOR_HINTS:
+    if allow_static_hint and ip in STATIC_VENDOR_HINTS:
         return STATIC_VENDOR_HINTS[ip]
     return "generic"
 
@@ -76,6 +82,29 @@ def classify_vendor(ip: str, sys_descr: str = "") -> str:
 # ---------------------------------------------------------------------------
 # SNMP section generators (per-vendor)
 # ---------------------------------------------------------------------------
+
+def _toml_string(value: str) -> str:
+    """Escape a Python string for simple TOML double-quoted values."""
+    return str(value or "").replace("\\", "\\\\").replace('"', '\\"')
+
+
+def _effective_snmp_communities() -> Tuple[str, str]:
+    """Use the Global Service Profile as the authoritative SNMP source."""
+    default_community = os.getenv("SNMP_COMMUNITY", "cognishield")
+    huawei_community = os.getenv("SNMP_HUAWEI_COMMUNITY", "").strip()
+    if get_effective_profile is not None:
+        try:
+            profile = get_effective_profile(DEFAULT_DB_PATH)
+            community = str(profile.get("snmp_community") or "").strip()
+            if community:
+                default_community = community
+            huawei = str(profile.get("snmp_huawei_community") or "").strip()
+            if huawei:
+                huawei_community = huawei
+        except Exception as exc:
+            logger.debug("Common services SNMP community lookup failed: %s", exc)
+    return default_community, huawei_community or default_community
+
 
 def _header(influx_url: str, influx_token: str, influx_org: str,
             influx_bucket: str) -> str:
@@ -102,13 +131,15 @@ def _header(influx_url: str, influx_token: str, influx_org: str,
 
 def _snmp_system(agents: List[str], community: str) -> str:
     """Standard system MIB (sysDescr, sysName, sysUpTime)."""
+    if not agents:
+        return ""
     agent_list = ", ".join(f'"{a}:161"' for a in agents)
     return f"""
 # ── Standard System MIB (all devices) ──────────────────────
 [[inputs.snmp]]
   agents    = [{agent_list}]
   version   = 2
-  community = "{community}"
+  community = "{_toml_string(community)}"
   name      = "snmp_system"
 
   [[inputs.snmp.field]]
@@ -133,7 +164,7 @@ def _cisco_cpu_mem(agents: List[str], community: str) -> str:
 [[inputs.snmp]]
   agents    = [{agent_list}]
   version   = 2
-  community = "{community}"
+  community = "{_toml_string(community)}"
   name      = "cisco_cpu"
 
   [[inputs.snmp.field]]
@@ -147,7 +178,7 @@ def _cisco_cpu_mem(agents: List[str], community: str) -> str:
 [[inputs.snmp]]
   agents    = [{agent_list}]
   version   = 2
-  community = "{community}"
+  community = "{_toml_string(community)}"
   name      = "cisco_memory"
 
   [[inputs.snmp.field]]
@@ -169,7 +200,7 @@ def _huawei_cpu_mem(agents: List[str], community: str) -> str:
 [[inputs.snmp]]
   agents    = [{agent_list}]
   version   = 2
-  community = "{community}"
+  community = "{_toml_string(community)}"
   name      = "huawei_cpu"
 
   [[inputs.snmp.field]]
@@ -180,12 +211,125 @@ def _huawei_cpu_mem(agents: List[str], community: str) -> str:
 [[inputs.snmp]]
   agents    = [{agent_list}]
   version   = 2
-  community = "{community}"
+  community = "{_toml_string(community)}"
   name      = "huawei_memory"
 
   [[inputs.snmp.field]]
     name = "mem_usage_pct"
     oid  = "1.3.6.1.4.1.2011.5.25.31.1.1.1.1.7.67108873"
+"""
+
+
+def _huawei_snmp(agents: List[str], community: str) -> str:
+    """Huawei system, ENTITY-EXTENT-MIB health, and interface telemetry."""
+    if not agents:
+        return ""
+    agent_list = ", ".join(f'"{a}:161"' for a in agents)
+    return f"""
+# Huawei SNMP (system, health, interfaces)
+[[inputs.snmp]]
+  agents    = [{agent_list}]
+  version   = 2
+  community = "{_toml_string(community)}"
+  name      = "snmp_huawei"
+
+  [[inputs.snmp.field]]
+    name   = "sysName_tag"
+    oid    = ".1.3.6.1.2.1.1.5.0"
+    is_tag = true
+
+  [[inputs.snmp.field]]
+    name   = "sysName"
+    oid    = ".1.3.6.1.2.1.1.5.0"
+    is_tag = false
+
+  [[inputs.snmp.field]]
+    name = "sysDescr"
+    oid  = ".1.3.6.1.2.1.1.1.0"
+
+  [[inputs.snmp.field]]
+    name = "sysUpTime"
+    oid  = ".1.3.6.1.2.1.1.3.0"
+
+  [[inputs.snmp.table]]
+    name = "huawei_health"
+
+    [[inputs.snmp.table.field]]
+      name   = "hwEntityName"
+      oid    = ".1.3.6.1.2.1.47.1.1.1.1.7"
+      is_tag = true
+
+    [[inputs.snmp.table.field]]
+      name = "hwEntityCpuUsage"
+      oid  = ".1.3.6.1.4.1.2011.5.25.31.1.1.1.1.5"
+
+    [[inputs.snmp.table.field]]
+      name = "hwEntityMemUsage"
+      oid  = ".1.3.6.1.4.1.2011.5.25.31.1.1.1.1.7"
+
+  [[inputs.snmp.table]]
+    name = "interface"
+    inherit_tags = ["sysName"]
+
+    [[inputs.snmp.table.field]]
+      name   = "ifName"
+      oid    = ".1.3.6.1.2.1.31.1.1.1.1"
+      is_tag = true
+    [[inputs.snmp.table.field]]
+      name = "ifOperStatus"
+      oid  = ".1.3.6.1.2.1.2.2.1.8"
+    [[inputs.snmp.table.field]]
+      name = "ifAdminStatus"
+      oid  = ".1.3.6.1.2.1.2.2.1.7"
+    [[inputs.snmp.table.field]]
+      name = "ifHCInOctets"
+      oid  = ".1.3.6.1.2.1.31.1.1.1.6"
+    [[inputs.snmp.table.field]]
+      name = "ifHCOutOctets"
+      oid  = ".1.3.6.1.2.1.31.1.1.1.10"
+    [[inputs.snmp.table.field]]
+      name = "ifInErrors"
+      oid  = ".1.3.6.1.2.1.2.2.1.14"
+    [[inputs.snmp.table.field]]
+      name = "ifOutErrors"
+      oid  = ".1.3.6.1.2.1.2.2.1.20"
+    [[inputs.snmp.table.field]]
+      name = "ifInDiscards"
+      oid  = ".1.3.6.1.2.1.2.2.1.13"
+    [[inputs.snmp.table.field]]
+      name = "ifOutDiscards"
+      oid  = ".1.3.6.1.2.1.2.2.1.19"
+
+  [[inputs.snmp.table]]
+    name = "interface_packet_stats"
+    inherit_tags = ["sysName"]
+    index_as_tag = true
+
+    [[inputs.snmp.table.field]]
+      name   = "ifName"
+      oid    = ".1.3.6.1.2.1.31.1.1.1.1"
+      is_tag = true
+    [[inputs.snmp.table.field]]
+      name = "ifHCInUcastPkts"
+      oid  = ".1.3.6.1.2.1.31.1.1.1.7"
+    [[inputs.snmp.table.field]]
+      name = "ifHCOutUcastPkts"
+      oid  = ".1.3.6.1.2.1.31.1.1.1.11"
+    [[inputs.snmp.table.field]]
+      name = "ifHCInMulticastPkts"
+      oid  = ".1.3.6.1.2.1.31.1.1.1.8"
+    [[inputs.snmp.table.field]]
+      name = "ifHCOutMulticastPkts"
+      oid  = ".1.3.6.1.2.1.31.1.1.1.12"
+    [[inputs.snmp.table.field]]
+      name = "ifHCInBroadcastPkts"
+      oid  = ".1.3.6.1.2.1.31.1.1.1.9"
+    [[inputs.snmp.table.field]]
+      name = "ifHCOutBroadcastPkts"
+      oid  = ".1.3.6.1.2.1.31.1.1.1.13"
+    [[inputs.snmp.table.field]]
+      name = "ifHighSpeed"
+      oid  = ".1.3.6.1.2.1.31.1.1.1.15"
 """
 
 
@@ -199,7 +343,7 @@ def _juniper_cpu_mem(agents: List[str], community: str) -> str:
 [[inputs.snmp]]
   agents    = [{agent_list}]
   version   = 2
-  community = "{community}"
+  community = "{_toml_string(community)}"
   name      = "juniper_cpu"
 
   [[inputs.snmp.field]]
@@ -210,7 +354,7 @@ def _juniper_cpu_mem(agents: List[str], community: str) -> str:
 [[inputs.snmp]]
   agents    = [{agent_list}]
   version   = 2
-  community = "{community}"
+  community = "{_toml_string(community)}"
   name      = "juniper_memory"
 
   [[inputs.snmp.field]]
@@ -221,13 +365,15 @@ def _juniper_cpu_mem(agents: List[str], community: str) -> str:
 
 def _interfaces(agents: List[str], community: str) -> str:
     """IF-MIB interface table (all vendors)."""
+    if not agents:
+        return ""
     agent_list = ", ".join(f'"{a}:161"' for a in agents)
     return f"""
 # ── Interfaces (IF-MIB — all devices) ─────────────────────
 [[inputs.snmp]]
   agents    = [{agent_list}]
   version   = 2
-  community = "{community}"
+  community = "{_toml_string(community)}"
   name      = "snmp_interfaces"
 
   [[inputs.snmp.table]]
@@ -315,7 +461,7 @@ class TelegrafConfigGenerator:
         self.influx_token  = os.getenv("INFLUXDB_TOKEN", "")
         self.influx_org    = os.getenv("INFLUXDB_ORG", "cognishield")
         self.influx_bucket = os.getenv("INFLUXDB_BUCKET", "network_telemetry")
-        self.snmp_community = os.getenv("SNMP_COMMUNITY", "cognishield")
+        self.snmp_community, self.huawei_community = _effective_snmp_communities()
 
     # ---- public API -------------------------------------------------------
 
@@ -341,7 +487,7 @@ class TelegrafConfigGenerator:
         all_ips: List[str] = list(device_ips.keys())
 
         for ip, sys_descr in device_ips.items():
-            vendor = classify_vendor(ip, sys_descr)
+            vendor = classify_vendor(ip, sys_descr, allow_static_hint=devices is None)
             if vendor == "cisco":
                 cisco_ips.append(ip)
             elif vendor == "huawei":
@@ -357,14 +503,15 @@ class TelegrafConfigGenerator:
         )
 
         community = self.snmp_community
+        non_huawei_ips = [ip for ip in all_ips if ip not in set(huawei_ips)]
         sections = [
             _header(self.influx_url, self.influx_token,
                     self.influx_org, self.influx_bucket),
-            _snmp_system(all_ips, community),
+            _snmp_system(non_huawei_ips, community),
             _cisco_cpu_mem(cisco_ips, community),
-            _huawei_cpu_mem(huawei_ips, community),
+            _huawei_snmp(huawei_ips, self.huawei_community),
             _juniper_cpu_mem(juniper_ips, community),
-            _interfaces(all_ips, community),
+            _interfaces(non_huawei_ips, community),
             _push_listeners(),
             _ping_targets(all_ips),
         ]
@@ -385,7 +532,7 @@ class TelegrafConfigGenerator:
         all_ips: List[str] = list(device_ips.keys())
 
         for ip, sys_descr in device_ips.items():
-            vendor = classify_vendor(ip, sys_descr)
+            vendor = classify_vendor(ip, sys_descr, allow_static_hint=devices is None)
             if vendor == "cisco":
                 cisco_ips.append(ip)
             elif vendor == "huawei":
@@ -394,16 +541,17 @@ class TelegrafConfigGenerator:
                 juniper_ips.append(ip)
 
         community = self.snmp_community
+        non_huawei_ips = [ip for ip in all_ips if ip not in set(huawei_ips)]
         sections = [
             "# ============================================================",
             "# AUTO-GENERATED by CogniShield telegraf_gen.py",
             "# Managed dynamic device SNMP targets (do not edit manually).",
             "# ============================================================",
-            _snmp_system(all_ips, community),
+            _snmp_system(non_huawei_ips, community),
             _cisco_cpu_mem(cisco_ips, community),
-            _huawei_cpu_mem(huawei_ips, community),
+            _huawei_snmp(huawei_ips, self.huawei_community),
             _juniper_cpu_mem(juniper_ips, community),
-            _interfaces(all_ips, community),
+            _interfaces(non_huawei_ips, community),
         ]
         return "\n".join(s for s in sections if s)
 
@@ -432,8 +580,15 @@ class TelegrafConfigGenerator:
 
         if devices:
             for d in devices:
-                ip = d.get("ip") or d.get("management_ip") or d.get("host", "")
-                descr = d.get("sys_descr") or d.get("sysDescr") or d.get("description", "")
+                ip = str(d.get("ip") or d.get("management_ip") or d.get("host", "")).strip()
+                descr_parts = [
+                    str(d.get("vendor") or "").strip(),
+                    str(d.get("sys_descr") or d.get("sysDescr") or "").strip(),
+                    str(d.get("description") or "").strip(),
+                    str(d.get("model") or "").strip(),
+                    str(d.get("os_version") or "").strip(),
+                ]
+                descr = " ".join(part for part in descr_parts if part).strip()
                 if ip:
                     result[ip] = descr
         else:

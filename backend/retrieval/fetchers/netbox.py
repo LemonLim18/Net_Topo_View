@@ -27,6 +27,8 @@ async def fetch_local_inventory_cache(db, device_name: str) -> Dict[str, Any]:
                 "subnet": iface.subnet_mask,
                 "mac": iface.mac_address,
                 "speed": iface.speed,
+                "interface_type": getattr(iface, "interface_type", "l2"),
+                "is_management": bool(getattr(iface, "is_management", False)),
                 "status": iface.status
             }
             for iface in interfaces

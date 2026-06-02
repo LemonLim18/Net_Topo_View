@@ -53,6 +53,8 @@ class Interface:
     subnet_mask: Optional[str] = None
     mac_address: Optional[str] = None
     speed: Optional[str] = None
+    interface_type: str = "l2"
+    is_management: bool = False
     status: str = "unknown"
     id: Optional[int] = None
     created_at: Optional[str] = None

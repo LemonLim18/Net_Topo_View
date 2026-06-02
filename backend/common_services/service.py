@@ -41,6 +41,7 @@ def ensure_common_services_table(db_path: str = DEFAULT_DB_PATH) -> None:
                 scope_type          TEXT NOT NULL,
                 scope_value         TEXT NOT NULL,
                 snmp_community      TEXT,
+                snmp_huawei_community TEXT,
                 snmp_location       TEXT,
                 snmp_contact        TEXT,
                 snmp_host_ip        TEXT,
@@ -58,6 +59,7 @@ def ensure_common_services_table(db_path: str = DEFAULT_DB_PATH) -> None:
         )
         # Safe column additions for existing DBs.
         for col, col_def in (
+            ("snmp_huawei_community", "TEXT"),
             ("snmp_location", "TEXT"),
             ("snmp_contact", "TEXT"),
             ("snmp_host_ip", "TEXT"),
@@ -106,6 +108,7 @@ def _row_to_profile(row: sqlite3.Row) -> Dict[str, Any]:
         "scope_type": row["scope_type"],
         "scope_value": row["scope_value"],
         "snmp_community": row["snmp_community"],
+        "snmp_huawei_community": row["snmp_huawei_community"] if "snmp_huawei_community" in row.keys() else None,
         "snmp_location": row["snmp_location"] if "snmp_location" in row.keys() else None,
         "snmp_contact": row["snmp_contact"] if "snmp_contact" in row.keys() else None,
         "snmp_host_ip": row["snmp_host_ip"] if "snmp_host_ip" in row.keys() else None,
@@ -159,6 +162,7 @@ def upsert_profile(scope_type: str, scope_value: str, payload: Dict[str, Any], d
     st, sv = _normalize_scope(scope_type, scope_value)
 
     snmp_community = payload.get("snmp_community")
+    snmp_huawei_community = payload.get("snmp_huawei_community")
     snmp_location = payload.get("snmp_location")
     snmp_contact = payload.get("snmp_contact")
     snmp_host_ip = payload.get("snmp_host_ip")
@@ -176,12 +180,13 @@ def upsert_profile(scope_type: str, scope_value: str, payload: Dict[str, Any], d
             """
             INSERT INTO common_service_profiles
                 (
-                    scope_type, scope_value, snmp_community, snmp_location, snmp_contact, snmp_host_ip,
+                    scope_type, scope_value, snmp_community, snmp_huawei_community, snmp_location, snmp_contact, snmp_host_ip,
                     syslog_port, syslog_device_port, syslog_servers_json, ntp_servers_json, syslog_host_ip, ntp_server_ip, updated_at
                 )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
             ON CONFLICT(scope_type, scope_value) DO UPDATE SET
                 snmp_community = excluded.snmp_community,
+                snmp_huawei_community = excluded.snmp_huawei_community,
                 snmp_location = excluded.snmp_location,
                 snmp_contact = excluded.snmp_contact,
                 snmp_host_ip = excluded.snmp_host_ip,
@@ -197,6 +202,7 @@ def upsert_profile(scope_type: str, scope_value: str, payload: Dict[str, Any], d
                 st,
                 sv,
                 snmp_community,
+                snmp_huawei_community,
                 snmp_location,
                 snmp_contact,
                 snmp_host_ip,
@@ -245,6 +251,7 @@ def get_effective_profile(
 
     merged: Dict[str, Any] = {
         "snmp_community": None,
+        "snmp_huawei_community": None,
         "snmp_location": None,
         "snmp_contact": None,
         "snmp_host_ip": None,
@@ -255,6 +262,7 @@ def get_effective_profile(
     }
     sources: Dict[str, Optional[str]] = {
         "snmp_community": None,
+        "snmp_huawei_community": None,
         "snmp_location": None,
         "snmp_contact": None,
         "snmp_host_ip": None,
@@ -277,6 +285,9 @@ def get_effective_profile(
             if row["snmp_community"]:
                 merged["snmp_community"] = row["snmp_community"]
                 sources["snmp_community"] = label
+            if "snmp_huawei_community" in row.keys() and row["snmp_huawei_community"]:
+                merged["snmp_huawei_community"] = row["snmp_huawei_community"]
+                sources["snmp_huawei_community"] = label
             if "snmp_location" in row.keys() and row["snmp_location"]:
                 merged["snmp_location"] = row["snmp_location"]
                 sources["snmp_location"] = label

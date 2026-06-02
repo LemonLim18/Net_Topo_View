@@ -661,6 +661,85 @@ async def ollama_playground(request: OllamaPlaygroundRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+def _build_inventory_detail_context(records: List[Dict[str, Any]], target_hostnames: set[str]) -> str:
+    """
+    Build a compact authoritative facts block for Inventory AI detail questions.
+    The generic RAG/context bundle is broad; this block is deliberately narrow
+    so interfaces, management addressing, and neighbors are easy to answer.
+    """
+    if not target_hostnames:
+        return ""
+
+    targets = {
+        str(hostname or "").strip().lower()
+        for hostname in target_hostnames
+        if str(hostname or "").strip()
+    }
+    if not targets:
+        return ""
+
+    lines: List[str] = [
+        "## Authoritative Inventory Device Details",
+        "Use this section first for management IP/interface, interface lists, interface counts, and neighbors.",
+        "If a value is absent here, say it is not recorded in inventory. Never use vector-store chunk counts as inventory counts.",
+    ]
+
+    for record in sorted(records, key=lambda r: str(r.get("hostname") or "")):
+        hostname = str(record.get("hostname") or "").strip()
+        if not hostname or hostname.lower() not in targets:
+            continue
+
+        enriched = network_tools._enrich_inventory_record(dict(record))
+        interfaces = [
+            iface for iface in (enriched.get("interfaces") or [])
+            if isinstance(iface, dict)
+        ]
+        links = [
+            link for link in (enriched.get("links") or [])
+            if isinstance(link, dict)
+        ]
+
+        lines.append("")
+        lines.append(f"### {hostname}")
+        lines.append(f"- Management IP: {enriched.get('management_ip') or 'not recorded'}")
+        lines.append(f"- Management subnet mask: {enriched.get('management_subnet_mask') or 'not recorded'}")
+        lines.append(f"- Management interface: {enriched.get('management_interface') or 'not recorded'}")
+        lines.append(f"- Vendor: {enriched.get('vendor') or 'not recorded'}")
+        lines.append(f"- Role: {enriched.get('role') or 'not recorded'}")
+        lines.append(f"- Status: {enriched.get('status') or 'not recorded'}")
+        lines.append(f"- Model: {enriched.get('model') or 'not recorded'}")
+        lines.append(f"- OS version: {enriched.get('os_version') or 'not recorded'}")
+
+        lines.append(f"- Interfaces ({len(interfaces)}):")
+        if interfaces:
+            for iface in interfaces[:80]:
+                name = iface.get("name") or "unknown"
+                iface_type = str(iface.get("interface_type") or iface.get("type") or "unknown").upper()
+                ip = iface.get("ip_address") or "none"
+                mask = iface.get("subnet_mask") or "none"
+                status = iface.get("status") or "unknown"
+                mgmt = "yes" if iface.get("is_management") else "no"
+                lines.append(
+                    f"  - {name}: type={iface_type}; ip={ip}; subnet_mask={mask}; "
+                    f"status={status}; management={mgmt}"
+                )
+        else:
+            lines.append("  - none recorded")
+
+        lines.append(f"- Neighbors ({len(links)}):")
+        if links:
+            for link in links[:80]:
+                peer = link.get("peer_hostname") or "unknown"
+                local_if = link.get("local_interface") or "unknown"
+                peer_if = link.get("peer_interface") or "unknown"
+                status = link.get("status") or "unknown"
+                lines.append(f"  - {local_if} -> {peer} {peer_if}; status={status}")
+        else:
+            lines.append("  - none recorded")
+
+    return "\n".join(lines)
+
+
 @router.post("/ollama/context_query")
 async def ollama_context_query(request: OllamaPlaygroundRequest):
     """
@@ -682,10 +761,16 @@ async def ollama_context_query(request: OllamaPlaygroundRequest):
         netbox_records = network_tools._inventory_records_from_netbox()
         local_records = network_tools._inventory_records_from_local_db()
         
-        merged = {str(r.get("hostname", "")).strip().lower(): r for r in local_records if str(r.get("hostname", "")).strip()}
-        for r in netbox_records:
+        merged = {str(r.get("hostname", "")).strip().lower(): r for r in netbox_records if str(r.get("hostname", "")).strip()}
+        # Prefer local DB for Inventory AI facts because it is the app-edited inventory
+        # and contains the local interface/link IDs needed for enrichment.
+        for r in local_records:
             h = str(r.get("hostname", "")).strip().lower()
             if h:
+                merged[h] = r
+        for r in netbox_records:
+            h = str(r.get("hostname", "")).strip().lower()
+            if h and h not in merged:
                 merged[h] = r
         
         devices = list(merged.values())
@@ -705,19 +790,28 @@ async def ollama_context_query(request: OllamaPlaygroundRequest):
 
         routing_decision = classify_query(prompt_text)
         context_builder = ContextBuilder(db_manager=agent._db)
-        
+
         network_context = context_builder.build_full_context(
             device_hostnames=list(target_hostnames) if target_hostnames else None,
             query=prompt_text,
             routing_decision=routing_decision,
         )
-        
+        inventory_detail_context = _build_inventory_detail_context(devices, target_hostnames)
+
         # 3. Build system prompt
         system_prompt = (
             "You are NetAutoController AI, operating as a grounded network reliability and automation controller.\n"
             "Answer read-only network questions from authoritative evidence.\n"
+            "Format every response as GitHub-flavored Markdown. Use real **bold** text for labels, "
+            "hyphen bullet lists for grouped facts, and numbered lists for ordered steps. Do not wrap "
+            "the whole answer in a code block and do not escape Markdown markers.\n"
             "Prefer authoritative planned, live, telemetry, incident, drift, and knowledge evidence.\n"
+            "For Inventory AI questions about interfaces, management IP/interface, or neighbors, answer from "
+            "Authoritative Inventory Device Details before using any knowledge-base or vector-store summary.\n"
+            "If the user's wording uses pronouns such as 'it' or 'that device', resolve them from the provided "
+            "recent Inventory AI conversation. If the target device is still ambiguous, ask for the hostname.\n"
             "If evidence is stale, conflicting, or missing, say so explicitly.\n\n"
+            f"{inventory_detail_context}\n\n"
             f"## Current Network State\n{network_context}"
         )
         

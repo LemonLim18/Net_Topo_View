@@ -102,6 +102,13 @@ function pickPreferredOverlayModel(models: string[]): string {
   return models[0] || '';
 }
 
+function sanitizeMarkdown(text: string): string {
+  if (!text) return '';
+  // Unescape backslash-escaped markdown markers (e.g. \*\* -> **, \* -> *, \- -> -)
+  // LLMs sometimes escape these, causing ReactMarkdown to render them as plain text.
+  return text.replace(/\\([\*\-#_\[\]\(\)`])/g, '$1');
+}
+
 function clampOverlayWidth(width: number) {
   const viewportMax = Math.max(OVERLAY_MIN_WIDTH, window.innerWidth - OVERLAY_MARGIN * 2);
   return Math.min(Math.max(width, OVERLAY_MIN_WIDTH), Math.min(OVERLAY_MAX_WIDTH, viewportMax));
@@ -396,6 +403,19 @@ const FloatingInventoryOverlay: React.FC<{ onClose: () => void }> = ({ onClose }
       : quotedForThisTurn
         ? `${quoteForPrompt(quotedForThisTurn)}\n\nUser request:\n${prompt}`
         : prompt;
+    const inventoryPrompt = isInventory && inventoryAiMessages.length > 0
+      ? [
+          'Recent Inventory AI conversation:',
+          ...inventoryAiMessages.slice(-8).map((msg) => `${msg.role}: ${msg.content}`),
+          '',
+          'Use the recent conversation only to resolve references like "it" or "that device". Answer only the current user request.',
+          'Format the answer as GitHub-flavored Markdown with real **bold** labels, hyphen bullet lists, and numbered lists where order matters. Do not wrap the whole response in a code block and do not escape Markdown markers.',
+          `Current user request: ${effectivePrompt}`,
+        ].join('\n')
+      : [
+          'Format the answer as GitHub-flavored Markdown with real **bold** labels, hyphen bullet lists, and numbered lists where order matters. Do not wrap the whole response in a code block and do not escape Markdown markers.',
+          `Current user request: ${effectivePrompt}`,
+        ].join('\n');
 
     const userMsg: Message = {
       role: 'user',
@@ -446,7 +466,7 @@ const FloatingInventoryOverlay: React.FC<{ onClose: () => void }> = ({ onClose }
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            message: effectivePrompt,
+            message: isInventory ? inventoryPrompt : effectivePrompt,
             model: selectedModel.split('::', 2)[1],
             grounding: mode !== 'playground',
           }),
@@ -472,7 +492,7 @@ const FloatingInventoryOverlay: React.FC<{ onClose: () => void }> = ({ onClose }
         const resp = await fetch(endpoint, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ prompt: effectivePrompt, model: modelName }),
+          body: JSON.stringify({ prompt: isInventory ? inventoryPrompt : effectivePrompt, model: modelName }),
           signal: controller.signal,
         });
         const data = await resp.json();
@@ -890,7 +910,31 @@ const FloatingInventoryOverlay: React.FC<{ onClose: () => void }> = ({ onClose }
                             ? 'bg-error/10 text-error border border-error/20 italic'
                             : 'bg-base-100 text-base-content rounded-tl-none shadow-sm'}`}
                       >
-                        <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.content}</ReactMarkdown>
+                        <ReactMarkdown
+                          remarkPlugins={[remarkGfm]}
+                          components={{
+                            p: ({ node: _node, ...props }: any) => <p className="mb-2 last:mb-0 leading-relaxed" style={{ fontSize: '13px' }} {...props} />,
+                            strong: ({ node: _node, ...props }: any) => <strong style={{ fontWeight: '700' }} className="font-bold text-current" {...props} />,
+                            ul: ({ node: _node, ...props }: any) => <ul style={{ listStyleType: 'disc', paddingLeft: '1.25rem' }} className="my-2 space-y-1" {...props} />,
+                            ol: ({ node: _node, ...props }: any) => <ol style={{ listStyleType: 'decimal', paddingLeft: '1.25rem' }} className="my-2 space-y-1" {...props} />,
+                            li: ({ node: _node, ...props }: any) => <li className="pl-0" style={{ listStylePosition: 'outside' }} {...props} />,
+                            code: ({ node: _node, className, children, ...props }: any) => {
+                              const match = /language-(\w+)/.exec(className || '');
+                              const isInline = !match && !String(children).includes('\n');
+                              return isInline ? (
+                                <code style={{ fontFamily: 'monospace', fontSize: '12px', background: 'rgba(0, 0, 0, 0.15)', padding: '1px 5px', borderRadius: '3px', border: '1px solid rgba(255,255,255,0.05)' }} {...props}>
+                                  {children}
+                                </code>
+                              ) : (
+                                <pre style={{ fontFamily: 'monospace', fontSize: '11.5px', background: 'rgba(0, 0, 0, 0.25)', padding: '8px', borderRadius: '6px', overflowX: 'auto', margin: '6px 0', border: '1px solid rgba(255,255,255,0.05)' }} {...props}>
+                                  <code>{children}</code>
+                                </pre>
+                              );
+                            }
+                          }}
+                        >
+                          {sanitizeMarkdown(msg.content)}
+                        </ReactMarkdown>
                       </div>
                       {isSystemAnswer && grounding && (
                         <button
@@ -1064,4 +1108,3 @@ const FloatingInventoryOverlay: React.FC<{ onClose: () => void }> = ({ onClose }
 };
 
 export default FloatingInventoryOverlay;
-

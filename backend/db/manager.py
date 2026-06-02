@@ -160,6 +160,8 @@ class DatabaseManager:
             ("devices", "management_interface", "TEXT"),
             ("devices", "oob_gateway_ip", "TEXT"),
             ("devices", "netbox_id", "INTEGER"),
+            ("interfaces", "interface_type", "TEXT DEFAULT 'l2'"),
+            ("interfaces", "is_management", "BOOLEAN DEFAULT 0"),
             ("users", "full_name", "TEXT"),
             ("users", "email", "TEXT"),
             ("users", "avatar", "TEXT"),
@@ -188,6 +190,22 @@ class DatabaseManager:
                 conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_devices_netbox_id ON devices(netbox_id) WHERE netbox_id IS NOT NULL")
             except Exception as e:
                 logger.warning(f"Migration error creating index: {e}")
+
+            try:
+                conn.execute(
+                    """UPDATE interfaces
+                       SET interface_type = 'l3'
+                       WHERE ip_address IS NOT NULL
+                         AND TRIM(ip_address) <> ''
+                         AND COALESCE(interface_type, 'l2') = 'l2'"""
+                )
+                conn.execute(
+                    """UPDATE interfaces
+                       SET interface_type = 'l2'
+                       WHERE interface_type IS NULL OR TRIM(interface_type) = ''"""
+                )
+            except Exception as e:
+                logger.warning("Migration error normalizing interface_type: %s", e)
 
             # M26: Compliance/baseline metadata columns on config_snapshots (safe for existing DBs)
             _m26_snapshot_cols = [
@@ -301,6 +319,7 @@ class DatabaseManager:
                         scope_type          TEXT NOT NULL,
                         scope_value         TEXT NOT NULL,
                         snmp_community      TEXT,
+                        snmp_huawei_community TEXT,
                         snmp_location       TEXT,
                         snmp_contact        TEXT,
                         snmp_host_ip        TEXT,
@@ -315,6 +334,7 @@ class DatabaseManager:
                 )
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_common_service_scope ON common_service_profiles(scope_type, scope_value)")
                 for col, col_def in (
+                    ("snmp_huawei_community", "TEXT"),
                     ("snmp_location", "TEXT"),
                     ("snmp_contact", "TEXT"),
                     ("snmp_host_ip", "TEXT"),
@@ -888,11 +908,13 @@ class DatabaseManager:
                 conn.execute(
                     """UPDATE interfaces
                        SET ip_address = ?, subnet_mask = ?, mac_address = ?,
-                           speed = ?, status = ?, updated_at = ?
+                           speed = ?, interface_type = ?, is_management = ?,
+                           status = ?, updated_at = ?
                      WHERE id = ?""",
                     (
                         iface.ip_address, iface.subnet_mask, iface.mac_address,
-                        iface.speed, iface.status, now, row["id"],
+                        iface.speed, iface.interface_type, 1 if iface.is_management else 0,
+                        iface.status, now, row["id"],
                     ),
                 )
                 return row["id"]
@@ -900,11 +922,12 @@ class DatabaseManager:
                 cur2 = conn.execute(
                     """INSERT INTO interfaces
                        (device_id, name, ip_address, subnet_mask, mac_address,
-                        speed, status, created_at, updated_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        speed, interface_type, is_management, status, created_at, updated_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
                         iface.device_id, iface.name, iface.ip_address,
                         iface.subnet_mask, iface.mac_address, iface.speed,
+                        iface.interface_type, 1 if iface.is_management else 0,
                         iface.status, now, now,
                     ),
                 )
@@ -928,6 +951,8 @@ class DatabaseManager:
             subnet_mask=row["subnet_mask"],
             mac_address=row["mac_address"],
             speed=row["speed"],
+            interface_type=row["interface_type"] if "interface_type" in row.keys() else "l2",
+            is_management=bool(row["is_management"]) if "is_management" in row.keys() else False,
             status=row["status"],
             created_at=row["created_at"],
             updated_at=row["updated_at"],

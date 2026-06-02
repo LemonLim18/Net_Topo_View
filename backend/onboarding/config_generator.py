@@ -244,9 +244,9 @@ commit and-quit
     @staticmethod
     def _huawei_common_services(p: dict) -> str:
         lines = []
-        snmp_community = p.get("snmp_community")
+        snmp_community = p.get("snmp_huawei_community") or p.get("snmp_community")
         if snmp_community:
-            lines.append(f"snmp-agent community read {snmp_community}")
+            lines.append(f"snmp-agent community read cipher {snmp_community}")
             if p.get("snmp_location"):
                 lines.append(f"snmp-agent sys-info location {p['snmp_location']}")
             if p.get("snmp_contact"):

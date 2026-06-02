@@ -1011,7 +1011,7 @@ const NetworkPerformance: React.FC = () => {
       ) : (
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
           <KPICard icon={<Activity className="h-4 w-4" />} label="Stack Status" value={toTitleCase(stackStatus)} color={stackStatus.toLowerCase() === 'healthy' ? 'text-success' : 'text-warning'} subtext="InfluxDB reachability" />
-          <KPICard icon={<CheckCircle className="h-4 w-4 text-success" />} label="Devices Up" value={`${upDevices} / ${devices.length}`} color="text-success" subtext={devices.length ? `${Math.round(upDevices / devices.length * 100)}% availability` : 'No inventory'} />
+          <KPICard icon={<CheckCircle className="h-4 w-4 text-success" />} label="Devices Up" value={`${upDevices} / ${devices.length}`} color="text-success" subtext={devices.length ? `${Math.round(upDevices / devices.length * 100)}% availability` : 'No live telemetry'} />
           <KPICard icon={<Cpu className="h-4 w-4 text-info" />} label="Average CPU" value={avgCpu !== null ? `${avgCpu.toFixed(1)}%` : 'N/A'} color={avgCpu !== null && avgCpu > 80 ? 'text-error' : avgCpu !== null && avgCpu > 60 ? 'text-warning' : 'text-info'} subtext={`${cpuDevices.length} devices with CPU values`} />
           <KPICard icon={<Wifi className="h-4 w-4 text-primary" />} label="Interface Health" value={totalIf ? `${totalIfUp}/${totalIf}` : 'N/A'} color="text-primary" subtext={`${activeAlerts} active alerts`} />
         </div>
@@ -1246,7 +1246,7 @@ const NetworkPerformance: React.FC = () => {
 
       <div className="card bg-base-100 border border-base-300 shadow-sm">
         <div className="card-body p-3">
-          <h3 className="text-xs font-semibold opacity-60 uppercase tracking-wide mb-2 flex items-center gap-1.5"><Server className="h-3.5 w-3.5" /> Device Inventory</h3>
+          <h3 className="text-xs font-semibold opacity-60 uppercase tracking-wide mb-2 flex items-center gap-1.5"><Server className="h-3.5 w-3.5" /> Live Devices</h3>
           <div className="overflow-x-auto">
             <table className="table table-xs table-zebra">
               <thead>

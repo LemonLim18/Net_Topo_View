@@ -1366,7 +1366,7 @@ const Dashboard: React.FC = () => {
                                 </select>
                                 
                                 <InterfaceSelect 
-                                  interfaces={srcInterfaces.filter(i => !i.name.toLowerCase().includes('management'))}
+                                  interfaces={srcInterfaces.filter(i => !(i as any).is_management && !i.name.toLowerCase().includes('management'))}
                                   value={linkForm.src_interface_id}
                                   onChange={(val) => setLinkForm({ ...linkForm, src_interface_id: val })}
                                   disabled={!linkForm.src_device_id}
@@ -1410,7 +1410,7 @@ const Dashboard: React.FC = () => {
                                 </select>
                                 
                                 <InterfaceSelect 
-                                  interfaces={dstInterfaces.filter(i => !i.name.toLowerCase().includes('management'))}
+                                  interfaces={dstInterfaces.filter(i => !(i as any).is_management && !i.name.toLowerCase().includes('management'))}
                                   value={linkForm.dst_interface_id}
                                   onChange={(val) => setLinkForm({ ...linkForm, dst_interface_id: val })}
                                   disabled={!linkForm.dst_device_id}
