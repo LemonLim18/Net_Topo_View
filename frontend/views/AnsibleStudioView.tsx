@@ -33,6 +33,13 @@ interface AnsibleStudioViewProps {
   user: User | null;
 }
 
+type AnsibleQuotedExplainRequest = {
+  id: string;
+  text: string;
+  fileName: string;
+  filePath?: string;
+};
+
 /** Vertical resize handle between panels; drag to change the width of the panel on the left of the handle. */
 function ResizeHandle({
   onResize,
@@ -152,6 +159,7 @@ const AnsibleStudioView: React.FC<AnsibleStudioViewProps> = ({ user }) => {
   const [checkResultJobId, setCheckResultJobId] = useState<number | null>(null);
   const [isChecking, setIsChecking]   = useState(false);
   const [checkPassedByJobId, setCheckPassedByJobId] = useState<Record<number, boolean>>(() => getStoredCheckPassedByJob());
+  const [chatExplainRequest, setChatExplainRequest] = useState<AnsibleQuotedExplainRequest | null>(null);
 
   // ── SSE state ────────────────────────────────────────────────────────────
   const [sseLines, setSseLines]       = useState<string[]>([]);
@@ -400,25 +408,32 @@ const AnsibleStudioView: React.FC<AnsibleStudioViewProps> = ({ user }) => {
   const handleSave = useCallback(async () => {
     if (!activeTab || activeTab.isReadOnly) return;
 
-    // Virtual template file → Config Engine API
-    const tplMatch = activeTab.id.match(/^templates\/([^/]+)\/(.+)\.j2$/);
-    if (tplMatch) {
-      await configApi.saveTemplateSource(tplMatch[1], tplMatch[2], activeTab.content);
-      setTabs(prev => prev.map(t => t.id === activeTab.id ? { ...t, isDirty: false } : t));
-      return;
-    }
+    try {
+      // Virtual template file → Config Engine API
+      const tplMatch = activeTab.id.match(/^templates\/([^/]+)\/(.+)\.j2$/);
+      if (tplMatch) {
+        await configApi.saveTemplateSource(tplMatch[1], tplMatch[2], activeTab.content);
+        setTabs(prev => prev.map(t => t.id === activeTab.id ? { ...t, isDirty: false } : t));
+        Toast.successEmphasis('Saved successfully', `${tplMatch[2]}.j2 saved.`);
+        return;
+      }
 
-    // Virtual schema file → Config Engine API
-    const schemaMatch = activeTab.id.match(/^schemas\/(.+)\.json$/);
-    if (schemaMatch) {
-      await configApi.saveSchemaSource(schemaMatch[1], activeTab.content);
-      setTabs(prev => prev.map(t => t.id === activeTab.id ? { ...t, isDirty: false } : t));
-      return;
-    }
+      // Virtual schema file → Config Engine API
+      const schemaMatch = activeTab.id.match(/^schemas\/(.+)\.json$/);
+      if (schemaMatch) {
+        await configApi.saveSchemaSource(schemaMatch[1], activeTab.content);
+        setTabs(prev => prev.map(t => t.id === activeTab.id ? { ...t, isDirty: false } : t));
+        Toast.successEmphasis('Saved successfully', `${schemaMatch[1]}.json saved.`);
+        return;
+      }
 
-    await ansibleApi.writeFile(activeTab.id, activeTab.content);
-    setTabs(prev => prev.map(t => t.id === activeTab.id ? { ...t, isDirty: false } : t));
-    setFileTreeRefresh(n => n + 1);
+      await ansibleApi.writeFile(activeTab.id, activeTab.content);
+      setTabs(prev => prev.map(t => t.id === activeTab.id ? { ...t, isDirty: false } : t));
+      setFileTreeRefresh(n => n + 1);
+      Toast.successEmphasis('Saved successfully', `${activeTab.name} saved.`);
+    } catch (err: any) {
+      Toast.error('Save failed', err.message || String(err));
+    }
   }, [activeTab]);
 
   // ── Check (dry-run) ──────────────────────────────────────────────────────
@@ -719,6 +734,14 @@ const AnsibleStudioView: React.FC<AnsibleStudioViewProps> = ({ user }) => {
               onApprove={handleApprove}
               onDeploy={handleDeploy}
               onRegenerate={handleRegenerate}
+              onExplainSelection={({ text, tab }) => {
+                setChatExplainRequest({
+                  id: `${tab.id}-${Date.now()}`,
+                  text,
+                  fileName: tab.name,
+                  filePath: tab.path,
+                });
+              }}
               job={job}
               checkResult={checkResult}
               isChecking={isChecking}
@@ -784,6 +807,8 @@ const AnsibleStudioView: React.FC<AnsibleStudioViewProps> = ({ user }) => {
             onOpenFile={(path) => handleFileOpen({ path, name: path.split('/').pop() ?? path })}
             activeJob={job}
             user={user}
+            explainSelectionRequest={chatExplainRequest}
+            onExplainSelectionHandled={() => setChatExplainRequest(null)}
           />
         </div>
       </div>

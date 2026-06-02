@@ -3,7 +3,7 @@ import Editor from '@monaco-editor/react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import {
-  X, Save, Download, Play, ShieldCheck, RefreshCw, FlaskConical, Lock, FileText, Check, Loader2
+  X, Save, Download, Play, ShieldCheck, RefreshCw, FlaskConical, Lock, FileText, Check, Loader2, MessageSquareQuote
 } from 'lucide-react';
 import type { AnsibleTab, AnsibleJob, AnsibleCheckResult } from '../../typesLLM';
 import { useMonacoTheme } from '../../src/utils/monacoTheme';
@@ -24,6 +24,7 @@ interface PlaybookEditorProps {
   onApprove:       () => void;
   onDeploy:        () => void;
   onRegenerate:    () => void;
+  onExplainSelection?: (payload: { text: string; tab: AnsibleTab }) => void;
 }
 
 
@@ -44,13 +45,17 @@ const PlaybookEditor: React.FC<PlaybookEditorProps> = ({
   approvalReady = false,
   userRole,   onTabSelect, onTabClose, onChange, onSave,
   onCheck, onApprove, onDeploy, onRegenerate,
+  onExplainSelection,
 }) => {
   const { themeName } = useMonacoTheme();
   const activeTabRef = useRef<HTMLDivElement>(null);
+  const editorInstanceRef = useRef<any>(null);
+  const editorContainerRef = useRef<HTMLDivElement>(null);
+  const selectionDisposeRef = useRef<{ dispose?: () => void } | null>(null);
   const activeTab = tabs.find(t => t.id === activeTabId) ?? null;
   const isMarkdownActiveTab = Boolean(activeTab?.name.toLowerCase().endsWith('.md'));
-  const isAdmin   = userRole === 'admin';
   const canEdit   = userRole === 'admin' || userRole === 'engineer';
+  const [selectionAction, setSelectionAction] = useState<{ text: string; top: number; left: number } | null>(null);
   
   // Auto-scroll active tab into view
   useEffect(() => {
@@ -90,6 +95,50 @@ const PlaybookEditor: React.FC<PlaybookEditorProps> = ({
     a.click();
     URL.revokeObjectURL(url);
   }, [activeTab]);
+
+  const clearSelectionAction = useCallback(() => setSelectionAction(null), []);
+
+  const updateSelectionAction = useCallback(() => {
+    const editor = editorInstanceRef.current;
+    const tab = activeTab;
+    const host = editorContainerRef.current;
+    if (!editor || !tab || !host || tab.name.endsWith('.md')) {
+      setSelectionAction(null);
+      return;
+    }
+    const selection = editor.getSelection?.();
+    const model = editor.getModel?.();
+    if (!selection || !model || selection.isEmpty?.()) {
+      setSelectionAction(null);
+      return;
+    }
+    const text = String(model.getValueInRange?.(selection) || '').trim();
+    if (!text) {
+      setSelectionAction(null);
+      return;
+    }
+    const pos = editor.getScrolledVisiblePosition?.(selection.getEndPosition?.());
+    if (!pos) {
+      setSelectionAction({ text, top: 12, left: 12 });
+      return;
+    }
+    const hostRect = host.getBoundingClientRect();
+    const estimatedWidth = 150;
+    const desiredLeft = pos.left + Math.min(pos.width || 0, 24);
+    const left = Math.max(12, Math.min(desiredLeft, hostRect.width - estimatedWidth - 12));
+    const top = Math.max(12, pos.top - 34);
+    setSelectionAction({ text, top, left });
+  }, [activeTab]);
+
+  useEffect(() => {
+    clearSelectionAction();
+  }, [activeTabId, clearSelectionAction]);
+
+  useEffect(() => {
+    return () => {
+      selectionDisposeRef.current?.dispose?.();
+    };
+  }, []);
 
   // Derive action states
   const hasPlaybook = !!activeTab?.jobId;
@@ -296,12 +345,15 @@ const PlaybookEditor: React.FC<PlaybookEditorProps> = ({
           )}
           {activeTab && !activeTab.isReadOnly && canEdit && (
             <button
-              className={`btn btn-xs gap-1 ${activeTab.isDirty ? 'btn-primary' : 'btn-ghost'}`}
-              onClick={() => onSave(activeTab.id)}
-              disabled={!activeTab.isDirty}
-              title="Save file to disk"
+              className={`btn btn-xs gap-1 ${
+                activeTab.isDirty
+                  ? 'btn-primary'
+                  : 'bg-transparent border border-primary text-primary pointer-events-none'
+              }`}
+              onClick={activeTab.isDirty ? () => onSave(activeTab.id) : undefined}
+              title={activeTab.isDirty ? 'Save file to disk' : 'Saved'}
             >
-              <Save className="h-3 w-3" /> Save
+              <Save className={`h-3 w-3 ${activeTab.isDirty ? '' : 'text-primary'}`} /> {activeTab.isDirty ? 'Save' : 'Saved'}
             </button>
           )}
           {activeTab && (
@@ -328,32 +380,61 @@ const PlaybookEditor: React.FC<PlaybookEditorProps> = ({
               </article>
             </div>
           ) : (
-            <Editor
-              height="100%"
-              language={
-                activeTab.name.endsWith('.md') ? 'markdown' :
-                activeTab.name.endsWith('.j2') ? 'jinja2' :
-                activeTab.name.endsWith('.cfg') ? 'ini' :
-                'yaml'
-              }
-              theme={themeName}
-              value={activeTab.content}
-              onChange={val => {
-                if (!activeTab.isReadOnly) onChange(activeTab.id, val ?? '');
-              }}
-              options={{
-                readOnly:         activeTab.isReadOnly,
-                minimap:          { enabled: false },
-                wordWrap:         'on',
-                fontSize:         13,
-                lineNumbers:      'on',
-                scrollBeyondLastLine: false,
-                automaticLayout:  true,
-                tabSize:          2,
-                renderWhitespace: 'boundary',
-                folding:          true,
-              }}
-            />
+            <div ref={editorContainerRef} className="relative h-full">
+              {selectionAction && activeTab && onExplainSelection && (
+                <button
+                  type="button"
+                  className="absolute z-20 btn btn-xs btn-primary gap-1 shadow-lg"
+                  style={{ top: selectionAction.top, left: selectionAction.left }}
+                  onClick={() => {
+                    onExplainSelection({ text: selectionAction.text, tab: activeTab });
+                    clearSelectionAction();
+                  }}
+                >
+                  <MessageSquareQuote className="h-3 w-3" />
+                  Add to chat
+                </button>
+              )}
+              <Editor
+                height="100%"
+                language={
+                  activeTab.name.endsWith('.md') ? 'markdown' :
+                  activeTab.name.endsWith('.j2') ? 'jinja2' :
+                  activeTab.name.endsWith('.cfg') ? 'ini' :
+                  'yaml'
+                }
+                theme={themeName}
+                value={activeTab.content}
+                onMount={(editor) => {
+                  selectionDisposeRef.current?.dispose?.();
+                  editorInstanceRef.current = editor;
+                  selectionDisposeRef.current = editor.onDidChangeCursorSelection(() => {
+                    window.requestAnimationFrame(updateSelectionAction);
+                  });
+                  editor.onDidBlurEditorText?.(() => {
+                    window.setTimeout(() => {
+                      if (document.activeElement?.closest?.('.btn')) return;
+                      clearSelectionAction();
+                    }, 120);
+                  });
+                }}
+                onChange={val => {
+                  if (!activeTab.isReadOnly) onChange(activeTab.id, val ?? '');
+                }}
+                options={{
+                  readOnly:         activeTab.isReadOnly,
+                  minimap:          { enabled: false },
+                  wordWrap:         'on',
+                  fontSize:         13,
+                  lineNumbers:      'on',
+                  scrollBeyondLastLine: false,
+                  automaticLayout:  true,
+                  tabSize:          2,
+                  renderWhitespace: 'boundary',
+                  folding:          true,
+                }}
+              />
+            </div>
           )
         ) : (
           <div className="flex flex-col items-center justify-center h-full opacity-30 gap-3">

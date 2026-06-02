@@ -152,8 +152,8 @@ export function updateMonacoTheme() {
         'editorLineNumber.foreground': isDark ? '#475569' : '#94a3b8',
         'editorLineNumber.activeForeground': isDark ? '#cbd5e1' : '#334155',
         'editorGutter.background': bgHex,
-        'editor.selectionBackground': isDark ? '#3b82f622' : '#3b82f633',
-        'editor.inactiveSelectionBackground': isDark ? '#3b82f611' : '#3b82f622',
+        'editor.selectionBackground': isDark ? '#264f78' : '#add6ff',
+        'editor.inactiveSelectionBackground': isDark ? '#3a3d41' : '#e4e6f1',
         'editorCursor.foreground': fgHex,
       },
     });

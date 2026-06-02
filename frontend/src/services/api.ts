@@ -510,7 +510,12 @@ export const llmApi = {
       }),
     }),
 
-  qaPlaybook: (playbookContent: string, question: string, history: { role: string; content: string }[]) =>
+  qaPlaybook: (
+    playbookContent: string,
+    question: string,
+    history: { role: string; content: string }[],
+    options?: { signal?: AbortSignal },
+  ) =>
     request<PlaybookQAResponse>('/llm/chat/playbook/qa', {
       method: 'POST',
       body: JSON.stringify({
@@ -518,6 +523,7 @@ export const llmApi = {
         question,
         history,
       }),
+      signal: options?.signal,
     }),
 };
 

@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react'
 import { createPortal } from 'react-dom';
 import ReactMarkdown from 'react-markdown';
 import { DiffEditor } from '@monaco-editor/react';
-import { Send, Loader2, Bot, Sparkles, AlertCircle, FileCode, ChevronRight, Paperclip, X, TriangleAlert, ChevronDown, Check, Undo2, Square, History, Plus, Trash2, RefreshCw, User as UserIcon } from 'lucide-react';
+import { Send, Loader2, Bot, Sparkles, AlertCircle, FileCode, ChevronRight, Paperclip, X, TriangleAlert, ChevronDown, Check, Undo2, Square, History, Plus, Trash2, RefreshCw, User as UserIcon, MessageSquareQuote } from 'lucide-react';
 import PremiumLoaderOverlay from '../PremiumLoaderOverlay';
 import { v4 as uuidv4 } from 'uuid';
 import { ansibleApi, llmApi, netboxApi, ragApi } from '../../src/services/api';
@@ -242,6 +242,13 @@ interface AnsibleChatPanelProps {
   onOpenFile:      (path: string) => void;
   activeJob:       AnsibleJob | null;
   user?:           User | null;
+  explainSelectionRequest?: {
+    id: string;
+    text: string;
+    fileName: string;
+    filePath?: string;
+  } | null;
+  onExplainSelectionHandled?: () => void;
 }
 
 // ── Lightweight intent parser ─────────────────────────────────────────────────
@@ -799,6 +806,8 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
   onOpenFile,
   activeJob: _activeJob,
   user,
+  explainSelectionRequest,
+  onExplainSelectionHandled,
 }) => {
   void _activeJob;
   const initialStoredSessions = useMemo(() => loadStoredAnsibleSessions(), []);
@@ -819,6 +828,7 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
   const [commandHistory, setCommandHistory] = useState<string[]>([]);
   const [commandHistoryIndex, setCommandHistoryIndex] = useState(-1);
   const [isGenerating, setGenerating]   = useState(false);
+  const [isGeneratingPlaybook, setGeneratingPlaybook] = useState(false);
   const [isDragOver, setIsDragOver]     = useState(false);
   const [attachedFiles, setAttachedFiles] = useState<{ name: string; content: string; lang: string; size: number; truncated: boolean }[]>([]);
   const [runtime, setRuntime]           = useState<LlmRuntimeState | null>(null);
@@ -939,6 +949,13 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
     parsed_intent: Record<string, unknown>;
     intent_schema_inspector?: IntentSchemaInspectorPayload;
   } | null>(null);
+  const lastHandledExplainSelectionIdRef = useRef<string | null>(null);
+  const [quotedSelection, setQuotedSelection] = useState<{
+    id: string;
+    text: string;
+    fileName: string;
+    filePath?: string;
+  } | null>(null);
 
   useEffect(() => {
     previewAccumulatedParamsRef.current = previewAccumulatedParams;
@@ -950,6 +967,7 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
     loadingPhaseTimeoutRef.current.forEach((timeoutId) => clearTimeout(timeoutId));
     loadingPhaseTimeoutRef.current = [];
     setGenerating(false);
+    setGeneratingPlaybook(false);
     setInput('');
     setAttachedFiles([]);
     setStudioOpen(false);
@@ -971,6 +989,23 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
     setPreviewAccumulatedIntentText('');
     setPlannedPickerDevices([]);
     setPlannedPickerDeviceNames([]);
+  }, []);
+
+  const buildSelectionQuestionUserMessage = useCallback((selection: {
+    text: string;
+    fileName: string;
+    filePath?: string;
+  }, question: string): string => {
+    const label = selection.filePath || selection.fileName || 'current playbook';
+    return [
+      `Quoted selection from \`${label}\`:`,
+      '',
+      '```yaml',
+      String(selection.text || '').trim(),
+      '```',
+      '',
+      question.trim(),
+    ].join('\n');
   }, []);
 
   useEffect(() => {
@@ -1465,6 +1500,29 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
     setMessages(prev => [...prev, { ...msg, id: uuidv4(), timestamp: Date.now() }]);
   }, []);
 
+  useEffect(() => {
+    if (!explainSelectionRequest?.id) return;
+    if (lastHandledExplainSelectionIdRef.current === explainSelectionRequest.id) return;
+
+    lastHandledExplainSelectionIdRef.current = explainSelectionRequest.id;
+
+    const selectionText = String(explainSelectionRequest.text || '').trim();
+    if (!selectionText) {
+      onExplainSelectionHandled?.();
+      return;
+    }
+    setQuotedSelection({
+      id: explainSelectionRequest.id,
+      text: selectionText,
+      fileName: explainSelectionRequest.fileName,
+      filePath: explainSelectionRequest.filePath,
+    });
+    onExplainSelectionHandled?.();
+  }, [
+    explainSelectionRequest,
+    onExplainSelectionHandled,
+  ]);
+
   /**
    * After previewIntent: device picker → switch-role menu → params wizard → interface picker → studio.
    * Params before interfaces so missing VLAN fields aren’t skipped when inventory also returns an interface picker.
@@ -1876,6 +1934,7 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
     setDeviceDisambiguation(null);
     setMessages((prev) => prev.filter((m) => m.id !== msgId));
     setGenerating(true);
+    setGeneratingPlaybook(true);
     const progressId = uuidv4();
     setMessages((prev) => [
       ...prev,
@@ -1966,6 +2025,8 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
       setMessages((prev) => prev.filter((m) => m.id !== progressId));
       if (applyPreviewFollowUps(res, intentText)) {
         setGenerating(false);
+setGeneratingPlaybook(false);
+        setGeneratingPlaybook(false);
         return;
       }
       const valErr = (res as { parsed_intent?: { validation_errors?: string[] } })?.parsed_intent?.validation_errors;
@@ -1990,6 +2051,7 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
       }
     }
     setGenerating(false);
+    setGeneratingPlaybook(false);
   }, [
     deviceDisambiguation,
     selectedDevices,
@@ -2036,6 +2098,7 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
     setInterfaceDisambiguation(null);
     setMessages(prev => prev.filter(m => m.id !== msgId));
     setGenerating(true);
+    setGeneratingPlaybook(true);
     const progressId = uuidv4();
     setMessages(prev => [...prev, {
       id: progressId,
@@ -2212,6 +2275,8 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
       setMessages(prev => prev.filter(m => m.id !== progressId));
       if (applyPreviewFollowUps(res, intentText)) {
         setGenerating(false);
+setGeneratingPlaybook(false);
+        setGeneratingPlaybook(false);
         return;
       }
       // Hard authoritative override before opening Playbook Studio:
@@ -2300,6 +2365,7 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
     }
     setSelectedInterfacesByDevice({});
     setGenerating(false);
+    setGeneratingPlaybook(false);
   }, [
     interfaceDisambiguation,
     selectedInterfacesByDevice,
@@ -2385,6 +2451,74 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
     const baseText = input.trim();
     if (!baseText && attachedFiles.length === 0) return;
     if (isGenerating) return;
+    const hasUpload = attachedFiles.length > 0;
+
+    if (quotedSelection) {
+      if (!baseText) return;
+      setCommandHistory((prev) => {
+        if (prev[prev.length - 1] === baseText) return prev;
+        const next = [...prev, baseText];
+        return next.length > 100 ? next.slice(next.length - 100) : next;
+      });
+      setCommandHistoryIndex(-1);
+      historyDraftBeforeNavigationRef.current = '';
+      setInput('');
+      setAttachedFiles([]);
+
+      const textToQa = quotedSelection.text;
+      const userContent = buildSelectionQuestionUserMessage(quotedSelection, baseText);
+      addMsg({ role: 'user', content: userContent });
+      setQuotedSelection(null);
+
+      const loadingId = uuidv4();
+      setMessages((prev) => [
+        ...prev,
+        { id: loadingId, role: 'assistant', content: 'Answering your question about the selected snippet…', isLoading: true, timestamp: Date.now() },
+      ]);
+      setGenerating(true);
+      setGeneratingPlaybook(false);
+      const ac = new AbortController();
+      abortControllerRef.current = ac;
+      try {
+        const res = await llmApi.qaPlaybook(textToQa, baseText, [], { signal: ac.signal });
+        abortControllerRef.current = null;
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === loadingId
+              ? {
+                  ...m,
+                  isLoading: false,
+                  content: res.answer || 'No answer was returned for the selected snippet.',
+                }
+              : m,
+          ),
+        );
+      } catch (err: unknown) {
+        abortControllerRef.current = null;
+        const isAbort = err instanceof DOMException && err.name === 'AbortError';
+        if (isAbort) {
+          setMessages((prev) => prev.filter((m) => m.id !== loadingId));
+          addMsg({ role: 'assistant', content: 'The question was cancelled by the user.' });
+        } else {
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === loadingId
+                ? {
+                    ...m,
+                    isLoading: false,
+                    isError: true,
+                    content: `❌ Failed to answer the question about the selected snippet.\n\n${describeError(err, 'Unable to reach the explanation service.')}`,
+                  }
+                : m,
+            ),
+          );
+        }
+      } finally {
+        setGenerating(false);
+        setGeneratingPlaybook(false);
+      }
+      return;
+    }
 
     if (baseText) {
       setCommandHistory((prev) => {
@@ -2425,6 +2559,7 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
           catch { tplParams = {}; }
         }
 
+        setGeneratingPlaybook(true);
         const result = await ansibleApi.createFromTemplate({
           vendor: tplVendor,
           feature: tplFeature,
@@ -2511,6 +2646,7 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
         }
       } finally {
         setGenerating(false);
+        setGeneratingPlaybook(false);
       }
     } else {
       // ── Standard flow: run preview first to detect ambiguity ──
@@ -2539,6 +2675,7 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
         ));
       }, 1800);
       loadingPhaseTimeoutRef.current = [t1, t2];
+      setGeneratingPlaybook(!hasUpload);
       const { vendor, feature, params: lightParams } = parseIntent(text);
       const initialHosts = safeParsedHostsForPreview(text);
       const hasLight = lightParams && Object.keys(lightParams).length > 0;
@@ -2563,6 +2700,7 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
         setMessages(prev => prev.filter(m => m.id !== loadingId));
         setGenerating(false);
         if (applyPreviewFollowUps(res, text)) {
+          setGeneratingPlaybook(false);
           return;
         }
         // No disambiguation: show reasoning / open studio below.
@@ -2618,6 +2756,7 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
             content: `**Validation issues**\n\n${valErr.join('\n')}`,
           });
           setGenerating(false);
+          setGeneratingPlaybook(false);
           return;
         }
         previewResultForStudio = res as Record<string, unknown>;
@@ -2631,16 +2770,30 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
           addMsg({ role: 'assistant', content: 'The generation was cancelled by the user.' });
         }
         setGenerating(false);
+        setGeneratingPlaybook(false);
         return;
       }
       setGenerating(false);
+      setGeneratingPlaybook(false);
       if (previewResultForStudio) {
         setStudioInitialPreview(previewResultForStudio as any);
         setStudioIntent(text);
         setStudioOpen(true);
       }
     }
-  }, [input, isGenerating, addMsg, onPlaybookReady, attachedFiles, ansibleModel, parseIntent, applyPreviewFollowUps, createPreviewDialogArtifact]);
+  }, [
+    input,
+    isGenerating,
+    addMsg,
+    onPlaybookReady,
+    attachedFiles,
+    ansibleModel,
+    parseIntent,
+    applyPreviewFollowUps,
+    createPreviewDialogArtifact,
+    quotedSelection,
+    buildSelectionQuestionUserMessage,
+  ]);
 
   const submitDisambiguation = useCallback(async () => {
     if (!disambiguation) return;
@@ -2655,6 +2808,7 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
     setDisambiguation(null);
     setMessages(prev => prev.filter(m => m.id !== msgId));
     setGenerating(true);
+    setGeneratingPlaybook(true);
     const loadingId = uuidv4();
     const ac = new AbortController();
     abortControllerRef.current = ac;
@@ -2682,6 +2836,7 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
       setMessages(prev => prev.filter(m => m.id !== loadingId));
       if (applyPreviewFollowUps(res, clarifiedText)) {
         setGenerating(false);
+        setGeneratingPlaybook(false);
         return;
       }
       const valErr = (res as { parsed_intent?: { validation_errors?: string[] } })?.parsed_intent?.validation_errors;
@@ -2706,6 +2861,7 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
       }
     }
     setGenerating(false);
+    setGeneratingPlaybook(false);
   }, [
     disambiguation,
     disambiguationChoice,
@@ -2727,6 +2883,7 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
     loadingPhaseTimeoutRef.current = [];
     setMessages(prev => prev.filter(m => !(m as AnsibleMessage & { isLoading?: boolean }).isLoading));
     addMsg({ role: 'assistant', content: 'The generation was cancelled by the user.' });
+    setGeneratingPlaybook(false);
     setGenerating(false);
   }, [addMsg]);
 
@@ -2872,7 +3029,7 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
       onDragOver={e => e.preventDefault()}
       onDrop={handlePanelDrop}
     >
-      {isGenerating && (
+      {isGeneratingPlaybook && (
         <PremiumLoaderOverlay
           type="ai"
           message="Synthesizing Playbook"
@@ -4284,6 +4441,7 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
                                     timestamp: Date.now(),
                                   }]);
                                   setGenerating(true);
+                                  setGeneratingPlaybook(true);
                                   const ac = new AbortController();
                                   abortControllerRef.current = ac;
                                   try {
@@ -4345,6 +4503,7 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
                                     setMessages(prev => prev.filter(m => m.id !== generatingId));
                                     if (applyPreviewFollowUps(res, intentText)) {
                                       setGenerating(false);
+setGeneratingPlaybook(false);
                                       return;
                                     }
                                     const valErr = (res as { parsed_intent?: { validation_errors?: string[] } })?.parsed_intent?.validation_errors;
@@ -4369,6 +4528,7 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
                                     }
                                   }
                                   setGenerating(false);
+                                  setGeneratingPlaybook(false);
                                 }}
                               >
                                 Submit
@@ -4478,6 +4638,35 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
         {/* Input box wrapper */}
         <div className="rounded-md border border-base-300 bg-base-300 relative focus-within:border-primary/70 transition-colors">
 
+          {quotedSelection && (
+            <div className="px-3 pt-3 pb-2 border-b border-base-content/5">
+              <div className="flex flex-col gap-2 rounded-lg border border-primary/25 bg-base-300/40 px-3 py-2">
+                {/* Row 1: Header */}
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-1.5">
+                    <MessageSquareQuote className="w-4 h-4 text-primary shrink-0" />
+                    <span className="text-xs font-semibold text-primary">
+                      Quoted:
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    className="btn btn-ghost btn-xs btn-square opacity-70 hover:opacity-100"
+                    onClick={() => setQuotedSelection(null)}
+                    aria-label="Clear quoted selection"
+                    title="Clear quoted selection"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+                {/* Row 2: Code Snippet */}
+                <div className="max-h-36 overflow-y-auto overflow-x-auto whitespace-pre rounded border border-base-300 bg-base-100 p-2.5 text-xs font-mono text-base-content shadow-inner">
+                  {quotedSelection.text}
+                </div>
+              </div>
+            </div>
+          )}
+
           {/* Attached file chips */}
           {attachedFiles.length > 0 && (
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, padding: '6px 8px 0' }}>
@@ -4515,7 +4704,13 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
           <div className="p-2 pb-0">
             <textarea
               ref={textareaRef}
-              placeholder={attachedFiles.length ? 'Add a message or send file as-is…' : 'Ask Ansible AI or drop a file…'}
+              placeholder={
+                quotedSelection
+                  ? 'Ask about this quoted snippet…'
+                  : attachedFiles.length
+                    ? 'Add a message or send file as-is…'
+                    : 'Ask Ansible AI or drop a file…'
+              }
               value={input}
               onChange={e => {
                 setInput(e.target.value);
@@ -4538,8 +4733,9 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
               <button
                 type="button"
                 onClick={() => fileInputRef.current?.click()}
-                title="Attach File (📎)"
-                className="btn btn-ghost btn-xs btn-square opacity-60 hover:opacity-100 hover:text-primary"
+                title={quotedSelection ? 'Clear the quoted selection to attach files' : 'Attach file'}
+                disabled={Boolean(quotedSelection)}
+                className="btn btn-ghost btn-xs btn-square opacity-60 hover:opacity-100 hover:text-primary disabled:cursor-not-allowed disabled:opacity-30"
               >
                 <Paperclip className="w-4 h-4" />
               </button>
@@ -4623,7 +4819,7 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
                   type="button"
                   onClick={handleStop}
                   title="Stop generation"
-                  className="btn btn-ghost btn-xs btn-square text-error hover:bg-error/10"
+                  className="btn btn-error btn-xs btn-circle text-error-content hover:brightness-110 flex items-center justify-center shrink-0"
                 >
                   <Square className="w-3.5 h-3.5 fill-current" />
                 </button>
@@ -4631,15 +4827,16 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
                 <button
                   type="button"
                   onClick={handleSend}
-                  disabled={!input.trim() && attachedFiles.length === 0}
-                  title="Send (Enter)"
-                  className={`btn btn-xs btn-square rounded-lg transition-all ${
-                    (input.trim() || attachedFiles.length > 0)
+                  disabled={quotedSelection ? !input.trim() : (!input.trim() && attachedFiles.length === 0)}
+                  title={quotedSelection ? 'Ask about the quoted snippet' : 'Send (Enter)'}
+                  className={`btn btn-xs rounded-lg transition-all ${
+                    (quotedSelection ? input.trim() : (input.trim() || attachedFiles.length > 0))
                       ? 'btn-primary shadow-sm'
                       : 'btn-ghost text-primary cursor-not-allowed'
                   }`}
                 >
                   <Send className="w-3.5 h-3.5" />
+                  {quotedSelection ? <span>Ask</span> : null}
                 </button>
               )}
             </div>
