@@ -6,10 +6,11 @@ import json
 import logging
 import os
 import socket
+import subprocess
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
@@ -115,7 +116,12 @@ NEW_FETCH_FILE = os.path.join(TOPOLOGY_SAVE_DIR, "new_fetch.json")
 
 CRAWL_INTERVAL_SECONDS = 300  # 5 minutes
 CRAWL_WORKERS = int(os.getenv("CRAWL_WORKERS", "6"))
-REALTIME_PULSE_SECONDS = max(5, int(os.getenv("REALTIME_PULSE_SECONDS", "20")))
+REALTIME_PULSE_SECONDS = max(2, min(10, int(os.getenv("REALTIME_PULSE_SECONDS", "10"))))
+REALTIME_FAST_PROBE_TIMEOUT_MS = max(200, int(os.getenv("REALTIME_FAST_PROBE_TIMEOUT_MS", "800")))
+REALTIME_FAST_PROBE_WORKERS = max(4, int(os.getenv("REALTIME_FAST_PROBE_WORKERS", "64")))
+CRAWL_REACHABILITY_GATE = os.getenv("CRAWL_REACHABILITY_GATE", "true").strip().lower() in {
+    "1", "true", "yes", "on"
+}
 
 # Seeds & credentials from environment (no hardcoded secrets)
 CRAWL_SEEDS: List[str] = [
@@ -153,6 +159,7 @@ _current_topology_json: Optional[str] = None
 _previous_topology_dict: Optional[dict] = None
 _topology_lock = asyncio.Lock()
 _crawl_run_lock = asyncio.Lock()
+_fast_probe_lock = asyncio.Lock()
 _last_crawl_finished_at_monotonic: float = 0.0
 
 # Shared instances promoted to module scope so run_crawl_and_broadcast
@@ -204,6 +211,284 @@ mgr = ConnectionManager()
 # ----------------------
 # Crawler Helpers
 # ----------------------
+def _ping_ip(ip_addr: str, timeout_ms: int = REALTIME_FAST_PROBE_TIMEOUT_MS) -> bool:
+    ip_addr = str(ip_addr or "").strip()
+    if not ip_addr:
+        return False
+
+    if os.name == "nt":
+        cmd = ["ping", "-n", "1", "-w", str(timeout_ms), ip_addr]
+    else:
+        timeout_seconds = max(1, int((timeout_ms + 999) / 1000))
+        cmd = ["ping", "-c", "1", "-W", str(timeout_seconds), ip_addr]
+
+    try:
+        completed = subprocess.run(
+            cmd,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=max(1.0, (timeout_ms / 1000.0) + 0.75),
+            check=False,
+        )
+        return completed.returncode == 0
+    except Exception:
+        return False
+
+
+def _tcp_port_open(ip_addr: str, port: int = 22, timeout_ms: int = REALTIME_FAST_PROBE_TIMEOUT_MS) -> bool:
+    ip_addr = str(ip_addr or "").strip()
+    if not ip_addr:
+        return False
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.settimeout(max(0.1, timeout_ms / 1000.0))
+    try:
+        return sock.connect_ex((ip_addr, int(port or 22))) == 0
+    except Exception:
+        return False
+    finally:
+        sock.close()
+
+
+def _probe_ip_reachable(ip_addr: str, ssh_port: int = 22) -> Tuple[bool, str]:
+    if _ping_ip(ip_addr):
+        return True, "ping"
+    if _tcp_port_open(ip_addr, ssh_port):
+        return True, "tcp_ssh"
+    return False, "unreachable"
+
+
+def _probe_reachable_ips(ip_ports: Dict[str, int]) -> Dict[str, Tuple[bool, str]]:
+    if not ip_ports:
+        return {}
+    results: Dict[str, Tuple[bool, str]] = {}
+    workers = min(max(4, REALTIME_FAST_PROBE_WORKERS), max(4, len(ip_ports)))
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = {
+            pool.submit(_probe_ip_reachable, ip, port): ip
+            for ip, port in ip_ports.items()
+        }
+        for fut in as_completed(futures):
+            ip = futures[fut]
+            try:
+                results[ip] = fut.result()
+            except Exception:
+                results[ip] = (False, "unreachable")
+    return results
+
+
+def _node_for_existing_ip(nodes: Dict[str, Any], hostname: str, mgmt_ip: str) -> Optional[Dict[str, Any]]:
+    if hostname in nodes and isinstance(nodes[hostname], dict):
+        return dict(nodes[hostname])
+    for data in nodes.values():
+        if not isinstance(data, dict):
+            continue
+        if str(data.get("mgmt_ip") or data.get("ip") or "").strip() == mgmt_ip:
+            return dict(data)
+    return None
+
+
+def build_fast_reachability_topology() -> dict:
+    """Build a quick live snapshot from inventory reachability before SSH/LLDP."""
+    db = _db
+    if db is None:
+        return {"timestamp": datetime.now().isoformat(), "seeds": [], "nodes": {}}
+
+    try:
+        devices = db.get_all_devices()
+    except Exception as exc:
+        logger.warning("Fast reachability probe could not read inventory: %s", exc)
+        return {"timestamp": datetime.now().isoformat(), "seeds": [], "nodes": {}}
+
+    device_by_ip: Dict[str, Any] = {}
+    ip_ports: Dict[str, int] = {}
+    for dev in devices:
+        mgmt_ip = str(getattr(dev, "management_ip", "") or "").strip()
+        if not mgmt_ip:
+            continue
+        device_by_ip[mgmt_ip] = dev
+        try:
+            ip_ports[mgmt_ip] = int(getattr(dev, "ssh_port", None) or 22)
+        except Exception:
+            ip_ports[mgmt_ip] = 22
+
+    probe_results = _probe_reachable_ips(ip_ports)
+    reachable_ips = {
+        ip for ip, (ok, _method) in probe_results.items() if ok
+    }
+
+    current_nodes: Dict[str, Any] = {}
+    if _current_topology_dict and isinstance(_current_topology_dict.get("nodes"), dict):
+        current_nodes = _current_topology_dict.get("nodes") or {}
+
+    ts = datetime.now().isoformat(timespec="seconds")
+    nodes: Dict[str, Dict[str, Any]] = {}
+    for ip in sorted(reachable_ips):
+        dev = device_by_ip.get(ip)
+        if not dev:
+            continue
+        hostname = str(getattr(dev, "hostname", "") or ip).strip()
+        if not hostname:
+            hostname = ip
+
+        existing = _node_for_existing_ip(current_nodes, hostname, ip) or {}
+        iface_dict: Dict[str, str] = {}
+        try:
+            dev_id = getattr(dev, "id", None)
+            if dev_id is not None:
+                for iface in db.get_interfaces_for_device(int(dev_id)):
+                    iface_name = str(getattr(iface, "name", "") or "").strip()
+                    iface_ip = str(getattr(iface, "ip_address", "") or "").strip()
+                    if iface_name and iface_ip:
+                        iface_dict[iface_name] = iface_ip
+        except Exception:
+            pass
+
+        existing_ifaces = existing.get("interfaceList")
+        if isinstance(existing_ifaces, list):
+            for row in existing_ifaces:
+                if isinstance(row, dict):
+                    for iface_name, iface_ip in row.items():
+                        if iface_name and iface_ip:
+                            iface_dict.setdefault(str(iface_name), str(iface_ip))
+
+        mgmt_iface = str(getattr(dev, "management_interface", "") or "Management").strip() or "Management"
+        iface_dict.setdefault(mgmt_iface, ip)
+
+        node = dict(existing)
+        node.update({
+            "id": hostname,
+            "hostname": hostname,
+            "name": hostname,
+            "mgmt_ip": ip,
+            "interfaceList": [iface_dict],
+            "reachable": True,
+            "reachable_by": probe_results.get(ip, (True, "probe"))[1],
+            "discovery_status": "reachable_pending_lldp",
+            "topology_source": "reachability_probe",
+            "last_seen": ts,
+        })
+        node.pop("down", None)
+        nodes[hostname] = node
+
+    # Keep only links whose endpoints are reachable in this fast snapshot.
+    for hostname, node in nodes.items():
+        connected = node.get("connectedNode") or []
+        if isinstance(connected, list):
+            node["connectedNode"] = [n for n in connected if n in nodes]
+        edge = node.get("edgeLink") or {}
+        if isinstance(edge, dict):
+            node["edgeLink"] = {
+                iface: link
+                for iface, link in edge.items()
+                if isinstance(link, dict) and link.get("remote_node") in nodes
+            }
+        else:
+            node["edgeLink"] = {}
+
+    logger.info(
+        "Fast reachability probe: %d/%d inventory device(s) reachable",
+        len(nodes),
+        len(ip_ports),
+    )
+    return {"timestamp": ts, "seeds": sorted(ip_ports.keys()), "nodes": nodes, "source": "reachability_probe"}
+
+
+async def _commit_topology_snapshot(
+    new_topo: dict,
+    *,
+    trigger: str,
+    persist_crawl_result: bool = False,
+    embed_state: bool = False,
+    refresh_agent_context: bool = True,
+) -> bool:
+    global _current_topology_dict, _current_topology_json, _previous_topology_dict
+    loop = asyncio.get_running_loop()
+
+    async with _topology_lock:
+        if _current_topology_dict:
+            save_topology_to_file(_current_topology_dict, PREVIOUS_TOPOLOGY_FILE, sort_keys=True)
+            _previous_topology_dict = _current_topology_dict
+        else:
+            _previous_topology_dict = None
+
+        _current_topology_dict = new_topo
+
+        if _db is not None:
+            _db.update_topology(new_topo)
+            if persist_crawl_result:
+                try:
+                    save_crawl_result(_db, new_topo, triggered_by=trigger)
+                except Exception as e:
+                    logger.warning("save_crawl_result failed: %s", e)
+
+        save_topology_to_file(_current_topology_dict, CURRENT_TOPOLOGY_FILE, sort_keys=True)
+        _current_topology_json = json.dumps(_current_topology_dict, sort_keys=True)
+
+        if _retrieval is not None:
+            try:
+                _retrieval.remember_topology(new_topo)
+            except Exception as exc:
+                logger.debug("Could not update retrieval topology memory: %s", exc)
+
+        if refresh_agent_context and _agent is not None:
+            _agent.refresh_context()
+            logger.debug("Agent RAG context refreshed after topology update")
+
+        if embed_state and _state_embedder is not None:
+            try:
+                embed_result = await loop.run_in_executor(
+                    None, _state_embedder.embed_crawl_result, new_topo, _previous_topology_dict
+                )
+                logger.info("Auto-embedded network state: %s", embed_result.get("status"))
+            except Exception as e:
+                logger.warning("Network state auto-embedding failed: %s", e)
+
+        previous_canon = canonical_topology(_previous_topology_dict) if _previous_topology_dict else None
+        current_canon = canonical_topology(_current_topology_dict) if _current_topology_dict else canonical_topology({})
+
+        previous_json = json.dumps(previous_canon, sort_keys=True) if previous_canon else None
+        current_json = json.dumps(current_canon, sort_keys=True)
+        topology_changed = (previous_json is None) or (current_json != previous_json)
+
+        if topology_changed:
+            logger.info("Topology changed. Broadcasting update.")
+            event_msg = {
+                "type": "topology_update",
+                "timestamp": new_topo.get("timestamp"),
+                "trigger": trigger,
+                "full_topology": new_topo,
+            }
+            await mgr.broadcast(json.dumps(event_msg, sort_keys=True))
+        else:
+            logger.info("Topology unchanged. Not broadcasting.")
+
+        return topology_changed
+
+
+async def run_fast_reachability_and_broadcast(trigger: str = "reachability_probe") -> bool:
+    if _fast_probe_lock.locked():
+        logger.info("Skipping fast reachability probe (trigger=%s): probe already running", trigger)
+        return False
+
+    async with _fast_probe_lock:
+        loop = asyncio.get_running_loop()
+        try:
+            fast_topo = await loop.run_in_executor(None, build_fast_reachability_topology)
+        except Exception as exc:
+            logger.warning("Fast reachability probe failed: %s", exc)
+            return False
+        if not fast_topo.get("nodes"):
+            logger.info("Fast reachability probe found no reachable inventory devices")
+            return False
+        return await _commit_topology_snapshot(
+            fast_topo,
+            trigger=trigger,
+            persist_crawl_result=False,
+            embed_state=False,
+            refresh_agent_context=False,
+        )
+
+
 def do_sync_crawl() -> dict:
     """Run BFS topology discovery using env-configured seeds & credentials.
 
@@ -233,12 +518,17 @@ def do_sync_crawl() -> dict:
 
     db_seed_count = 0
     db_cred_overrides: Dict[str, Tuple[str, str]] = {}
+    db_ssh_ports: Dict[str, int] = {}
     if _db is not None:
         try:
             for dev in _db.get_all_devices():
                 mgmt_ip = str(getattr(dev, "management_ip", "") or "").strip()
                 if not mgmt_ip:
                     continue
+                try:
+                    db_ssh_ports[mgmt_ip] = int(getattr(dev, "ssh_port", None) or 22)
+                except Exception:
+                    db_ssh_ports[mgmt_ip] = 22
                 if mgmt_ip not in seen_seed_ips:
                     seen_seed_ips.add(mgmt_ip)
                     effective_seeds.append(mgmt_ip)
@@ -355,6 +645,21 @@ def do_sync_crawl() -> dict:
                 )
             else:
                 logger.debug("Subnet discovery scanned %d hosts and found no new SSH targets", len(discovery_targets))
+
+    if CRAWL_REACHABILITY_GATE and effective_seeds:
+        ip_ports = {ip: db_ssh_ports.get(ip, 22) for ip in effective_seeds}
+        probe_results = _probe_reachable_ips(ip_ports)
+        reachable_seeds = [
+            ip for ip in effective_seeds
+            if probe_results.get(ip, (False, "unreachable"))[0]
+        ]
+        skipped = len(effective_seeds) - len(reachable_seeds)
+        if skipped:
+            logger.info(
+                "Reachability gate skipped %d unreachable seed(s) before SSH/LLDP crawl",
+                skipped,
+            )
+        effective_seeds = reachable_seeds
 
     # Prefer DB/NetBox-synced per-device credentials; env overrides are fallback.
     effective_cred_overrides = dict(_CRAWL_CRED_OVERRIDES)
@@ -581,7 +886,9 @@ def save_topology_to_file(topo: dict, filepath: str, sort_keys: bool = False):
         logger.error(f"Failed to save topology to {filepath}: {e}")
 
 async def run_crawl_and_broadcast(trigger: str = "periodic"):
-    global _current_topology_dict, _current_topology_json, _previous_topology_dict, _last_crawl_finished_at_monotonic
+    global _last_crawl_finished_at_monotonic
+    await run_fast_reachability_and_broadcast(trigger=f"{trigger}:reachability")
+
     if _crawl_run_lock.locked():
         logger.info("Skipping crawl (trigger=%s): another crawl is already running", trigger)
         return
@@ -604,67 +911,13 @@ async def run_crawl_and_broadcast(trigger: str = "periodic"):
             return
 
         save_topology_to_file(new_topo, NEW_FETCH_FILE, sort_keys=True)
-
-        async with _topology_lock:
-            # 1. Archive current
-            if _current_topology_dict:
-                save_topology_to_file(_current_topology_dict, PREVIOUS_TOPOLOGY_FILE, sort_keys=True)
-                _previous_topology_dict = _current_topology_dict
-            else:
-                _previous_topology_dict = None
-
-            # 2. Update current
-            _current_topology_dict = new_topo
-            save_topology_to_file(_current_topology_dict, CURRENT_TOPOLOGY_FILE, sort_keys=True)
-            _current_topology_json = json.dumps(_current_topology_dict, sort_keys=True)
-            if _retrieval is not None:
-                try:
-                    _retrieval.remember_topology(new_topo)
-                except Exception as exc:
-                    logger.debug("Could not update retrieval topology memory: %s", exc)
-
-            # 2b. Keep the agent's RAG cache in sync with every crawl result
-            if _db is not None:
-                _db.update_topology(new_topo)
-                # Persist devices + links to SQL (enriched with model/version/serial)
-                try:
-                    save_crawl_result(_db, new_topo, triggered_by=trigger)
-                except Exception as e:
-                    logger.warning("save_crawl_result failed: %s", e)
-            if _agent is not None:
-                _agent.refresh_context()
-                logger.debug("Agent RAG context refreshed after crawl")
-
-            # 2c. Phase 9 - Auto-embed network state into ChromaDB
-            if _state_embedder is not None:
-                try:
-                    embed_result = await loop.run_in_executor(
-                        None, _state_embedder.embed_crawl_result, new_topo, _previous_topology_dict
-                    )
-                    logger.info("Auto-embedded network state: %s", embed_result.get("status"))
-                except Exception as e:
-                    logger.warning("Network state auto-embedding failed: %s", e)
-
-            # 3. Detect changes
-            previous_canon = canonical_topology(_previous_topology_dict) if _previous_topology_dict else None
-            current_canon = canonical_topology(_current_topology_dict) if _current_topology_dict else canonical_topology({})
-
-            previous_json = json.dumps(previous_canon, sort_keys=True) if previous_canon else None
-            current_json = json.dumps(current_canon, sort_keys=True)
-
-            topology_changed = (previous_json is None) or (current_json != previous_json)
-
-            if topology_changed:
-                logger.info("Topology changed. Broadcasting update.")
-                event_msg = {
-                    "type": "topology_update",
-                    "timestamp": new_topo.get("timestamp"),
-                    "trigger": trigger,
-                    "full_topology": new_topo
-                }
-                await mgr.broadcast(json.dumps(event_msg, sort_keys=True))
-            else:
-                logger.info("Topology unchanged. Not broadcasting.")
+        topology_changed = await _commit_topology_snapshot(
+            new_topo,
+            trigger=trigger,
+            persist_crawl_result=True,
+            embed_state=True,
+            refresh_agent_context=True,
+        )
 
         _last_crawl_finished_at_monotonic = time.monotonic()
         refresh_state.record_success(

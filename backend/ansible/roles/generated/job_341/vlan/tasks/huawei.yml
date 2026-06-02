@@ -1,0 +1,16 @@
+---
+- name: Ensure VLAN 43 exists
+  community.network.ce_config:
+    lines:
+      - 'vlan {{ vlan_id }} name {{ vlan_name }}'
+    parents:
+      - 'vlan {{ vlan_id }}'
+
+- name: Configure access ports on interfaces
+  community.network.ce_config:
+    lines:
+      - 'interface {{ item.name }}
+        switchport access vlan {{ item.access_vlan }}'
+    parents:
+      - 'interface {{ item.name }}'
+    loop: '{{ interfaces }}'

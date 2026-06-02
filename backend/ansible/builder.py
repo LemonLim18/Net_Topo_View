@@ -21,7 +21,7 @@ import yaml
 from pathlib import Path
 from typing import Any, Optional, Sequence
 
-from ansible.bundle_artifacts import AnsibleArtifactBundle, AnsibleArtifactFile, parse_bundle_response
+from ansible.bundle_artifacts import AnsibleArtifactBundle, AnsibleArtifactFile, normalize_bundle, parse_bundle_response
 from config_engine.safety import validate_playbook_yaml
 from config_engine.safety import validate_playbook_bundle
 
@@ -217,7 +217,12 @@ class PlaybookBuilder:
             )
 
         try:
-            return parse_bundle_response(raw)
+            bundle = parse_bundle_response(raw)
+            return self._normalize_generated_role_bundle(
+                bundle=bundle,
+                intent=intent,
+                run_id=run_id,
+            )
         except (ValueError, json.JSONDecodeError) as e:
             logger.warning(
                 "Bundle JSON parse failed (%s), falling back to single-playbook extraction. "
@@ -454,6 +459,85 @@ class PlaybookBuilder:
                 "feature": feature,
             },
         )
+
+    def _normalize_generated_role_bundle(
+        self,
+        *,
+        bundle: AnsibleArtifactBundle,
+        intent: dict,
+        run_id: Optional[str],
+    ) -> AnsibleArtifactBundle:
+        """
+        Fill structural role-bundle gaps that LLMs commonly omit.
+
+        This preserves all generated task content. Missing vendor task files are
+        placeholders, and missing tasks/main.yml becomes the standard dispatcher.
+        Safety/module validation still decides whether the resulting bundle is
+        semantically acceptable.
+        """
+        run_suffix = str(run_id or "unknown")
+        feature = str(intent.get("feature") or "generated").strip().lower() or "generated"
+        role_root = self._infer_generated_role_root(bundle, run_suffix=run_suffix, feature=feature)
+        existing_paths = {artifact.normalized_path() for artifact in bundle.files}
+
+        main_path = f"{role_root}/tasks/main.yml"
+        if main_path not in existing_paths:
+            bundle.files.append(
+                AnsibleArtifactFile(
+                    path=main_path,
+                    content=self._render_dispatch_tasks(""),
+                    kind="task",
+                )
+            )
+            existing_paths.add(main_path)
+
+        placeholder_tasks = {
+            "cisco.yml": self._render_placeholder_vendor_task("Cisco IOS"),
+            "huawei.yml": self._render_placeholder_vendor_task("Huawei VRP"),
+            "juniper.yml": self._render_placeholder_vendor_task("Juniper Junos"),
+        }
+        for filename, content in placeholder_tasks.items():
+            task_path = f"{role_root}/tasks/{filename}"
+            if task_path not in existing_paths:
+                bundle.files.append(
+                    AnsibleArtifactFile(path=task_path, content=content, kind="task")
+                )
+                existing_paths.add(task_path)
+
+        return normalize_bundle(bundle)
+
+    @staticmethod
+    def _infer_generated_role_root(
+        bundle: AnsibleArtifactBundle,
+        *,
+        run_suffix: str,
+        feature: str,
+    ) -> str:
+        entrypoint = bundle.file_map().get(bundle.normalized_entrypoint(), "")
+        try:
+            parsed = yaml.safe_load(_mask_jinja2_for_yaml_parse(_normalize_literal_j2_for_parse(entrypoint)))
+        except Exception:
+            parsed = None
+        if isinstance(parsed, list):
+            for play in parsed:
+                if not isinstance(play, dict):
+                    continue
+                for role in play.get("roles") or []:
+                    role_name = ""
+                    if isinstance(role, str):
+                        role_name = role
+                    elif isinstance(role, dict):
+                        role_name = str(role.get("role") or "")
+                    role_name = role_name.strip().replace("\\", "/").strip("/")
+                    if role_name:
+                        return f"roles/{role_name}" if not role_name.startswith("roles/") else role_name
+
+        for artifact in bundle.files:
+            path = artifact.normalized_path()
+            if "/tasks/" in path:
+                return path.split("/tasks/", 1)[0]
+
+        return f"roles/generated/job_{run_suffix}/{feature}"
 
     def _parse_playbook_loose(self, playbook_yaml: str) -> list[dict[str, Any]]:
         try:

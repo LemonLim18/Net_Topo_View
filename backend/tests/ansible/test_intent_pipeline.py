@@ -1125,6 +1125,49 @@ def test_reference_fill_huawei_vlan_keeps_interface_name_normalization():
     assert "parents: interface GE1/0/2" in rendered
 
 
+def test_reference_fill_multi_vendor_vlan_keeps_interfaces_per_target_vendor():
+    intent = {
+        "target_hosts": ["Juniper_Acc_4", "Huawei_Acc_2", "Cisco_Acc_1"],
+        "params": {
+            "vlan_id": 43,
+            "vlan_name": "Mathematics",
+            "interfaces": [
+                {"name": "Juniper_Acc_4:ge-0/0/3", "mode": "access", "access_vlan": 43},
+                {"name": "Huawei_Acc_2:GigabitEthernet1/0/2", "mode": "access", "access_vlan": 43},
+                {"name": "Cisco_Acc_1:Ethernet0/2", "mode": "access", "access_vlan": 43},
+            ],
+        },
+    }
+    planning_context = {
+        "devices": [
+            {"hostname": "Juniper_Acc_4", "vendor": "juniper_junos"},
+            {"hostname": "Huawei_Acc_2", "vendor": "huawei_vrp"},
+            {"hostname": "Cisco_Acc_1", "vendor": "cisco_ios"},
+        ]
+    }
+
+    rendered = fill_playbook_from_reference(
+        "vlan",
+        ["cisco_ios", "huawei_vrp", "juniper_junos"],
+        intent,
+        planning_context=planning_context,
+    )
+
+    assert isinstance(rendered, str) and rendered
+    assert "cisco.ios.ios_vlans" in rendered
+    assert "community.network.ce_config" in rendered
+    assert "juniper.device.junos_vlans" in rendered
+    assert rendered.count("Configure Ethernet0/2 as access VLAN 43") == 1
+    assert rendered.count("Configure GigabitEthernet1/0/2 as access VLAN 43") == 1
+    assert rendered.count("Configure ge-0/0/3 as access VLAN 43") == 1
+    assert 'inventory_hostname == "Cisco_Acc_1"' in rendered
+    assert 'inventory_hostname == "Huawei_Acc_2"' in rendered
+    assert 'inventory_hostname == "Juniper_Acc_4"' in rendered
+    assert "Cisco_Acc_1:Ethernet0/2" not in rendered
+    assert "Huawei_Acc_2:GigabitEthernet1/0/2" not in rendered
+    assert "Juniper_Acc_4:ge-0/0/3" not in rendered
+
+
 def test_reference_fill_ospf_cisco_renders_network_lines():
     intent = {
         "target_hosts": ["Acc_Cisco_2"],

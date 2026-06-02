@@ -360,7 +360,9 @@ const processTopologyData = (
             const ifaceList = (n as any).interfaceList;
             const hasInterfaces = Array.isArray(ifaceList)
                 && ifaceList.some((row: unknown) => !!row && typeof row === 'object' && Object.keys(row as Record<string, unknown>).length > 0);
-            return !down && hasInterfaces;
+            const reachable = Boolean((n as any).reachable)
+                || String((n as any).discovery_status || '').startsWith('reachable');
+            return !down && (hasInterfaces || reachable);
         })
         : rawNodes);
     const visibleNodeIds = new Set(nodes.map((n) => n.id));

@@ -1,0 +1,15 @@
+---
+- name: Ensure VLAN 43 exists
+  juniper.device.junos_vlans:
+    config:
+      - vlan_id: '{{ vlan_id }}'
+        name: '{{ vlan_name }}'
+        state: merged
+
+- name: Configure access ports on interfaces
+  juniper.device.junos_l2_interfaces:
+    config:
+      - name: '{{ item.name }}'
+        mode: access
+        access.vlan: '{{ item.access_vlan }}'
+    loop: '{{ interfaces }}'

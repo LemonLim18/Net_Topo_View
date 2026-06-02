@@ -194,10 +194,16 @@ def _normalize_intent_to_schema_shape(intent: Dict[str, Any]) -> Dict[str, Any]:
         for item in raw_ifaces:
             if isinstance(item, dict):
                 mode = "trunk" if str(item.get("mode") or "").strip().lower() == "trunk" else "access"
+                target_host, iface_name = _split_device_prefix_from_iface_name(
+                    str(item.get("name", "")).strip(),
+                    out["target_hosts"],
+                )
                 row: Dict[str, Any] = {
-                    "name": str(item.get("name", "")).strip(),
+                    "name": iface_name,
                     "mode": mode,
                 }
+                if target_host:
+                    row["target_host"] = target_host
                 av = item.get("access_vlan")
                 if av is not None and str(av).strip() != "":
                     try:
@@ -243,19 +249,20 @@ def _normalize_intent_to_schema_shape(intent: Dict[str, Any]) -> Dict[str, Any]:
                 interfaces.append(row)
             else:
                 # LLM sent interface name as string; use global mode and trunk_vlans
-                name = str(item).strip()
+                target_host, name = _split_device_prefix_from_iface_name(str(item).strip(), out["target_hosts"])
                 if not name:
                     continue
                 mode = "trunk" if global_mode == "trunk" else "access"
+                host_part = {"target_host": target_host} if target_host else {}
                 if mode == "trunk":
                     if allowed_list:
-                        interfaces.append({"name": name, "mode": "trunk", "allowed_vlans": allowed_list})
+                        interfaces.append({"name": name, "mode": "trunk", "allowed_vlans": allowed_list, **host_part})
                     elif vlan_id_for_default is not None:
-                        interfaces.append({"name": name, "mode": "trunk", "allowed_vlans": [vlan_id_for_default]})
+                        interfaces.append({"name": name, "mode": "trunk", "allowed_vlans": [vlan_id_for_default], **host_part})
                     else:
-                        interfaces.append({"name": name, "mode": "trunk"})
+                        interfaces.append({"name": name, "mode": "trunk", **host_part})
                 else:
-                    interfaces.append({"name": name, "mode": "access"})
+                    interfaces.append({"name": name, "mode": "access", **host_part})
         out["interfaces"] = [i for i in interfaces if i.get("name")]
     else:
         out["interfaces"] = []
@@ -323,19 +330,25 @@ def format_vlan_interface_reasoning_line(s: Dict[str, Any]) -> str:
     return f"  - **{iface}**: {mode}" + vlan_part + nv_part
 
 
-def _strip_device_prefix_from_iface_name(iface: str, hostnames: List[str]) -> str:
-    """Turn 'SW1:Gi0/1' into 'Gi0/1' when SW1 is a known target host (UI chip format)."""
+def _split_device_prefix_from_iface_name(iface: str, hostnames: List[str]) -> Tuple[Optional[str], str]:
+    """Turn 'SW1:Gi0/1' into ('SW1', 'Gi0/1') when SW1 is a known target host."""
     s = str(iface or "").strip()
     if ":" not in s:
-        return s
+        return None, s
     prefix, rest = s.split(":", 1)
     rest = rest.strip()
     if not rest:
-        return s
+        return None, s
     for h in hostnames:
         if h and prefix.strip().lower() == str(h).strip().lower():
-            return rest
-    return s
+            return str(h).strip(), rest
+    return None, s
+
+
+def _strip_device_prefix_from_iface_name(iface: str, hostnames: List[str]) -> str:
+    """Turn 'SW1:Gi0/1' into 'Gi0/1' when SW1 is a known target host (UI chip format)."""
+    _, stripped = _split_device_prefix_from_iface_name(iface, hostnames)
+    return stripped
 
 
 def _normalize_intent_to_interface_shape(intent: Dict[str, Any]) -> Dict[str, Any]:
@@ -664,6 +677,21 @@ def vendors_from_planning_context(planning_context: Optional[Dict[str, Any]]) ->
         if v and v not in seen:
             seen.add(v)
             out.append(v)
+    return out
+
+
+def host_vendor_map_from_planning_context(planning_context: Optional[Dict[str, Any]]) -> Dict[str, str]:
+    """Map inventory hostname to normalized vendor from planning context."""
+    if not planning_context:
+        return {}
+    out: Dict[str, str] = {}
+    for d in planning_context.get("devices") or []:
+        if not isinstance(d, dict):
+            continue
+        hostname = str(d.get("hostname") or "").strip()
+        vendor = normalize_vendor(d.get("vendor"))
+        if hostname and vendor:
+            out[hostname] = vendor
     return out
 
 
@@ -1189,6 +1217,17 @@ def get_template_vars(
     vlan_dict = normalized["vlan"]
     schema_interfaces = list(normalized.get("interfaces") or [])
     target_hosts_resolved = _target_hosts_from_intent(intent)
+    target_host_vendor_map = host_vendor_map_from_planning_context(planning_context)
+    if target_host_vendor_map:
+        enriched_interfaces: List[Dict[str, Any]] = []
+        for iface in schema_interfaces:
+            row = dict(iface)
+            target_host = str(row.get("target_host") or "").strip()
+            target_vendor = target_host_vendor_map.get(target_host)
+            if target_vendor:
+                row["target_vendor"] = target_vendor
+            enriched_interfaces.append(row)
+        schema_interfaces = enriched_interfaces
     schema_interfaces = _merge_trunk_allowed_with_planning(
         schema_interfaces, int(vlan_dict["id"]), planning_context, target_hosts_resolved
     )
@@ -1258,7 +1297,11 @@ def get_template_vars(
             if not name:
                 continue
             mode = "trunk" if str(i.get("mode") or "").strip().lower() == "trunk" else "access"
-            interfaces_config.append({"name": name, "mode": mode})
+            target_host = str(i.get("target_host") or "").strip()
+            host_part = {"target_host": target_host} if target_host else {}
+            target_vendor = str(i.get("target_vendor") or "").strip()
+            vendor_part = {"target_vendor": target_vendor} if target_vendor else {}
+            interfaces_config.append({"name": name, "mode": mode, **host_part, **vendor_part})
             if mode == "access":
                 access_vlan = i.get("access_vlan")
                 vid = str(access_vlan if access_vlan is not None else vlan_dict["id"]).strip()
@@ -1266,6 +1309,8 @@ def get_template_vars(
                     "name": name,
                     "mode": "access",
                     "access": {"vlan": vid},
+                    **host_part,
+                    **vendor_part,
                 })
             else:
                 allowed = i.get("allowed_vlans")
@@ -1292,6 +1337,8 @@ def get_template_vars(
                         "allowed_vlans": trunk_allowed,
                         **({"native_vlan": native_vlan_int} if native_vlan_int is not None else {}),
                     },
+                    **host_part,
+                    **vendor_part,
                 })
 
     params["interfaces_config"] = interfaces_config
@@ -1300,7 +1347,11 @@ def get_template_vars(
     params["interfaces_binding_mode"] = default_binding_mode or "access"
     params["interfaces_binding_trunk_allowed_vlans"] = default_trunk_allowed_vlans
     params["interfaces_binding_trunk_native_vlan"] = default_trunk_native_vlan
-    yaml_str = yaml.dump(interfaces_config_with_vlan, default_flow_style=False, sort_keys=False)
+    module_interfaces_config_with_vlan = [
+        {k: v for k, v in row.items() if k not in {"target_host", "target_vendor"}}
+        for row in interfaces_config_with_vlan
+    ]
+    yaml_str = yaml.dump(module_interfaces_config_with_vlan, default_flow_style=False, sort_keys=False)
     params["interfaces_config_yaml"] = "\n".join("          " + line for line in yaml_str.strip().splitlines())
     # Indented YAML for config: key — must be indented more than "config:" (8 spaces) so YAML parses as key value
     indent = "          "  # 10 spaces so value is under config:

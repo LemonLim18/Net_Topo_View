@@ -264,6 +264,81 @@ def test_build_bundle_draft_synthesizes_role_bundle_from_yaml_only_juniper_respo
     assert report["errors"] == []
 
 
+def test_build_bundle_draft_repairs_missing_role_dispatch_and_vendor_files():
+    payload = {
+        "entrypoint_path": "playbooks/generated/job_340/playbook.yml",
+        "files": [
+            {
+                "path": "playbooks/generated/job_340/playbook.yml",
+                "kind": "playbook",
+                "content": (
+                    "---\n"
+                    "- name: Configure VLAN and access ports\n"
+                    "  hosts: all\n"
+                    "  gather_facts: false\n"
+                    "  roles:\n"
+                    "    - generated/job_340/vlan\n"
+                ),
+            },
+            {
+                "path": "roles/generated/job_340/vlan/tasks/huawei.yml",
+                "kind": "task",
+                "content": (
+                    "- name: Huawei VLAN task\n"
+                    "  community.network.ce_config:\n"
+                    "    lines:\n"
+                    "      - vlan 43\n"
+                ),
+            },
+            {
+                "path": "roles/generated/job_340/vlan/tasks/juniper.yml",
+                "kind": "task",
+                "content": (
+                    "- name: Juniper VLAN task\n"
+                    "  juniper.device.junos_config:\n"
+                    "    lines:\n"
+                    "      - set vlans VLAN43 vlan-id 43\n"
+                ),
+            },
+        ],
+        "manifest": {"generator": "test"},
+    }
+    provider = _YamlOnlyProvider("```json\n" + json.dumps(payload) + "\n```")
+    builder = PlaybookBuilder(provider)
+
+    bundle = asyncio.run(
+        builder.build_bundle_draft(
+            intent={
+                "vendor": "multi_vendor",
+                "feature": "vlan",
+                "target_hosts": ["Cisco_Acc_1", "Huawei_Acc_2", "Juniper_Acc_4"],
+                "params": {"vlan_id": 43},
+            },
+            rag_context="",
+            kb_snippets=[],
+            run_id="340",
+        )
+    )
+
+    file_map = bundle.file_map()
+    assert "roles/generated/job_340/vlan/tasks/main.yml" in file_map
+    assert "roles/generated/job_340/vlan/tasks/cisco.yml" in file_map
+    assert "roles/generated/job_340/vlan/tasks/huawei.yml" in file_map
+    assert "roles/generated/job_340/vlan/tasks/juniper.yml" in file_map
+    assert "ansible.builtin.include_tasks: cisco.yml" in file_map["roles/generated/job_340/vlan/tasks/main.yml"]
+    assert "Cisco IOS not targeted by this request" in file_map["roles/generated/job_340/vlan/tasks/cisco.yml"]
+
+    report = builder.validate_bundle(
+        intent={
+            "vendor": "multi_vendor",
+            "feature": "vlan",
+            "target_hosts": ["Cisco_Acc_1", "Huawei_Acc_2", "Juniper_Acc_4"],
+        },
+        bundle=bundle,
+    )
+    assert not any("missing required role task file" in err.lower() for err in report["errors"])
+
+
 def test_plan_ansible_uses_reference_bundle_for_juniper_interface(tmp_path, monkeypatch):
     db = _FakeDb(tmp_path / "ansible_bundle.db")
     builder = _ReferenceFirstBundleBuilder()

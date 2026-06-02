@@ -3680,7 +3680,11 @@ async def plan_ansible(
     single_vendor_reference_target = len(reference_vendor_set) == 1 and reference_vendor_set.issubset(
         {"cisco_ios", "huawei_vrp", "juniper_junos"}
     )
-    if (not use_bundle) or single_vendor_reference_target:
+    # VLAN generation is reference-backed even though VLAN also supports artifact bundles.
+    # The preview may select the multi-vendor reference template; keep the final
+    # generation path aligned with that preview instead of falling through to an
+    # LLM-generated bundle that can drift into a single-vendor playbook.
+    if (not use_bundle) or single_vendor_reference_target or is_vlan:
         template_filled = fill_playbook_from_reference(
             feature=req.feature or "",
             vendors=vendors,
@@ -3716,7 +3720,7 @@ async def plan_ansible(
             },
         )
 
-    if template_filled is not None and use_bundle and not single_vendor_reference_target:
+    if template_filled is not None and use_bundle and not single_vendor_reference_target and not is_vlan:
         reference_bundle = builder.build_bundle_from_playbook(
             intent=intent,
             playbook_yaml=template_filled,

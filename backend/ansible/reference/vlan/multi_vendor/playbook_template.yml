@@ -50,12 +50,31 @@
         state: merged
       when: inventory_hostname in groups.get('vendor_cisco_ios', [])
 {% elif interfaces_config_with_vlan | length > 0 %}
-    - name: Configure interfaces (Cisco IOS)
+{% for iface in interfaces_config_with_vlan %}
+{% if iface.target_vendor is not defined or not iface.target_vendor or iface.target_vendor == 'cisco_ios' %}
+    - name: Configure {{ iface.name }} as {{ iface.mode | default('access') }} VLAN {{ vlan_id }} (Cisco IOS)
       cisco.ios.ios_l2_interfaces:
         config:
-{{ interfaces_config_with_vlan_yaml }}
+          - name: "{{ iface.name }}"
+            mode: "{{ iface.mode | default('access') }}"
+{% if (iface.mode | default('access')) == 'access' %}
+            access:
+              vlan: "{{ iface.access.vlan }}"
+{% else %}
+            trunk:
+              allowed_vlans: "{{ iface.trunk.allowed_vlans }}"
+{% if iface.trunk.native_vlan is defined and iface.trunk.native_vlan is not none %}
+              native_vlan: {{ iface.trunk.native_vlan }}
+{% endif %}
+{% endif %}
         state: merged
-      when: inventory_hostname in groups.get('vendor_cisco_ios', [])
+      when:
+        - inventory_hostname in groups.get('vendor_cisco_ios', [])
+{% if iface.target_host is defined and iface.target_host %}
+        - inventory_hostname == "{{ iface.target_host }}"
+{% endif %}
+{% endif %}
+{% endfor %}
 {% endif %}
 {% endif %}
 {% if 'huawei_vrp' in vendors %}
@@ -105,6 +124,7 @@
 {% endif %}
 {% else %}
 {% for iface in interfaces_config_with_vlan %}
+{% if iface.target_vendor is not defined or not iface.target_vendor or iface.target_vendor == 'huawei_vrp' %}
 {% if (iface.mode | default('access')) == 'access' %}
     - name: Configure {{ iface.name }} as access VLAN {{ vlan_id }} (Huawei VRP)
       community.network.ce_config:
@@ -112,10 +132,16 @@
           - port link-type access
           - port default vlan {{ iface.access.vlan }}
         parents: interface {{ iface.name | replace('TenGigabitEthernet', '10GE') | replace('GigabitEthernet', 'GE') }}
-      when: inventory_hostname in groups.get('vendor_huawei_vrp', [])
+      when:
+        - inventory_hostname in groups.get('vendor_huawei_vrp', [])
+{% if iface.target_host is defined and iface.target_host %}
+        - inventory_hostname == "{{ iface.target_host }}"
+{% endif %}
+{% endif %}
 {% endif %}
 {% endfor %}
 {% for iface in interfaces_config_with_vlan %}
+{% if iface.target_vendor is not defined or not iface.target_vendor or iface.target_vendor == 'huawei_vrp' %}
 {% if (iface.mode | default('access')) == 'trunk' %}
     - name: Configure {{ iface.name }} as trunk (Huawei VRP)
       community.network.ce_config:
@@ -126,7 +152,12 @@
           - port trunk pvid vlan {{ iface.trunk.native_vlan }}
 {% endif %}
         parents: interface {{ iface.name | replace('TenGigabitEthernet', '10GE') | replace('GigabitEthernet', 'GE') }}
-      when: inventory_hostname in groups.get('vendor_huawei_vrp', [])
+      when:
+        - inventory_hostname in groups.get('vendor_huawei_vrp', [])
+{% if iface.target_host is defined and iface.target_host %}
+        - inventory_hostname == "{{ iface.target_host }}"
+{% endif %}
+{% endif %}
 {% endif %}
 {% endfor %}
 {% endif %}
@@ -173,11 +204,30 @@
         state: merged
       when: inventory_hostname in groups.get('vendor_juniper_junos', [])
 {% elif interfaces_config_with_vlan | length > 0 %}
-    - name: Configure interfaces (Juniper Junos)
+{% for iface in interfaces_config_with_vlan %}
+{% if iface.target_vendor is not defined or not iface.target_vendor or iface.target_vendor == 'juniper_junos' %}
+    - name: Configure {{ iface.name }} as {{ iface.mode | default('access') }} VLAN {{ vlan_id }} (Juniper Junos)
       juniper.device.junos_l2_interfaces:
         config:
-{{ interfaces_config_with_vlan_yaml }}
+          - name: "{{ iface.name }}"
+            mode: "{{ iface.mode | default('access') }}"
+{% if (iface.mode | default('access')) == 'access' %}
+            access:
+              vlan: "{{ iface.access.vlan }}"
+{% else %}
+            trunk:
+              allowed_vlans: "{{ iface.trunk.allowed_vlans }}"
+{% if iface.trunk.native_vlan is defined and iface.trunk.native_vlan is not none %}
+              native_vlan: {{ iface.trunk.native_vlan }}
+{% endif %}
+{% endif %}
         state: merged
-      when: inventory_hostname in groups.get('vendor_juniper_junos', [])
+      when:
+        - inventory_hostname in groups.get('vendor_juniper_junos', [])
+{% if iface.target_host is defined and iface.target_host %}
+        - inventory_hostname == "{{ iface.target_host }}"
+{% endif %}
+{% endif %}
+{% endfor %}
 {% endif %}
 {% endif %}
