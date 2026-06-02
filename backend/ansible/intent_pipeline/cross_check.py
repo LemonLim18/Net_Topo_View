@@ -47,6 +47,39 @@ def _normalize_iface_token(s: str) -> str:
     return re.sub(r"\s+", "", (s or "").strip())
 
 
+def _split_interface_host_hint(raw: Any) -> Tuple[Optional[str], str]:
+    item = str(raw or "").strip()
+    if ":" in item or "@" in item:
+        sep = ":" if ":" in item else "@"
+        host_part, iface_part = item.split(sep, 1)
+        host_part = host_part.strip()
+        iface_part = iface_part.strip()
+        if host_part and iface_part:
+            return host_part, iface_part
+    return None, item
+
+
+def _host_hint_from_iface_dict(item: Dict[str, Any]) -> Optional[str]:
+    for key in (
+        "hostname",
+        "host",
+        "device",
+        "device_hostname",
+        "device_name",
+        "target_host",
+        "target_hostname",
+        "target_device",
+    ):
+        val = str(item.get(key) or "").strip()
+        if val:
+            return val
+    host_list = item.get("device_hostnames") or item.get("target_hosts")
+    if isinstance(host_list, list) and len(host_list) == 1:
+        val = str(host_list[0] or "").strip()
+        return val or None
+    return None
+
+
 def cross_check_parsed_intent(data: Dict[str, Any], db_manager: Optional[Any]) -> Dict[str, Any]:
     """
     Validate resolved/mentioned devices and interface strings against inventory.
@@ -153,13 +186,7 @@ def cross_check_parsed_intent(data: Dict[str, Any], db_manager: Optional[Any]) -
         for item in iflist:
             if isinstance(item, str):
                 # "Host:Eth0" or "GigabitEthernet0/1"
-                host_part: Optional[str] = None
-                iface_part = item
-                if ":" in item or "@" in item:
-                    sep = ":" if ":" in item else "@"
-                    host_part, iface_part = item.split(sep, 1)
-                    host_part = host_part.strip()
-                    iface_part = iface_part.strip()
+                host_part, iface_part = _split_interface_host_hint(item)
                 target_hosts = [host_part] if host_part and host_part.lower() in inv_set else resolved
                 if not target_hosts:
                     continue
@@ -183,22 +210,26 @@ def cross_check_parsed_intent(data: Dict[str, Any], db_manager: Optional[Any]) -
                         }
                     )
             elif isinstance(item, dict):
-                name = item.get("name") or item.get("interface") or item.get("interface_name")
-                if not name or not resolved:
+                name_raw = item.get("name") or item.get("interface") or item.get("interface_name")
+                if not name_raw or not resolved:
                     continue
-                for th in resolved:
+                host_part, iface_part = _split_interface_host_hint(name_raw)
+                if host_part is None:
+                    host_part = _host_hint_from_iface_dict(item)
+                target_hosts = [host_part] if host_part and host_part.lower() in inv_set else resolved
+                for th in target_hosts:
                     names = _interface_names_for_host(db_manager, th)
                     if not names:
                         continue
-                    if any(_normalize_iface_token(str(name)).lower() == _normalize_iface_token(n).lower() for n in names):
+                    if any(_normalize_iface_token(str(iface_part)).lower() == _normalize_iface_token(n).lower() for n in names):
                         break
                     invalid_interfaces.append(
                         {
                             "hostname": th,
-                            "value": str(name),
+                            "value": str(iface_part),
                             "field": field_name,
                             "message": (
-                                f"Interface '{name}' was not found on '{th}' in the planned network context. "
+                                f"Interface '{iface_part}' was not found on '{th}' in the planned network context. "
                                 "Select the correct interface from the list below."
                             ),
                             "suggestions": sorted(names, key=str.lower),

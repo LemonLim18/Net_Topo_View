@@ -21,7 +21,7 @@ import {
   buildPlannedInventoryPreselectChips,
   extractTargetInterfaceNamesFromAuthoritativeParams,
   extractTargetInterfaceNamesFromParsedIntent,
-  preselectPlannedInventoryInterfaces,
+  preselectPlannedInventoryInterfacesByDevice,
 } from '../../src/utils/interfaceInventoryPreselect';
 import { parseNativeVlanNumberFromPrompt, userPromptSuggestsNativeVlanIntent } from '../../src/utils/vlanPromptHints';
 import type { AnsibleGeneratedArtifactFile } from '../../typesLLM';
@@ -69,6 +69,24 @@ const isWildcardInterfaceToken = (v: string): boolean => {
   return t === 'all' || t === '*' || t === 'any' || t === 'every';
 };
 
+const qualifiedInterfaceToken = (hostname: string, ifName: string): string => {
+  const host = String(hostname || '').trim();
+  const name = String(ifName || '').trim();
+  if (!name) return '';
+  if (name.includes(':') || name.includes('@')) return name;
+  return host ? `${host}:${name}` : name;
+};
+
+const interfaceTokenLabel = (token: string): string => {
+  const raw = String(token || '').trim();
+  if (!raw) return '';
+  const sep = raw.includes(':') ? ':' : raw.includes('@') ? '@' : '';
+  if (!sep) return raw;
+  const [host, ...rest] = raw.split(sep);
+  const name = rest.join(sep).trim();
+  return name ? `${host.trim()} / ${name}` : raw;
+};
+
 const expandWildcardInterfacesFromPlannedPreview = (
   current: string[],
   planned: { devices?: { hostname?: string; interfaces?: { name?: string }[] }[] } | null,
@@ -81,7 +99,7 @@ const expandWildcardInterfacesFromPlannedPreview = (
     new Set(
       devices.flatMap((d) =>
         (d.interfaces || [])
-          .map((i) => String(i.name || '').trim())
+          .map((i) => qualifiedInterfaceToken(String(d.hostname || '').trim(), String(i.name || '').trim()))
           .filter(Boolean),
       ),
     ),
@@ -96,30 +114,74 @@ function resolveInitialTargetInterfaces(params: {
 }): string[] {
   const fromAuth = extractTargetInterfaceNamesFromAuthoritativeParams(params.authoritative);
   const fromParsed = extractTargetInterfaceNamesFromParsedIntent(params.parsedIntent);
-  const plannedNames = new Set(
-    (params.planned?.devices || []).flatMap((d) =>
-      (d.interfaces || [])
-        .map((i) => String(i.name || '').trim())
-        .filter(Boolean),
-    ),
-  );
-
-  // No planned context yet: keep existing precedence but still expand wildcard tokens.
-  if (plannedNames.size === 0) {
+  const plannedNames = new Set<string>();
+  const plannedTokens = new Set<string>();
+  for (const d of params.planned?.devices || []) {
+    const host = String(d.hostname || '').trim();
+    for (const iface of d.interfaces || []) {
+      const name = String(iface.name || '').trim();
+      if (!name) continue;
+      plannedNames.add(name);
+      const token = qualifiedInterfaceToken(host, name);
+      if (token) plannedTokens.add(token);
+    }
+  }
+  const plannedTokenOrNameSet = new Set([
+    ...Array.from(plannedNames),
+    ...Array.from(plannedTokens),
+  ]);
+  if (plannedTokenOrNameSet.size === 0) {
     const base = fromAuth.length > 0 ? fromAuth : fromParsed;
     return expandWildcardInterfacesFromPlannedPreview(base, params.planned);
   }
 
-  const onlyPlannedNames = (arr: string[]) => arr.filter((n) => plannedNames.has(n));
-  const authInPlanned = onlyPlannedNames(fromAuth);
+  const onlyPlannedTokensOrNames = (arr: string[]) => arr.filter((n) => plannedTokenOrNameSet.has(n));
+  const authInPlanned = onlyPlannedTokensOrNames(fromAuth);
   if (authInPlanned.length > 0) return authInPlanned;
 
-  const parsedInPlanned = onlyPlannedNames(fromParsed);
+  const parsedInPlanned = onlyPlannedTokensOrNames(fromParsed);
   if (parsedInPlanned.length > 0) return parsedInPlanned;
 
   // If input interfaces don't exist in planned inventory, return empty so the
   // planned-all preview effect can prefill vendor-correct interface chips.
   return [];
+}
+
+function flattenPreselectedInterfacesByDevice(
+  selected: Record<string, Set<string>>,
+): Set<string> {
+  const out = new Set<string>();
+  for (const [hostname, names] of Object.entries(selected || {})) {
+    for (const name of names || []) {
+      const token = qualifiedInterfaceToken(hostname, name);
+      if (token) out.add(token);
+    }
+  }
+  return out;
+}
+
+function plannedInterfaceOptionRows(
+  plannedAll: { devices?: { hostname?: string; interfaces?: { name?: string }[] }[] } | null,
+  selectable: { devices?: { hostname?: string; interfaces?: { name?: string }[] }[] } | null,
+  targetHosts: string[],
+): { token: string; hostname: string; name: string; label: string }[] {
+  const devices = (plannedAll?.devices || []).length > 0 ? plannedAll?.devices || [] : selectable?.devices || [];
+  const targetSet = new Set((targetHosts || []).map((h) => String(h || '').trim()).filter(Boolean));
+  const seen = new Set<string>();
+  const rows: { token: string; hostname: string; name: string; label: string }[] = [];
+  for (const device of devices) {
+    const hostname = String(device.hostname || '').trim();
+    if (!hostname) continue;
+    if (targetSet.size > 0 && !targetSet.has(hostname)) continue;
+    for (const iface of device.interfaces || []) {
+      const name = String(iface.name || '').trim();
+      const token = qualifiedInterfaceToken(hostname, name);
+      if (!token || seen.has(token)) continue;
+      seen.add(token);
+      rows.push({ token, hostname, name, label: `${hostname} / ${name}` });
+    }
+  }
+  return rows.sort((a, b) => a.label.localeCompare(b.label, undefined, { sensitivity: 'base' }));
 }
 
 /** All L2 interface objects from primary + secondary (order: primary first, then secondaries). */
@@ -554,10 +616,12 @@ export function PlaybookStudioOverlay({
         // we must show the mismatch instead of silently remapping the selection.
         const chips = buildPlannedInventoryPreselectChips(parsedPi, { skipSuggestions: true });
         setVlanSelectedInterfaces(
-          preselectPlannedInventoryInterfaces(
-            chips,
-            (res as { interfaces_for_selection?: { devices: { hostname: string; interfaces: { name: string }[] }[] } })
-              .interfaces_for_selection ?? null,
+          flattenPreselectedInterfacesByDevice(
+            preselectPlannedInventoryInterfacesByDevice(
+              chips,
+              (res as { interfaces_for_selection?: { devices: { hostname: string; interfaces: { name: string }[] }[] } })
+                .interfaces_for_selection ?? null,
+            ),
           ),
         );
       }
@@ -632,7 +696,9 @@ export function PlaybookStudioOverlay({
         // Never auto-pick "closest in inventory" suggestions here; keep user selection authoritative.
         const chips = buildPlannedInventoryPreselectChips(parsedPi, { skipSuggestions: true });
         setVlanSelectedInterfaces(
-          preselectPlannedInventoryInterfaces(chips, initialPreviewResult.interfaces_for_selection ?? null),
+          flattenPreselectedInterfacesByDevice(
+            preselectPlannedInventoryInterfacesByDevice(chips, initialPreviewResult.interfaces_for_selection ?? null),
+          ),
         );
       }
       skipNextInventoryRefreshRef.current = true;
@@ -651,20 +717,18 @@ export function PlaybookStudioOverlay({
       targetInterfaces.length > 0 && targetInterfaces.every((x) => isWildcardInterfaceToken(x));
     if (targetInterfaces.length !== 0 && !shouldExpandWildcardOnly) return; // don't clobber user edits
 
-    const perDevice = opts.devices.map((d) =>
-      (d.interfaces || []).map((i) => String(i.name || '').trim()).filter(Boolean)
+    const qualified = Array.from(
+      new Set(
+        opts.devices.flatMap((d) =>
+          (d.interfaces || [])
+            .map((i) => qualifiedInterfaceToken(String(d.hostname || '').trim(), String(i.name || '').trim()))
+            .filter(Boolean),
+        ),
+      ),
     );
-    if (perDevice.length === 0) return;
+    if (qualified.length === 0) return;
 
-    const union = Array.from(new Set(perDevice.flat()));
-    if (union.length === 0) return;
-
-    const intersection =
-      perDevice.length > 1
-        ? perDevice[0].filter((name) => perDevice.every((arr) => arr.includes(name)))
-        : union;
-
-    setTargetInterfaces(intersection.length > 0 ? intersection : union);
+    setTargetInterfaces(qualified);
   }, [plannedAllInterfacesPreview, targetInterfaces.length]);
 
   useEffect(() => {
@@ -690,24 +754,11 @@ export function PlaybookStudioOverlay({
     ]),
   ).sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
 
-  const plannedInterfaceOptions = Array.from(
-    new Set(
-      (
-        (plannedAllInterfacesPreview?.devices || []).length > 0
-          ? (plannedAllInterfacesPreview?.devices || [])
-          : (interfacesForSelection?.devices || [])
-      )
-        .filter((device) => {
-          const hostname = String(device.hostname || '').trim();
-          return targetHosts.length === 0 || targetHosts.includes(hostname);
-        })
-        .flatMap((device) =>
-          (device.interfaces || [])
-            .map((iface) => String(iface.name || '').trim())
-            .filter(Boolean),
-        ),
-    ),
-  ).sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
+  const plannedInterfaceOptions = plannedInterfaceOptionRows(
+    plannedAllInterfacesPreview,
+    interfacesForSelection,
+    targetHosts,
+  );
 
   useEffect(() => {
     if (newCategory && !categoryOptions.includes(newCategory)) {
@@ -722,7 +773,7 @@ export function PlaybookStudioOverlay({
   }, [newTargetHost, plannedDeviceOptions]);
 
   useEffect(() => {
-    if (newTargetInterface && !plannedInterfaceOptions.includes(newTargetInterface)) {
+    if (newTargetInterface && !plannedInterfaceOptions.some((option) => option.token === newTargetInterface)) {
       setNewTargetInterface('');
     }
   }, [newTargetInterface, plannedInterfaceOptions]);
@@ -918,15 +969,18 @@ export function PlaybookStudioOverlay({
       } else if (parsedAction === 'configure_interface') {
         const pipIf = pip?.parameters as { interfaces?: unknown } | undefined;
         const existing = pipIf?.interfaces;
-        if (Array.isArray(existing) && existing.length > 0) {
-          params.interfaces = existing;
-        } else {
-          params.interfaces = targetInterfaces.map((name) => ({
+        const existingRows = Array.isArray(existing) ? existing : [];
+        params.interfaces = targetInterfaces.map((name, idx) => {
+          const base = existingRows[idx] && typeof existingRows[idx] === 'object'
+            ? { ...(existingRows[idx] as Record<string, unknown>) }
+            : {};
+          return {
+            ...base,
             name,
-            mode: 'access' as const,
-            ...(accessVlan !== undefined ? { access_vlan: accessVlan } : {}),
-          }));
-        }
+            mode: base.mode || 'access',
+            ...(accessVlan !== undefined && !base.access_vlan ? { access_vlan: accessVlan } : {}),
+          };
+        });
       } else {
         const ifaceIdx = secondariesFromPreview.findIndex(
           (s) =>
@@ -1478,7 +1532,8 @@ export function PlaybookStudioOverlay({
                                       {interfacesForSelection.devices.flatMap((d) =>
                                         (d.interfaces || []).map((i) => {
                                           const name = i.name;
-                                          const checked = vlanSelectedInterfaces.has(name);
+                                          const token = qualifiedInterfaceToken(d.hostname, name);
+                                          const checked = vlanSelectedInterfaces.has(token);
                                           return (
                                             <label key={`${d.hostname}-${name}`} className="label cursor-pointer gap-1.5 border border-base-300 rounded px-2 py-1 bg-base-100">
                                               <input
@@ -1487,13 +1542,13 @@ export function PlaybookStudioOverlay({
                                                 onChange={() => {
                                                   setVlanSelectedInterfaces((prev) => {
                                                     const next = new Set(prev);
-                                                    if (next.has(name)) next.delete(name);
-                                                    else next.add(name);
+                                                    if (next.has(token)) next.delete(token);
+                                                    else next.add(token);
                                                     return next;
                                                   });
                                                 }}
                                               />
-                                              <span className="text-xs font-mono">{name}</span>
+                                              <span className="text-xs font-mono">{d.hostname} / {name}</span>
                                             </label>
                                           );
                                         })
@@ -1590,7 +1645,7 @@ export function PlaybookStudioOverlay({
                   <div className="flex flex-wrap gap-2 items-center">
                     {targetInterfaces.map((iface) => (
                       <span key={iface} className="badge badge-outline badge-sm gap-1 pr-1 font-mono">
-                        {iface}
+                        {interfaceTokenLabel(iface)}
                         <button
                           type="button"
                           className="hover:bg-base-content/20 rounded-full p-0.5"
@@ -1613,10 +1668,10 @@ export function PlaybookStudioOverlay({
                           : 'No planned interfaces available'}
                       </option>
                       {plannedInterfaceOptions
-                        .filter((name) => !targetInterfaces.includes(name))
-                        .map((name) => (
-                          <option key={name} value={name}>
-                            {name}
+                        .filter((option) => !targetInterfaces.includes(option.token))
+                        .map((option) => (
+                          <option key={option.token} value={option.token}>
+                            {option.label}
                           </option>
                         ))}
                     </select>

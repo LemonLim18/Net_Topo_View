@@ -380,6 +380,36 @@ def shutdown_list_is_placeholder_ethernet0_not_in_inventory(
     return True
 
 
+def _device_hint_from_iface_dict(x: Dict[str, Any]) -> str:
+    for key in (
+        "hostname",
+        "host",
+        "device",
+        "device_hostname",
+        "device_name",
+        "target_host",
+        "target_hostname",
+        "target_device",
+    ):
+        val = str(x.get(key) or "").strip()
+        if val:
+            return val
+    host_list = x.get("device_hostnames") or x.get("target_hosts")
+    if isinstance(host_list, list) and len(host_list) == 1:
+        return str(host_list[0] or "").strip()
+    return ""
+
+
+def _interface_token_from_dict(x: Dict[str, Any]) -> str:
+    name = str(x.get("name") or x.get("interface") or x.get("interface_name") or "").strip()
+    if not name:
+        return ""
+    if ":" in name or "@" in name:
+        return name
+    hint = _device_hint_from_iface_dict(x)
+    return f"{hint}:{name}" if hint else name
+
+
 def collect_user_interface_names_from_params(
     params: Optional[Dict[str, Any]],
     *,
@@ -478,7 +508,7 @@ def collect_user_interface_names_from_params(
             if isinstance(x, str):
                 add_one(x)
             elif isinstance(x, dict):
-                add_one(x.get("name") or x.get("interface"))
+                add_one(_interface_token_from_dict(x))
     else:
         add_one(raw_if)
 
@@ -555,7 +585,7 @@ def explicit_interface_names_from_request_params(params: Optional[Dict[str, Any]
         names: List[str] = []
         for item in v:
             if isinstance(item, dict):
-                n = str(item.get("interface") or item.get("name") or "").strip()
+                n = _interface_token_from_dict(item)
             else:
                 n = _strip_direction_suffix(str(item).strip())
             if n:
@@ -567,7 +597,7 @@ def explicit_interface_names_from_request_params(params: Optional[Dict[str, Any]
             return
         for x in v:
             if isinstance(x, dict):
-                n = str(x.get("name") or x.get("interface") or "").strip()
+                n = _interface_token_from_dict(x)
             else:
                 n = _strip_direction_suffix(str(x).strip())
             if not n:
