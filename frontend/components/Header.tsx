@@ -66,51 +66,59 @@ const Header: React.FC<HeaderProps> = ({ theme, setTheme, setView }) => {
                         {notifications.length === 0 ? (
                             <div className="text-center py-8 opacity-50 text-sm">No notifications</div>
                         ) : (
-                            notifications.map(notif => {
-                                const isClickable = !!notif.targetView && !!setView;
-                                const handleCardClick = () => {
-                                    markAsRead(notif.id);
-                                    if (notif.targetView && setView) {
-                                        setView(notif.targetView);
-                                    }
-                                    if (document.activeElement instanceof HTMLElement) {
-                                        document.activeElement.blur();
-                                    }
-                                };
-                                return (
-                                    <div 
-                                        key={notif.id} 
-                                        onClick={handleCardClick}
-                                        className={`p-3 rounded-lg border transition-all duration-200 
-                                            ${notif.read 
-                                                ? 'bg-base-100 border-base-200 opacity-60' 
-                                                : 'bg-base-200 border-base-300 shadow-sm'}
-                                            ${isClickable 
-                                                ? 'cursor-pointer hover:bg-base-300 hover:border-base-400 active:scale-[0.98]' 
-                                                : ''}`}
-                                    >
-                                        <div className="flex justify-between items-start gap-2">
-                                            <div className={`font-semibold text-sm ${getIconColor(notif.type)}`}>{notif.title}</div>
-                                            {!notif.read && (
-                                                <button 
-                                                    onClick={(e) => {
-                                                        e.stopPropagation();
-                                                        markAsRead(notif.id);
-                                                    }} 
-                                                    className="btn btn-ghost btn-xs btn-circle hover:bg-base-300" 
-                                                    title="Mark as read"
-                                                >
-                                                    <Check className="w-3 h-3" />
-                                                </button>
-                                            )}
-                                        </div>
-                                        <p className="text-xs mt-1 leading-relaxed text-base-content/85">{notif.message}</p>
-                                        <div className="text-[10px] opacity-40 mt-2 text-right">
-                                            {new Date(notif.timestamp).toLocaleTimeString()}
-                                        </div>
+                            notifications.map(notif => (
+                                <div
+                                    key={notif.id}
+                                    role={notif.targetView ? 'button' : undefined}
+                                    tabIndex={notif.targetView ? 0 : undefined}
+                                    onClick={() => {
+                                        markAsRead(notif.id);
+                                        if (notif.targetView && setView) setView(notif.targetView);
+                                        if (document.activeElement instanceof HTMLElement) {
+                                            document.activeElement.blur();
+                                        }
+                                    }}
+                                    onKeyDown={(e) => {
+                                        if (!notif.targetView || !setView) return;
+                                        if (e.key === 'Enter' || e.key === ' ') {
+                                            e.preventDefault();
+                                            markAsRead(notif.id);
+                                            setView(notif.targetView);
+                                        }
+                                    }}
+                                    className={`p-3 rounded-lg border transition-colors ${
+                                      notif.targetView ? 'cursor-pointer hover:border-primary/60 hover:bg-primary/10' : ''
+                                    } ${notif.read ? 'bg-base-100 border-base-200 opacity-70' : 'bg-base-200 border-base-300'}`}
+                                >
+                                    <div className="flex justify-between items-start gap-2">
+                                        <div className={`font-semibold text-sm ${getIconColor(notif.type)}`}>{notif.title}</div>
+                                        {!notif.read && (
+                                            <button
+                                                onClick={(e) => {
+                                                    e.stopPropagation();
+                                                    markAsRead(notif.id);
+                                                }}
+                                                className="btn btn-ghost btn-xs btn-circle"
+                                                title="Mark as read"
+                                            >
+                                                <Check className="w-3 h-3" />
+                                            </button>
+                                        )}
                                     </div>
-                                );
-                            })
+                                    <p className="text-xs mt-1 leading-relaxed">{notif.message}</p>
+                                    {notif.detail && notif.detail !== notif.message ? (
+                                        <p className="text-[11px] mt-1 leading-relaxed opacity-60 line-clamp-2">{notif.detail}</p>
+                                    ) : null}
+                                    {notif.contextLabel ? (
+                                        <div className="text-[10px] text-primary font-semibold mt-2">
+                                            {notif.contextLabel}
+                                        </div>
+                                    ) : null}
+                                    <div className="text-[10px] opacity-40 mt-2 text-right">
+                                        {new Date(notif.timestamp).toLocaleTimeString()}
+                                    </div>
+                                </div>
+                            ))
                         )}
                     </div>
                 </div>
@@ -219,7 +227,7 @@ const Header: React.FC<HeaderProps> = ({ theme, setTheme, setView }) => {
                 </div>
             </div>
         </div>
-        
+
         <div className="dropdown dropdown-end">
             <div tabIndex={0} role="button" className="btn btn-ghost">
                 <Sun className="h-5 w-5 stroke-1.5" />

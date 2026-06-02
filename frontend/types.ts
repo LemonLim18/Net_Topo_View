@@ -74,12 +74,12 @@ export interface User {
 
 // Domain Types
 export type AppDomain = 'network';
-export type ViewId = 
+export type ViewId =
   | 'overview'
   | 'dashboard'
   | 'topology'
   | 'netbox_devices'
-  | 'net_perf' 
+  | 'net_perf'
   | 'compliance_hub'
   | 'compliance_device_detail'
   | 'knowledge_base'
@@ -102,13 +102,16 @@ export interface AppNotification {
     id: string;
     title: string;
     message: string;
+    detail?: string;
     type: NotificationType;
     timestamp: number;
     read: boolean;
     targetView?: ViewId;
+    contextLabel?: string;
+    dedupeKey?: string;
 }
 
-// Intent Lifecycle types (Phase 1 — UC02-UC05)
+// Intent Lifecycle types (Phase 1 - UC02-UC05)
 export interface IntentRecord {
     id: string;
     user_prompt: string;

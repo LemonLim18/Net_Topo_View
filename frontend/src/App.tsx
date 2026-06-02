@@ -91,7 +91,7 @@ const App: React.FC = () => {
   const [hasMoved, setHasMoved] = useState(false);
   const buttonDragStart = useRef({ x: 0, y: 0 });
 
-  // ── Hydrate user from stored JWT on mount ──
+  // -- Hydrate user from stored JWT on mount --
   useEffect(() => {
     const token = localStorage.getItem('auth_token');
     if (!token) {
@@ -158,10 +158,10 @@ const App: React.FC = () => {
   useEffect(() => {
     const handleMouseMove = (e: MouseEvent) => {
       if (!isDraggingButton) return;
-      
+
       const newX = e.clientX - buttonDragStart.current.x;
       const newY = e.clientY - buttonDragStart.current.y;
-      
+
       // If moved more than 5px, mark as moved
       if (Math.abs(newX - buttonPos.x) > 5 || Math.abs(newY - buttonPos.y) > 5) {
         setHasMoved(true);
@@ -195,7 +195,7 @@ const App: React.FC = () => {
       case 'netbox_devices':
         return <NetBoxDevices />;
       case 'device_detail':
-        return <div className="p-6"><h2 className="text-xl font-bold">Device 360 — #{selectedDeviceId ?? '?'}</h2><p className="mt-2 opacity-60">Device detail view — Phase 2.</p></div>;
+        return <div className="p-6"><h2 className="text-xl font-bold">Device 360 - #{selectedDeviceId ?? '?'}</h2><p className="mt-2 opacity-60">Device detail view - Phase 2.</p></div>;
       case 'net_perf':
         return <NetworkPerformance />;
       case 'compliance_hub':
@@ -207,35 +207,35 @@ const App: React.FC = () => {
       case 'ansible_studio':
         return <AnsibleStudioView user={user} />;
 
-      // M0 — Device Onboarding
+      // M0 - Device Onboarding
       case 'onboarding':
         return <OnboardingView setView={setView} />;
       case 'common_services':
         return <CommonServicesProfilesView />;
 
-      // Phase 1 — Intent Lifecycle Management
+      // Phase 1 - Intent Lifecycle Management
       case 'intent_history':
         return <IntentHistoryView setView={setView} />;
       case 'intent_parser':
         return <IntentParserView />;
 
-      // Phase 3 — SDN Controller Dashboard
+      // Phase 3 - SDN Controller Dashboard
       case 'sdn_dashboard':
         if (!SHOW_SDN_CONTROLLER) return <OverviewDashboard setView={setView} setSelectedDeviceId={setSelectedDeviceId} user={user} />;
         return <SDNDashboardView setView={setView} />;
 
-      // Phase 12 — Playbook Candidate Comparison (UC14)
+      // Phase 12 - Playbook Candidate Comparison (UC14)
       case 'playbook_comparison':
         return <PlaybookComparisonView setView={setView} />;
 
-      // Phase 16 — Approval Queue Dashboard
+      // Phase 16 - Approval Queue Dashboard
       case 'approval_queue':
         if (normalizeUserRole(user?.role) !== 'admin') {
           return <OverviewDashboard setView={setView} setSelectedDeviceId={setSelectedDeviceId} user={user} />;
         }
         return <ApprovalQueueView setView={setView} />;
 
-      // Template Studio — Jinja2 template editor
+      // Template Studio - Jinja2 template editor
       case 'template_studio':
         return <TemplateStudioView />;
 
@@ -271,10 +271,10 @@ const App: React.FC = () => {
         <div data-theme={theme} className="w-screen h-screen flex flex-col font-sans">
         <Header theme={theme} setTheme={setTheme} setView={setView} />
         <div className="flex grow overflow-hidden">
-            <Sidebar 
-                currentView={view} 
-                setView={setView} 
-                user={user} 
+            <Sidebar
+                currentView={view}
+                setView={setView}
+                user={user}
                 onLogout={() => { localStorage.removeItem('auth_token'); setUser(null); }}
                 collapsed={sidebarCollapsed}
                 onToggleCollapse={() => setSidebarCollapsed(c => !c)}
@@ -285,7 +285,7 @@ const App: React.FC = () => {
               <div className="grow overflow-hidden relative">
                 {renderView()}
               </div>
-              
+
               {/* Enriched Draggable Toggle Button */}
               {!overlayOpen && (
                 <>
@@ -307,17 +307,17 @@ const App: React.FC = () => {
                       animation: agent-hover 0.5s ease-in-out infinite;
                     }
                   `}</style>
-                  <div 
-                    style={{ 
-                      position: 'fixed', 
-                      left: `${buttonPos.x}px`, 
+                  <div
+                    style={{
+                      position: 'fixed',
+                      left: `${buttonPos.x}px`,
                       top: `${buttonPos.y}px`,
                       zIndex: 50,
                       cursor: isDraggingButton ? 'grabbing' : 'grab'
                     }}
                     onMouseDown={handleButtonMouseDown}
                   >
-                    <button 
+                    <button
                       onClick={() => !hasMoved && setOverlayOpen(true)}
                       className="btn btn-primary btn-circle shadow-xl border-2 border-primary/20 agent-button agent-breathing transition-all active:scale-95 relative"
                       title="Open Inventory AI & Network Ops Center"
@@ -346,10 +346,10 @@ const App: React.FC = () => {
         </div>
         </div>
         {profileOpen && user && (
-          <UserProfileModal 
-            user={user} 
-            onClose={() => setProfileOpen(false)} 
-            onUpdateUser={setUser} 
+          <UserProfileModal
+            user={user}
+            onClose={() => setProfileOpen(false)}
+            onUpdateUser={setUser}
           />
         )}
       </DeviceProvider>

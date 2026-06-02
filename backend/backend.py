@@ -57,7 +57,7 @@ from retrieval import build_retrieval_orchestrator
 from dashboard.api import router as dashboard_router, setup_dashboard
 from device_syslog.api import router as device_syslog_router
 
-# M22 — Ansible-first automation (optional: graceful no-op if ansible-runner absent)
+# M22 - Ansible-first automation (optional: graceful no-op if ansible-runner absent)
 try:
     from ansible.api import router as ansible_router, setup_ansible
     from ansible.builder import PlaybookBuilder
@@ -66,27 +66,27 @@ except ImportError:
     ansible_router = None   # type: ignore[assignment]
     _ANSIBLE_ENABLED = False
 
-# M25 — Phase-2 Autonomous Agent APIs
+# M25 - Phase-2 Autonomous Agent APIs
 from incidents.api import router as incidents_router, setup_incidents
 from agent.api import router as agent_router, setup_agent_api
 
-# M0 — Device Onboarding Wizard
+# M0 - Device Onboarding Wizard
 from onboarding.api import router as onboarding_router
 from common_services.api import router as common_services_router
 
-# Phase 1 — Intent Lifecycle Management (UC02-UC05)
+# Phase 1 - Intent Lifecycle Management (UC02-UC05)
 from llm.intent_api import router as intent_router, setup_intents
 
-# Phase 3 — SDN Controller Management
+# Phase 3 - SDN Controller Management
 from sdn.api import router as sdn_router, setup_sdn
 
-# Phase 5 — Threshold-Based Telemetry Monitoring
+# Phase 5 - Threshold-Based Telemetry Monitoring
 from monitor.threshold_engine import router as threshold_router, setup_thresholds
 
-# Phase 7 — Unified Validator Report
+# Phase 7 - Unified Validator Report
 from config_engine.unified_validator import router as validator_router, setup_validator
 
-# M4 — Deployment Approval Gate
+# M4 - Deployment Approval Gate
 try:
     from deploy.approval import router as approval_router, set_db_manager as _set_approval_db
     _APPROVAL_ENABLED = True
@@ -94,7 +94,7 @@ except ImportError:
     approval_router = None  # type: ignore[assignment]
     _APPROVAL_ENABLED = False
 
-# --- Crawler Logic (refactored BFS engine — replaces legacy mini_nce) ---
+# --- Crawler Logic (refactored BFS engine - replaces legacy mini_nce) ---
 from crawler.bfs_engine import crawl_topology as _bfs_crawl
 from crawler.store import save_crawl_result
 from common_services.service import get_effective_profile
@@ -160,8 +160,8 @@ _last_crawl_finished_at_monotonic: float = 0.0
 _db: Optional[DatabaseManager] = None
 _agent: Optional[NetworkAgent] = None
 _retrieval = None
-_vault = None  # CredentialVault — set in lifespan
-_state_embedder = None  # NetworkStateEmbedder — Phase 9
+_vault = None  # CredentialVault - set in lifespan
+_state_embedder = None  # NetworkStateEmbedder - Phase 9
 _syslog_receiver: Optional[SyslogReceiver] = None
 _syslog_loop: Optional[asyncio.AbstractEventLoop] = None
 
@@ -265,7 +265,7 @@ def do_sync_crawl() -> dict:
 
     if not user:
         logger.error(
-            "No crawl credentials configured — set CRAWL_USER/CRAWL_PASSWORD, store a vault default, "
+            "No crawl credentials configured - set CRAWL_USER/CRAWL_PASSWORD, store a vault default, "
             "or save SSH credentials on at least one inventory device"
         )
         return {"timestamp": datetime.now().isoformat(), "seeds": CRAWL_SEEDS, "nodes": {}}
@@ -375,32 +375,32 @@ def canonical_topology(topo: dict) -> dict:
     """Normalize topology for comparison."""
     if not topo:
         return {"nodes": {}, "links": []}
-    
+
     nodes_dict = topo.get("nodes", {})
     if not isinstance(nodes_dict, dict):
         nodes_dict = {}
-    
+
     cleaned_nodes = {}
     for node_id, node_data in nodes_dict.items():
         if not isinstance(node_data, dict): continue
         # Remove volatile fields
         cleaned_node = {k: v for k, v in node_data.items() if k != "timestamp"}
-        
+
         # Sort arrays
         if "connectedNode" in cleaned_node and isinstance(cleaned_node["connectedNode"], list):
             cleaned_node["connectedNode"] = sorted(cleaned_node["connectedNode"])
-        
+
         # Consistent "down" state
         has_interfaces = cleaned_node.get("interfaceList") and any(bool(i) for i in cleaned_node.get("interfaceList", [{}]))
         has_links = cleaned_node.get("edgeLink") and bool(cleaned_node.get("edgeLink", {}))
-        
+
         if "down" in node_data:
             cleaned_node["down"] = node_data["down"]
         elif not has_interfaces and not has_links:
             cleaned_node["down"] = True
         else:
             cleaned_node.pop("down", None)
-        
+
         cleaned_nodes[node_id] = cleaned_node
 
     # Extract links
@@ -556,6 +556,7 @@ async def _ingest_raw_syslog(source_ip: str, raw_message: str):
                     "facility": parsed.get("facility"),
                     "mnemonic": parsed.get("mnemonic"),
                     "message": parsed.get("message"),
+                    "raw_message": raw_message,
                 },
             }
         )
@@ -634,7 +635,7 @@ async def run_crawl_and_broadcast(trigger: str = "periodic"):
                 _agent.refresh_context()
                 logger.debug("Agent RAG context refreshed after crawl")
 
-            # 2c. Phase 9 — Auto-embed network state into ChromaDB
+            # 2c. Phase 9 - Auto-embed network state into ChromaDB
             if _state_embedder is not None:
                 try:
                     embed_result = await loop.run_in_executor(
@@ -678,7 +679,7 @@ async def run_crawl_and_broadcast(trigger: str = "periodic"):
             trigger=trigger,
         )
 
-# (periodic_crawler removed — now managed by M16 scheduler)
+# (periodic_crawler removed - now managed by M16 scheduler)
 
 # ----------------------
 # Lifespan & App Setup
@@ -696,7 +697,7 @@ async def lifespan(app: FastAPI):
     # 2. Initialize Core Systems
     pipeline = DeploymentPipeline(db)
 
-    # M21 — Vector-Embedded RAG stack
+    # M21 - Vector-Embedded RAG stack
     embedder = GeminiEmbedder(api_key=os.getenv("GEMINI_API_KEY"))
     vector_store = KnowledgeVectorStore(embedder)
     retriever = KnowledgeRetriever(vector_store, embedder)
@@ -704,7 +705,7 @@ async def lifespan(app: FastAPI):
     logger.info("Vector knowledge store ready (chunks=%d)", vector_store.count())
     setup_rag(ingester, vector_store)
 
-    # Phase 9 — Auto Network State Embedding
+    # Phase 9 - Auto Network State Embedding
     global _state_embedder
     try:
         from rag.auto_embedder import NetworkStateEmbedder
@@ -748,46 +749,46 @@ async def lifespan(app: FastAPI):
     global _retrieval
     _retrieval = retrieval
 
-    # M4 — Inject DB into approval module so its Depends(_get_db) works at request time
+    # M4 - Inject DB into approval module so its Depends(_get_db) works at request time
     if _APPROVAL_ENABLED:
         _set_approval_db(db)
         logger.info("Deployment approval gate initialized")
 
-    # M22 — Ansible-first orchestration layer
+    # M22 - Ansible-first orchestration layer
     _builder = None
     if _ANSIBLE_ENABLED:
         _builder = PlaybookBuilder(_main_llm)
         setup_ansible(_builder, agent, pipeline, db, retrieval=retrieval)
         logger.info("Ansible orchestration layer initialized (M22)")
 
-    # M25 — Phase-2: Agent Plan/Execute and Incidents
+    # M25 - Phase-2: Agent Plan/Execute and Incidents
     setup_agent_api(agent, builder=_builder, db=db)
     logger.info("Autonomous Agent Plan/Execute API initialized (M25)")
 
-    # Phase 1 — Intent Lifecycle Management
+    # Phase 1 - Intent Lifecycle Management
     setup_intents(db)
     logger.info("Intent Lifecycle API initialized")
 
-    # Phase 2 — RAG Context Bundle (UC06-UC09)
+    # Phase 2 - RAG Context Bundle (UC06-UC09)
     setup_context_bundle(db)
     logger.info("RAG Context Bundle builder initialized")
 
-    # Phase 3 — SDN Controller Management
+    # Phase 3 - SDN Controller Management
     setup_sdn(db)
     logger.info("SDN Controller Management initialized")
 
-    # Phase 5 — Threshold-Based Telemetry Monitoring
+    # Phase 5 - Threshold-Based Telemetry Monitoring
     setup_thresholds(db)
     logger.info("Threshold monitoring engine initialized")
 
-    # Phase 7 — Unified Validator Report
+    # Phase 7 - Unified Validator Report
     setup_validator(db)
     logger.info("Unified validator initialized")
 
-    # Config Backup — sharing the DB manager (for live topology status)
+    # Config Backup - sharing the DB manager (for live topology status)
     set_network_db(db)
 
-    # M25 — Incident Response Orchestrator (closed-loop pipeline)
+    # M25 - Incident Response Orchestrator (closed-loop pipeline)
     from incidents.orchestrator import IncidentOrchestrator
     _orchestrator = IncidentOrchestrator(
         db=db,
@@ -916,7 +917,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="CogniShield Backend", lifespan=lifespan)
 
 # ---------------------------------------------------------------------------
-# CORS — belt-and-suspenders approach
+# CORS - belt-and-suspenders approach
 # ---------------------------------------------------------------------------
 # 1) Standard CORSMiddleware for normal responses
 # 2) A catch-all middleware that guarantees CORS headers even on unhandled
@@ -1002,29 +1003,29 @@ app.include_router(dashboard_router, prefix="/api/v1", tags=["Dashboard"])
 if _ANSIBLE_ENABLED and ansible_router is not None:
     app.include_router(ansible_router, prefix="/api/v1", tags=["Ansible Orchestration (M22)"])
 
-# M4 — Deployment approval gate
+# M4 - Deployment approval gate
 if _APPROVAL_ENABLED and approval_router is not None:
     app.include_router(approval_router, tags=["Deploy Approval (M4)"])
 
-# M25 — Phase-2 Autonomous Agent APIs
+# M25 - Phase-2 Autonomous Agent APIs
 app.include_router(incidents_router, prefix="/api/v1", tags=["Incidents (M25)"])
 app.include_router(agent_router, prefix="/api/v1", tags=["Autonomous Agent (M25)"])
 
-# M0 — Onboarding
+# M0 - Onboarding
 app.include_router(onboarding_router, prefix="/api/v1", tags=["Onboarding (M0)"])
 app.include_router(common_services_router, prefix="/api/v1", tags=["Common Services"])
 app.include_router(device_syslog_router, prefix="/api/v1", tags=["Syslog"])
 
-# Phase 1 — Intent Lifecycle
+# Phase 1 - Intent Lifecycle
 app.include_router(intent_router, prefix="/api/v1", tags=["Intent Lifecycle"])
 
-# Phase 3 — SDN Controller Management
+# Phase 3 - SDN Controller Management
 app.include_router(sdn_router, prefix="/api/v1", tags=["SDN Controllers"])
 
-# Phase 5 — Threshold Monitoring
+# Phase 5 - Threshold Monitoring
 app.include_router(threshold_router, prefix="/api/v1", tags=["Threshold Monitoring"])
 
-# Phase 7 — Unified Validator
+# Phase 7 - Unified Validator
 app.include_router(validator_router, prefix="/api/v1", tags=["Unified Validation"])
 
 # WebSocket Endpoint (Streamlined)
@@ -1043,7 +1044,7 @@ async def websocket_endpoint(websocket: WebSocket):
         # Kick an immediate refresh for near-real-time visibility when clients
         # open the dashboard. This runs async and is protected by crawl lock.
         asyncio.create_task(run_crawl_and_broadcast(trigger="ws_client_connected"))
-        
+
         # Keep alive loop
         while True:
             try:

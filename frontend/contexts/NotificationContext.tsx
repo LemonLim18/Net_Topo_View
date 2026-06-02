@@ -3,21 +3,34 @@ import type { ReactNode } from 'react';
 import type { AppNotification, NotificationType, ViewId } from '../types';
 import { ENABLE_DRIFT_NOTIFICATIONS, API_CONFIG } from '../src/config';
 
-/* ── Telemetry WS listener (incident push events) ───────────── */
+/* -- Telemetry WS listener (incident push events) ------------- */
 // Use configured backend URL when available so frontend works across networks.
 const _wsBase = (API_CONFIG?.API_URL || `http://${window.location.hostname}:8000`).replace(/^http/, 'ws').replace(/\/$/, '');
 const TELEMETRY_WS = `${_wsBase}/api/telemetry`;
 
 interface NotificationContextType {
     notifications: AppNotification[];
-    addNotification: (title: string, message: string, type: NotificationType, targetView?: ViewId) => void;
+    addNotification: (title: string, message: string, type: NotificationType, options?: AddNotificationOptions) => void;
     markAsRead: (id: string) => void;
     clearAll: () => void;
     removeNotification: (id: string) => void;
     openIncidentCount: number;
 }
 
+type AddNotificationOptions = {
+    detail?: string;
+    targetView?: ViewId;
+    contextLabel?: string;
+    dedupeKey?: string;
+    dedupeWindowMs?: number;
+};
+
 const NotificationContext = createContext<NotificationContextType | undefined>(undefined);
+
+const shouldNotifySeverity = (severity: string): boolean => {
+    const sev = String(severity || '').toLowerCase();
+    return sev === 'critical' || sev === 'high' || sev === 'medium' || sev === 'warning';
+};
 
 export const NotificationProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
     const [notifications, setNotifications] = useState<AppNotification[]>([]);
@@ -25,10 +38,10 @@ export const NotificationProvider: React.FC<{ children: ReactNode }> = ({ childr
     const wsRef = useRef<WebSocket | null>(null);
     const recentNotificationRef = useRef<Map<string, number>>(new Map());
 
-    const addNotification = useCallback((title: string, message: string, type: NotificationType, targetView?: ViewId) => {
-        const key = `${type}|${title}|${message}`;
+    const addNotification = useCallback((title: string, message: string, type: NotificationType, options?: AddNotificationOptions) => {
+        const key = options?.dedupeKey || `${type}|${title}|${message}`;
         const now = Date.now();
-        const DUPLICATE_WINDOW_MS = 15000;
+        const DUPLICATE_WINDOW_MS = options?.dedupeWindowMs ?? 15000;
         const lastAt = recentNotificationRef.current.get(key);
 
         // Drop repeated telemetry toasts that arrive in short bursts.
@@ -51,10 +64,13 @@ export const NotificationProvider: React.FC<{ children: ReactNode }> = ({ childr
             id: Math.random().toString(36).substring(2, 9),
             title,
             message,
+            detail: options?.detail,
             type,
             timestamp: Date.now(),
             read: false,
-            targetView,
+            targetView: options?.targetView,
+            contextLabel: options?.contextLabel,
+            dedupeKey: key,
         };
         setNotifications(prev => [newNotif, ...prev]);
 
@@ -64,7 +80,7 @@ export const NotificationProvider: React.FC<{ children: ReactNode }> = ({ childr
         }
     }, []);
 
-    /* ── Telemetry WebSocket bridge ───────────────────────────── */
+    /* -- Telemetry WebSocket bridge ----------------------------- */
     useEffect(() => {
         let retryDelay = 2000;
         let timer: ReturnType<typeof setTimeout> | null = null;
@@ -87,7 +103,6 @@ export const NotificationProvider: React.FC<{ children: ReactNode }> = ({ childr
                 if (intentionallyClosing || !alive) return;
             };
 
-
             ws.onmessage = (ev) => {
                 try {
                     const msg = JSON.parse(ev.data);
@@ -105,37 +120,68 @@ export const NotificationProvider: React.FC<{ children: ReactNode }> = ({ childr
                             'New Incident Detected',
                             `${(msg.data?.anomaly_type ?? 'anomaly').replace(/_/g, ' ')} on ${(msg.data?.affected_devices ?? []).join(', ') || 'unknown device'}`,
                             notifType,
-                            'overview',
+                            {
+                                targetView: 'approval_queue',
+                                contextLabel: 'Open incident workflow',
+                                dedupeKey: `incident-created|${msg.data?.id || msg.data?.anomaly_type || 'incident'}`,
+                                dedupeWindowMs: 60000,
+                            },
                         );
                     } else if (msg.event === 'incident_resolved') {
-                        addNotification('Incident Resolved', msg.data?.id ?? 'incident', 'success', 'overview');
+                        addNotification('Incident Resolved', msg.data?.id ?? 'incident', 'success', {
+                            targetView: 'approval_queue',
+                            contextLabel: 'View incident queue',
+                            dedupeKey: `incident-resolved|${msg.data?.id || 'incident'}`,
+                            dedupeWindowMs: 60000,
+                        });
                     } else if (msg.event === 'incident_updated' && msg.data?.status === 'approved') {
-                        addNotification('Incident Approved', `Playbook ready for deployment: ${msg.data?.id ?? ''}`, 'info', 'approval_queue');
+                        addNotification('Incident Approved', `Playbook ready for deployment: ${msg.data?.id ?? ''}`, 'info', {
+                            targetView: 'approval_queue',
+                            contextLabel: 'Review approval queue',
+                            dedupeKey: `incident-approved|${msg.data?.id || 'incident'}`,
+                            dedupeWindowMs: 60000,
+                        });
                     } else if (msg.event === 'security_event') {
                         const sev = String(msg.data?.severity ?? 'info').toLowerCase();
-                        if (sev === 'low' || sev === 'info') return; // Filter out low severity spam
-                        const notifType: NotificationType = sev === 'critical' ? 'error' : sev === 'high' ? 'warning' : 'info';
+                        if (!shouldNotifySeverity(sev)) return;
+                        const notifType: NotificationType = sev === 'critical' ? 'error' : sev === 'high' || sev === 'warning' ? 'warning' : sev === 'medium' ? 'info' : 'success';
+                        const source = msg.data?.source_ip ?? 'unknown source';
+                        const eventType = msg.data?.event_type ?? 'event';
+                        const description = msg.data?.description || msg.data?.raw_message || '';
                         addNotification(
-                            'Syslog Event',
-                            `${msg.data?.event_type ?? 'event'} from ${msg.data?.source_ip ?? 'unknown source'}${msg.data?.description ? `: ${msg.data.description}` : ''}`,
+                            `${sev.toUpperCase()} Security Event`,
+                            `${eventType} from ${source}${description ? `: ${description}` : ''}`,
                             notifType,
-                            'net_perf',
+                            {
+                                detail: description,
+                                targetView: 'net_perf',
+                                contextLabel: 'Open Performance syslog',
+                                dedupeKey: `security|${source}|${eventType}|${description.slice(0, 120)}`,
+                                dedupeWindowMs: 60000,
+                            },
                         );
                     } else if (msg.event === 'device_syslog_event') {
                         const sev = String(msg.data?.severity ?? 'info').toLowerCase();
-                        if (sev === 'low' || sev === 'info') return; // Filter out low severity spam
-                        const notifType: NotificationType = sev === 'critical' ? 'error' : sev === 'high' ? 'warning' : 'info';
+                        if (!shouldNotifySeverity(sev)) return;
+                        const notifType: NotificationType = sev === 'critical' ? 'error' : sev === 'high' || sev === 'warning' ? 'warning' : sev === 'medium' ? 'info' : 'success';
                         const source = msg.data?.source_host ?? msg.data?.source_ip ?? 'unknown source';
                         const mnemonic = msg.data?.mnemonic ?? msg.data?.facility ?? 'syslog';
+                        const eventMessage = msg.data?.message || msg.data?.raw_message || '';
                         addNotification(
-                            'Device Syslog',
-                            `${mnemonic} from ${source}${msg.data?.message ? `: ${msg.data.message}` : ''}`,
+                            `${sev.toUpperCase()} Device Syslog`,
+                            `${mnemonic} on ${source}${eventMessage ? `: ${eventMessage}` : ''}`,
                             notifType,
-                            'net_perf',
+                            {
+                                detail: msg.data?.raw_message || eventMessage,
+                                targetView: 'net_perf',
+                                contextLabel: 'Open Recent Syslog Events',
+                                dedupeKey: `device-syslog|${source}|${mnemonic}|${eventMessage.slice(0, 120)}`,
+                                dedupeWindowMs: sev === 'critical' || sev === 'high' ? 60000 : 180000,
+                            },
                         );
                     }
 
-                    // Phase 13 — Drift detection push events
+                    // Phase 13 - Drift detection push events
                     if (ENABLE_DRIFT_NOTIFICATIONS && msg.event === 'drift_check_complete') {
                         const dCount = msg.data?.drift_detected ?? 0;
                         if (dCount > 0) {
@@ -143,7 +189,12 @@ export const NotificationProvider: React.FC<{ children: ReactNode }> = ({ childr
                                 'Drift Detected',
                                 `${dCount} device(s) with configuration drift (${msg.data?.devices_checked ?? 0} checked)`,
                                 dCount > 2 ? 'error' : 'warning',
-                                'compliance_hub',
+                                {
+                                    targetView: 'compliance_hub',
+                                    contextLabel: 'Open compliance findings',
+                                    dedupeKey: `drift|${dCount}|${msg.data?.devices_checked ?? 0}`,
+                                    dedupeWindowMs: 300000,
+                                },
                             );
                         }
                     }

@@ -1,13 +1,13 @@
 """
-Phase 5 — Threshold-Based Telemetry Monitoring Engine (UC34).
+Phase 5 - Threshold-Based Telemetry Monitoring Engine (UC34).
 
 Configurable rules that evaluate InfluxDB metrics against thresholds
 and raise alerts when breached.  Supports CRUD for rules, periodic
 evaluation, and integrates with the incident system for auto-remediation.
 
 Table schema (added to schema.sql):
-    threshold_rules  — stores configurable alert rules
-    threshold_alerts — stores triggered alert instances
+    threshold_rules  - stores configurable alert rules
+    threshold_alerts - stores triggered alert instances
 """
 
 from __future__ import annotations
@@ -30,6 +30,8 @@ from llm.refresh_fabric import publish_context_refresh_event
 logger = logging.getLogger("monitor.threshold_engine")
 
 router = APIRouter(prefix="/monitor/thresholds", tags=["Threshold Monitoring"])
+
+MIN_ALERT_COOLDOWN_MINUTES = 30
 
 # DI
 _db = None
@@ -70,7 +72,7 @@ def _ensure_tables():
                 threshold   REAL NOT NULL,
                 severity    TEXT DEFAULT 'warning',  -- info | warning | critical
                 device_filter TEXT,                  -- JSON: {"hostnames": [...], "vendor": "..."}
-                cooldown_minutes INTEGER DEFAULT 15, -- don't re-alert within window
+                cooldown_minutes INTEGER DEFAULT 30, -- don't re-alert within window
                 enabled     BOOLEAN DEFAULT 1,
                 auto_remediate BOOLEAN DEFAULT 0,
                 remediation_playbook TEXT,           -- optional: YAML or template name
@@ -110,7 +112,7 @@ class RuleCreate(BaseModel):
     threshold: float
     severity: str = "warning"
     device_filter: Optional[Dict[str, Any]] = None
-    cooldown_minutes: int = 15
+    cooldown_minutes: int = MIN_ALERT_COOLDOWN_MINUTES
     enabled: bool = True
     auto_remediate: bool = False
     remediation_playbook: Optional[str] = None
@@ -180,6 +182,14 @@ def _row_dict(row) -> dict:
     return d
 
 
+def _effective_cooldown_minutes(value: Any) -> int:
+    try:
+        cooldown = int(value)
+    except Exception:
+        cooldown = MIN_ALERT_COOLDOWN_MINUTES
+    return max(MIN_ALERT_COOLDOWN_MINUTES, cooldown)
+
+
 @router.get("/rules", response_model=List[RuleResponse])
 async def list_rules(current_user: dict = Depends(_auth_dep)):
     _check_db()
@@ -204,7 +214,7 @@ async def create_rule(body: RuleCreate, current_user: dict = Depends(_auth_dep))
             "device_filter, cooldown_minutes, enabled, auto_remediate, remediation_playbook) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (body.name, body.metric, body.measurement, body.field_key, body.operator,
-             body.threshold, body.severity, df_json, body.cooldown_minutes,
+             body.threshold, body.severity, df_json, _effective_cooldown_minutes(body.cooldown_minutes),
              body.enabled, body.auto_remediate, body.remediation_playbook),
         )
         row = conn.execute("SELECT * FROM threshold_rules WHERE id = ?", (cur.lastrowid,)).fetchone()
@@ -224,6 +234,8 @@ async def update_rule(rule_id: int, body: RuleUpdate, current_user: dict = Depen
                      "auto_remediate", "remediation_playbook"):
             val = getattr(body, fld, None)
             if val is not None:
+                if fld == "cooldown_minutes":
+                    val = _effective_cooldown_minutes(val)
                 sets.append(f"{fld} = ?")
                 params.append(val)
         if body.device_filter is not None:
@@ -297,7 +309,7 @@ async def resolve_alert(alert_id: int, current_user: dict = Depends(_auth_dep)):
 
 
 # ---------------------------------------------------------------------------
-# Evaluation Engine — called by scheduler or manually
+# Evaluation Engine - called by scheduler or manually
 # ---------------------------------------------------------------------------
 
 @router.post("/evaluate", summary="Manually trigger threshold evaluation")
@@ -315,7 +327,7 @@ async def evaluate_and_remediate(current_user: dict = Depends(_auth_dep)):
     auto-remediation pipeline for any new incidents created.
 
     This is the primary endpoint for the scheduler to call periodically
-    to close the full threshold → alert → incident → remediation loop.
+    to close the full threshold -> alert -> incident -> remediation loop.
     """
     _check_db()
 
@@ -469,10 +481,10 @@ def _maybe_create_alert(rule: dict, breach: dict) -> None:
 
     rule_id = rule["id"]
     device = breach.get("device", "unknown")
-    cooldown = rule.get("cooldown_minutes", 15)
+    cooldown = _effective_cooldown_minutes(rule.get("cooldown_minutes", MIN_ALERT_COOLDOWN_MINUTES))
 
     with _db._connect() as conn:
-        # Check cooldown — don't re-alert if there's a recent active/acknowledged alert
+        # Check cooldown - don't re-alert if there's a recent active/acknowledged alert
         recent = conn.execute(
             "SELECT id FROM threshold_alerts "
             "WHERE rule_id = ? AND device = ? AND status IN ('active', 'acknowledged') "
@@ -549,7 +561,7 @@ def _trigger_auto_remediation(rule: dict, breach: dict) -> Optional[str]:
         store.update_analysis(
             inc_id,
             root_cause_summary=(
-                f"Automatic threshold breach: rule '{rule.get('name', '?')}' — "
+                f"Automatic threshold breach: rule '{rule.get('name', '?')}' - "
                 f"{rule.get('metric', '?')} {rule.get('operator', '>')} "
                 f"{rule.get('threshold', '?')} on device {device}. "
                 f"Measured value: {breach.get('value', '?')}"
@@ -563,7 +575,7 @@ def _trigger_auto_remediation(rule: dict, breach: dict) -> Optional[str]:
                 f"Auto-remediate threshold breach for {rule.get('metric', '?')} on {device}"
             ),
             proposed_playbook=remediation_playbook,
-            estimated_impact="Automated fix — impact depends on remediation playbook",
+            estimated_impact="Automated fix - impact depends on remediation playbook",
             rollback_plan="Revert to previous configuration snapshot if remediation fails",
         )
 
