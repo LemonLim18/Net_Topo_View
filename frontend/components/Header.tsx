@@ -2,6 +2,7 @@ import React from 'react';
 import { Bell, Check, ListChecks, Sun } from 'lucide-react';
 import { useNotification } from '../contexts/NotificationContext';
 import { useTaskProgress } from '../contexts/TaskProgressContext';
+import type { ViewId } from '../types';
 
 const daisyUIThemes = [
   "light", "dark", "cupcake", "emerald", "corporate", "synthwave",
@@ -14,9 +15,10 @@ const daisyUIThemes = [
 interface HeaderProps {
     theme: string;
     setTheme: (theme: string) => void;
+    setView?: (view: ViewId) => void;
 }
 
-const Header: React.FC<HeaderProps> = ({ theme, setTheme }) => {
+const Header: React.FC<HeaderProps> = ({ theme, setTheme, setView }) => {
   const { notifications, markAsRead, clearAll } = useNotification();
   const unreadCount = notifications.filter(n => !n.read).length;
     const { tasks, checkTask, removeTask, clearCheckedTasks } = useTaskProgress();
@@ -64,22 +66,51 @@ const Header: React.FC<HeaderProps> = ({ theme, setTheme }) => {
                         {notifications.length === 0 ? (
                             <div className="text-center py-8 opacity-50 text-sm">No notifications</div>
                         ) : (
-                            notifications.map(notif => (
-                                <div key={notif.id} className={`p-3 rounded-lg border ${notif.read ? 'bg-base-100 border-base-200 opacity-60' : 'bg-base-200 border-base-300'}`}>
-                                    <div className="flex justify-between items-start gap-2">
-                                        <div className={`font-semibold text-sm ${getIconColor(notif.type)}`}>{notif.title}</div>
-                                        {!notif.read && (
-                                            <button onClick={() => markAsRead(notif.id)} className="btn btn-ghost btn-xs btn-circle" title="Mark as read">
-                                                <Check className="w-3 h-3" />
-                                            </button>
-                                        )}
+                            notifications.map(notif => {
+                                const isClickable = !!notif.targetView && !!setView;
+                                const handleCardClick = () => {
+                                    markAsRead(notif.id);
+                                    if (notif.targetView && setView) {
+                                        setView(notif.targetView);
+                                    }
+                                    if (document.activeElement instanceof HTMLElement) {
+                                        document.activeElement.blur();
+                                    }
+                                };
+                                return (
+                                    <div 
+                                        key={notif.id} 
+                                        onClick={handleCardClick}
+                                        className={`p-3 rounded-lg border transition-all duration-200 
+                                            ${notif.read 
+                                                ? 'bg-base-100 border-base-200 opacity-60' 
+                                                : 'bg-base-200 border-base-300 shadow-sm'}
+                                            ${isClickable 
+                                                ? 'cursor-pointer hover:bg-base-300 hover:border-base-400 active:scale-[0.98]' 
+                                                : ''}`}
+                                    >
+                                        <div className="flex justify-between items-start gap-2">
+                                            <div className={`font-semibold text-sm ${getIconColor(notif.type)}`}>{notif.title}</div>
+                                            {!notif.read && (
+                                                <button 
+                                                    onClick={(e) => {
+                                                        e.stopPropagation();
+                                                        markAsRead(notif.id);
+                                                    }} 
+                                                    className="btn btn-ghost btn-xs btn-circle hover:bg-base-300" 
+                                                    title="Mark as read"
+                                                >
+                                                    <Check className="w-3 h-3" />
+                                                </button>
+                                            )}
+                                        </div>
+                                        <p className="text-xs mt-1 leading-relaxed text-base-content/85">{notif.message}</p>
+                                        <div className="text-[10px] opacity-40 mt-2 text-right">
+                                            {new Date(notif.timestamp).toLocaleTimeString()}
+                                        </div>
                                     </div>
-                                    <p className="text-xs mt-1 leading-relaxed">{notif.message}</p>
-                                    <div className="text-[10px] opacity-40 mt-2 text-right">
-                                        {new Date(notif.timestamp).toLocaleTimeString()}
-                                    </div>
-                                </div>
-                            ))
+                                );
+                            })
                         )}
                     </div>
                 </div>

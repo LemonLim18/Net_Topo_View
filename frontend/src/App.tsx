@@ -269,7 +269,7 @@ const App: React.FC = () => {
     <NotificationProvider>
       <DeviceProvider>
         <div data-theme={theme} className="w-screen h-screen flex flex-col font-sans">
-        <Header theme={theme} setTheme={setTheme} />
+        <Header theme={theme} setTheme={setTheme} setView={setView} />
         <div className="flex grow overflow-hidden">
             <Sidebar 
                 currentView={view} 

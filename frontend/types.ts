@@ -105,6 +105,7 @@ export interface AppNotification {
     type: NotificationType;
     timestamp: number;
     read: boolean;
+    targetView?: ViewId;
 }
 
 // Intent Lifecycle types (Phase 1 — UC02-UC05)

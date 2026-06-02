@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useState, useCallback, useEffect, useRef } from 'react';
 import type { ReactNode } from 'react';
-import type { AppNotification, NotificationType } from '../types';
+import type { AppNotification, NotificationType, ViewId } from '../types';
 import { ENABLE_DRIFT_NOTIFICATIONS, API_CONFIG } from '../src/config';
 
 /* ── Telemetry WS listener (incident push events) ───────────── */
@@ -10,7 +10,7 @@ const TELEMETRY_WS = `${_wsBase}/api/telemetry`;
 
 interface NotificationContextType {
     notifications: AppNotification[];
-    addNotification: (title: string, message: string, type: NotificationType) => void;
+    addNotification: (title: string, message: string, type: NotificationType, targetView?: ViewId) => void;
     markAsRead: (id: string) => void;
     clearAll: () => void;
     removeNotification: (id: string) => void;
@@ -25,7 +25,7 @@ export const NotificationProvider: React.FC<{ children: ReactNode }> = ({ childr
     const wsRef = useRef<WebSocket | null>(null);
     const recentNotificationRef = useRef<Map<string, number>>(new Map());
 
-    const addNotification = useCallback((title: string, message: string, type: NotificationType) => {
+    const addNotification = useCallback((title: string, message: string, type: NotificationType, targetView?: ViewId) => {
         const key = `${type}|${title}|${message}`;
         const now = Date.now();
         const DUPLICATE_WINDOW_MS = 15000;
@@ -54,6 +54,7 @@ export const NotificationProvider: React.FC<{ children: ReactNode }> = ({ childr
             type,
             timestamp: Date.now(),
             read: false,
+            targetView,
         };
         setNotifications(prev => [newNotif, ...prev]);
 
@@ -86,6 +87,7 @@ export const NotificationProvider: React.FC<{ children: ReactNode }> = ({ childr
                 if (intentionallyClosing || !alive) return;
             };
 
+
             ws.onmessage = (ev) => {
                 try {
                     const msg = JSON.parse(ev.data);
@@ -103,26 +105,33 @@ export const NotificationProvider: React.FC<{ children: ReactNode }> = ({ childr
                             'New Incident Detected',
                             `${(msg.data?.anomaly_type ?? 'anomaly').replace(/_/g, ' ')} on ${(msg.data?.affected_devices ?? []).join(', ') || 'unknown device'}`,
                             notifType,
+                            'overview',
                         );
                     } else if (msg.event === 'incident_resolved') {
-                        addNotification('Incident Resolved', msg.data?.id ?? 'incident', 'success');
+                        addNotification('Incident Resolved', msg.data?.id ?? 'incident', 'success', 'overview');
                     } else if (msg.event === 'incident_updated' && msg.data?.status === 'approved') {
-                        addNotification('Incident Approved', `Playbook ready for deployment: ${msg.data?.id ?? ''}`, 'info');
+                        addNotification('Incident Approved', `Playbook ready for deployment: ${msg.data?.id ?? ''}`, 'info', 'approval_queue');
                     } else if (msg.event === 'security_event') {
                         const sev = String(msg.data?.severity ?? 'info').toLowerCase();
-                        const notifType: NotificationType = sev === 'critical' ? 'error' : sev === 'high' ? 'warning' : sev === 'medium' ? 'info' : 'success';
+                        if (sev === 'low' || sev === 'info') return; // Filter out low severity spam
+                        const notifType: NotificationType = sev === 'critical' ? 'error' : sev === 'high' ? 'warning' : 'info';
                         addNotification(
                             'Syslog Event',
-                            `${msg.data?.event_type ?? 'event'} from ${msg.data?.source_ip ?? 'unknown source'}`,
+                            `${msg.data?.event_type ?? 'event'} from ${msg.data?.source_ip ?? 'unknown source'}${msg.data?.description ? `: ${msg.data.description}` : ''}`,
                             notifType,
+                            'net_perf',
                         );
                     } else if (msg.event === 'device_syslog_event') {
                         const sev = String(msg.data?.severity ?? 'info').toLowerCase();
-                        const notifType: NotificationType = sev === 'critical' ? 'error' : sev === 'high' ? 'warning' : sev === 'medium' ? 'info' : 'success';
+                        if (sev === 'low' || sev === 'info') return; // Filter out low severity spam
+                        const notifType: NotificationType = sev === 'critical' ? 'error' : sev === 'high' ? 'warning' : 'info';
+                        const source = msg.data?.source_host ?? msg.data?.source_ip ?? 'unknown source';
+                        const mnemonic = msg.data?.mnemonic ?? msg.data?.facility ?? 'syslog';
                         addNotification(
                             'Device Syslog',
-                            `${msg.data?.mnemonic ?? msg.data?.facility ?? 'syslog'} from ${msg.data?.source_host ?? msg.data?.source_ip ?? 'unknown source'}`,
+                            `${mnemonic} from ${source}${msg.data?.message ? `: ${msg.data.message}` : ''}`,
                             notifType,
+                            'net_perf',
                         );
                     }
 
@@ -134,6 +143,7 @@ export const NotificationProvider: React.FC<{ children: ReactNode }> = ({ childr
                                 'Drift Detected',
                                 `${dCount} device(s) with configuration drift (${msg.data?.devices_checked ?? 0} checked)`,
                                 dCount > 2 ? 'error' : 'warning',
+                                'compliance_hub',
                             );
                         }
                     }
