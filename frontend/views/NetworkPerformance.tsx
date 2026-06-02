@@ -646,6 +646,7 @@ const NetworkPerformance: React.FC = () => {
   const [syslogEventsLoading, setSyslogEventsLoading] = useState(false);
   const [syslogSyncLoading, setSyslogSyncLoading] = useState(false);
   const [telegrafSyncLoading, setTelegrafSyncLoading] = useState(false);
+  const [syslogHydrated, setSyslogHydrated] = useState(false);
   const [focusDevice, setFocusDevice] = useState<string>('');
   const [selectedInterface, setSelectedInterface] = useState<string>('');
   const [rangeMinutes, setRangeMinutes] = useState<number>(60);
@@ -741,13 +742,9 @@ const NetworkPerformance: React.FC = () => {
     try {
       const reqDevice = focusDevice || undefined;
       const ifFilter = selectedInterface || undefined;
-      const metrics = [
-        'cpu',
-        'memory',
-        'interface_traffic',
-        'interface_out',
-        'errors',
-        'discards',
+      const baseMetrics = ['cpu', 'memory', 'interface_traffic', 'interface_out', 'errors', 'discards'];
+      const focusedMetrics = [
+        ...baseMetrics,
         'pkts_in_ucast',
         'pkts_out_ucast',
         'pkts_in_mcast',
@@ -756,7 +753,9 @@ const NetworkPerformance: React.FC = () => {
         'pkts_out_bcast',
         'if_speed',
       ];
-      const batch = await monitorApi.getMetricHistoryBatch(metrics, reqDevice, rangeMinutes, 240, ifFilter);
+      const metrics = focusDevice ? focusedMetrics : baseMetrics;
+      const pointLimit = focusDevice ? 120 : 90;
+      const batch = await monitorApi.getMetricHistoryBatch(metrics, reqDevice, rangeMinutes, pointLimit, ifFilter);
       const historyData = ((batch as any).data || {}) as Record<string, MetricPoint[]>;
       const pointsFor = (metricName: string) =>
         ((historyData[metricName] || []) as MetricPoint[]).filter((p) => isValidDeviceKey(p.device));
@@ -845,8 +844,18 @@ const NetworkPerformance: React.FC = () => {
 
   useEffect(() => { fetchAll(); }, [fetchAll]);
   useEffect(() => { fetchHistory(); }, [fetchHistory]);
-  useEffect(() => { loadSyslogSources(); }, [loadSyslogSources]);
-  useEffect(() => { loadRecentSyslogEvents(); }, [loadRecentSyslogEvents]);
+  useEffect(() => {
+    const timer = window.setTimeout(() => setSyslogHydrated(true), 1500);
+    return () => window.clearTimeout(timer);
+  }, []);
+  useEffect(() => {
+    if (!syslogHydrated) return;
+    loadSyslogSources();
+  }, [loadSyslogSources, syslogHydrated]);
+  useEffect(() => {
+    if (!syslogHydrated) return;
+    loadRecentSyslogEvents();
+  }, [loadRecentSyslogEvents, syslogHydrated]);
   useEffect(() => {
     const timer = setInterval(() => {
       fetchAll();
@@ -855,12 +864,13 @@ const NetworkPerformance: React.FC = () => {
     return () => clearInterval(timer);
   }, [fetchAll, fetchHistory]);
   useEffect(() => {
+    if (!syslogHydrated) return;
     const timer = setInterval(() => {
       loadSyslogSources();
       loadRecentSyslogEvents();
-    }, 10000);
+    }, 30000);
     return () => clearInterval(timer);
-  }, [loadRecentSyslogEvents, loadSyslogSources]);
+  }, [loadRecentSyslogEvents, loadSyslogSources, syslogHydrated]);
 
   const upDevices = devices.filter((d) => (d.status || '').toLowerCase() === 'up').length;
   const activeAlerts = alerts.filter((a) => a.status === 'active').length;
@@ -956,7 +966,7 @@ const NetworkPerformance: React.FC = () => {
         <div>
           <div className="flex items-center gap-3 w-full">
             <Activity className="w-7 h-7 text-primary" />
-            <h1 className="text-2xl font-bold">Network Health</h1>
+            <h1 className="text-2xl font-bold">Network Health & Performance</h1>
             <span className="badge badge-primary badge-outline hidden sm:inline-flex">{focusDevice ? 'Device focus' : `${devices.length} devices`}</span>
           </div>
           <p className="text-xs opacity-50 mt-1.5 flex items-center gap-1">
@@ -968,12 +978,10 @@ const NetworkPerformance: React.FC = () => {
           <button className="btn btn-sm btn-outline gap-1" onClick={() => { fetchAll(); fetchHistory(); }} disabled={isLoading}>
             <RefreshCw className={`w-4 h-4 ${isLoading ? 'animate-spin' : ''}`} /> Refresh
           </button>
-          {/* <button className="btn btn-sm btn-outline gap-1" onClick={handleEvaluate}>
-            <AlertTriangle className="w-4 h-4 text-warning" /> Evaluate
+          <button className="btn btn-sm btn-outline gap-1" onClick={handleSyncTelegraf} disabled={telegrafSyncLoading}>
+            {telegrafSyncLoading ? <span className="loading loading-spinner loading-xs" /> : <Server className="w-4 h-4" />}
+            Sync Telegraf Config
           </button>
-          <button className="btn btn-sm btn-primary gap-1" onClick={handleRegenerateConfig} disabled={isLoading}>
-            <Server className="w-4 h-4" /> Telegraf
-          </button> */}
         </div>
       </div>
 
@@ -1291,16 +1299,13 @@ const NetworkPerformance: React.FC = () => {
               Recent Syslog Events
             </h3>
             <div className="flex flex-wrap items-center gap-2">
-              <button className="btn btn-ghost btn-xs" onClick={loadRecentSyslogEvents} disabled={syslogEventsLoading} title="Refresh syslog events">
-                <RefreshCw className={`w-3.5 h-3.5 ${syslogEventsLoading ? 'animate-spin' : ''}`} />
+              <button className="btn btn-ghost btn-xs gap-1" onClick={loadRecentSyslogEvents} disabled={syslogEventsLoading}>
+                <RefreshCw className={`w-3 h-3 ${syslogEventsLoading ? 'animate-spin' : ''}`} />
+                Refresh Logs
               </button>
-              <button className="btn btn-outline btn-xs" onClick={handleSyncTelegraf} disabled={telegrafSyncLoading}>
-                {telegrafSyncLoading ? <span className="loading loading-spinner loading-xs" /> : null}
-                Sync Telegraf
-              </button>
-              <button className="btn btn-outline btn-xs" onClick={handleSyncSyslogServer} disabled={syslogSyncLoading}>
-                {syslogSyncLoading ? <span className="loading loading-spinner loading-xs" /> : null}
-                Sync Server
+              <button className="btn btn-outline btn-xs gap-1" onClick={handleSyncSyslogServer} disabled={syslogSyncLoading}>
+                {syslogSyncLoading ? <span className="loading loading-spinner loading-xs" /> : <Server className="w-3 h-3" />}
+                Sync Syslog Server
               </button>
             </div>
           </div>

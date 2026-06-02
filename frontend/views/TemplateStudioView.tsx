@@ -1117,13 +1117,12 @@ const TemplateStudioView: React.FC = () => {
         </div>
 
         {/* ─── Right: Variables + Preview ─── */}
-        <div
+        {/* <div
           className="shrink-0 overflow-hidden border-l border-base-300 bg-base-100 flex flex-col"
           style={{ width: '300px' }}
         >
           {activeTab ? (
             <>
-              {/* Variables panel */}
               <div className="border-b border-base-300 p-3 shrink-0 overflow-y-auto" style={{ maxHeight: '45%' }}>
                 <div className="flex items-center justify-between mb-2">
                   <span className="text-xs font-bold uppercase opacity-60">Template Variables</span>
@@ -1221,7 +1220,6 @@ const TemplateStudioView: React.FC = () => {
                 )}
               </div>
 
-              {/* Preview */}
               <div className="flex flex-col grow min-h-0">
                 <div className="flex items-center justify-between p-3 border-b border-base-300 shrink-0">
                   <span className="text-xs font-bold uppercase opacity-60">Live Preview</span>
@@ -1255,7 +1253,7 @@ const TemplateStudioView: React.FC = () => {
               <p className="text-xs">Preview panel</p>
             </div>
           )}
-        </div>
+        </div> */}
       </div>
 
       {/* ─── New Template Modal ─── */}

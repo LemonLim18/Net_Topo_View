@@ -10,6 +10,9 @@ import os
 import logging
 import urllib.request
 import json
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from db.manager import DatabaseManager
 from monitor.telegraf_sync import sync_telegraf_config
 from monitor.prometheus import (
@@ -21,6 +24,27 @@ from monitor.prometheus import (
 
 router = APIRouter(prefix="/monitor", tags=["monitor"])
 logger = logging.getLogger("api.monitor")
+
+_MONITOR_CACHE: Dict[Tuple[Any, ...], Tuple[float, Any]] = {}
+_MONITOR_CACHE_LOCK = threading.Lock()
+
+
+def _cache_get(key: Tuple[Any, ...], ttl_seconds: float):
+    now = time.time()
+    with _MONITOR_CACHE_LOCK:
+        entry = _MONITOR_CACHE.get(key)
+        if not entry:
+            return None
+        expires_at, payload = entry
+        if expires_at <= now:
+            _MONITOR_CACHE.pop(key, None)
+            return None
+        return payload
+
+
+def _cache_set(key: Tuple[Any, ...], ttl_seconds: float, payload: Any):
+    with _MONITOR_CACHE_LOCK:
+        _MONITOR_CACHE[key] = (time.time() + max(0.1, ttl_seconds), payload)
 
 # InfluxDB connection (configure via env vars)
 INFLUXDB_URL   = os.getenv("INFLUXDB_URL", "http://localhost:8086")
@@ -38,13 +62,13 @@ INFLUX_MEASUREMENTS = [
     "snmp_system",
     "snmp_cisco",
     "snmp_huawei",
+    "snmp_juniper",
     "cisco_cpu",
     "cisco_memory",
     "huawei_cpu",
     "huawei_memory",
     "huawei_health",
-    "juniper_cpu",
-    "juniper_memory",
+    "juniper_health",
     "interface",
     "ifTable",
     "snmp_interfaces",
@@ -118,6 +142,7 @@ DISCARD_COUNTER_FIELDS = {
 PERCENT_MEMORY_FIELDS = {
     "mem_usage_pct",
     "hwEntityMemUsage",
+    "jnxOperatingBuffer",
 }
 
 RATE_METRICS = {
@@ -139,12 +164,12 @@ MAX_ESTIMATED_PACKET_BYTES = 896.0
 
 METRIC_DEFS: Dict[str, Dict[str, List[str]]] = {
     "cpu": {
-        "measurements": ["snmp", "snmp_cisco", "snmp_huawei", "cisco_cpu", "huawei_cpu", "huawei_health"],
-        "fields": ["cpmCPUTotal5minRev", "cpmCPUTotal5min", "cpu_5min", "cpu_usage", "cpu_load", "hwEntityCpuUsage"],
+        "measurements": ["snmp", "snmp_cisco", "snmp_huawei", "snmp_juniper", "cisco_cpu", "huawei_cpu", "huawei_health", "juniper_health"],
+        "fields": ["cpmCPUTotal5minRev", "cpmCPUTotal5min", "cpu_5min", "cpu_usage", "cpu_load", "hwEntityCpuUsage", "jnxOperatingCPU"],
     },
     "memory": {
-        "measurements": ["snmp", "snmp_cisco", "snmp_huawei", "cisco_memory", "huawei_memory", "huawei_health"],
-        "fields": ["ciscoMemoryPoolUsed", "cisco_mem_used", "mem_used", "mem_usage_pct", "hwEntityMemUsage"],
+        "measurements": ["snmp", "snmp_cisco", "snmp_huawei", "snmp_juniper", "cisco_memory", "huawei_memory", "huawei_health", "juniper_health"],
+        "fields": ["ciscoMemoryPoolUsed", "cisco_mem_used", "mem_used", "mem_usage_pct", "hwEntityMemUsage", "jnxOperatingBuffer"],
     },
     "memory_free": {
         "measurements": ["snmp_cisco"],
@@ -208,7 +233,7 @@ METRIC_DEFS: Dict[str, Dict[str, List[str]]] = {
         "fields": ["ifHighSpeed"],
     },
     "uptime": {
-        "measurements": ["snmp_cisco", "snmp_huawei"],
+        "measurements": ["snmp_cisco", "snmp_huawei", "snmp_juniper", "snmp_system"],
         "fields": ["sysUpTime"],
     },
     "latency": {
@@ -248,12 +273,13 @@ def _row_device_key(row: Dict[str, str]) -> str:
         "",
         "agent_host",
         "host",
+        "source",
         "localhost",
         "127.0.0.1",
         "::1",
         "unknown",
     }
-    for key in ("agent_host", "host", "device", "node", "instance"):
+    for key in ("agent_host", "host", "source", "device", "node", "instance"):
         value = (row.get(key) or "").strip()
         if not value:
             continue
@@ -276,7 +302,7 @@ def _row_interface_key(row: Dict[str, str]) -> Optional[str]:
 
     for key, value in candidates:
         normalized = value.lower()
-        if normalized in {"host", "agent_host", "unknown"}:
+        if normalized in {"host", "agent_host", "source", "unknown"}:
             continue
         if key == "name" and value.isdigit():
             continue
@@ -322,7 +348,8 @@ def _flux_device_filter(selected_devices: List[str]) -> str:
         return ""
     by_agent = _build_or_filter("agent_host", selected_devices)
     by_host = _build_or_filter("host", selected_devices)
-    filters = [clause for clause in (by_agent, by_host) if clause]
+    by_source = _build_or_filter("source", selected_devices)
+    filters = [clause for clause in (by_agent, by_host, by_source) if clause]
     if not filters:
         return ""
     joined = " or ".join(f"({clause})" for clause in filters)
@@ -419,7 +446,7 @@ def _vendor_from_sysdesc(sysdesc: str) -> str:
 
 
 def _system_field_filter() -> str:
-    return '  |> filter(fn: (r) => r._measurement == "snmp_system" or r._measurement == "snmp_cisco" or r._measurement == "snmp_huawei")\n'
+    return '  |> filter(fn: (r) => r._measurement == "snmp_system" or r._measurement == "snmp_cisco" or r._measurement == "snmp_huawei" or r._measurement == "snmp_juniper")\n'
 
 
 def _estimated_packet_size_bytes(device: str, interface: Optional[str], direction: str, time_bucket: Optional[str] = None) -> float:
@@ -1297,7 +1324,10 @@ from(bucket: "{INFLUXDB_BUCKET}")
             if selected_devices:
                 by_agent = _build_or_filter("agent_host", selected_devices)
                 by_host = _build_or_filter("host", selected_devices)
-                flux_query += f'  |> filter(fn: (r) => ({by_agent}) or ({by_host}))\n'
+                by_source = _build_or_filter("source", selected_devices)
+                selected_filters = [clause for clause in (by_agent, by_host, by_source) if clause]
+                if selected_filters:
+                    flux_query += f'  |> filter(fn: (r) => {" or ".join(f"({clause})" for clause in selected_filters)})\n'
 
             flux_query += f'  |> last()\n  |> limit(n: {max(1, limit)})'
             rows = _run_flux_query(flux_query, timeout=15)
@@ -1453,32 +1483,63 @@ def _get_metric_history_batch_sync(
     range_minutes: int = 60,
     limit: int = 120,
 ):
+    selected_devices = _parse_device_filters(device, devices)
+    cache_key = (
+        "history-batch",
+        tuple(metrics),
+        tuple(selected_devices),
+        (interface or "").strip(),
+        int(range_minutes),
+        int(limit),
+    )
+    cached = _cache_get(cache_key, ttl_seconds=8.0)
+    if cached is not None:
+        return cached
+
     data: Dict[str, List[Dict[str, Any]]] = {}
     sources: Set[str] = set()
-    for metric_name in metrics:
-        res = _get_metric_history_sync(
-            device=device,
-            devices=devices,
-            interface=interface,
-            metric=metric_name,
-            range_minutes=range_minutes,
-            limit=limit,
-        )
-        data[metric_name] = list(res.get("data") or [])
-        source = str(res.get("source") or "").strip()
-        if source:
-            sources.add(source)
+    max_workers = max(1, min(len(metrics), 4))
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_map = {
+            executor.submit(
+                _get_metric_history_sync,
+                device,
+                devices,
+                interface,
+                metric_name,
+                range_minutes,
+                limit,
+            ): metric_name
+            for metric_name in metrics
+        }
+        for future in as_completed(future_map):
+            metric_name = future_map[future]
+            try:
+                res = future.result()
+            except Exception as exc:
+                logger.debug("History batch metric %s failed: %s", metric_name, exc)
+                res = {"source": "error", "data": [], "error": str(exc)}
+            data[metric_name] = list(res.get("data") or [])
+            source = str(res.get("source") or "").strip()
+            if source:
+                sources.add(source)
     source_value = sources.pop() if len(sources) == 1 else ("mixed" if sources else "unknown")
-    return {
+    payload = {
         "source": source_value,
         "metrics": metrics,
         "data": data,
         "selected_interface": interface,
-        "selected_devices": _parse_device_filters(device, devices),
+        "selected_devices": selected_devices,
     }
+    _cache_set(cache_key, ttl_seconds=8.0, payload=payload)
+    return payload
 
 
 def _get_device_metrics_summary_sync(limit: int = 50):
+    cache_key = ("summary", int(limit))
+    cached = _cache_get(cache_key, ttl_seconds=10.0)
+    if cached is not None:
+        return cached
     inventory_devices = []
 
     def _norm_device_key(value: Any) -> str:
@@ -1595,10 +1656,14 @@ def _get_device_metrics_summary_sync(limit: int = 50):
             live_devices.append(merged)
 
         live_devices.sort(key=lambda d: (d.get("hostname") or d.get("mgmt_ip") or ""))
-        return {"devices": live_devices[:limit], "source": "influxdb+sqlite"}
+        payload = {"devices": live_devices[:limit], "source": "influxdb+sqlite"}
+        _cache_set(cache_key, ttl_seconds=10.0, payload=payload)
+        return payload
 
     if INFLUXDB_TOKEN:
-        return {"devices": [], "source": "influxdb"}
+        payload = {"devices": [], "source": "influxdb"}
+        _cache_set(cache_key, ttl_seconds=4.0, payload=payload)
+        return payload
 
     devices = inventory_devices
     for d in devices:
@@ -1641,15 +1706,23 @@ def _get_device_metrics_summary_sync(limit: int = 50):
             if d.get(extra_key) in (None, 0) and enriched.get(extra_key) is not None:
                 d[extra_key] = enriched.get(extra_key)
 
-    return {"devices": devices, "source": "sqlite+influx"}
+    payload = {"devices": devices, "source": "sqlite+influx"}
+    _cache_set(cache_key, ttl_seconds=10.0, payload=payload)
+    return payload
 
 
 def _get_device_interfaces_sync(device: str = "", interface: Optional[str] = None):
     if not device:
         raise HTTPException(400, "Provide ?device=IP-or-hostname")
+    cache_key = ("interfaces", device.strip(), (interface or "").strip())
+    cached = _cache_get(cache_key, ttl_seconds=8.0)
+    if cached is not None:
+        return cached
     try:
         data = _influx_interface_snapshot(device=device, interface=interface)
-        return {"device": device, "interfaces": data}
+        payload = {"device": device, "interfaces": data}
+        _cache_set(cache_key, ttl_seconds=8.0, payload=payload)
+        return payload
     except Exception as exc:
         logger.debug("Interface snapshot query failed: %s", exc)
         return {"device": device, "interfaces": [], "error": str(exc)}
@@ -1658,6 +1731,10 @@ def _get_device_interfaces_sync(device: str = "", interface: Optional[str] = Non
 def _get_device_hostnames_sync():
     if not INFLUXDB_TOKEN:
         return {"hostnames": {}}
+    cache_key = ("hostnames",)
+    cached = _cache_get(cache_key, ttl_seconds=15.0)
+    if cached is not None:
+        return cached
     try:
         flux = f'''
 from(bucket: "{INFLUXDB_BUCKET}")
@@ -1672,7 +1749,9 @@ from(bucket: "{INFLUXDB_BUCKET}")
             name = (row.get("_value") or "").strip()
             if ip and name and ip != "unknown":
                 result[ip] = name
-        return {"hostnames": result}
+        payload = {"hostnames": result}
+        _cache_set(cache_key, ttl_seconds=15.0, payload=payload)
+        return payload
     except Exception as exc:
         logger.debug("Hostnames query failed: %s", exc)
         return {"hostnames": {}}

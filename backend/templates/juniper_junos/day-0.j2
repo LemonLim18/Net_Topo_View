@@ -21,6 +21,7 @@ set security zones security-zone trust interfaces {{ mgmt_interface }}.0 host-in
 set security zones security-zone trust interfaces {{ mgmt_interface }}.0 host-inbound-traffic system-services http
 set security zones security-zone trust interfaces {{ mgmt_interface }}.0 host-inbound-traffic system-services https
 set security zones security-zone trust interfaces {{ mgmt_interface }}.0 host-inbound-traffic system-services netconf
+set security zones security-zone trust interfaces {{ mgmt_interface }}.0 host-inbound-traffic system-services snmp
 #
 {% if snmp_community %}
 set snmp community {{ snmp_community }} authorization read-only

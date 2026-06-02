@@ -333,34 +333,121 @@ def _huawei_snmp(agents: List[str], community: str) -> str:
 """
 
 
-def _juniper_cpu_mem(agents: List[str], community: str) -> str:
-    """Juniper Operating MIB CPU + memory."""
+def _juniper_snmp(agents: List[str], community: str) -> str:
+    """Juniper system, health, and interface telemetry in a dedicated vendor block."""
     if not agents:
         return ""
     agent_list = ", ".join(f'"{a}:161"' for a in agents)
     return f"""
-# ── Juniper CPU (JUNIPER-MIB jnxOperating) ────────────────
+# Juniper SNMP (system, health, interfaces)
 [[inputs.snmp]]
   agents    = [{agent_list}]
   version   = 2
   community = "{_toml_string(community)}"
-  name      = "juniper_cpu"
+  name      = "snmp_juniper"
 
   [[inputs.snmp.field]]
-    name = "cpu_load"
-    oid  = "1.3.6.1.4.1.2636.3.1.13.1.8.9.1.0.0"
-
-# ── Juniper Memory (JUNIPER-MIB jnxOperating) ─────────────
-[[inputs.snmp]]
-  agents    = [{agent_list}]
-  version   = 2
-  community = "{_toml_string(community)}"
-  name      = "juniper_memory"
+    name   = "sysName_tag"
+    oid    = ".1.3.6.1.2.1.1.5.0"
+    is_tag = true
 
   [[inputs.snmp.field]]
-    name = "mem_usage_pct"
-    oid  = "1.3.6.1.4.1.2636.3.1.13.1.11.9.1.0.0"
+    name   = "sysName"
+    oid    = ".1.3.6.1.2.1.1.5.0"
+    is_tag = false
+
+  [[inputs.snmp.field]]
+    name = "sysDescr"
+    oid  = ".1.3.6.1.2.1.1.1.0"
+
+  [[inputs.snmp.field]]
+    name = "sysUpTime"
+    oid  = ".1.3.6.1.2.1.1.3.0"
+
+  [[inputs.snmp.table]]
+    name = "juniper_health"
+
+    [[inputs.snmp.table.field]]
+      name   = "jnxOperatingDescr"
+      oid    = ".1.3.6.1.4.1.2636.3.1.13.1.5"
+      is_tag = true
+
+    [[inputs.snmp.table.field]]
+      name = "jnxOperatingCPU"
+      oid  = ".1.3.6.1.4.1.2636.3.1.13.1.8"
+
+    [[inputs.snmp.table.field]]
+      name = "jnxOperatingBuffer"
+      oid  = ".1.3.6.1.4.1.2636.3.1.13.1.11"
+
+  [[inputs.snmp.table]]
+    name = "interface"
+    inherit_tags = ["sysName"]
+
+    [[inputs.snmp.table.field]]
+      name   = "ifName"
+      oid    = ".1.3.6.1.2.1.31.1.1.1.1"
+      is_tag = true
+    [[inputs.snmp.table.field]]
+      name = "ifOperStatus"
+      oid  = ".1.3.6.1.2.1.2.2.1.8"
+    [[inputs.snmp.table.field]]
+      name = "ifAdminStatus"
+      oid  = ".1.3.6.1.2.1.2.2.1.7"
+    [[inputs.snmp.table.field]]
+      name = "ifHCInOctets"
+      oid  = ".1.3.6.1.2.1.31.1.1.1.6"
+    [[inputs.snmp.table.field]]
+      name = "ifHCOutOctets"
+      oid  = ".1.3.6.1.2.1.31.1.1.1.10"
+    [[inputs.snmp.table.field]]
+      name = "ifInErrors"
+      oid  = ".1.3.6.1.2.1.2.2.1.14"
+    [[inputs.snmp.table.field]]
+      name = "ifOutErrors"
+      oid  = ".1.3.6.1.2.1.2.2.1.20"
+    [[inputs.snmp.table.field]]
+      name = "ifInDiscards"
+      oid  = ".1.3.6.1.2.1.2.2.1.13"
+    [[inputs.snmp.table.field]]
+      name = "ifOutDiscards"
+      oid  = ".1.3.6.1.2.1.2.2.1.19"
+
+  [[inputs.snmp.table]]
+    name = "interface_packet_stats"
+    inherit_tags = ["sysName"]
+    index_as_tag = true
+
+    [[inputs.snmp.table.field]]
+      name   = "ifName"
+      oid    = ".1.3.6.1.2.1.31.1.1.1.1"
+      is_tag = true
+    [[inputs.snmp.table.field]]
+      name = "ifHCInUcastPkts"
+      oid  = ".1.3.6.1.2.1.31.1.1.1.7"
+    [[inputs.snmp.table.field]]
+      name = "ifHCInMulticastPkts"
+      oid  = ".1.3.6.1.2.1.31.1.1.1.8"
+    [[inputs.snmp.table.field]]
+      name = "ifHCInBroadcastPkts"
+      oid  = ".1.3.6.1.2.1.31.1.1.1.9"
+    [[inputs.snmp.table.field]]
+      name = "ifHCOutUcastPkts"
+      oid  = ".1.3.6.1.2.1.31.1.1.1.11"
+    [[inputs.snmp.table.field]]
+      name = "ifHCOutMulticastPkts"
+      oid  = ".1.3.6.1.2.1.31.1.1.1.12"
+    [[inputs.snmp.table.field]]
+      name = "ifHCOutBroadcastPkts"
+      oid  = ".1.3.6.1.2.1.31.1.1.1.13"
+    [[inputs.snmp.table.field]]
+      name = "ifLinkUpDownTrapEnable"
+      oid  = ".1.3.6.1.2.1.31.1.1.1.14"
+    [[inputs.snmp.table.field]]
+      name = "ifHighSpeed"
+      oid  = ".1.3.6.1.2.1.31.1.1.1.15"
 """
+
 
 
 def _interfaces(agents: List[str], community: str) -> str:
@@ -503,15 +590,16 @@ class TelegrafConfigGenerator:
         )
 
         community = self.snmp_community
-        non_huawei_ips = [ip for ip in all_ips if ip not in set(huawei_ips)]
+        dedicated_vendor_ips = set(huawei_ips) | set(juniper_ips)
+        generic_ips = [ip for ip in all_ips if ip not in dedicated_vendor_ips]
         sections = [
             _header(self.influx_url, self.influx_token,
                     self.influx_org, self.influx_bucket),
-            _snmp_system(non_huawei_ips, community),
+            _snmp_system(generic_ips, community),
             _cisco_cpu_mem(cisco_ips, community),
             _huawei_snmp(huawei_ips, self.huawei_community),
-            _juniper_cpu_mem(juniper_ips, community),
-            _interfaces(non_huawei_ips, community),
+            _juniper_snmp(juniper_ips, community),
+            _interfaces(generic_ips, community),
             _push_listeners(),
             _ping_targets(all_ips),
         ]
@@ -541,17 +629,18 @@ class TelegrafConfigGenerator:
                 juniper_ips.append(ip)
 
         community = self.snmp_community
-        non_huawei_ips = [ip for ip in all_ips if ip not in set(huawei_ips)]
+        dedicated_vendor_ips = set(huawei_ips) | set(juniper_ips)
+        generic_ips = [ip for ip in all_ips if ip not in dedicated_vendor_ips]
         sections = [
             "# ============================================================",
             "# AUTO-GENERATED by CogniShield telegraf_gen.py",
             "# Managed dynamic device SNMP targets (do not edit manually).",
             "# ============================================================",
-            _snmp_system(non_huawei_ips, community),
+            _snmp_system(generic_ips, community),
             _cisco_cpu_mem(cisco_ips, community),
             _huawei_snmp(huawei_ips, self.huawei_community),
-            _juniper_cpu_mem(juniper_ips, community),
-            _interfaces(non_huawei_ips, community),
+            _juniper_snmp(juniper_ips, community),
+            _interfaces(generic_ips, community),
         ]
         return "\n".join(s for s in sections if s)
 
