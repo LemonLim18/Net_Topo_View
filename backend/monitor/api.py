@@ -1757,6 +1757,94 @@ from(bucket: "{INFLUXDB_BUCKET}")
         return {"hostnames": {}}
 
 
+def _get_dashboard_bundle_sync(
+    device: Optional[str] = None,
+    devices: Optional[str] = None,
+    interface: Optional[str] = None,
+    range_minutes: int = 60,
+    limit: int = 120,
+    summary_limit: int = 50,
+    include_packets: bool = False,
+):
+    selected_devices = _parse_device_filters(device, devices)
+    normalized_interface = (interface or "").strip() or None
+    cache_key = (
+        "dashboard-bundle",
+        tuple(selected_devices),
+        normalized_interface or "",
+        int(range_minutes),
+        int(limit),
+        int(summary_limit),
+        bool(include_packets),
+    )
+    cached = _cache_get(cache_key, ttl_seconds=8.0)
+    if cached is not None:
+        return cached
+
+    metrics = ['cpu', 'memory', 'interface_traffic', 'interface_out', 'errors', 'discards']
+    if include_packets:
+        metrics.extend([
+            'pkts_in_ucast',
+            'pkts_out_ucast',
+            'pkts_in_mcast',
+            'pkts_out_mcast',
+            'pkts_in_bcast',
+            'pkts_out_bcast',
+            'if_speed',
+        ])
+
+    tasks = {
+        "summary": lambda: _get_device_metrics_summary_sync(summary_limit),
+        "hostnames": _get_device_hostnames_sync,
+        "history": lambda: _get_metric_history_batch_sync(
+            metrics=metrics,
+            device=device,
+            devices=devices,
+            interface=normalized_interface,
+            range_minutes=range_minutes,
+            limit=limit,
+        ),
+    }
+    if device:
+        tasks["interfaces"] = lambda: _get_device_interfaces_sync(device=device, interface=normalized_interface)
+
+    results: Dict[str, Any] = {}
+    with ThreadPoolExecutor(max_workers=min(4, len(tasks))) as executor:
+        future_map = {executor.submit(fn): key for key, fn in tasks.items()}
+        for future in as_completed(future_map):
+            key = future_map[future]
+            try:
+                results[key] = future.result()
+            except Exception as exc:
+                logger.debug("Dashboard bundle task %s failed: %s", key, exc)
+                if key == "summary":
+                    results[key] = {"devices": [], "source": "error", "error": str(exc)}
+                elif key == "hostnames":
+                    results[key] = {"hostnames": {}}
+                elif key == "history":
+                    results[key] = {"source": "error", "metrics": metrics, "data": {}, "error": str(exc)}
+                elif key == "interfaces":
+                    results[key] = {"device": device or "", "interfaces": [], "error": str(exc)}
+
+    payload = {
+        "scope": {
+            "device": device,
+            "devices": selected_devices,
+            "interface": normalized_interface,
+            "range_minutes": range_minutes,
+            "limit": limit,
+            "summary_limit": summary_limit,
+            "include_packets": include_packets,
+        },
+        "summary": results.get("summary", {"devices": [], "source": "unknown"}),
+        "hostnames": results.get("hostnames", {"hostnames": {}}),
+        "history": results.get("history", {"source": "unknown", "metrics": metrics, "data": {}}),
+        "interfaces": results.get("interfaces", {"device": device or "", "interfaces": []}),
+    }
+    _cache_set(cache_key, ttl_seconds=8.0, payload=payload)
+    return payload
+
+
 @router.post("/update-config", response_model=StatusResponse)
 async def update_telegraf_config(deploy_remote: Optional[bool] = None):
     """Regenerate Telegraf config and optionally deploy/restart remote Telegraf."""
@@ -1873,6 +1961,29 @@ async def get_device_interfaces(device: str = "", interface: Optional[str] = Non
 async def get_device_hostnames():
     """Return IP → sysName mapping for all monitored devices."""
     return await run_in_threadpool(_get_device_hostnames_sync)
+
+
+@router.get("/metrics/dashboard-bundle")
+async def get_dashboard_bundle(
+    device: Optional[str] = None,
+    devices: Optional[str] = None,
+    interface: Optional[str] = None,
+    range_minutes: int = 60,
+    limit: int = 120,
+    summary_limit: int = 50,
+    include_packets: bool = False,
+):
+    """Return a bundled monitoring payload for Network Health dashboards."""
+    return await run_in_threadpool(
+        _get_dashboard_bundle_sync,
+        device,
+        devices,
+        interface,
+        range_minutes,
+        limit,
+        summary_limit,
+        include_packets,
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════════════

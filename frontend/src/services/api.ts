@@ -636,6 +636,35 @@ export const monitorApi = {
   /** Get IP → sysName hostname mapping from InfluxDB */
   getDeviceHostnames: () =>
     request<{ hostnames: Record<string, string> }>('/monitor/metrics/hostnames'),
+
+  getDashboardBundle: (
+    options?: {
+      device?: string;
+      rangeMinutes?: number;
+      limit?: number;
+      summaryLimit?: number;
+      interfaceName?: string;
+      devices?: string[];
+      includePackets?: boolean;
+    },
+  ) => {
+    const params = new URLSearchParams();
+    if (options?.device) params.set('device', options.device);
+    if (options?.rangeMinutes != null) params.set('range_minutes', String(options.rangeMinutes));
+    if (options?.limit != null) params.set('limit', String(options.limit));
+    if (options?.summaryLimit != null) params.set('summary_limit', String(options.summaryLimit));
+    if (options?.interfaceName) params.set('interface', options.interfaceName);
+    if (options?.devices && options.devices.length > 0) params.set('devices', options.devices.join(','));
+    if (options?.includePackets) params.set('include_packets', 'true');
+    const qs = params.toString();
+    return request<{
+      scope: Record<string, any>;
+      summary: { devices: any[]; source?: string };
+      hostnames: { hostnames: Record<string, string> };
+      history: { source?: string; metrics: string[]; data: Record<string, any[]> };
+      interfaces: { device?: string; interfaces: any[] };
+    }>(`/monitor/metrics/dashboard-bundle${qs ? `?${qs}` : ''}`);
+  },
 };
 
 // --- M3: Config Engine API ---

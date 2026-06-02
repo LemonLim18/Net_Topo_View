@@ -652,7 +652,6 @@ const NetworkPerformance: React.FC = () => {
   const [rangeMinutes, setRangeMinutes] = useState<number>(60);
   const [sortConfig, setSortConfig] = useState<SortConfig | null>(null);
   const fetchAllInFlightRef = React.useRef(false);
-  const fetchHistoryInFlightRef = React.useRef(false);
 
   const requestSort = (key: string) => {
     let direction: SortDirection = 'desc';
@@ -693,23 +692,35 @@ const NetworkPerformance: React.FC = () => {
     fetchAllInFlightRef.current = true;
     setIsLoading(true);
     try {
-      const requests: Promise<any>[] = [
+      const includePackets = Boolean(focusDevice);
+      const pointLimit = focusDevice ? 120 : 90;
+      const [statusRes, alertsRes, bundleRes] = await Promise.all([
         monitorApi.getStatus().catch(() => ({ status: 'error' })),
-        monitorApi.getDeviceSummary().catch(() => ({ devices: [] })),
         thresholdApi.listAlerts('active', 30).catch(() => []),
-        monitorApi.getDeviceHostnames().catch(() => ({ hostnames: {} })),
-      ];
-      if (focusDevice) {
-        requests.push(monitorApi.getDeviceInterfaces(focusDevice).catch(() => ({ interfaces: [] })));
-      }
+        monitorApi.getDashboardBundle({
+          device: focusDevice || undefined,
+          rangeMinutes,
+          limit: pointLimit,
+          summaryLimit: 50,
+          interfaceName: selectedInterface || undefined,
+          includePackets,
+        }).catch(() => ({
+          summary: { devices: [] },
+          hostnames: { hostnames: {} },
+          history: { data: {} },
+          interfaces: { interfaces: [] },
+        })),
+      ]);
 
-      const [statusRes, summaryRes, alertsRes, hostnameRes, interfaceRes] = await Promise.all(requests);
-      const nextDevices = ((summaryRes as any).devices || []).filter((d: DeviceSummary) => isValidDeviceKey(d.mgmt_ip || d.hostname));
-      const hostnames = Object.entries((hostnameRes as any).hostnames || {}).reduce((acc, [k, v]) => {
+      const nextDevices = (((bundleRes as any)?.summary?.devices) || []).filter((d: DeviceSummary) => isValidDeviceKey(d.mgmt_ip || d.hostname));
+      const hostnames = Object.entries(((bundleRes as any)?.hostnames?.hostnames) || {}).reduce((acc, [k, v]) => {
         if (isValidDeviceKey(k) && String(v || '').trim()) acc[k] = String(v).trim();
         return acc;
       }, {} as Record<string, string>);
-      const nextInterfaces = (((interfaceRes as any)?.interfaces || []) as InterfaceSnapshot[]).filter((item) => !!item.interface).sort((a, b) => a.interface.localeCompare(b.interface));
+      const nextInterfaces = ((((bundleRes as any)?.interfaces?.interfaces) || []) as InterfaceSnapshot[]).filter((item) => !!item.interface).sort((a, b) => a.interface.localeCompare(b.interface));
+      const historyData = ((((bundleRes as any)?.history?.data) || {}) as Record<string, MetricPoint[]>);
+      const pointsFor = (metricName: string) =>
+        ((historyData[metricName] || []) as MetricPoint[]).filter((p) => isValidDeviceKey(p.device));
 
       console.log('[NetworkHealth] summary devices', nextDevices);
 
@@ -720,46 +731,6 @@ const NetworkPerformance: React.FC = () => {
       setInterfaceSnapshots(nextInterfaces);
       setLastUpdated(new Date());
       setHasLoadedSummaryGraphs(true);
-
-      if (focusDevice && selectedInterface && !nextInterfaces.some((item) => item.interface === selectedInterface)) {
-        setSelectedInterface('');
-      }
-      if (focusDevice && nextInterfaces.length === 0) {
-        setSelectedInterface('');
-      }
-    } catch {
-      setHasLoadedSummaryGraphs(true);
-      Toast.error('Load failed', 'Could not fetch monitoring data');
-    } finally {
-      fetchAllInFlightRef.current = false;
-      setIsLoading(false);
-    }
-  }, [focusDevice, selectedInterface]);
-
-  const fetchHistory = useCallback(async () => {
-    if (fetchHistoryInFlightRef.current) return;
-    fetchHistoryInFlightRef.current = true;
-    try {
-      const reqDevice = focusDevice || undefined;
-      const ifFilter = selectedInterface || undefined;
-      const baseMetrics = ['cpu', 'memory', 'interface_traffic', 'interface_out', 'errors', 'discards'];
-      const focusedMetrics = [
-        ...baseMetrics,
-        'pkts_in_ucast',
-        'pkts_out_ucast',
-        'pkts_in_mcast',
-        'pkts_out_mcast',
-        'pkts_in_bcast',
-        'pkts_out_bcast',
-        'if_speed',
-      ];
-      const metrics = focusDevice ? focusedMetrics : baseMetrics;
-      const pointLimit = focusDevice ? 120 : 90;
-      const batch = await monitorApi.getMetricHistoryBatch(metrics, reqDevice, rangeMinutes, pointLimit, ifFilter);
-      const historyData = ((batch as any).data || {}) as Record<string, MetricPoint[]>;
-      const pointsFor = (metricName: string) =>
-        ((historyData[metricName] || []) as MetricPoint[]).filter((p) => isValidDeviceKey(p.device));
-
       setCpuPoints(pointsFor('cpu'));
       setMemPoints(pointsFor('memory'));
       setTrafficIn(pointsFor('interface_traffic'));
@@ -774,11 +745,20 @@ const NetworkPerformance: React.FC = () => {
       setOutBcast(pointsFor('pkts_out_bcast'));
       setSpeedPoints(pointsFor('if_speed'));
       setHasLoadedHistoryGraphs(true);
+
+      if (focusDevice && selectedInterface && !nextInterfaces.some((item) => item.interface === selectedInterface)) {
+        setSelectedInterface('');
+      }
+      if (focusDevice && nextInterfaces.length === 0) {
+        setSelectedInterface('');
+      }
     } catch {
+      setHasLoadedSummaryGraphs(true);
       setHasLoadedHistoryGraphs(true);
-      // Charts degrade gracefully.
+      Toast.error('Load failed', 'Could not fetch monitoring data');
     } finally {
-      fetchHistoryInFlightRef.current = false;
+      fetchAllInFlightRef.current = false;
+      setIsLoading(false);
     }
   }, [focusDevice, selectedInterface, rangeMinutes]);
 
@@ -843,7 +823,6 @@ const NetworkPerformance: React.FC = () => {
   }, []);
 
   useEffect(() => { fetchAll(); }, [fetchAll]);
-  useEffect(() => { fetchHistory(); }, [fetchHistory]);
   useEffect(() => {
     const timer = window.setTimeout(() => setSyslogHydrated(true), 1500);
     return () => window.clearTimeout(timer);
@@ -859,10 +838,9 @@ const NetworkPerformance: React.FC = () => {
   useEffect(() => {
     const timer = setInterval(() => {
       fetchAll();
-      fetchHistory();
     }, 30000);
     return () => clearInterval(timer);
-  }, [fetchAll, fetchHistory]);
+  }, [fetchAll]);
   useEffect(() => {
     if (!syslogHydrated) return;
     const timer = setInterval(() => {
@@ -975,7 +953,7 @@ const NetworkPerformance: React.FC = () => {
           </p>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
-          <button className="btn btn-sm btn-outline gap-1" onClick={() => { fetchAll(); fetchHistory(); }} disabled={isLoading}>
+          <button className="btn btn-sm btn-outline gap-1" onClick={() => { fetchAll(); }} disabled={isLoading}>
             <RefreshCw className={`w-4 h-4 ${isLoading ? 'animate-spin' : ''}`} /> Refresh
           </button>
           <button className="btn btn-sm btn-outline gap-1" onClick={handleSyncTelegraf} disabled={telegrafSyncLoading}>
