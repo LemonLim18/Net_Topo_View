@@ -27,6 +27,9 @@ const ANSIBLE_MODEL_STORAGE_KEY = 'ansibleStudio.selectedModel';
 const OLLAMA_BASE_URL_STORAGE_KEY = 'llmRuntimeSelector.ollamaBaseUrl';
 const ANSIBLE_CHAT_SESSIONS_KEY = 'ansibleChat.sessions.v1';
 const ANSIBLE_CHAT_CURRENT_SESSION_KEY = 'ansibleChat.currentSessionId.v1';
+const LOCAL_OLLAMA_URLS = new Set(['http://127.0.0.1:11434', 'http://localhost:11434']);
+
+const isLocalOllamaUrl = (value?: string | null) => LOCAL_OLLAMA_URLS.has(String(value || '').trim().replace(/\/+$/, ''));
 
 type AnsibleChatSessionRecord = ChatSession & { messages: AnsibleMessage[] };
 
@@ -1268,10 +1271,15 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
           const parsed = JSON.parse(raw) as AnsibleModelSelection;
           if (parsed?.provider && parsed?.model) {
             const ollamaDesc = r.providers.find((p) => p.name === 'ollama');
+            const restoredOllamaBaseUrl = parsed.provider === 'ollama'
+              ? (isLocalOllamaUrl(parsed.ollama_base_url)
+                ? (ollamaDesc?.base_url ?? r.active_base_url ?? DEFAULT_OLLAMA_BASE_URL)
+                : (parsed.ollama_base_url ?? ollamaDesc?.base_url ?? null))
+              : null;
             setAnsibleModel({
               provider: parsed.provider,
               model: parsed.model,
-              ollama_base_url: parsed.provider === 'ollama' ? (parsed.ollama_base_url ?? ollamaDesc?.base_url ?? null) : null,
+              ollama_base_url: restoredOllamaBaseUrl,
             });
             return;
           }
@@ -1405,10 +1413,10 @@ const AnsibleChatPanel: React.FC<AnsibleChatPanelProps> = ({
       const msgId = m.id;
       ansibleApi.getResult(m.jobId!).then((r) => {
         const paths = (r.files ?? []).map((f) => f.path).filter(Boolean);
-        if (paths.length > 0) {
-          setHydratedFilePaths((prev) => ({ ...prev, [msgId]: paths }));
-        }
-      }).catch(() => { /* ignore */ });
+        setHydratedFilePaths((prev) => ({ ...prev, [msgId]: paths }));
+      }).catch(() => {
+        setHydratedFilePaths((prev) => ({ ...prev, [msgId]: [] }));
+      });
     });
   }, [messages, hydratedFilePaths]);
 

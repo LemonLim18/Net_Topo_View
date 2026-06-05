@@ -136,6 +136,59 @@ def parse_vlan_database_params_from_text(msg: str) -> Dict[str, Any]:
     return {"vlans": [{"id": vid, "name": name}]}
 
 
+_INTERFACE_NAME_RE = re.compile(
+    r"(?i)(?:[A-Za-z0-9_.-]+:)?(?:"
+    r"(?:TenGigabitEthernet|GigabitEthernet|FastEthernet|Ethernet|Vlan|Loopback)\d+(?:/\d+)*"
+    r"|ge-\d+/\d+/\d+"
+    r"|xe-\d+/\d+/\d+"
+    r"|et-\d+/\d+/\d+"
+    r"|irb\.\d+"
+    r"|vlan\.\d+"
+    r")"
+)
+
+
+def _vlan_interface_binding_mode_from_text(msg: str) -> Optional[str]:
+    lower = re.sub(r"\s+", " ", (msg or "").lower())
+    trunk_tokens = (
+        "trunk port",
+        "trunk ports",
+        "as trunk",
+        "allowed vlan",
+        "allowed vlans",
+        "allow-pass vlan",
+        "tagged vlan",
+    )
+    access_tokens = (
+        "access port",
+        "access ports",
+        "as access",
+        "access vlan",
+        "untagged vlan",
+        "default vlan",
+    )
+    if any(token in lower for token in trunk_tokens):
+        return "trunk"
+    if any(token in lower for token in access_tokens):
+        return "access"
+    return None
+
+
+def _extract_interface_names_from_text(msg: str) -> List[str]:
+    seen: set[str] = set()
+    out: List[str] = []
+    for match in _INTERFACE_NAME_RE.findall(msg or ""):
+        name = str(match or "").strip().rstrip(".,;")
+        if not name:
+            continue
+        key = name.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(name)
+    return out
+
+
 def _inventory_switch_index(hostname: str) -> Optional[int]:
     """Best numeric suffix on inventory-style hostnames (e.g. Acc_Cisco_3 → 3)."""
     h = (hostname or "").strip()
@@ -497,8 +550,31 @@ class IntentParser:
     """
 
     def __init__(self, provider=None, db_manager=None):
-        self._provider = provider
+        self._provider = self._intent_provider_with_fast_timeout(provider)
         self._db = db_manager
+
+    def _intent_provider_with_fast_timeout(self, provider):
+        """Use a short Ollama timeout for intent parsing without changing chat runtime."""
+        if provider is None:
+            return None
+        provider_name = provider.__class__.__name__.lower()
+        if "ollama" not in provider_name:
+            return provider
+        try:
+            timeout_sec = int(float(os.getenv("INTENT_PARSE_OLLAMA_TIMEOUT_SEC", "3")))
+        except ValueError:
+            timeout_sec = 3
+        timeout_sec = max(1, timeout_sec)
+        try:
+            from llm.ollama_provider import OllamaProvider
+
+            return OllamaProvider(
+                base_url=getattr(provider, "_base_url", None),
+                model=getattr(provider, "_model", None),
+                timeout=timeout_sec,
+            )
+        except Exception:
+            return provider
 
     # ----- public -----
 
@@ -519,6 +595,33 @@ class IntentParser:
             return json.dumps(quick.model_dump(), default=str)
 
         # Fast-path: imperative VLAN DB creation ("Create VLAN on …") — no LLM latency
+        # Fast-path: create VLAN plus access/trunk interface binding. This
+        # covers the common Playbook Studio command shape without waiting on
+        # Ollama just to identify create_vlan + interface binding.
+        quick_vlan_binding = self._try_rule_based_vlan_interface_binding(user_message)
+        if quick_vlan_binding:
+            quick_vlan_binding.id = str(uuid.uuid4())[:8]
+            quick_vlan_binding.raw_user_input = user_message
+            quick_vlan_binding.resolved_devices = self._resolve_devices(quick_vlan_binding)
+            self._normalize_vlan_parameters(quick_vlan_binding)
+            quick_vlan_binding.parameters["device_deduction"] = self._deduce_device_reason(
+                user_message,
+                quick_vlan_binding.resolved_devices,
+                generic_prompt=False,
+                layer_candidates=bool(
+                    (quick_vlan_binding.parameters or {}).get("_target_device_candidates")
+                ),
+            )
+            try:
+                from ansible.intent_pipeline.validator import annotate_missing_fields
+
+                dumped = annotate_missing_fields(quick_vlan_binding.model_dump())
+                quick_vlan_binding.parameters = dict(dumped.get("parameters") or {})
+                quick_vlan_binding.requires_resolution = bool(dumped.get("requires_resolution"))
+            except Exception:
+                pass
+            return json.dumps(quick_vlan_binding.model_dump(), default=str)
+
         quick_cv = self._try_rule_based_create_vlan(user_message)
         if quick_cv:
             quick_cv.id = str(uuid.uuid4())[:8]
@@ -1028,6 +1131,101 @@ class IntentParser:
             parameters=params,
         )
 
+    def _try_rule_based_vlan_interface_binding(self, msg: str) -> Optional[ParsedIntent]:
+        """
+        Rule-based create_vlan + access/trunk port binding for common studio prompts.
+
+        Example: "Create vlan 43 on access switch and configure as access port on interface".
+        Target devices and exact interfaces can still be supplied/changed by the UI picker.
+        """
+        mode = _vlan_interface_binding_mode_from_text(msg)
+        if mode not in {"access", "trunk"}:
+            return None
+        params = dict(parse_vlan_database_params_from_text(msg))
+        vlans = params.get("vlans")
+        if not isinstance(vlans, list) or not vlans:
+            return None
+        vlan_row = dict(vlans[0] or {})
+        vlan_id = vlan_row.get("id")
+        vlan_name = vlan_row.get("name") or f"VLAN {vlan_id}"
+        try:
+            vlan_id_int = int(vlan_id)
+        except (TypeError, ValueError):
+            return None
+
+        interfaces: List[Dict[str, Any]] = []
+        for name in _extract_interface_names_from_text(msg):
+            if mode == "trunk":
+                interfaces.append({"name": name, "mode": "trunk", "trunk_vlans": [vlan_id_int]})
+            else:
+                interfaces.append({"name": name, "mode": "access", "access_vlan": vlan_id_int})
+
+        secondary_params: Dict[str, Any] = {
+            "interfaces": interfaces,
+            "vlan_id": vlan_id_int,
+            "vlan_name": vlan_name,
+        }
+        if mode == "trunk":
+            secondary_action = "assign_vlan_to_trunk_port"
+            secondary_params["trunk_vlans"] = [vlan_id_int]
+        else:
+            secondary_action = "assign_vlan_to_access_port"
+            secondary_params["access_vlan"] = vlan_id_int
+
+        params.update(
+            {
+                "vlan_id": vlan_id_int,
+                "vlan_name": vlan_name,
+                "interface_binding": interfaces,
+                "_secondary_intents": [
+                    {
+                        "action": secondary_action,
+                        "feature": "interface",
+                        "parameters": secondary_params,
+                    }
+                ],
+            }
+        )
+        if interfaces:
+            params["interfaces"] = list(interfaces)
+
+        layer_cand = enumerate_layer_switch_device_candidates(msg, self._inventory_records())
+        requires_disambiguation = False
+        disambiguation = ""
+        if layer_cand:
+            params["_target_device_candidates"] = layer_cand
+            params["_target_device_candidate_reason"] = (
+                "Prompt uses access/distribution/core switch numbers or role wording; confirm "
+                "device(s) from this shortlist or the planned network list."
+            )
+            requires_disambiguation = True
+            disambiguation = "Select target device(s) from planned inventory."
+        elif not interfaces:
+            requires_disambiguation = True
+            disambiguation = "Select interface(s) from planned inventory for the VLAN port binding."
+
+        scope = IntentScope()
+        lower = re.sub(r"\s+", " ", (msg or "").lower())
+        if re.search(r"\baccess\s+switch(?:es)?\b", lower):
+            scope.device_role = "access"
+        elif re.search(r"\b(?:distribution|dist)\s+switch(?:es)?\b", lower):
+            scope.device_role = "distribution"
+        elif re.search(r"\bcore\s+switch(?:es)?\b", lower):
+            scope.device_role = "core"
+
+        return ParsedIntent(
+            intent_type=IntentType.CONFIGURE,
+            action="create_vlan",
+            feature="vlan",
+            risk_level=RiskLevel.MEDIUM,
+            justification="Rule-based: create VLAN and configure VLAN port binding",
+            parameters=params,
+            scope=scope,
+            requires_resolution=not bool(interfaces),
+            requires_disambiguation=requires_disambiguation,
+            disambiguation_message=disambiguation,
+        )
+
     # ----- Helpers -----
 
     def _get_template_schemas(self) -> str:
@@ -1276,6 +1474,8 @@ class IntentParser:
 
     def _inventory_records(self) -> List[Dict[str, Any]]:
         records: List[Dict[str, Any]] = []
+        if self._db is None:
+            return records
 
         try:
             from rag.context_bundle import ContextBundleBuilder

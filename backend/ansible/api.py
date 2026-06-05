@@ -171,6 +171,24 @@ def _preview_cache_db_key(db_manager: Any) -> int:
     return id(db_manager) if db_manager is not None else 0
 
 
+def _preview_cache_clear() -> Dict[str, int]:
+    with _preview_cache_lock:
+        cleared = {
+            "intent_parse": len(_preview_intent_parse_cache),
+            "parse_context": len(_preview_parse_context_cache),
+            "planning_context": len(_preview_planning_context_cache),
+        }
+        _preview_intent_parse_cache.clear()
+        _preview_parse_context_cache.clear()
+        _preview_planning_context_cache.clear()
+        cleared["total"] = (
+            cleared["intent_parse"]
+            + cleared["parse_context"]
+            + cleared["planning_context"]
+        )
+        return cleared
+
+
 def _client_supplied_ospf_process_id(params: Optional[Dict[str, Any]]) -> bool:
     if not isinstance(params, dict):
         return False
@@ -1846,6 +1864,23 @@ def _provider_for_request(provider: Optional[str], model: Optional[str], ollama_
         from llm.api import _instantiate_runtime_provider
 
         return _instantiate_runtime_provider(str(provider).strip(), model, ollama_base_url)
+    active_provider = getattr(_agent, "_provider", None) if _agent is not None else None
+    active_provider_name = active_provider.__class__.__name__.lower() if active_provider is not None else ""
+    if "ollama" in active_provider_name:
+        from llm.api import _instantiate_runtime_provider
+
+        active_model = model or getattr(active_provider, "_model", None) or os.getenv("OLLAMA_MODEL")
+        active_base_url = (
+            ollama_base_url
+            or getattr(active_provider, "_base_url", None)
+            or os.getenv("OLLAMA_BASE_URL")
+            or os.getenv("OLLAMA_UI_BASE_URL")
+        )
+        # If the shared agent is still bound to localhost, rebuild a fresh preview-time
+        # provider using the env/UI fallback so intent parsing does not fail unnecessarily.
+        if str(active_base_url or "").strip() in {"", "http://127.0.0.1:11434", "http://localhost:11434"}:
+            active_base_url = os.getenv("OLLAMA_BASE_URL") or os.getenv("OLLAMA_UI_BASE_URL") or active_base_url
+        return _instantiate_runtime_provider("ollama", active_model, active_base_url)
     if _agent is not None and hasattr(_agent, "_provider"):
         return getattr(_agent, "_provider")
     if _builder is not None and hasattr(_builder, "_provider"):
@@ -2239,6 +2274,28 @@ def _resolve_backend_intent_request(req, user: dict) -> tuple["PlanAnsibleReques
     if parsed.requires_disambiguation:
         raise HTTPException(422, parsed.disambiguation_message or "Intent requires disambiguation before planning.")
 
+    # Playbook Studio may already have an authoritative feature/template category selected,
+    # while the refactored parser degraded into query/unknown due to LLM transport issues.
+    # In that case, trust the explicit configuration feature from the request instead of
+    # rejecting the flow as a non-config intent.
+    if parsed.intent_type not in {IntentType.CONFIGURE, IntentType.DEPLOY}:
+        _req_feature_norm = str(req.feature or parsed.feature or "").strip().lower().replace("-", "_")
+        if _req_feature_norm in {
+            "vlan",
+            "interface",
+            "ospf",
+            "static_route",
+            "acl",
+            "qos",
+            "bgp",
+            "nat",
+            "vpn",
+            "snmp",
+            "ntp",
+            "hostname",
+        }:
+            parsed.intent_type = IntentType.CONFIGURE
+
     # Heuristic recovery: LLM sometimes labels routing config prompts as QUERY (action unknown / feature routing).
     # If the user is clearly asking to create/configure a route, treat it as a configuration intent so
     # create-and-plan can proceed into schema-driven questions and reference template generation.
@@ -2248,6 +2305,10 @@ def _resolve_backend_intent_request(req, user: dict) -> tuple["PlanAnsibleReques
             _pa = str(parsed.action or "").strip().lower().replace("-", "_")
             _pf = str(parsed.feature or "").strip().lower().replace("-", "_")
             _routeish = ("route" in _tl or "routing" in _tl) and "traceroute" not in _tl
+            _vlanish = "vlan" in _tl
+            _ifaceish = bool(
+                re.search(r"\b(?:interface|port|gigabitethernet|ethernet|fastethernet|ge-|xe-|te|uplink|trunk|access port)\b", _tl)
+            )
             _aclish = "acl" in _tl or "access-list" in _tl or "access list" in _tl
             _qosish = (
                 "qos" in _tl
@@ -2283,6 +2344,11 @@ def _resolve_backend_intent_request(req, user: dict) -> tuple["PlanAnsibleReques
                     parsed.feature = "ospf"
                 if _pa in ("unknown", ""):
                     parsed.action = "configure_ospf"
+            elif _vlanish and (_pa in ("unknown", "") or _pf in ("", "general", "vlan", "interface")):
+                parsed.intent_type = IntentType.CONFIGURE
+                parsed.feature = "vlan"
+                if _pa in ("unknown", ""):
+                    parsed.action = "configure_interface" if _ifaceish else "create_vlan"
             elif _routeish and (_pa in ("unknown", "") or _pf in ("routing", "")):
                 parsed.intent_type = IntentType.CONFIGURE
             elif (_applyish and (_aclish or _pf in ("acl", ""))) or (_aclish and _acl_ruleish):
@@ -6389,6 +6455,35 @@ def _preview_parse_and_rag(
                         categories.append("static_route")
             except Exception:
                 pass
+        try:
+            _tl_preview = str(intent_description or "").strip().lower()
+            _pa_preview = str(parsed_dict.get("action") or parsed.action or "").strip().lower().replace("-", "_")
+            _pf_preview = str(parsed_dict.get("feature") or parsed.feature or "").strip().lower().replace("-", "_")
+            _cats_preview = {str(c).strip().lower().replace("-", "_") for c in (categories or []) if str(c).strip()}
+            _parse_failed_preview = bool(params_dict.get("_intent_parse_error"))
+            _mentions_vlan_preview = "vlan" in _tl_preview or "vlan" in _cats_preview
+            _mentions_access_preview = any(
+                token in _tl_preview
+                for token in ("access port", "access ports", "access vlan", "untagged vlan")
+            )
+            _mentions_trunk_preview = any(
+                token in _tl_preview
+                for token in ("trunk port", "trunk ports", "allowed vlan", "allowed vlans")
+            )
+            if _parse_failed_preview and _mentions_vlan_preview:
+                parsed_dict["intent_type"] = "configure"
+                if _pa_preview in ("unknown", ""):
+                    if _mentions_access_preview or _mentions_trunk_preview:
+                        parsed_dict["action"] = "configure_interface"
+                    else:
+                        parsed_dict["action"] = "create_vlan"
+                if _pf_preview in ("", "general"):
+                    parsed_dict["feature"] = "vlan"
+                params_dict.pop("_intent_parse_error", None)
+                params_dict.pop("_parse_error_detail", None)
+        except Exception as _preview_recovery_exc:
+            logger.debug("preview intent recovery failed: %s", _preview_recovery_exc)
+
         if params_dict.get("_intent_parse_error"):
             reasoning.insert(
                 0,
@@ -8570,6 +8665,23 @@ async def preview_intent(
         "params_need_context_fix": params_need_context_fix,
         "devices_disambiguation": devices_disambiguation,
         "intent_schema_inspector": intent_schema_inspector,
+    }
+
+
+@router.post(
+    "/preview-cache/clear",
+    summary="Clear cached Ansible preview intent/planning results",
+)
+async def clear_preview_cache(user: dict = Depends(get_current_user)):
+    cleared = _preview_cache_clear()
+    logger.info(
+        "Ansible preview cache cleared by user=%s (%d entries)",
+        user.get("username"),
+        cleared.get("total", 0),
+    )
+    return {
+        "status": "cleared",
+        "cleared": cleared,
     }
 
 

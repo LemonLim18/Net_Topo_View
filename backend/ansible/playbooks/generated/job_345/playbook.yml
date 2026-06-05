@@ -1,0 +1,78 @@
+---
+# VLAN 43 named Mathematics on target hosts.
+# LLM provides intent (vlan id/name, interfaces list). Template does not invent: interfaces empty => no interface config.
+# Only vendors present in target hosts are included (vendors list).
+- name: Configure VLANs on access switches
+  hosts: "Cisco_Acc_1,Juniper_Acc_4,Huawei_Acc_2"
+  gather_facts: no
+  ignore_unreachable: true
+  tasks:
+    - name: Ensure VLAN 43 exists (Cisco IOS)
+      cisco.ios.ios_vlans:
+        config:
+          - vlan_id: "43"
+            name: "Mathematics"
+            state: active
+        state: merged
+      when: inventory_hostname in groups.get('vendor_cisco_ios', [])
+
+    - name: Configure Ethernet0/2 as access VLAN 43 (Cisco IOS)
+      cisco.ios.ios_l2_interfaces:
+        config:
+          - name: "Ethernet0/2"
+            mode: "access"
+            access:
+              vlan: "43"
+        state: merged
+      when:
+        - inventory_hostname in groups.get('vendor_cisco_ios', [])
+        - inventory_hostname == "Cisco_Acc_1"
+
+    - name: Ensure VLAN 43 exists (Huawei VRP)
+      community.network.ce_config:
+        lines:
+          - vlan batch 43
+          - vlan 43
+          - name Mathematics
+      when: inventory_hostname in groups.get('vendor_huawei_vrp', [])
+
+    - name: Configure GigabitEthernet1/0/2 as access VLAN 43 (Huawei VRP)
+      community.network.ce_config:
+        lines:
+          - port link-type access
+          - port default vlan 43
+        parents: interface GE1/0/2
+      when:
+        - inventory_hostname in groups.get('vendor_huawei_vrp', [])
+
+        - inventory_hostname == "Huawei_Acc_2"
+
+    - name: Ensure VLAN 43 exists (Juniper Junos)
+      juniper.device.junos_config:
+        lines:
+          - set vlans Mathematics vlan-id 43
+      when: inventory_hostname in groups.get('vendor_juniper_junos', [])
+
+
+
+
+
+
+
+
+    - name: Configure ge-0/0/3 as access VLAN 43 (Juniper Junos)
+      juniper.device.junos_config:
+        lines:
+          - set interfaces ge-0/0/3 unit 0 family ethernet-switching port-mode access
+          - set interfaces ge-0/0/3 unit 0 family ethernet-switching vlan members Mathematics
+
+      when:
+        - inventory_hostname in groups.get('vendor_juniper_junos', [])
+
+        - inventory_hostname == "Juniper_Acc_4"
+
+
+
+
+
+

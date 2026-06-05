@@ -251,6 +251,23 @@ _GEMINI_MODELS = [
     "gemini-2.5-pro",
 ]
 _DEFAULT_OLLAMA_VM_URL = os.getenv("OLLAMA_UI_BASE_URL", "http://192.168.1.252:11434")
+_LOCAL_OLLAMA_URLS = {"http://127.0.0.1:11434", "http://localhost:11434"}
+
+
+def _effective_ollama_base_url(candidate: Optional[str] = None) -> str:
+    """Resolve Ollama URL; backend env wins over stale localhost UI defaults."""
+    supplied = str(candidate or "").strip().rstrip("/")
+    env_url = str(os.getenv("OLLAMA_BASE_URL") or "").strip().rstrip("/")
+    ui_url = str(os.getenv("OLLAMA_UI_BASE_URL") or "").strip().rstrip("/")
+    if supplied and supplied not in _LOCAL_OLLAMA_URLS:
+        return supplied
+    if env_url:
+        return env_url
+    if supplied:
+        return supplied
+    if ui_url:
+        return ui_url
+    return _DEFAULT_OLLAMA_VM_URL.rstrip("/")
 
 
 def _provider_kind(provider: Any) -> str:
@@ -258,6 +275,394 @@ def _provider_kind(provider: Any) -> str:
     if "ollama" in provider_name:
         return "ollama"
     return "gemini"
+
+
+def _inventory_markdown_title(title: str) -> str:
+    return f"**{title}**"
+
+
+def _dedupe_inventory_links(links: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    seen = set()
+    deduped: List[Dict[str, Any]] = []
+    for link in links:
+        peer = str(link.get("peer_hostname") or "").strip()
+        local_if = str(link.get("local_interface") or "").strip()
+        peer_if = str(link.get("peer_interface") or "").strip()
+        status = str(link.get("status") or "").strip().lower()
+        if not peer or not local_if:
+            continue
+        key = (peer.lower(), local_if.lower(), peer_if.lower(), status)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(link)
+    deduped.sort(
+        key=lambda item: (
+            str(item.get("peer_hostname") or "").lower(),
+            str(item.get("local_interface") or "").lower(),
+            str(item.get("peer_interface") or "").lower(),
+        )
+    )
+    return deduped
+
+
+def _inventory_role_rank(role: Any) -> int:
+    text = str(role or "").lower()
+    if "core" in text:
+        return 30
+    if "dist" in text or "distribution" in text:
+        return 20
+    if "access" in text or "acc" in text:
+        return 10
+    return 0
+
+
+def _build_inventory_link_graph(local_records: List[Dict[str, Any]]) -> tuple[Dict[str, List[str]], List[Dict[str, str]]]:
+    adjacency: Dict[str, set[str]] = {}
+    edge_facts: List[Dict[str, str]] = []
+    seen = set()
+
+    planned = network_tools._get_planned_topology_data()
+    for link in planned.get("links", []) or []:
+        if not isinstance(link, dict):
+            continue
+        src = str(link.get("src_hostname") or "").strip()
+        dst = str(link.get("dst_hostname") or "").strip()
+        src_if = str(link.get("src_interface") or "").strip()
+        dst_if = str(link.get("dst_interface") or "").strip()
+        if not src or not dst:
+            continue
+        edge_key = tuple(sorted((src.lower(), dst.lower(), src_if.lower(), dst_if.lower())))
+        if edge_key in seen:
+            continue
+        seen.add(edge_key)
+        adjacency.setdefault(src, set()).add(dst)
+        adjacency.setdefault(dst, set()).add(src)
+        edge_facts.append(
+            {
+                "src": src,
+                "dst": dst,
+                "src_if": src_if,
+                "dst_if": dst_if,
+                "source": str(planned.get("source") or "planned_topology"),
+            }
+        )
+
+    for record in local_records:
+        enriched = network_tools._enrich_inventory_record(dict(record))
+        src = str(enriched.get("hostname") or "").strip()
+        if not src:
+            continue
+        for link in _dedupe_inventory_links([item for item in (enriched.get("links") or []) if isinstance(item, dict)]):
+            dst = str(link.get("peer_hostname") or "").strip()
+            src_if = str(link.get("local_interface") or "").strip()
+            dst_if = str(link.get("peer_interface") or "").strip()
+            if not dst:
+                continue
+            edge_key = tuple(sorted((src.lower(), dst.lower(), src_if.lower(), dst_if.lower())))
+            if edge_key in seen:
+                continue
+            seen.add(edge_key)
+            adjacency.setdefault(src, set()).add(dst)
+            adjacency.setdefault(dst, set()).add(src)
+            edge_facts.append(
+                {
+                    "src": src,
+                    "dst": dst,
+                    "src_if": src_if,
+                    "dst_if": dst_if,
+                    "source": "local_inventory",
+                }
+            )
+
+    return {key: sorted(value) for key, value in adjacency.items()}, edge_facts
+
+
+def _find_inventory_path(adjacency: Dict[str, List[str]], source: str, destination: str) -> List[str]:
+    from collections import deque
+
+    if source not in adjacency or destination not in adjacency:
+        return []
+    queue = deque([(source, [source])])
+    visited = {source}
+    while queue:
+        current, path = queue.popleft()
+        if current == destination:
+            return path
+        for neighbor in adjacency.get(current, []):
+            if neighbor in visited:
+                continue
+            visited.add(neighbor)
+            queue.append((neighbor, path + [neighbor]))
+    return []
+
+
+def _edge_matches_host(edge: Dict[str, str], hostname: str) -> bool:
+    host = str(hostname or "").strip().lower()
+    return str(edge.get("src") or "").lower() == host or str(edge.get("dst") or "").lower() == host
+
+
+def _edge_local_remote(edge: Dict[str, str], hostname: str) -> tuple[str, str, str]:
+    if str(edge.get("src") or "").lower() == str(hostname or "").lower():
+        return str(edge.get("src_if") or "Unknown"), str(edge.get("dst") or "Unknown"), str(edge.get("dst_if") or "Unknown")
+    return str(edge.get("dst_if") or "Unknown"), str(edge.get("src") or "Unknown"), str(edge.get("src_if") or "Unknown")
+
+
+def _render_inventory_device_summary(device: Dict[str, Any]) -> str:
+    lines = [
+        _inventory_markdown_title(str(device.get("hostname") or "Device Summary")),
+        "",
+        f"- Vendor: {device.get('vendor') or 'Not recorded'}",
+        f"- Model: {device.get('model') or 'Not recorded'}",
+        f"- Role: {device.get('role') or 'Not recorded'}",
+        f"- Status: {device.get('status') or 'Not recorded'}",
+        f"- Management IP: {device.get('management_ip') or 'Not recorded'}",
+        f"- Management Interface: {device.get('management_interface') or 'Not recorded'}",
+        f"- OS Version: {device.get('os_version') or 'Not recorded'}",
+    ]
+    return "\n".join(lines)
+
+
+def _build_inventory_direct_answer(prompt_text: str, local_records: List[Dict[str, Any]]) -> Optional[str]:
+    prompt = str(prompt_text or "").strip()
+    if not prompt:
+        return None
+
+    prompt_lower = prompt.lower()
+    records = list(local_records or [])
+    if not records:
+        return None
+
+    ranked = network_tools._rank_inventory_records(records, prompt, limit=4)
+    target = ranked[0] if ranked else None
+    target_hostname = str(target.get("hostname") or "").strip() if target else ""
+
+    wants_neighbors = any(token in prompt_lower for token in ["neighbor", "neighbour", "connection", "connected to", "uplink", "downlink"])
+    wants_mgmt_ip = ("management ip" in prompt_lower) or ("mgmt ip" in prompt_lower) or ("management address" in prompt_lower)
+    wants_mgmt_interface = "management interface" in prompt_lower
+    wants_vendor_model_role = (
+        "vendor" in prompt_lower
+        or "model" in prompt_lower
+        or "role" in prompt_lower
+        or "planned inventory" in prompt_lower
+    )
+    wants_interface_list = any(token in prompt_lower for token in ["list interfaces", "show interfaces", "what interfaces", "which interfaces", "interface list"])
+    wants_interface_count = "how many interface" in prompt_lower or "interface count" in prompt_lower
+    wants_device_count = any(token in prompt_lower for token in ["how many devices", "device count", "total devices", "inventory count"])
+    wants_path = "path between" in prompt_lower or ("path from" in prompt_lower and " to " in prompt_lower)
+    wants_upstream = "upstream" in prompt_lower
+    wants_downstream = "downstream" in prompt_lower
+    wants_impact = "impacted if" in prompt_lower or "affected if" in prompt_lower or "fails" in prompt_lower
+    wants_interface_peer = (
+        "connects to" in prompt_lower
+        or "connected to" in prompt_lower
+        or "which device connects" in prompt_lower
+        or "what device connects" in prompt_lower
+    )
+
+    adjacency, edge_facts = _build_inventory_link_graph(records)
+
+    if wants_path:
+        if len(ranked) < 2:
+            return None
+        src = str(ranked[0].get("hostname") or "").strip()
+        dst = str(ranked[1].get("hostname") or "").strip()
+        if not src or not dst:
+            return None
+        path = _find_inventory_path(adjacency, src, dst)
+        lines = [_inventory_markdown_title(f"Path Between {src} and {dst}"), ""]
+        if not path:
+            lines.append("- No planned/local inventory path is recorded between these devices.")
+            return "\n".join(lines)
+        lines.append(f"- Hop count: {max(len(path) - 1, 0)}")
+        lines.append(f"- Path: {' -> '.join(path)}")
+        lines.extend(["", _inventory_markdown_title("Hop Sequence"), ""])
+        for index, hop in enumerate(path, start=1):
+            lines.append(f"{index}. {hop}")
+        return "\n".join(lines)
+
+    if wants_device_count and not target_hostname:
+        by_vendor: Dict[str, int] = {}
+        by_role: Dict[str, int] = {}
+        for record in records:
+            vendor = str(record.get("vendor") or "Unknown")
+            role = str(record.get("role") or "Unknown")
+            by_vendor[vendor] = by_vendor.get(vendor, 0) + 1
+            by_role[role] = by_role.get(role, 0) + 1
+
+        lines = [
+            _inventory_markdown_title("Inventory Count"),
+            "",
+            f"- Total devices: {len(records)}",
+            "",
+            _inventory_markdown_title("By Vendor"),
+            "",
+        ]
+        for vendor, count in sorted(by_vendor.items(), key=lambda item: (item[0].lower(), item[1])):
+            lines.append(f"- {vendor}: {count}")
+        lines.extend(["", _inventory_markdown_title("By Role"), ""])
+        for role, count in sorted(by_role.items(), key=lambda item: (item[0].lower(), item[1])):
+            lines.append(f"- {role}: {count}")
+        return "\n".join(lines)
+
+    if not target:
+        return None
+
+    enriched = network_tools._enrich_inventory_record(dict(target))
+    hostname = target_hostname or str(enriched.get("hostname") or "Unknown")
+    interfaces = [iface for iface in (enriched.get("interfaces") or []) if isinstance(iface, dict)]
+    neighbors = _dedupe_inventory_links([link for link in (enriched.get("links") or []) if isinstance(link, dict)])
+    relevant_edges = [edge for edge in edge_facts if _edge_matches_host(edge, hostname)]
+
+    if wants_interface_peer and relevant_edges:
+        named_interfaces = [
+            str(iface.get("name") or "").strip()
+            for iface in interfaces
+            if str(iface.get("name") or "").strip()
+        ]
+        matched_interface = next((name for name in named_interfaces if name.lower() in prompt_lower), "")
+        if matched_interface:
+            lines = [_inventory_markdown_title(f"Connection for {hostname} {matched_interface}"), ""]
+            matches = []
+            for edge in relevant_edges:
+                local_if, peer, peer_if = _edge_local_remote(edge, hostname)
+                if local_if.lower() == matched_interface.lower():
+                    matches.append((peer, peer_if, edge.get("source") or "inventory"))
+            if not matches:
+                lines.append("- No connected peer is recorded for that interface.")
+                return "\n".join(lines)
+            for peer, peer_if, source in matches:
+                lines.append(f"- {matched_interface} -> {peer} {peer_if} (source: {source})")
+            return "\n".join(lines)
+
+    if wants_upstream or wants_downstream:
+        device_rank = _inventory_role_rank(enriched.get("role"))
+        upstream: List[str] = []
+        downstream: List[str] = []
+        lateral: List[str] = []
+        record_by_name = {str(record.get("hostname") or ""): record for record in records}
+        for edge in relevant_edges:
+            _local_if, peer, peer_if = _edge_local_remote(edge, hostname)
+            peer_record = record_by_name.get(peer) or {}
+            peer_rank = _inventory_role_rank(peer_record.get("role"))
+            rendered = f"{peer} via {peer_if}"
+            if peer_rank > device_rank:
+                upstream.append(rendered)
+            elif peer_rank < device_rank:
+                downstream.append(rendered)
+            else:
+                lateral.append(rendered)
+        title = "Upstream" if wants_upstream and not wants_downstream else "Downstream" if wants_downstream and not wants_upstream else "Adjacency Direction"
+        lines = [_inventory_markdown_title(f"{title} for {hostname}"), ""]
+        if wants_upstream:
+            lines.append(_inventory_markdown_title("Upstream"))
+            lines.append("")
+            lines.extend([f"- {item}" for item in upstream] or ["- No upstream neighbors are recorded."])
+            if wants_downstream:
+                lines.extend(["", _inventory_markdown_title("Downstream"), ""])
+                lines.extend([f"- {item}" for item in downstream] or ["- No downstream neighbors are recorded."])
+        elif wants_downstream:
+            lines.append(_inventory_markdown_title("Downstream"))
+            lines.append("")
+            lines.extend([f"- {item}" for item in downstream] or ["- No downstream neighbors are recorded."])
+            if lateral:
+                lines.extend(["", _inventory_markdown_title("Lateral"), ""])
+                lines.extend([f"- {item}" for item in lateral])
+        return "\n".join(lines)
+
+    if wants_impact:
+        impacted = sorted(set(adjacency.get(hostname, [])))
+        lines = [_inventory_markdown_title(f"Impact if {hostname} Fails"), ""]
+        if not impacted:
+            lines.append("- No directly connected devices are recorded in the inventory graph.")
+            return "\n".join(lines)
+        lines.append("- Directly impacted neighbors:")
+        for peer in impacted:
+            lines.append(f"- {peer}")
+        downstream_paths = []
+        for node in sorted(adjacency.keys()):
+            if node == hostname or node in impacted:
+                continue
+            path = _find_inventory_path(adjacency, hostname, node)
+            if len(path) > 2:
+                downstream_paths.append(path)
+        if downstream_paths:
+            lines.extend(["", _inventory_markdown_title("Extended Reachability"), ""])
+            for path in downstream_paths[:10]:
+                lines.append(f"- {' -> '.join(path)}")
+        return "\n".join(lines)
+
+    if wants_neighbors:
+        lines = [
+            _inventory_markdown_title(f"Neighbors of {hostname}"),
+            "",
+        ]
+        if not neighbors and not relevant_edges:
+            lines.append("- No neighbor records are stored in the local inventory.")
+            return "\n".join(lines)
+        rendered = set()
+        for edge in relevant_edges:
+            local_if, peer, peer_if = _edge_local_remote(edge, hostname)
+            item = f"- {peer}: {local_if} -> {peer_if}"
+            if item in rendered:
+                continue
+            rendered.add(item)
+            lines.append(item)
+        if not rendered:
+            for link in neighbors:
+                peer = link.get("peer_hostname") or "Unknown"
+                local_if = link.get("local_interface") or "Unknown"
+                peer_if = link.get("peer_interface") or "Unknown"
+                status = link.get("status") or "unknown"
+                item = f"- {peer}: {local_if} -> {peer_if} (status: {status})"
+                if item in rendered:
+                    continue
+                rendered.add(item)
+                lines.append(item)
+        lines.extend(["", f"- Source: planned/local inventory links for {hostname}"])
+        return "\n".join(lines)
+
+    if wants_mgmt_ip or wants_mgmt_interface:
+        lines = [
+            _inventory_markdown_title(f"Management Details for {hostname}"),
+            "",
+            f"- Management IP: {enriched.get('management_ip') or 'Not recorded'}",
+            f"- Management subnet mask: {enriched.get('management_subnet_mask') or 'Not recorded'}",
+            f"- Management interface: {enriched.get('management_interface') or 'Not recorded'}",
+        ]
+        return "\n".join(lines)
+
+    if wants_vendor_model_role:
+        return _render_inventory_device_summary(enriched)
+
+    if wants_interface_count:
+        return "\n".join([
+            _inventory_markdown_title(f"Interface Count for {hostname}"),
+            "",
+            f"- Total interfaces recorded: {len(interfaces)}",
+        ])
+
+    if wants_interface_list:
+        lines = [
+            _inventory_markdown_title(f"Interfaces on {hostname}"),
+            "",
+        ]
+        if not interfaces:
+            lines.append("- No interfaces are recorded in the local inventory.")
+            return "\n".join(lines)
+        for iface in sorted(interfaces, key=lambda item: str(item.get("name") or "").lower()):
+            name = iface.get("name") or "Unknown"
+            ip = iface.get("ip_address") or "No IP"
+            mask = iface.get("subnet_mask") or "No mask"
+            status = iface.get("status") or "unknown"
+            iface_type = iface.get("interface_type") or iface.get("type") or "unknown"
+            mgmt = "yes" if iface.get("is_management") else "no"
+            lines.append(
+                f"- {name}: type={iface_type}, ip={ip}, subnet_mask={mask}, status={status}, management={mgmt}"
+            )
+        return "\n".join(lines)
+
+    return None
 
 
 def _current_provider_name(agent: Any) -> str:
@@ -329,7 +734,7 @@ def _build_runtime_state(agent: Any, ollama_base_url: Optional[str] = None) -> D
         active_model = active_model()
     active_model = str(active_model or "")
     active_base_url = _current_provider_base_url(agent)
-    browser_base_url = (ollama_base_url or active_base_url or os.getenv("OLLAMA_BASE_URL") or _DEFAULT_OLLAMA_VM_URL).rstrip("/")
+    browser_base_url = _effective_ollama_base_url(ollama_base_url or active_base_url)
 
     return {
         "active_provider": active_provider,
@@ -349,7 +754,7 @@ def _instantiate_runtime_provider(provider_name: str, model: Optional[str], olla
         from llm.ollama_provider import OllamaProvider
 
         return OllamaProvider(
-            base_url=(ollama_base_url or os.getenv("OLLAMA_BASE_URL") or _DEFAULT_OLLAMA_VM_URL).rstrip("/"),
+            base_url=_effective_ollama_base_url(ollama_base_url),
             model=model or os.getenv("OLLAMA_MODEL"),
         )
     if normalized == "gemini":
@@ -661,85 +1066,6 @@ async def ollama_playground(request: OllamaPlaygroundRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-def _build_inventory_detail_context(records: List[Dict[str, Any]], target_hostnames: set[str]) -> str:
-    """
-    Build a compact authoritative facts block for Inventory AI detail questions.
-    The generic RAG/context bundle is broad; this block is deliberately narrow
-    so interfaces, management addressing, and neighbors are easy to answer.
-    """
-    if not target_hostnames:
-        return ""
-
-    targets = {
-        str(hostname or "").strip().lower()
-        for hostname in target_hostnames
-        if str(hostname or "").strip()
-    }
-    if not targets:
-        return ""
-
-    lines: List[str] = [
-        "## Authoritative Inventory Device Details",
-        "Use this section first for management IP/interface, interface lists, interface counts, and neighbors.",
-        "If a value is absent here, say it is not recorded in inventory. Never use vector-store chunk counts as inventory counts.",
-    ]
-
-    for record in sorted(records, key=lambda r: str(r.get("hostname") or "")):
-        hostname = str(record.get("hostname") or "").strip()
-        if not hostname or hostname.lower() not in targets:
-            continue
-
-        enriched = network_tools._enrich_inventory_record(dict(record))
-        interfaces = [
-            iface for iface in (enriched.get("interfaces") or [])
-            if isinstance(iface, dict)
-        ]
-        links = [
-            link for link in (enriched.get("links") or [])
-            if isinstance(link, dict)
-        ]
-
-        lines.append("")
-        lines.append(f"### {hostname}")
-        lines.append(f"- Management IP: {enriched.get('management_ip') or 'not recorded'}")
-        lines.append(f"- Management subnet mask: {enriched.get('management_subnet_mask') or 'not recorded'}")
-        lines.append(f"- Management interface: {enriched.get('management_interface') or 'not recorded'}")
-        lines.append(f"- Vendor: {enriched.get('vendor') or 'not recorded'}")
-        lines.append(f"- Role: {enriched.get('role') or 'not recorded'}")
-        lines.append(f"- Status: {enriched.get('status') or 'not recorded'}")
-        lines.append(f"- Model: {enriched.get('model') or 'not recorded'}")
-        lines.append(f"- OS version: {enriched.get('os_version') or 'not recorded'}")
-
-        lines.append(f"- Interfaces ({len(interfaces)}):")
-        if interfaces:
-            for iface in interfaces[:80]:
-                name = iface.get("name") or "unknown"
-                iface_type = str(iface.get("interface_type") or iface.get("type") or "unknown").upper()
-                ip = iface.get("ip_address") or "none"
-                mask = iface.get("subnet_mask") or "none"
-                status = iface.get("status") or "unknown"
-                mgmt = "yes" if iface.get("is_management") else "no"
-                lines.append(
-                    f"  - {name}: type={iface_type}; ip={ip}; subnet_mask={mask}; "
-                    f"status={status}; management={mgmt}"
-                )
-        else:
-            lines.append("  - none recorded")
-
-        lines.append(f"- Neighbors ({len(links)}):")
-        if links:
-            for link in links[:80]:
-                peer = link.get("peer_hostname") or "unknown"
-                local_if = link.get("local_interface") or "unknown"
-                peer_if = link.get("peer_interface") or "unknown"
-                status = link.get("status") or "unknown"
-                lines.append(f"  - {local_if} -> {peer} {peer_if}; status={status}")
-        else:
-            lines.append("  - none recorded")
-
-    return "\n".join(lines)
-
-
 @router.post("/ollama/context_query")
 async def ollama_context_query(request: OllamaPlaygroundRequest):
     """
@@ -753,30 +1079,34 @@ async def ollama_context_query(request: OllamaPlaygroundRequest):
     from llm.provider import LLMMessage
 
     try:
-        # 1. Fetch inventory snapshot to identify target devices
+        # 1. Fetch inventory snapshot
         agent = _get_agent()
         if agent._db and not network_tools._db_manager:
             network_tools.set_db_manager(agent._db)
 
         netbox_records = network_tools._inventory_records_from_netbox()
         local_records = network_tools._inventory_records_from_local_db()
-        
-        merged = {str(r.get("hostname", "")).strip().lower(): r for r in netbox_records if str(r.get("hostname", "")).strip()}
-        # Prefer local DB for Inventory AI facts because it is the app-edited inventory
-        # and contains the local interface/link IDs needed for enrichment.
-        for r in local_records:
+
+        direct_answer = _build_inventory_direct_answer(prompt_text=request.prompt, local_records=local_records)
+        if direct_answer:
+            return {
+                "content": direct_answer,
+                "model": "inventory_localdb",
+                "provider": "local_inventory",
+                "context_size": len(local_records),
+            }
+
+        merged = {str(r.get("hostname", "")).strip().lower(): r for r in local_records if str(r.get("hostname", "")).strip()}
+        for r in netbox_records:
             h = str(r.get("hostname", "")).strip().lower()
             if h:
                 merged[h] = r
-        for r in netbox_records:
-            h = str(r.get("hostname", "")).strip().lower()
-            if h and h not in merged:
-                merged[h] = r
-        
+
         devices = list(merged.values())
         prompt_text = str(request.prompt or "")
+        prompt_lower = prompt_text.lower()
 
-        # Identify likely target devices from the question so we scope the RAG bundle
+        # Identify likely target devices from the question so we always enrich them.
         ranked_targets = network_tools._rank_inventory_records(devices, prompt_text, limit=6) if prompt_text else []
         target_hostnames = {
             str(r.get("hostname", "")).strip()
@@ -784,35 +1114,172 @@ async def ollama_context_query(request: OllamaPlaygroundRequest):
             if str(r.get("hostname", "")).strip()
         }
 
-        # 2. Build comprehensive context prompt
-        from llm.context import ContextBuilder
-        from llm.context_contract import classify_query
+        def _norm_host(hostname: str) -> str:
+            return re.sub(r"[^a-z0-9]+", "", str(hostname or "").lower())
 
-        routing_decision = classify_query(prompt_text)
-        context_builder = ContextBuilder(db_manager=agent._db)
+        def _append_link_fact(
+            out: List[Dict[str, str]],
+            seen: set,
+            src_host: str,
+            src_if: str,
+            dst_host: str,
+            dst_if: str,
+            source: str,
+        ) -> None:
+            a = str(src_host or "").strip()
+            b = str(dst_host or "").strip()
+            if not a or not b:
+                return
+            ai = str(src_if or "").strip() or "unknown-if"
+            bi = str(dst_if or "").strip() or "unknown-if"
+            key = tuple(sorted((a.lower(), b.lower()))) + tuple(sorted((ai.lower(), bi.lower())))
+            if key in seen:
+                return
+            seen.add(key)
+            out.append(
+                {
+                    "src": a,
+                    "src_if": ai,
+                    "dst": b,
+                    "dst_if": bi,
+                    "source": source,
+                }
+            )
 
-        network_context = context_builder.build_full_context(
-            device_hostnames=list(target_hostnames) if target_hostnames else None,
-            query=prompt_text,
-            routing_decision=routing_decision,
-        )
-        inventory_detail_context = _build_inventory_detail_context(devices, target_hostnames)
+        # 2. Format context
+        total_count = len(devices)
+        roles = {}
+        vendors = {}
+        for d in devices:
+            r = d.get('role', 'unknown')
+            v = d.get('vendor', 'unknown')
+            roles[r] = roles.get(r, 0) + 1
+            vendors[v] = vendors.get(v, 0) + 1
 
-        # 3. Build system prompt
+        summary_parts = [f"{count} {role}" for role, count in roles.items()]
+        vendor_parts = [f"{count} {vendor}" for vendor, count in vendors.items()]
+
+        inventory_text = f"REAL-TIME INVENTORY METADATA:\n"
+        inventory_text += f"- Total Inventory Count: {total_count} devices\n"
+        inventory_text += f"- Role Summary: {', '.join(summary_parts)}\n"
+        inventory_text += f"- Vendor Summary: {', '.join(vendor_parts)}\n\n"
+        inventory_text += "DEVICE SNAPSHOT LIST:\n"
+
+        enrich_limit = 8
+        discovered_links: List[Dict[str, str]] = []
+        seen_links = set()
+
+        for i, d in enumerate(devices):
+            interfaces_summary = ""
+            links_summary = ""
+
+            hostname = str(d.get("hostname", ""))
+            should_enrich = (
+                i < enrich_limit
+                or hostname in target_hostnames
+                or (_norm_host(hostname) and _norm_host(hostname) in _norm_host(prompt_lower))
+            )
+
+            if should_enrich:
+                try:
+                    enriched = network_tools._enrich_inventory_record(d)
+                    if enriched.get("interfaces"):
+                        ifaces = [f"{iface['name']} ({iface['ip_address'] or 'no-ip'})" for iface in enriched["interfaces"][:15]]
+                        interfaces_summary = f", Interfaces: [{', '.join(ifaces)}]"
+                    if enriched.get("links"):
+                        links = [
+                            f"{l.get('local_interface') or '?'}->{l.get('peer_hostname') or '?'}:{l.get('peer_interface') or '?'}"
+                            for l in enriched["links"]
+                        ]
+                        links_summary = f", Connections: [{', '.join(links)}]"
+                        for l in enriched["links"]:
+                            _append_link_fact(
+                                discovered_links,
+                                seen_links,
+                                hostname,
+                                str(l.get("local_interface") or ""),
+                                str(l.get("peer_hostname") or ""),
+                                str(l.get("peer_interface") or ""),
+                                source="inventory_enrichment",
+                            )
+                except Exception:
+                    pass
+
+            inventory_text += f"- {hostname} ({d.get('management_ip')}), {d.get('vendor')} {d.get('role')}{interfaces_summary}{links_summary}\n"
+
+        if total_count > enrich_limit:
+            inventory_text += f"\n(Note: Detailed enrichment skipped for {total_count - enrich_limit} devices.)\n"
+
+        try:
+            if agent._db:
+                topo = agent._db.get_topology() or {}
+                live_nodes = topo.get("nodes", {}) if isinstance(topo, dict) else {}
+                for src_host, node_data in live_nodes.items():
+                    if not isinstance(node_data, dict):
+                        continue
+                    for src_if, edge in (node_data.get("edgeLink") or {}).items():
+                        if not isinstance(edge, dict):
+                            continue
+                        _append_link_fact(
+                            discovered_links,
+                            seen_links,
+                            str(src_host),
+                            str(src_if or ""),
+                            str(edge.get("remote_node") or ""),
+                            str(edge.get("remote_interface") or ""),
+                            source="live_topology",
+                        )
+        except Exception:
+            pass
+
+        try:
+            planned = network_tools._get_planned_topology_data()
+            for link in planned.get("links", []) or []:
+                if not isinstance(link, dict):
+                    continue
+                _append_link_fact(
+                    discovered_links,
+                    seen_links,
+                    str(link.get("src_hostname") or ""),
+                    str(link.get("src_interface") or ""),
+                    str(link.get("dst_hostname") or ""),
+                    str(link.get("dst_interface") or ""),
+                    source="planned_topology",
+                )
+        except Exception:
+            pass
+
+        relevant_links = [
+            lf
+            for lf in discovered_links
+            if not target_hostnames
+            or lf["src"] in target_hostnames
+            or lf["dst"] in target_hostnames
+        ]
+        if len(relevant_links) < 10:
+            relevant_links = discovered_links
+        relevant_links = relevant_links[:120]
+
+        inventory_text += "\nLINK FACTS (interface-to-interface):\n"
+        if relevant_links:
+            for lf in relevant_links:
+                inventory_text += (
+                    f"- {lf['src']}:{lf['src_if']} <-> {lf['dst']}:{lf['dst_if']} "
+                    f"[source={lf['source']}]\n"
+                )
+        else:
+            inventory_text += "- No link facts available.\n"
+
+        # 3. Build prompt
         system_prompt = (
-            "You are NetAutoController AI, operating as a grounded network reliability and automation controller.\n"
-            "Answer read-only network questions from authoritative evidence.\n"
-            "Format every response as GitHub-flavored Markdown. Use real **bold** text for labels, "
-            "hyphen bullet lists for grouped facts, and numbered lists for ordered steps. Do not wrap "
-            "the whole answer in a code block and do not escape Markdown markers.\n"
-            "Prefer authoritative planned, live, telemetry, incident, drift, and knowledge evidence.\n"
-            "For Inventory AI questions about interfaces, management IP/interface, or neighbors, answer from "
-            "Authoritative Inventory Device Details before using any knowledge-base or vector-store summary.\n"
-            "If the user's wording uses pronouns such as 'it' or 'that device', resolve them from the provided "
-            "recent Inventory AI conversation. If the target device is still ambiguous, ask for the hostname.\n"
-            "If evidence is stale, conflicting, or missing, say so explicitly.\n\n"
-            f"{inventory_detail_context}\n\n"
-            f"## Current Network State\n{network_context}"
+            "You are a Network Inventory Assistant. "
+            f"There are exactly {total_count} devices in the inventory. "
+            "Use the metadata and snapshot below for accurate counts. "
+            "If asked 'how many', always refer to the 'Total Inventory Count' metadata. "
+            "When asked about connections between two devices, prioritize LINK FACTS and quote both local and peer interfaces. "
+            "Respond in GitHub-flavored Markdown using real bold labels, hyphen bullet lists, and numbered lists only when order matters. "
+            "Do not escape Markdown markers and do not wrap the whole answer in a code block.\n\n"
+            f"{inventory_text}"
         )
         
         provider = OllamaProvider(base_url=base_url, model=model)

@@ -10,6 +10,7 @@ import subprocess
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 import uvicorn
@@ -19,8 +20,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from dotenv import load_dotenv
 
-# Load environment variables from .env
-load_dotenv()
+# Load environment variables explicitly. ``load_dotenv()`` alone depends on
+# the process working directory and does not override stale shell values, which
+# can leave Ollama stuck on localhost even when backend/.env points to the VM.
+_BACKEND_DIR = Path(__file__).resolve().parent
+_PROJECT_DIR = _BACKEND_DIR.parent
+load_dotenv(_PROJECT_DIR / ".env", override=False)
+load_dotenv(_BACKEND_DIR / ".env", override=True)
 
 # --- Core Modules ---
 from db.manager import DatabaseManager
@@ -391,6 +397,47 @@ def build_fast_reachability_topology() -> dict:
         len(ip_ports),
     )
     return {"timestamp": ts, "seeds": sorted(ip_ports.keys()), "nodes": nodes, "source": "reachability_probe"}
+
+
+def merge_reachability_nodes_into_topology(full_topology: dict, fast_topology: Optional[dict]) -> dict:
+    """
+    Preserve ping/TCP-reachable inventory devices in the live topology even if the
+    deeper SSH/LLDP crawl misses them in a given pass.
+    """
+    merged = json.loads(json.dumps(full_topology or {}))
+    merged_nodes = merged.setdefault("nodes", {})
+    if not isinstance(merged_nodes, dict):
+        merged_nodes = {}
+        merged["nodes"] = merged_nodes
+
+    fast_nodes = (fast_topology or {}).get("nodes") or {}
+    if not isinstance(fast_nodes, dict):
+        return merged
+
+    for hostname, fast_node in fast_nodes.items():
+        if not isinstance(fast_node, dict):
+            continue
+
+        existing = merged_nodes.get(hostname)
+        if isinstance(existing, dict):
+            existing.setdefault("reachable", fast_node.get("reachable", True))
+            existing.setdefault("reachable_by", fast_node.get("reachable_by", "probe"))
+            existing.setdefault("topology_source", existing.get("topology_source") or "ssh_crawl")
+            existing.setdefault("last_seen", fast_node.get("last_seen"))
+            existing_ifaces = existing.get("interfaceList")
+            if not existing_ifaces and fast_node.get("interfaceList"):
+                existing["interfaceList"] = fast_node.get("interfaceList")
+            continue
+
+        reachable_only = dict(fast_node)
+        reachable_only["connectedNode"] = []
+        reachable_only["edgeLink"] = {}
+        reachable_only["discovery_status"] = "reachable_only"
+        reachable_only["topology_source"] = "reachability_probe"
+        reachable_only["last_seen"] = merged.get("timestamp") or fast_node.get("last_seen")
+        merged_nodes[hostname] = reachable_only
+
+    return merged
 
 
 async def _commit_topology_snapshot(
@@ -887,7 +934,21 @@ def save_topology_to_file(topo: dict, filepath: str, sort_keys: bool = False):
 
 async def run_crawl_and_broadcast(trigger: str = "periodic"):
     global _last_crawl_finished_at_monotonic
-    await run_fast_reachability_and_broadcast(trigger=f"{trigger}:reachability")
+    fast_topology: Optional[dict] = None
+    try:
+        fast_topology = build_fast_reachability_topology()
+    except Exception as exc:
+        logger.warning("Fast reachability pre-build failed: %s", exc)
+        fast_topology = None
+
+    if fast_topology and fast_topology.get("nodes"):
+        await _commit_topology_snapshot(
+            fast_topology,
+            trigger=f"{trigger}:reachability",
+            persist_crawl_result=False,
+            embed_state=False,
+            refresh_agent_context=False,
+        )
 
     if _crawl_run_lock.locked():
         logger.info("Skipping crawl (trigger=%s): another crawl is already running", trigger)
@@ -909,6 +970,8 @@ async def run_crawl_and_broadcast(trigger: str = "periodic"):
                 trigger=trigger,
             )
             return
+
+        new_topo = merge_reachability_nodes_into_topology(new_topo, fast_topology)
 
         save_topology_to_file(new_topo, NEW_FETCH_FILE, sort_keys=True)
         topology_changed = await _commit_topology_snapshot(

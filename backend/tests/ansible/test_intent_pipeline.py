@@ -1,5 +1,7 @@
 """Unit tests for refactored intent pipeline (no LLM)."""
 
+import json
+
 from ansible.intent_pipeline.cross_check import cross_check_parsed_intent
 from ansible.intent_validation import correct_vlan_interface_binding_from_trunk_prompt
 from ansible.intent_pipeline.intent_splitter import split_multi_intent
@@ -10,6 +12,7 @@ from ansible.intent_pipeline.orchestrator import build_pipeline_trace
 from ansible.intent_pipeline.schema_loader import reload_catalog
 from ansible.intent_pipeline.validator import validate_llm_intent_dict
 from llm.intent import (
+    IntentParser,
     enumerate_layer_switch_device_candidates,
     extract_layer_switch_role_and_numbers,
     parse_vlan_database_params_from_text,
@@ -426,6 +429,50 @@ def test_trunk_prompt_coerces_interface_binding_key():
     assert iface.get("mode") == "trunk"
     assert iface.get("trunk_vlans") == [10]
     assert "access_vlan" not in iface
+
+
+def test_intent_parser_rule_based_vlan_access_binding_without_ollama():
+    class _BoomProvider:
+        async def generate(self, *args, **kwargs):
+            raise AssertionError("rule-based VLAN binding should not call the provider")
+
+    parsed = json.loads(
+        IntentParser(provider=_BoomProvider()).parse(
+            "Create vlan 43 on access switch and configure as access port on interface"
+        )
+    )
+
+    params = parsed["parameters"]
+    assert parsed["intent_type"] == "configure"
+    assert parsed["action"] == "create_vlan"
+    assert parsed["feature"] == "vlan"
+    assert parsed["scope"]["device_role"] == "access"
+    assert params["vlan_id"] == 43
+    assert params["vlans"] == [{"id": 43, "name": "VLAN 43"}]
+    assert params["interface_binding"] == []
+    assert params["_secondary_intents"][0]["action"] == "assign_vlan_to_access_port"
+    assert params["_secondary_intents"][0]["parameters"]["access_vlan"] == 43
+    assert parsed["requires_resolution"] is True
+    assert parsed["requires_disambiguation"] is True
+
+
+def test_intent_parser_rule_based_vlan_binding_extracts_named_interface():
+    class _BoomProvider:
+        async def generate(self, *args, **kwargs):
+            raise AssertionError("rule-based VLAN binding should not call the provider")
+
+    parsed = json.loads(
+        IntentParser(provider=_BoomProvider()).parse(
+            "Create vlan 43 named Mathematics on Cisco_Acc_1 and configure Ethernet0/2 as access port"
+        )
+    )
+
+    params = parsed["parameters"]
+    assert params["vlan_name"] == "Mathematics"
+    assert params["interface_binding"] == [{"name": "Ethernet0/2", "mode": "access", "access_vlan": 43}]
+    assert params["_secondary_intents"][0]["parameters"]["interfaces"] == [
+        {"name": "Ethernet0/2", "mode": "access", "access_vlan": 43}
+    ]
 
 
 def test_intent_requests_all_interfaces_detection_interface_shutdown():

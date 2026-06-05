@@ -160,6 +160,7 @@ const AnsibleStudioView: React.FC<AnsibleStudioViewProps> = ({ user }) => {
   const [isChecking, setIsChecking]   = useState(false);
   const [checkPassedByJobId, setCheckPassedByJobId] = useState<Record<number, boolean>>(() => getStoredCheckPassedByJob());
   const [chatExplainRequest, setChatExplainRequest] = useState<AnsibleQuotedExplainRequest | null>(null);
+  const [isClearingPreviewCache, setIsClearingPreviewCache] = useState(false);
 
   // ── SSE state ────────────────────────────────────────────────────────────
   const [sseLines, setSseLines]       = useState<string[]>([]);
@@ -610,6 +611,22 @@ const AnsibleStudioView: React.FC<AnsibleStudioViewProps> = ({ user }) => {
     setStreamingSessionId(null);
   }, [activeTab, closeTab]);
 
+  const handleClearPreviewCache = useCallback(async () => {
+    if (isClearingPreviewCache) return;
+    setIsClearingPreviewCache(true);
+    try {
+      const resp = await ansibleApi.clearPreviewCache();
+      Toast.success(
+        'Preview cache cleared',
+        `Removed ${resp.cleared.total} cached preview entr${resp.cleared.total === 1 ? 'y' : 'ies'}.`,
+      );
+    } catch (err: any) {
+      Toast.error('Unable to clear preview cache', err?.message || 'Please try again.');
+    } finally {
+      setIsClearingPreviewCache(false);
+    }
+  }, [isClearingPreviewCache]);
+
   const approvalReady = Boolean(
     activeJobId && (checkPassedByJobId[activeJobId] || (checkResultJobId === activeJobId && checkResult?.rc === 0))
   );
@@ -699,6 +716,17 @@ const AnsibleStudioView: React.FC<AnsibleStudioViewProps> = ({ user }) => {
           subtitle="Executing Ansible dry-run (check mode) validation over SSH…"
         />
       )}
+      {/* <div className="flex items-center justify-end gap-2 px-3 py-2 border-b border-base-300 bg-base-100/90">
+        <button
+          type="button"
+          onClick={handleClearPreviewCache}
+          disabled={isClearingPreviewCache}
+          className="btn btn-xs btn-ghost text-base-content/70 hover:text-base-content disabled:opacity-60"
+          title="Clear cached Playbook Studio preview results and force a fresh parse for the next prompt."
+        >
+          {isClearingPreviewCache ? 'Clearing cache...' : 'Clear cache'}
+        </button>
+      </div> */}
       {/* ── Main three-column area ── */}
       <div className="flex grow min-h-0 overflow-hidden">
 

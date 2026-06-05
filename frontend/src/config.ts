@@ -12,7 +12,7 @@ export const DEFAULT_OLLAMA_MODEL =
   (import.meta.env.VITE_DEFAULT_OLLAMA_MODEL as string | undefined)?.trim() || 'qwen2.5-coder:3b';
 /** Browser → Ollama API; override with VITE_OLLAMA_BASE_URL or localStorage. */
 export const DEFAULT_OLLAMA_BASE_URL =
-  (import.meta.env.VITE_OLLAMA_BASE_URL as string | undefined)?.trim() || 'http://127.0.0.1:11434';
+  (import.meta.env.VITE_OLLAMA_BASE_URL as string | undefined)?.trim() || 'http://192.168.1.251:11434';
 
 /** Temporary feature flag for SDN controller UI surfaces. */
 export const SHOW_SDN_CONTROLLER =

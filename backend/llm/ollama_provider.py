@@ -34,7 +34,7 @@ from llm.provider import LLMProvider, LLMMessage, LLMResponse, ToolCall
 
 logger = logging.getLogger("llm.ollama")
 
-_DEFAULT_BASE_URL = "http://localhost:11434"
+_DEFAULT_BASE_URL = os.getenv("OLLAMA_UI_BASE_URL", "http://localhost:11434")
 # Default local coding model (Ollama tag); override with OLLAMA_MODEL.
 _DEFAULT_MODEL = "qwen2.5-coder:3b"
 DEFAULT_OLLAMA_MODEL = _DEFAULT_MODEL
@@ -60,7 +60,13 @@ class OllamaProvider(LLMProvider):
         model: Optional[str] = None,
         timeout: Optional[int] = None,
     ):
-        self._base_url = (base_url or os.getenv("OLLAMA_BASE_URL", _DEFAULT_BASE_URL)).rstrip("/")
+        resolved_base_url = (
+            base_url
+            or os.getenv("OLLAMA_BASE_URL")
+            or os.getenv("OLLAMA_UI_BASE_URL")
+            or _DEFAULT_BASE_URL
+        )
+        self._base_url = str(resolved_base_url).rstrip("/")
         self._model    = model   or os.getenv("OLLAMA_MODEL",    _DEFAULT_MODEL)
         self._timeout  = int(timeout or os.getenv("OLLAMA_TIMEOUT", _DEFAULT_TIMEOUT))
         logger.info("OllamaProvider initialised (url=%s model=%s)", self._base_url, self._model)

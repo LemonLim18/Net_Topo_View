@@ -1505,6 +1505,17 @@ export const sshApi = {
 
 // --- M23: Ansible Workflow Studio API ---
 export const ansibleApi = {
+  clearPreviewCache: () =>
+    request<{
+      status: string;
+      cleared: {
+        intent_parse: number;
+        parse_context: number;
+        planning_context: number;
+        total: number;
+      };
+    }>('/ansible/preview-cache/clear', { method: 'POST' }),
+
   /** Preview intent: categories + RAG reference templates + reasoning (for studio overlay). */
   previewIntent: (
     req: {
