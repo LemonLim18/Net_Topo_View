@@ -1749,7 +1749,7 @@ export const ansibleApi = {
       playbook: string;
       artifact_type?: 'playbook' | 'bundle';
       entrypoint_path?: string | null;
-      files?: { path: string; content: string; writable?: boolean; kind?: string }[];
+      files?: { path: string; content: string; writable?: boolean; read_only?: boolean; kind?: string }[];
       manifest?: Record<string, any>;
       target_hosts?: string[];
     }>(
@@ -1772,7 +1772,7 @@ export const ansibleApi = {
       job_id: number; request_id: number; status: string;
       playbook: string; config: string; undo_config: string | null;
       entrypoint_path?: string | null;
-      files?: { path: string; content: string; writable?: boolean; kind?: string }[];
+      files?: { path: string; content: string; writable?: boolean; read_only?: boolean; kind?: string }[];
     }>(
       '/ansible/create-from-template',
       { method: 'POST', body: JSON.stringify(req), signal: opts?.signal }
@@ -1822,7 +1822,9 @@ export const ansibleApi = {
       has_playbook: boolean;
       artifact_type?: 'playbook' | 'bundle';
       entrypoint_path?: string | null;
-      files?: { path: string }[];
+      read_only?: boolean;
+      locked_reason?: string | null;
+      files?: { path: string; read_only?: boolean; writable?: boolean }[];
       steps: { stage: string; status: string; details: string; created_at: string }[];
     }>(`/ansible/jobs/${jobId}/result`),
 
@@ -1854,7 +1856,7 @@ export const ansibleApi = {
 
   /** Read a single file's content from the ansible directory. */
   readFile: (path: string) =>
-    request<{ path: string; content: string; size: number; modified_at: string }>(
+    request<{ path: string; content: string; size: number; modified_at: string; read_only?: boolean; writable?: boolean }>(
       `/ansible/files/${encodeURIComponent(path)}`
     ),
 

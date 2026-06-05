@@ -138,6 +138,8 @@ export interface AnsibleJob {
   hasPlaybook: boolean;
   artifactType?: 'playbook' | 'bundle';
   entrypointPath?: string | null;
+  readOnly?: boolean;
+  lockedReason?: string | null;
   steps: AnsibleJobStep[];
 }
 
@@ -215,6 +217,7 @@ export interface AnsibleGeneratedArtifactFile {
   path: string;
   content: string;
   writable?: boolean;
+  read_only?: boolean;
   kind?: string;
 }
 

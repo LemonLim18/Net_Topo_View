@@ -28,6 +28,16 @@ const FILE_TREE_DEFAULT = 200;
 const CHAT_PANEL_MIN = 280;
 const CHAT_PANEL_MAX = 560;
 const CHAT_PANEL_DEFAULT = 320;
+const APPROVED_JOB_READ_ONLY_STATUSES = new Set(['approved', 'running', 'success', 'failed', 'rolled_back']);
+
+const isApprovedJobReadOnlyStatus = (status?: string | null) =>
+  APPROVED_JOB_READ_ONLY_STATUSES.has(String(status || '').trim().toLowerCase());
+
+const tabBelongsToJob = (tab: AnsibleTab, jobId: number) => {
+  if (tab.jobId === jobId) return true;
+  const path = (tab.path || tab.id || '').replace(/\\/g, '/');
+  return new RegExp(`(?:^|/)job_${jobId}(?:/|$)`).test(path);
+};
 
 interface AnsibleStudioViewProps {
   user: User | null;
@@ -202,6 +212,7 @@ const AnsibleStudioView: React.FC<AnsibleStudioViewProps> = ({ user }) => {
   const refreshJob = useCallback(async (id: number) => {
     try {
       const r = await ansibleApi.getResult(id);
+      const readOnly = Boolean(r.read_only) || isApprovedJobReadOnlyStatus(r.status);
       setJob({
         jobId:       r.job_id,
         requestId:   0,
@@ -210,8 +221,17 @@ const AnsibleStudioView: React.FC<AnsibleStudioViewProps> = ({ user }) => {
         hasPlaybook: r.has_playbook,
         artifactType: r.artifact_type,
         entrypointPath: r.entrypoint_path,
+        readOnly,
+        lockedReason: r.locked_reason ?? null,
         steps:       r.steps ?? [],
       });
+      if (readOnly) {
+        setTabs(prev => prev.map(t =>
+          tabBelongsToJob(t, id)
+            ? { ...t, jobId: id, isReadOnly: true, isDirty: false }
+            : t
+        ));
+      }
     } catch { /* ignore */ }
   }, []);
 
@@ -278,7 +298,19 @@ const AnsibleStudioView: React.FC<AnsibleStudioViewProps> = ({ user }) => {
   const openTab = useCallback((id: string, name: string, content: string, isDirty = false, isReadOnly = false, jobId?: number) => {
     setTabs(prev => {
       const existing = prev.find(t => t.id === id);
-      if (existing) return prev;
+      if (existing) {
+        return prev.map(t => t.id === id
+          ? {
+              ...t,
+              name,
+              content,
+              isDirty,
+              isReadOnly: t.isReadOnly || isReadOnly,
+              jobId: jobId ?? t.jobId,
+            }
+          : t
+        );
+      }
       return [...prev, { id, path: id, name, content, isDirty, isReadOnly, jobId }];
     });
     setActiveTabId(id);
@@ -401,7 +433,7 @@ const AnsibleStudioView: React.FC<AnsibleStudioViewProps> = ({ user }) => {
       const pathNorm = (node.path || '').replace(/\\/g, '/');
       const jobMatch = pathNorm.match(/(?:^|\/)generated\/job_(\d+)(?:\/|$)/);
       const jobIdFromPath = jobMatch && Number.isFinite(Number(jobMatch[1])) ? parseInt(jobMatch[1], 10) : undefined;
-      openTab(node.path, node.name, r.content, false, false, jobIdFromPath);
+      openTab(node.path, node.name, r.content, false, Boolean(r.read_only), jobIdFromPath);
     } catch { /* ignore */ }
   }, [tabs, openTab]);
 

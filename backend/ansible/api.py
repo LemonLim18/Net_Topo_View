@@ -3063,6 +3063,7 @@ async def plan_ansible(
     The playbook now goes through a bounded refine-and-verify loop before being stored.
     Device dry-run contact remains optional and disabled unless requested.
     """
+    _assert_job_artifacts_unlocked(job_id, "replanned")
     builder = _require_builder()
     resolved_hosts = _resolve_target_hosts(req.target_hosts)
     if _db is not None and resolved_hosts and _db_hostname_lower_to_canonical(_db):
@@ -4116,6 +4117,7 @@ async def select_candidate(
     After reviewing candidates, operator selects one by index.
     The selected playbook is stored against the job.
     """
+    _assert_job_artifacts_unlocked(job_id, "changed")
     if not playbook_yaml:
         raise HTTPException(400, "playbook_yaml is required")
 
@@ -4560,6 +4562,11 @@ async def get_result(
     if not row:
         raise HTTPException(404, f"Job {job_id} not found")
 
+    read_only = _is_job_artifact_read_only_status(row["status"])
+    locked_reason = (
+        "Approved playbook artifacts are read-only."
+        if read_only else None
+    )
     out = {
         "job_id":  job_id,
         "status":  row["status"],
@@ -4568,13 +4575,19 @@ async def get_result(
         "has_playbook": bool(row["ansible_playbook"] or row["ansible_artifact_manifest"]),
         "entrypoint_path": row["ansible_entrypoint_path"],
         "artifact_type": "bundle" if row["ansible_artifact_manifest"] else "playbook",
+        "read_only": read_only,
+        "locked_reason": locked_reason,
         "steps":   [dict(r) for r in logs],
     }
     # Include bundle file list so chat/file UI can show all generated files
     if row["ansible_artifact_manifest"]:
         try:
             bundle = json.loads(row["ansible_artifact_manifest"])
-            out["files"] = [{"path": f.get("path", "")} for f in (bundle.get("files") or []) if f.get("path")]
+            out["files"] = [
+                {"path": f.get("path", ""), "read_only": read_only, "writable": not read_only}
+                for f in (bundle.get("files") or [])
+                if f.get("path")
+            ]
         except Exception:
             out["files"] = []
     else:
@@ -5116,6 +5129,63 @@ _READONLY_ROOTS = frozenset({"reference", "roles", "awx", "generated", "Test_Ref
 _WRITABLE_ROOTS = ("playbooks", "inventory")
 _GENERATED_ROLE_ROOT = "roles/generated"
 _GENERATED_PLAYBOOK_ROOT = "playbooks/generated"
+_APPROVED_ARTIFACT_LOCK_STATUSES = frozenset({"approved", "running", "success", "failed", "rolled_back"})
+
+
+def _is_job_artifact_read_only_status(status_value: Any) -> bool:
+    return str(status_value or "").strip().lower() in _APPROVED_ARTIFACT_LOCK_STATUSES
+
+
+def _job_id_from_generated_artifact_path(relative: str) -> int | None:
+    path = str(relative or "").replace("\\", "/").strip("/")
+    match = re.match(r"^(?:generated|playbooks/generated|roles/generated)/job_(\d+)(?:/|$)", path)
+    if not match:
+        return None
+    try:
+        return int(match.group(1))
+    except ValueError:
+        return None
+
+
+def _get_job_status(job_id: int) -> str | None:
+    if _db is None:
+        return None
+    with _db._connect() as conn:
+        row = conn.execute("SELECT status FROM jobs WHERE id = ?", (job_id,)).fetchone()
+    if not row:
+        return None
+    return str(row["status"] or "").strip().lower()
+
+
+def _locked_generated_artifact(relative: str) -> tuple[int, str] | None:
+    job_id = _job_id_from_generated_artifact_path(relative)
+    if job_id is None:
+        return None
+    status_value = _get_job_status(job_id)
+    if _is_job_artifact_read_only_status(status_value):
+        return job_id, status_value or "approved"
+    return None
+
+
+def _assert_generated_artifact_unlocked(relative: str, action: str = "modify") -> None:
+    locked = _locked_generated_artifact(relative)
+    if not locked:
+        return
+    job_id, status_value = locked
+    raise HTTPException(
+        status.HTTP_423_LOCKED,
+        f"Job {job_id} is {status_value}; approved playbook artifacts are read-only and cannot be {action}.",
+    )
+
+
+def _assert_job_artifacts_unlocked(job_id: int, action: str = "changed") -> None:
+    status_value = _get_job_status(job_id)
+    if not _is_job_artifact_read_only_status(status_value):
+        return
+    raise HTTPException(
+        status.HTTP_423_LOCKED,
+        f"Job {job_id} is {status_value}; approved playbook artifacts are read-only and cannot be {action}.",
+    )
 
 
 def _safe_path(relative: str) -> Path:
@@ -9630,11 +9700,14 @@ async def read_file(file_path: str, user: dict = Depends(get_current_user)):
         raise HTTPException(400, "Path is a directory, not a file")
     content = path.read_text(encoding="utf-8", errors="replace")
     st = path.stat()
+    read_only = _locked_generated_artifact(path_to_read) is not None
     return {
         "path": file_path,
         "content": content,
         "size": st.st_size,
         "modified_at": datetime.fromtimestamp(st.st_mtime).isoformat(),
+        "read_only": read_only,
+        "writable": _is_writable_relative_path(path_to_read) and not read_only,
     }
 
 
@@ -9674,6 +9747,7 @@ async def write_file(
         real = _generated_virtual_to_real(path_to_write)
         if real:
             path_to_write = real
+    _assert_generated_artifact_unlocked(path_to_write, "modified")
     path = _safe_path(path_to_write)
     if not _is_writable_relative_path(path_to_write):
         raise HTTPException(
@@ -9692,7 +9766,13 @@ async def create_file(
     body:      CreateFileRequest,
     user:      dict = Depends(require_role("engineer", "admin")),
 ):
-    path, rel_parts = _safe_writable_path(file_path)
+    path_to_create = file_path.replace("\\", "/").strip("/")
+    if path_to_create.startswith("generated/"):
+        real = _generated_virtual_to_real(path_to_create)
+        if real:
+            path_to_create = real
+    _assert_generated_artifact_unlocked(path_to_create, "changed")
+    path, rel_parts = _safe_writable_path(path_to_create)
     if len(rel_parts) < 2:
         raise HTTPException(400, "Provide a file path under playbooks/, inventory/, or roles/generated/")
     if path.exists():
@@ -9708,7 +9788,13 @@ async def create_folder(
     folder_path: str,
     user:        dict = Depends(require_role("engineer", "admin")),
 ):
-    path, rel_parts = _safe_writable_path(folder_path)
+    path_to_create = folder_path.replace("\\", "/").strip("/")
+    if path_to_create.startswith("generated/"):
+        real = _generated_virtual_to_real(path_to_create)
+        if real:
+            path_to_create = real
+    _assert_generated_artifact_unlocked(path_to_create, "changed")
+    path, rel_parts = _safe_writable_path(path_to_create)
     if len(rel_parts) < 2:
         raise HTTPException(400, "Provide a folder path under playbooks/, inventory/, or roles/generated/")
     if path.exists() and not path.is_dir():
@@ -9724,6 +9810,7 @@ async def delete_path(
     user:        dict = Depends(require_role("engineer", "admin")),
 ):
     path_to_delete = target_path.replace("\\", "/").strip("/")
+    _assert_generated_artifact_unlocked(path_to_delete, "deleted")
     # Virtual job folder (generated/job_XX): delete both playbooks/generated/job_XX and roles/generated/job_XX
     job_real_paths = _generated_job_real_paths(path_to_delete)
     if job_real_paths:
@@ -9749,6 +9836,7 @@ async def delete_path(
         real = _generated_virtual_to_real(path_to_delete)
         if real:
             path_to_delete = real
+    _assert_generated_artifact_unlocked(path_to_delete, "deleted")
     path, rel_parts = _safe_writable_path(path_to_delete)
     if len(rel_parts) == 1 and rel_parts[0] in _WRITABLE_ROOTS:
         raise HTTPException(403, f"Cannot delete writable root directory: {rel_parts[0]}")
@@ -9780,6 +9868,12 @@ async def rename_path(
         real = _generated_virtual_to_real(from_raw)
         if real:
             from_raw = real
+    if to_raw.startswith("generated/"):
+        real = _generated_virtual_to_real(to_raw)
+        if real:
+            to_raw = real
+    _assert_generated_artifact_unlocked(from_raw, "renamed")
+    _assert_generated_artifact_unlocked(to_raw, "renamed")
     from_path = _safe_path(from_raw)
     to_path = _safe_path(to_raw)
     if not _is_writable_relative_path(from_raw):
@@ -10092,6 +10186,7 @@ async def refine_playbook(
     3. Repeat until /check passes
     4. Approve + execute
     """
+    _assert_job_artifacts_unlocked(job_id, "refined")
     playbook_yaml, _ = _load_job_playbook(job_id)
 
     errors_raw  = [e.model_dump() for e in req.errors]

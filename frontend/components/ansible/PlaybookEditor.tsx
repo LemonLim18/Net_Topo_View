@@ -331,6 +331,15 @@ const PlaybookEditor: React.FC<PlaybookEditorProps> = ({
             Rejected
           </span>
         )}
+        {activeTab?.isReadOnly && (
+          <span
+            className="badge badge-ghost badge-sm gap-1"
+            title={job?.lockedReason || 'This file is read-only'}
+          >
+            <Lock className="h-3 w-3" />
+            {job?.readOnly ? 'Approved read-only' : 'Read-only'}
+          </span>
+        )}
 
         <div className="ml-auto flex items-center gap-2">
           {activeTab?.name.endsWith('.md') && (
@@ -423,6 +432,7 @@ const PlaybookEditor: React.FC<PlaybookEditorProps> = ({
                 }}
                 options={{
                   readOnly:         activeTab.isReadOnly,
+                  domReadOnly:      activeTab.isReadOnly,
                   minimap:          { enabled: false },
                   wordWrap:         'on',
                   fontSize:         13,
