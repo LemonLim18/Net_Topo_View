@@ -18,7 +18,7 @@ from drivers.factory import DriverFactory
 
 logger = logging.getLogger("deploy.snapshots")
 
-_RESTORE_SUPPORTED_VENDORS = {"cisco_ios", "cisco_xe", "huawei_vrp"}
+_RESTORE_SUPPORTED_VENDORS = {"cisco_ios", "cisco_xe", "huawei_vrp", "juniper_junos"}
 
 
 def _normalize_vendor(vendor: Optional[str]) -> str:
@@ -118,9 +118,9 @@ class SnapshotManager:
         Apply a stored snapshot back onto the live device.
 
         Current safety policy:
-        - Supported: Cisco IOS / IOS-XE, Huawei VRP
-        - Not yet supported: Juniper Junos (saved snapshot format is hierarchical and
-          cannot be safely replayed with the current line-oriented push_config flow)
+        - Cisco IOS / IOS-XE and Huawei VRP use line-oriented restore commands.
+        - Juniper Junos uses a vendor-safe full candidate restore:
+          load override terminal -> commit check -> commit.
 
         The method always captures a pre-restore backup first so operators have an
         immediate rollback reference if the applied restore is not what they intended.
@@ -136,17 +136,18 @@ class SnapshotManager:
         vendor = _normalize_vendor(getattr(device, "vendor", None))
         if vendor not in _RESTORE_SUPPORTED_VENDORS:
             raise ValueError(
-                "Snapshot restore is currently supported only for Cisco IOS/IOS-XE and Huawei VRP. "
-                "Juniper snapshots remain view-only until a vendor-safe restore workflow is added."
+                "Snapshot restore is currently supported only for Cisco IOS/IOS-XE, Huawei VRP, and Juniper Junos."
             )
 
         config_text = (snap.config_text or "").strip()
         if not config_text:
             raise ValueError("This snapshot has no configuration content to restore")
 
-        commands = self._build_restore_commands(vendor, snap.config_text)
-        if not commands:
-            raise ValueError("No restorable configuration commands could be derived from this snapshot")
+        commands: List[str] = []
+        if vendor != "juniper_junos":
+            commands = self._build_restore_commands(vendor, snap.config_text)
+            if not commands:
+                raise ValueError("No restorable configuration commands could be derived from this snapshot")
 
         backup_description = (
             f"Automatic safety backup captured before restoring snapshot #{snapshot_id}"
@@ -172,7 +173,15 @@ class SnapshotManager:
                 owner_username=owner_username,
             )
 
-            result = driver.push_config(commands)
+            if vendor == "juniper_junos":
+                restore_full = getattr(driver, "restore_full_config", None)
+                if not callable(restore_full):
+                    raise RuntimeError("Juniper driver does not support full snapshot restore")
+                result = restore_full(snap.config_text)
+                commands_applied = self._restore_line_count(result.data, snap.config_text)
+            else:
+                result = driver.push_config(commands)
+                commands_applied = len(commands)
             if not result.success:
                 raise RuntimeError(result.error or "The device rejected the restore commands")
 
@@ -203,7 +212,7 @@ class SnapshotManager:
                             "vendor": vendor,
                             "backup_snapshot_id": backup_snapshot_id,
                             "restored_snapshot_id": restored_snapshot_id,
-                            "commands_applied": len(commands),
+                            "commands_applied": commands_applied,
                         },
                         ensure_ascii=False,
                     ),
@@ -217,7 +226,7 @@ class SnapshotManager:
             "Restored snapshot #%s to device %s using %d commands (backup=%s, post=%s)",
             snapshot_id,
             device.hostname,
-            len(commands),
+            commands_applied,
             backup_snapshot_id,
             restored_snapshot_id,
         )
@@ -229,12 +238,19 @@ class SnapshotManager:
             "vendor": vendor,
             "backup_snapshot_id": backup_snapshot_id,
             "restored_snapshot_id": restored_snapshot_id,
-            "commands_applied": len(commands),
+            "commands_applied": commands_applied,
             "message": (
                 f"Snapshot #{snapshot_id} was restored to {device.hostname}. "
                 f"A safety backup was saved as snapshot #{backup_snapshot_id}."
             ),
         }
+
+    def _restore_line_count(self, result_data: Any, config_text: str) -> int:
+        if isinstance(result_data, dict):
+            loaded_lines = result_data.get("loaded_lines")
+            if isinstance(loaded_lines, int) and loaded_lines >= 0:
+                return loaded_lines
+        return len([line for line in (config_text or "").splitlines() if line.strip()])
 
     def diff(self, pre_id: int, post_id: int) -> str:
         """
@@ -261,7 +277,7 @@ class SnapshotManager:
 
     def _build_restore_commands(self, vendor: str, config_text: str) -> List[str]:
         vendor = _normalize_vendor(vendor)
-        if vendor not in _RESTORE_SUPPORTED_VENDORS:
+        if vendor not in _RESTORE_SUPPORTED_VENDORS or vendor == "juniper_junos":
             return []
 
         section_delimiter = "!" if vendor in {"cisco_ios", "cisco_xe"} else "#"

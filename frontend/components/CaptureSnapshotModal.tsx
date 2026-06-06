@@ -84,10 +84,10 @@ const CaptureSnapshotModal: React.FC<CaptureSnapshotModalProps> = ({
 
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const vendorKey = (device.vendor || '').trim().toLowerCase();
-  const restoreSupported = ['cisco_ios', 'cisco_xe', 'huawei_vrp'].includes(vendorKey);
+  const restoreSupported = ['cisco_ios', 'cisco_xe', 'huawei_vrp', 'juniper_junos'].includes(vendorKey);
   const restoreBlockedReason = vendorKey === 'juniper_junos'
-    ? 'Restore from saved snapshots is not enabled for Juniper yet because the current snapshot format is not safe to replay automatically.'
-    : 'Restore is currently available for Cisco IOS/IOS-XE and Huawei VRP snapshots.';
+    ? ''
+    : 'Restore is currently available for Cisco IOS/IOS-XE, Huawei VRP, and Juniper Junos snapshots.';
 
   // ── Phase 1: Capture immediately on mount (or load existing snapshot) ──────────────────────
   useEffect(() => {
@@ -521,7 +521,9 @@ const CaptureSnapshotModal: React.FC<CaptureSnapshotModalProps> = ({
                 <AlertTriangle className="h-3.5 w-3.5 mt-0.5 shrink-0 text-warning/80" />
                 <span>
                   {restoreSupported
-                    ? 'This action applies the saved snapshot back to the live device. It is intentionally separated from the description controls, and a safety backup plus confirmation dialog are required before any restore begins.'
+                    ? vendorKey === 'juniper_junos'
+                      ? 'This action applies the saved Junos snapshot as a full candidate configuration, validates it with commit check, and captures a safety backup before restore begins.'
+                      : 'This action applies the saved snapshot back to the live device. It is intentionally separated from the description controls, and a safety backup plus confirmation dialog are required before any restore begins.'
                     : restoreBlockedReason}
                 </span>
               </div>

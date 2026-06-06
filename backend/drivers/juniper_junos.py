@@ -23,8 +23,9 @@ Supported commands:
     show configuration
 """
 
-import re
 import logging
+import re
+import time
 from typing import List, Dict, Tuple, Optional
 
 from drivers.ssh_driver import SSHDriver
@@ -34,6 +35,8 @@ from drivers.models import (
     Route,
     ARPEntry,
     DeviceInfo,
+    DriverResult,
+    DriverType,
     InterfaceStatus,
     RouteProtocol,
     Vendor,
@@ -228,6 +231,159 @@ class JuniperJunosDriver(SSHDriver):
             "version": "show version",
             "running_config": "show configuration",
         }
+
+    # ------------------------------------------------------------------
+    # Full snapshot restore
+    # ------------------------------------------------------------------
+
+    def restore_full_config(self, config_text: str) -> DriverResult:
+        """
+        Restore a hierarchical Junos snapshot as a full candidate config.
+
+        Junos ``show configuration`` snapshots are not safe to replay line by
+        line. Use ``load override terminal`` so Junos parses the hierarchy as a
+        candidate, validate with ``commit check``, and commit only if validation
+        succeeds.
+        """
+        payload = self._sanitize_full_config_payload(config_text)
+        if not payload:
+            return DriverResult(
+                success=False,
+                error="No restorable Junos configuration content was found in the snapshot",
+                device_hostname=self.host,
+                driver_type=DriverType.SSH,
+            )
+
+        try:
+            if not self.is_alive():
+                raise ConnectionError(f"Not connected to {self.host}")
+
+            channel = self._channel
+            if channel is None or channel.closed:
+                channel = self._client.invoke_shell()
+                time.sleep(0.5)
+                self._channel = channel
+
+            self._drain_channel(channel, wait=0.1)
+
+            output = ""
+            output += self._send_and_read(channel, "configure\n", timeout=2.0)
+            output += self._send_and_read(channel, "load override terminal\n", timeout=2.0)
+            channel.sendall(payload.rstrip() + "\n")
+            channel.sendall("\x04")
+            output += self._read_channel(channel, timeout=12.0)
+
+            if self._restore_output_has_error(output):
+                output += self._discard_candidate(channel)
+                return DriverResult(
+                    success=False,
+                    error=self._summarize_restore_error(output),
+                    data={"output": output, "loaded_lines": self._payload_line_count(payload)},
+                    device_hostname=self.host,
+                    driver_type=DriverType.SSH,
+                )
+
+            check_output = self._send_and_read(channel, "commit check\n", timeout=20.0)
+            output += check_output
+            if self._restore_output_has_error(check_output):
+                output += self._discard_candidate(channel)
+                return DriverResult(
+                    success=False,
+                    error=self._summarize_restore_error(check_output),
+                    data={"output": output, "loaded_lines": self._payload_line_count(payload)},
+                    device_hostname=self.host,
+                    driver_type=DriverType.SSH,
+                )
+
+            commit_output = self._send_and_read(channel, "commit and-quit\n", timeout=30.0)
+            output += commit_output
+            if self._restore_output_has_error(commit_output):
+                output += self._discard_candidate(channel)
+                return DriverResult(
+                    success=False,
+                    error=self._summarize_restore_error(commit_output),
+                    data={"output": output, "loaded_lines": self._payload_line_count(payload)},
+                    device_hostname=self.host,
+                    driver_type=DriverType.SSH,
+                )
+
+            return DriverResult(
+                success=True,
+                data={"output": output, "loaded_lines": self._payload_line_count(payload)},
+                device_hostname=self.host,
+                driver_type=DriverType.SSH,
+            )
+        except Exception as exc:
+            return DriverResult(
+                success=False,
+                error=str(exc),
+                device_hostname=self.host,
+                driver_type=DriverType.SSH,
+            )
+
+    def _send_and_read(self, channel, data: str, timeout: float) -> str:
+        channel.sendall(data)
+        return self._read_channel(channel, timeout=timeout)
+
+    def _discard_candidate(self, channel) -> str:
+        output = ""
+        try:
+            output += self._send_and_read(channel, "rollback 0\n", timeout=6.0)
+            output += self._send_and_read(channel, "exit configuration-mode\n", timeout=4.0)
+        except Exception as exc:
+            output += f"\nFailed to discard Junos candidate: {exc}\n"
+        return output
+
+    def _sanitize_full_config_payload(self, config_text: str) -> str:
+        lines: List[str] = []
+        for raw_line in (config_text or "").splitlines():
+            line = raw_line.rstrip("\r")
+            stripped = line.strip()
+            lower = stripped.lower()
+            if not stripped:
+                if lines and lines[-1]:
+                    lines.append("")
+                continue
+            if lower.startswith((
+                "show configuration",
+                "show configuration |",
+                "set cli screen-length",
+            )):
+                continue
+            if re.match(r"^\S+@\S+[>#]\s*$", stripped):
+                continue
+            if re.match(r"^\S+@\S+[>#]\s+(?:show configuration|set cli screen-length).*$", stripped, re.IGNORECASE):
+                continue
+            if re.match(r"^\[edit[^\]]*\]\s*$", stripped, re.IGNORECASE):
+                continue
+            if stripped in {"---(more)---", "--More--"}:
+                continue
+            lines.append(line)
+
+        payload = "\n".join(lines).strip()
+        if not re.search(r"[{};]", payload):
+            return ""
+        return payload
+
+    def _payload_line_count(self, payload: str) -> int:
+        return len([line for line in (payload or "").splitlines() if line.strip()])
+
+    def _restore_output_has_error(self, output: str) -> bool:
+        if not output:
+            return False
+        return bool(
+            re.search(r"(?im)^\s*error:", output)
+            or re.search(r"(?i)\b(commit failed|syntax error|load failed)\b", output)
+        )
+
+    def _summarize_restore_error(self, output: str) -> str:
+        for line in (output or "").splitlines():
+            stripped = line.strip()
+            if not stripped:
+                continue
+            if re.search(r"(?i)(error:|commit failed|syntax error|load failed)", stripped):
+                return stripped
+        return "Junos rejected the candidate restore configuration"
 
     # ------------------------------------------------------------------
     # Parsers — fully implemented
