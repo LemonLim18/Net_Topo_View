@@ -28,6 +28,12 @@ If your Markdown viewer supports HTML embeds:
 </iframe>
 ```
 
+### System Demo Workflow
+
+The demo workflow below summarizes how CogniShield is presented end to end: Proxmox and VM infrastructure, local and VPN system hosting, EVE-NG digital twin lab setup, Day-0 provisioning, DHCP/TFTP device initialization, Day-1 automation, Day-2 assurance, and post-change backup diff analysis with AI assistance.
+
+![CogniShield system demo workflow](docs/readme_assets/system-demo-workflow.png)
+
 ### Presentation Deck
 
 [Download the PIXEL PPT project deck](docs/readme_assets/PIXEL-PPT.pdf)
