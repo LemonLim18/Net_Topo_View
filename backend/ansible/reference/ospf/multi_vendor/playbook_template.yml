@@ -1,0 +1,65 @@
+---
+- name: Configure OSPF (multi-vendor)
+  hosts: "{{ target_hosts | default('all') }}"
+  gather_facts: no
+  ignore_unreachable: true
+  tasks:
+    - name: Configure OSPF (Cisco IOS)
+      cisco.ios.ios_config:
+        parents: "router ospf {{ process_id }}"
+        lines:
+{% if router_id %}
+          - "router-id {{ router_id }}"
+{% endif %}
+{% for net in networks | default([]) %}
+          - "network {{ net.network }} {{ net.wildcard }} area {{ net.area }}"
+{% endfor %}
+{% for iface in passive_interfaces | default([]) %}
+          - "passive-interface {{ (iface | string).split(':')[-1] }}"
+{% endfor %}
+{% for proto in redistribution | default([]) %}
+          - "redistribute {{ proto }}"
+{% endfor %}
+      when:
+        - inventory_hostname in groups.get('vendor_cisco_ios', [])
+
+    - name: Configure OSPF (Huawei VRP)
+      community.network.ce_config:
+        lines:
+          - "ospf {{ process_id }}"
+{% if router_id %}
+          - " router-id {{ router_id }}"
+{% endif %}
+{% for net in networks | default([]) %}
+          - " area {{ net.area }}"
+          - "  network {{ net.network }} {{ net.wildcard }}"
+{% endfor %}
+{% for iface in passive_interfaces | default([]) %}
+          - " silent-interface {{ (iface | string).split(':')[-1] | replace('TenGigabitEthernet', '10GE') | replace('GigabitEthernet', 'GE') }}"
+{% endfor %}
+{% for proto in redistribution | default([]) %}
+          - " import-route {{ proto }}"
+{% endfor %}
+          - "return"
+      when:
+        - inventory_hostname in groups.get('vendor_huawei_vrp', [])
+
+    - name: Configure OSPF (Juniper Junos)
+      juniper.device.junos_config:
+        lines:
+{% if router_id %}
+          - "set protocols ospf router-id {{ router_id }}"
+{% endif %}
+{% for net in networks | default([]) %}
+          - "set protocols ospf area {{ net.area }} network {{ net.network }}/{{ net.prefix_length | default('24') }}"
+{% endfor %}
+{% for iface in passive_interfaces | default([]) %}
+          - "set protocols ospf area 0.0.0.0 interface {{ (iface | string).split(':')[-1] }} passive"
+{% endfor %}
+{% for proto in redistribution | default([]) %}
+          - "set policy-options policy-statement REDIST_{{ proto | upper }} term 1 from protocol {{ proto }}"
+          - "set policy-options policy-statement REDIST_{{ proto | upper }} term 1 then accept"
+          - "set protocols ospf export REDIST_{{ proto | upper }}"
+{% endfor %}
+      when:
+        - inventory_hostname in groups.get('vendor_juniper_junos', [])

@@ -1,0 +1,14 @@
+---
+# handlers/main.yml — junos_vlan role
+
+- name: save_junos_config
+  junipernetworks.junos.junos_config:
+    save: true
+  listen: save_junos_config
+
+- name: commit_junos_config
+  # confirm_commit flushes the pending confirmed-commit timer set with
+  # `confirm:` in the task above — keeps config permanently.
+  junipernetworks.junos.junos_config:
+    confirm_commit: true
+  listen: commit_junos_config

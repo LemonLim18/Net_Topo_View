@@ -1,0 +1,635 @@
+"""
+Routing + retrieval layer for M21 — Vector-Embedded RAG.
+
+Responsibilities:
+        1. route(query) — taxonomy-aligned intent detection.
+       Returns (use_live: bool, use_knowledge: bool).
+             • use_live and use_knowledge come from the authoritative query taxonomy
+                 in llm.context_contract.
+             • static knowledge is included only when the retrieval planner says it
+                 is appropriate for the query class.
+
+        2. KnowledgeRetriever — wraps KnowledgeVectorStore with retrieval planning,
+             freshness-aware reranking, and source-authority guardrails.
+       friendlier interface: retrieve() returns a list of result dicts,
+       retrieve_as_text() formats them as a markdown block suitable for
+       direct injection into the system prompt.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import datetime, timezone
+import logging
+import threading
+from typing import TYPE_CHECKING, Optional
+
+from llm.context_contract import (
+    CONTEXT_DOMAIN_CONFIG,
+    CONTEXT_DOMAIN_DEPLOYMENT,
+    CONTEXT_DOMAIN_INCIDENTS,
+    CONTEXT_DOMAIN_INVENTORY,
+    CONTEXT_DOMAIN_KNOWLEDGE,
+    CONTEXT_DOMAIN_LIVE_TOPOLOGY,
+    classify_query,
+    compute_freshness,
+)
+from llm.vector_store import (
+    PARTITION_CHANGE_OUTCOMES,
+    PARTITION_CONFIG_HISTORY,
+    PARTITION_INCIDENTS,
+    PARTITION_LIVE_STATE,
+    PARTITION_PLANNED_STATE,
+    PARTITION_STATIC_KNOWLEDGE,
+)
+
+if TYPE_CHECKING:
+    from llm.vector_store import KnowledgeVectorStore
+    from llm.embedder import GeminiEmbedder
+
+logger = logging.getLogger("llm.retriever")
+
+
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+_FEATURE_HINTS = (
+    "ospf",
+    "bgp",
+    "vlan",
+    "spanning tree",
+    "stp",
+    "mpls",
+    "vrf",
+    "acl",
+    "qos",
+    "nat",
+    "ipsec",
+    "gre",
+    "lldp",
+    "cdp",
+    "lacp",
+    "snmp",
+    "syslog",
+    "netflow",
+    "topology",
+    "inventory",
+    "interfaces",
+    "configuration",
+    "drift",
+)
+_VENDOR_ALIASES = {
+    "cisco": ("cisco", "ios", "ios xe", "cisco_ios"),
+    "juniper": ("juniper", "junos", "juniper_junos"),
+    "huawei": ("huawei", "vrp", "huawei_vrp"),
+    "aruba": ("aruba",),
+    "netbox": ("netbox",),
+}
+_SEVERITY_BONUS = {"critical": 0.12, "high": 0.08, "medium": 0.03, "warning": 0.02, "low": 0.0, "info": 0.0}
+
+
+@dataclass(frozen=True)
+class RetrievalPlan:
+    query_class: str
+    preferred_partitions: tuple[str, ...]
+    fallback_partitions: tuple[str, ...]
+    min_preferred_results: int
+    suppress_fallback_when_fresh: tuple[str, ...] = ()
+    reasoning: str = ""
+
+
+class RetrievalTelemetry:
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self.reset()
+
+    def reset(self) -> None:
+        with self._lock:
+            self._total_queries = 0
+            self._last_retrieved_at: Optional[str] = None
+            self._query_class_counts: dict[str, int] = {}
+            self._partition_counts: dict[str, int] = {}
+            self._source_type_counts: dict[str, int] = {}
+
+    def record(self, query_class: str, results: list[dict]) -> None:
+        with self._lock:
+            self._total_queries += 1
+            self._last_retrieved_at = _utc_now()
+            self._query_class_counts[query_class] = self._query_class_counts.get(query_class, 0) + 1
+            for result in results:
+                partition = str(result.get("partition") or "unknown")
+                self._partition_counts[partition] = self._partition_counts.get(partition, 0) + 1
+                source_type = str(result.get("source_type") or "unknown")
+                self._source_type_counts[source_type] = self._source_type_counts.get(source_type, 0) + 1
+
+    def snapshot(self) -> dict[str, object]:
+        with self._lock:
+            total_results = sum(self._partition_counts.values())
+            partition_percentages = {
+                partition: round((count / total_results) * 100, 1)
+                for partition, count in self._partition_counts.items()
+            } if total_results else {}
+            return {
+                "total_queries": self._total_queries,
+                "last_retrieved_at": self._last_retrieved_at,
+                "query_class_counts": dict(sorted(self._query_class_counts.items())),
+                "partition_counts": dict(sorted(self._partition_counts.items())),
+                "partition_percentages": dict(sorted(partition_percentages.items())),
+                "source_type_counts": dict(sorted(self._source_type_counts.items())),
+            }
+
+
+_RETRIEVAL_TELEMETRY = RetrievalTelemetry()
+
+
+def get_retrieval_telemetry_snapshot() -> dict[str, object]:
+    return _RETRIEVAL_TELEMETRY.snapshot()
+
+
+def reset_retrieval_telemetry() -> None:
+    _RETRIEVAL_TELEMETRY.reset()
+
+
+_PARTITION_FRESHNESS = {
+    PARTITION_STATIC_KNOWLEDGE: (CONTEXT_DOMAIN_KNOWLEDGE, "knowledge_documents", "vector_store"),
+    PARTITION_LIVE_STATE: (CONTEXT_DOMAIN_LIVE_TOPOLOGY, "live_network_state", "vector_store_live_state"),
+    PARTITION_PLANNED_STATE: (CONTEXT_DOMAIN_INVENTORY, "planned_inventory_topology", "vector_store_planned_state"),
+    PARTITION_INCIDENTS: (CONTEXT_DOMAIN_INCIDENTS, "incident_and_alert_state", "vector_store_incidents"),
+    PARTITION_CONFIG_HISTORY: (CONTEXT_DOMAIN_CONFIG, "config_history_state", "vector_store_config_history"),
+    PARTITION_CHANGE_OUTCOMES: (CONTEXT_DOMAIN_DEPLOYMENT, "change_outcomes", "vector_store_change_outcomes"),
+}
+
+
+def build_retrieval_plan(query: str) -> RetrievalPlan:
+    decision = classify_query(query)
+    query_class = decision.query_class
+    if query_class == "live_only":
+        return RetrievalPlan(
+            query_class=query_class,
+            preferred_partitions=(PARTITION_LIVE_STATE, PARTITION_INCIDENTS, PARTITION_CONFIG_HISTORY),
+            fallback_partitions=(),
+            min_preferred_results=2,
+            suppress_fallback_when_fresh=(PARTITION_STATIC_KNOWLEDGE,),
+            reasoning="live queries should answer from fresh live-state and operational evidence only",
+        )
+    if query_class == "inventory_only":
+        return RetrievalPlan(
+            query_class=query_class,
+            preferred_partitions=(PARTITION_PLANNED_STATE,),
+            fallback_partitions=(PARTITION_LIVE_STATE,),
+            min_preferred_results=1,
+            suppress_fallback_when_fresh=(PARTITION_STATIC_KNOWLEDGE, PARTITION_LIVE_STATE),
+            reasoning="inventory queries should prefer planned inventory and topology before any live or static fallback",
+        )
+    if query_class == "planned_vs_live":
+        return RetrievalPlan(
+            query_class=query_class,
+            preferred_partitions=(PARTITION_PLANNED_STATE, PARTITION_LIVE_STATE, PARTITION_CONFIG_HISTORY),
+            fallback_partitions=(PARTITION_CHANGE_OUTCOMES,),
+            min_preferred_results=2,
+            suppress_fallback_when_fresh=(PARTITION_STATIC_KNOWLEDGE, PARTITION_CHANGE_OUTCOMES),
+            reasoning="planned-vs-live comparison must come from planned and live state before narrative documents",
+        )
+    if query_class == "troubleshooting":
+        return RetrievalPlan(
+            query_class=query_class,
+            preferred_partitions=(PARTITION_LIVE_STATE, PARTITION_INCIDENTS, PARTITION_CONFIG_HISTORY),
+            fallback_partitions=(PARTITION_CHANGE_OUTCOMES, PARTITION_STATIC_KNOWLEDGE),
+            min_preferred_results=2,
+            reasoning="troubleshooting should start with live telemetry, incidents, and config state; docs are guidance only",
+        )
+    if query_class == "change_planning":
+        return RetrievalPlan(
+            query_class=query_class,
+            preferred_partitions=(PARTITION_CONFIG_HISTORY, PARTITION_CHANGE_OUTCOMES, PARTITION_PLANNED_STATE),
+            fallback_partitions=(PARTITION_STATIC_KNOWLEDGE, PARTITION_LIVE_STATE),
+            min_preferred_results=2,
+            reasoning="change planning should prioritize prior outcomes, current config context, and intended state",
+        )
+    if query_class == "compliance":
+        return RetrievalPlan(
+            query_class=query_class,
+            preferred_partitions=(PARTITION_CONFIG_HISTORY, PARTITION_STATIC_KNOWLEDGE, PARTITION_CHANGE_OUTCOMES),
+            fallback_partitions=(PARTITION_PLANNED_STATE,),
+            min_preferred_results=2,
+            reasoning="compliance needs policy documentation plus current config and prior remediation evidence",
+        )
+    if query_class == "knowledge_heavy":
+        return RetrievalPlan(
+            query_class=query_class,
+            preferred_partitions=(PARTITION_STATIC_KNOWLEDGE, PARTITION_CHANGE_OUTCOMES),
+            fallback_partitions=(PARTITION_CONFIG_HISTORY,),
+            min_preferred_results=2,
+            reasoning="knowledge-heavy questions should prefer static docs and curated outcomes",
+        )
+    return RetrievalPlan(
+        query_class=query_class,
+        preferred_partitions=(PARTITION_PLANNED_STATE, PARTITION_LIVE_STATE),
+        fallback_partitions=(PARTITION_CONFIG_HISTORY, PARTITION_CHANGE_OUTCOMES),
+        min_preferred_results=2,
+        suppress_fallback_when_fresh=(PARTITION_STATIC_KNOWLEDGE,),
+        reasoning="general questions should start with planned and live state before fallback evidence",
+    )
+
+
+def select_retrieval_partitions(query: str) -> list[str]:
+    plan = build_retrieval_plan(query)
+    return [*plan.preferred_partitions, *plan.fallback_partitions]
+
+def route(query: str) -> tuple[bool, bool]:
+    """
+    Route a user query to determine which context sources to activate.
+
+    Returns:
+        (use_live, use_knowledge)
+
+        use_live      — from the query taxonomy in context_contract.
+        use_knowledge — True when the retrieval planner includes static knowledge
+                        partitions for the query class.
+    """
+    decision = classify_query(query)
+    plan = build_retrieval_plan(query)
+    use_knowledge = decision.use_knowledge or (PARTITION_STATIC_KNOWLEDGE in plan.preferred_partitions)
+    return decision.use_live_context, use_knowledge
+
+
+# ---------------------------------------------------------------------------
+# KnowledgeRetriever
+# ---------------------------------------------------------------------------
+
+class KnowledgeRetriever:
+    """
+    High-level retrieval interface for use inside NetworkAgent.
+
+    Args:
+        vector_store: KnowledgeVectorStore instance.
+        embedder:     GeminiEmbedder instance (used to embed the query).
+    """
+
+    _RELEVANCE_THRESHOLD = 0.35  # same default as KnowledgeVectorStore
+    _FRESHNESS_BONUS = {"live": 0.12, "warm": 0.05, "stale": -0.05, "missing": -0.1}
+    _SOURCE_TYPE_WEIGHTS = {
+        "live_only": {"live_state": 0.16, "incident_report": 0.08, "config_snapshot": 0.06, "static_document": -0.08},
+        "inventory_only": {"planned_inventory": 0.14, "planned_topology": 0.12, "live_state": 0.03, "static_document": -0.06},
+        "planned_vs_live": {"planned_inventory": 0.12, "planned_topology": 0.12, "live_state": 0.1, "config_snapshot": 0.04},
+        "troubleshooting": {"live_state": 0.12, "incident_report": 0.12, "config_snapshot": 0.08, "troubleshooting_playbook": 0.05, "static_document": -0.04},
+        "change_planning": {"config_snapshot": 0.11, "change_outcome": 0.12, "planned_inventory": 0.08, "planned_topology": 0.08},
+        "compliance": {"config_snapshot": 0.1, "best_practice": 0.06, "standard_operating_procedure": 0.06, "static_document": 0.04},
+        "knowledge_heavy": {"static_document": 0.12, "cli_reference": 0.1, "best_practice": 0.08, "troubleshooting_playbook": 0.06},
+        "general": {"planned_inventory": 0.05, "planned_topology": 0.05, "live_state": 0.05, "config_snapshot": 0.02},
+    }
+
+    def __init__(
+        self,
+        vector_store: "KnowledgeVectorStore",
+        embedder: "GeminiEmbedder",
+    ):
+        self._store = vector_store
+        self._embedder = embedder
+
+    def _build_where_clause(
+        self,
+        vendor_filter: Optional[str],
+        doc_type_filter: Optional[str],
+    ) -> Optional[dict]:
+        where: dict | None = None
+        conditions = []
+        if vendor_filter:
+            conditions.append({"vendor": {"$eq": vendor_filter}})
+        if doc_type_filter:
+            conditions.append({"doc_type": {"$eq": doc_type_filter}})
+        if len(conditions) == 1:
+            where = conditions[0]
+        elif len(conditions) > 1:
+            where = {"$and": conditions}
+        return where
+
+    def _query_store(
+        self,
+        query_embedding: list[float],
+        partitions: tuple[str, ...],
+        where: Optional[dict],
+        k: int,
+        min_score: float,
+    ) -> list[dict]:
+        if not partitions:
+            return []
+        try:
+            return self._store.query(
+                query_embedding,
+                k=k,
+                where=where,
+                min_score=min_score,
+                partitions=list(partitions),
+            )
+        except TypeError:
+            return self._store.query(
+                query_embedding,
+                k=k,
+                where=where,
+                min_score=min_score,
+            )
+
+    def _freshness_metadata_for_partition(self, metadata: dict, score: float) -> dict:
+        partition = metadata.get("partition") or PARTITION_STATIC_KNOWLEDGE
+        domain, scope, source = _PARTITION_FRESHNESS.get(
+            partition,
+            (CONTEXT_DOMAIN_KNOWLEDGE, "knowledge_documents", "vector_store"),
+        )
+        return compute_freshness(
+            domain=domain,
+            captured_at=metadata.get("captured_at") or metadata.get("ingested_at", ""),
+            ingested_at=metadata.get("ingested_at", ""),
+            source=source,
+            scope=scope,
+            confidence=float(score),
+        ).to_dict()
+
+    def _planner_score(
+        self,
+        raw_score: float,
+        partition: str,
+        freshness_class: str,
+        plan: RetrievalPlan,
+        query: str,
+        metadata: dict,
+    ) -> float:
+        score = float(raw_score)
+        if partition in plan.preferred_partitions:
+            score += 0.28 - (0.04 * plan.preferred_partitions.index(partition))
+        elif partition in plan.fallback_partitions:
+            score += 0.08 - (0.02 * plan.fallback_partitions.index(partition))
+        else:
+            score -= 0.12
+
+        score += self._FRESHNESS_BONUS.get(freshness_class, 0.0)
+        score += self._temporal_bonus(metadata)
+        score += self._source_type_bonus(plan.query_class, str(metadata.get("source_type") or "static_document"))
+        score += self._applicability_bonus(query, metadata)
+        score += self._severity_bonus(plan.query_class, str(metadata.get("severity") or "info"))
+
+        if plan.query_class in {"live_only", "inventory_only", "planned_vs_live", "troubleshooting", "general"} and partition == PARTITION_STATIC_KNOWLEDGE:
+            score -= 0.38
+        if plan.query_class == "knowledge_heavy" and partition == PARTITION_STATIC_KNOWLEDGE:
+            score += 0.12
+        return round(score, 4)
+
+    def _temporal_bonus(self, metadata: dict) -> float:
+        try:
+            freshness_weight = float(metadata.get("freshness_weight", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            freshness_weight = 0.0
+        freshness_weight = max(0.0, min(freshness_weight, 1.0))
+        return round((freshness_weight - 0.4) * 0.18, 4)
+
+    def _source_type_bonus(self, query_class: str, source_type: str) -> float:
+        weights = self._SOURCE_TYPE_WEIGHTS.get(query_class, {})
+        normalized = (source_type or "static_document").strip().lower()
+        return weights.get(normalized, 0.0)
+
+    def _severity_bonus(self, query_class: str, severity: str) -> float:
+        if query_class not in {"troubleshooting", "change_planning", "live_only"}:
+            return 0.0
+        return _SEVERITY_BONUS.get((severity or "info").strip().lower(), 0.0)
+
+    def _applicability_bonus(self, query: str, metadata: dict) -> float:
+        query_lower = query.lower()
+        bonus = 0.0
+
+        vendor_values = self._metadata_values(metadata.get("applicable_vendor") or metadata.get("vendor"))
+        if vendor_values:
+            query_vendor_hints = self._query_vendor_hints(query_lower)
+            if query_vendor_hints:
+                if any(vendor in query_vendor_hints for vendor in vendor_values):
+                    bonus += 0.12
+                else:
+                    bonus -= 0.05
+
+        model_values = self._metadata_values(metadata.get("applicable_model"))
+        if model_values and any(model in query_lower for model in model_values):
+            bonus += 0.08
+
+        feature_values = self._metadata_values(metadata.get("applicable_feature"))
+        query_features = self._query_feature_hints(query_lower)
+        if query_features and feature_values:
+            overlap = query_features.intersection(feature_values)
+            if overlap:
+                bonus += min(0.14, 0.06 + (0.03 * len(overlap)))
+
+        return round(bonus, 4)
+
+    @staticmethod
+    def _metadata_values(value: object) -> set[str]:
+        if value is None:
+            return set()
+        if isinstance(value, (list, tuple, set)):
+            items = value
+        else:
+            items = str(value).split(",")
+        normalized = set()
+        for item in items:
+            text = str(item).strip().lower()
+            if not text:
+                continue
+            normalized.add(text)
+            normalized.add(text.replace("_", " "))
+        return normalized
+
+    def _query_vendor_hints(self, query_lower: str) -> set[str]:
+        matches = set()
+        for canonical, aliases in _VENDOR_ALIASES.items():
+            if any(alias in query_lower for alias in aliases):
+                matches.add(canonical)
+                matches.update(alias.replace("_", " ") for alias in aliases)
+        return matches
+
+    @staticmethod
+    def _query_feature_hints(query_lower: str) -> set[str]:
+        return {feature for feature in _FEATURE_HINTS if feature in query_lower}
+
+    @staticmethod
+    def _dedupe_results(results: list[dict]) -> list[dict]:
+        seen = set()
+        deduped = []
+        for result in results:
+            key = (
+                result.get("doc_name", ""),
+                result.get("chunk_index", 0),
+                result.get("partition", ""),
+                result.get("text", ""),
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(result)
+        return deduped
+
+    def _suppress_fallback_results(self, results: list[dict], plan: RetrievalPlan) -> list[dict]:
+        if not plan.suppress_fallback_when_fresh:
+            return results
+        authoritative_fresh = any(
+            result.get("partition") in plan.preferred_partitions
+            and result.get("source_metadata", {}).get("freshness_class") in {"live", "warm"}
+            for result in results
+        )
+        if not authoritative_fresh:
+            return results
+        return [
+            result for result in results
+            if result.get("partition") not in plan.suppress_fallback_when_fresh
+            or result.get("partition") in plan.preferred_partitions
+        ]
+
+    # ------------------------------------------------------------------
+
+    def retrieve(
+        self,
+        query: str,
+        k: int = 5,
+        vendor_filter: str | None = None,
+        doc_type_filter: str | None = None,
+        min_score: float = _RELEVANCE_THRESHOLD,
+        partitions: list[str] | None = None,
+    ) -> list[dict]:
+        """
+        Embed *query* and return the top-k most relevant chunks.
+
+        Args:
+            query:            Natural language query string.
+            k:                Maximum number of chunks to return.
+            vendor_filter:    Restrict to a specific vendor (e.g. "cisco").
+            doc_type_filter:  Restrict to a specific doc type.
+            min_score:        Minimum cosine similarity score [0, 1].
+
+        Returns:
+            List of dicts, each containing::
+
+                {
+                    "text":      str,
+                    "score":     float,
+                    "doc_name":  str,
+                    "doc_type":  str,
+                    "vendor":    str,
+                    "page_number": int,
+                    "chunk_index": int,
+                }
+        """
+        if not self._store._available:  # noqa: SLF001
+            return []
+
+        try:
+            query_embedding = self._embedder.embed_query(query)
+
+            where = self._build_where_clause(vendor_filter, doc_type_filter)
+            plan = build_retrieval_plan(query)
+            if partitions is not None:
+                plan = RetrievalPlan(
+                    query_class=plan.query_class,
+                    preferred_partitions=tuple(partitions),
+                    fallback_partitions=(),
+                    min_preferred_results=plan.min_preferred_results,
+                    suppress_fallback_when_fresh=plan.suppress_fallback_when_fresh,
+                    reasoning=plan.reasoning,
+                )
+
+            preferred_results = self._query_store(
+                query_embedding,
+                plan.preferred_partitions,
+                where,
+                k=max(k * 2, plan.min_preferred_results, k),
+                min_score=min_score,
+            )
+            fallback_results: list[dict] = []
+            if len(preferred_results) < plan.min_preferred_results:
+                fallback_results = self._query_store(
+                    query_embedding,
+                    plan.fallback_partitions,
+                    where,
+                    k=max(k, plan.min_preferred_results),
+                    min_score=min_score,
+                )
+
+            enriched = []
+            for r in [*preferred_results, *fallback_results]:
+                meta = r.get("metadata") or {}
+                partition = meta.get("partition") or PARTITION_STATIC_KNOWLEDGE
+                source_metadata = self._freshness_metadata_for_partition(meta, float(r["score"]))
+                enriched.append(
+                    {
+                        "text":         r["text"],
+                        "score":        r["score"],
+                        "doc_name":     meta.get("doc_name", "Unknown"),
+                        "doc_type":     meta.get("doc_type", "unknown"),
+                        "vendor":       meta.get("vendor", "general"),
+                        "page_number":  meta.get("page_number", 0),
+                        "chunk_index":  meta.get("chunk_index", 0),
+                        "captured_at":  meta.get("captured_at", ""),
+                        "ingested_at":  meta.get("ingested_at", ""),
+                        "partition":    partition,
+                        "collection_name": meta.get("collection_name", ""),
+                        "applicable_vendor": meta.get("applicable_vendor", ""),
+                        "applicable_model": meta.get("applicable_model", ""),
+                        "applicable_feature": meta.get("applicable_feature", ""),
+                        "source_type": meta.get("source_type", ""),
+                        "severity": meta.get("severity", "info"),
+                        "freshness_weight": meta.get("freshness_weight", 0.0),
+                        "source_metadata": source_metadata,
+                        "planner_score": self._planner_score(
+                            float(r["score"]),
+                            partition,
+                            source_metadata.get("freshness_class", "missing"),
+                            plan,
+                            query,
+                            meta,
+                        ),
+                    }
+                )
+
+            deduped = self._dedupe_results(enriched)
+            filtered = self._suppress_fallback_results(deduped, plan)
+            selected_results = sorted(
+                filtered,
+                key=lambda item: (item.get("planner_score", item["score"]), item["score"]),
+                reverse=True,
+            )[:k]
+            _RETRIEVAL_TELEMETRY.record(plan.query_class, selected_results)
+            return selected_results
+
+        except Exception as exc:
+            logger.warning("Knowledge retrieval failed: %s", exc)
+            return []
+
+    # ------------------------------------------------------------------
+
+    def retrieve_as_text(self, query: str, k: int = 5) -> str:
+        """
+        Retrieve top-k relevant chunks and format them as a markdown block
+        ready for injection into the system prompt.
+
+        Returns an empty string when the knowledge base is empty or
+        unavailable (so the caller can skip injection cleanly).
+        """
+        results = self.retrieve(query, k=k)
+        if not results:
+            return ""
+
+        lines = [
+            "## Relevant Knowledge Base",
+            "",
+            "The following excerpts from your network documentation may "
+            "help answer the query:",
+            "",
+        ]
+        for r in results:
+            page_info = f" · page {r['page_number']}" if r["page_number"] else ""
+            partition_info = f" / {r['partition']}" if r.get("partition") else ""
+            lines.append(
+                f"**Source**: {r['doc_name']}{page_info} "
+                f"[{r['doc_type']} / {r['vendor']}{partition_info}]  "
+                f"relevance: {r['score']:.2f}; planner_score: {r.get('planner_score', r['score']):.2f}"
+            )
+            lines.append(f"Freshness: {r['source_metadata']['freshness_class']} @ {r['source_metadata']['captured_at'] or 'unknown'}")
+            lines.append(r["text"])
+            lines.append("")
+
+        return "\n".join(lines).rstrip()

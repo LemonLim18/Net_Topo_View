@@ -1,0 +1,36 @@
+fastapi
+uvicorn
+paramiko
+rich
+python-multipart
+cryptography
+bcrypt==3.2.0
+pysnmp>=7.1.22
+websockets
+jinja2
+requests
+
+mcp>=1.2.0
+pynetbox>=7.3.3
+apscheduler>=3.10.4
+passlib[bcrypt]
+python-jose[cryptography]
+python-dotenv
+
+# M21 — Vector-Embedded RAG
+chromadb
+pdfplumber
+python-docx
+beautifulsoup4
+lxml
+google-genai
+
+# M22 — Ansible-First Automation Layer
+ansible-runner>=2.3
+ansible-core>=2.14   # required for Windows (ansible-runner uses pexpect, so we run ansible-playbook via subprocess)
+netmiko>=4.3
+ansible-lint>=6.22         # optional: playbook linting in builder.py
+jsonschema>=4.0            # VLAN intent schema validation (reference/vlan/intent_schema.json)
+
+influxdb-client
+redis

@@ -1,0 +1,35 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "properties": {
+    "target_hosts": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "process_id": { "type": "integer", "minimum": 0 },
+    "router_id": { "type": "string" },
+    "networks": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "oneOf": [
+          { "type": "string", "minLength": 1 },
+          {
+            "type": "object",
+            "properties": {
+              "network": { "type": "string", "minLength": 1 },
+              "wildcard": { "type": "string", "minLength": 1 },
+              "area": { "type": "integer", "minimum": 0 }
+            },
+            "required": ["network", "wildcard", "area"]
+          }
+        ]
+      }
+    },
+    "area_definitions": {},
+    "passive_interfaces": {},
+    "redistribution": {}
+  },
+  "required": ["target_hosts", "process_id", "networks"]
+}

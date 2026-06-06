@@ -1,0 +1,5 @@
+{% for server in syslog_servers %}
+no logging host {{ server }}
+{% endfor %}
+no logging buffered
+!

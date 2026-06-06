@@ -1,0 +1,61 @@
+category_key: interface
+display_name: Interface
+category_description: Manage physical and logical network interfaces.
+legacy_feature: interface
+shared_fields: []
+
+operations:
+  configure_interface:
+    action: configure_interface
+    feature: interface
+    required_parameters: [interfaces]
+    implicit_requires_targets: true
+    rules:
+      - "Generic L2/L3 interface changes (access/trunk/routed, VLANs, IPs)."
+
+  assign_vlan_to_access_port:
+    action: assign_vlan_to_access_port
+    feature: interface
+    required_parameters: [interfaces]
+    keyword_triggers:
+      - "access vlan"
+      - "access port"
+      - "untagged"
+    rules:
+      - "Access port VLAN: interfaces[].mode=access and access_vlan set to the VLAN id."
+
+  assign_vlan_to_trunk_port:
+    action: assign_vlan_to_trunk_port
+    feature: interface
+    required_parameters: [interfaces]
+    implicit_requires_targets: true
+    keyword_triggers:
+      - "trunk"
+      - "allowed vlan"
+      - "tagged"
+    rules:
+      - "Trunk allowed VLANs: interfaces[].mode=trunk and trunk_vlans / allowed VLAN list."
+
+  set_native_vlan:
+    action: set_native_vlan
+    feature: interface
+    required_parameters: [interfaces]
+    keyword_triggers:
+      - "native vlan"
+      - "pvid"
+    rules:
+      - "Native / PVID VLAN on a trunk: interfaces[].mode=trunk and native_vlan set."
+
+  shutdown_interface:
+    action: shutdown_interface
+    feature: interface
+    required_parameters: [interfaces_to_shutdown]
+    implicit_requires_targets: true
+    keyword_triggers:
+      - "shutdown"
+      - "shut down"
+      - "admin down"
+      - "admin-down"
+      - "disable interface"
+    rules:
+      - "Shutdown / admin-down on specific interfaces; put targets in scope.device_hostnames or parameters.target_devices."

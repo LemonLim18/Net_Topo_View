@@ -1,0 +1,15 @@
+{
+  "case_id": "qos_create_policing_policy_http_sw1",
+  "started_at": "2026-03-20T12:22:19.831730",
+  "intent_description": "Create policing policy for HTTP traffic on SW1",
+  "preview_initial": {
+    "status_code": 200,
+    "text": "{\"categories\":[\"qos\",\"policing\"],\"references\":[],\"parsed_intent\":{\"id\":\"60280ac5\",\"intent_type\":\"configure\",\"action\":\"configure_interface\",\"feature\":\"policing\",\"vendor\":\"\",\"parameters\":{\"interfaces\":[\"SW1:Ethernet0/1\"],\"policy_name\":\"HTTP_Policing\",\"policy_type\":\"bandwidth\",\"bandwidth_limit\":\"100Mbps\",\"bandwidth_unit\":\"Mbps\",\"conform_action\":\"drop\",\"exceed_action\":\"drop\",\"conform_bandwidth\":\"80Mbps\",\"exceed_bandwidth\":\"60Mbps\",\"device_deduction\":{\"deduced\":[\"Acc_Cisco_1\",\"Acc_Cisco_2\",\"Acc_Cisco_5\",\"Acc_Cisco_6\",\"Acc_Huawei_3\",\"Acc_Juniper_4\",\"Core_Cisco_1\",\"Core_Cisco_2\",\"Dist_Cisco_1\",\"Dist_Cisco_3\",\"Dist_Huawei_2\",\"Dist_Huawei_4\"],\"mapping\":[{\"hostname\":\"Acc_Cisco_1\",\"reason\":\"matched prompt number\"},{\"hostname\":\"Acc_Cisco_2\",\"reason\":\"matched by inventory/name similarity\"},{\"hostname\":\"Acc_Cisco_5\",\"reason\":\"matched by inventory/name similarity\"},{\"hostname\":\"Acc_Cisco_6\",\"reason\":\"matched by inventory/name similarity\"},{\"hostname\":\"Acc_Huawei_3\",\"reason\":\"matched by inventory/name similarity\"},{\"hostname\":\"Acc_Juniper_4\",\"reason\":\"matched by inventory/name similarity\"},{\"hostname\":\"Core_Cisco_1\",\"reason\":\"matched prompt number\"},{\"hostname\":\"Core_Cisco_2\",\"reason\":\"matched by inventory/name similarity\"},{\"hostname\":\"Dist_Cisco_1\",\"reason\":\"matched prompt number\"},{\"hostname\":\"Dist_Cisco_3\",\"reason\":\"matched by inventory/name similarity\"},{\"hostname\":\"Dist_Huawei_2\",\"reason\":\"matched by inventory/name similarity\"},{\"hostname\":\"Dist_Huawei_4\",\"reason\":\"matched by inventory/name similarity\"}],\"why\":\"Backend selected the closest inventory names from the prompt wording.\"},\"target_hosts\":[\"Acc_Cisco_1\",\"Acc_Cisco_2\",\"Acc_Cisco_5\",\"Acc_Cisco_6\",\"Acc_Huawei_3\",\"Acc_Juniper_4\",\"Core_Cisco_1\",\"Core_Cisco_2\",\"Dist_Cisco_1\",\"Dist_Cisco_3\",\"Dist_Huawei_2\",\"Dist_Huawei_4\",\"awe\",\"dsa\"]},\"scope\":{\"device_hostnames\":[],\"device_role\":null,\"building\":null,\"vendor_filter\":null,\"all_devices\":false},\"risk_level\":\"medium\",\"justification\":\"\",\"raw_user_input\":\"Create policing policy fo"
+  },
+  "preview_initial_assert": {
+    "ok": true,
+    "notes": []
+  },
+  "finished_at": "2026-03-20T12:22:57.875192",
+  "result_ok": true
+}

@@ -1,0 +1,17 @@
+set system services ssh protocol-version v2
+{% if ssh_timeout is defined and ssh_timeout %}
+set system services ssh connection-limit {{ ssh_timeout }}
+{% endif %}
+{% if ssh_retries is defined and ssh_retries %}
+set system services ssh rate-limit {{ ssh_retries }}
+{% endif %}
+{% if rsa_key_size is defined and rsa_key_size %}
+set security ssh-known-hosts key-size {{ rsa_key_size }}
+{% endif %}
+{% if disable_telnet is defined and disable_telnet %}
+delete system services telnet
+{% endif %}
+{% if exec_timeout_minutes is defined %}
+set system login idle-timeout {{ exec_timeout_minutes }}
+{% endif %}
+set system services ssh root-login deny

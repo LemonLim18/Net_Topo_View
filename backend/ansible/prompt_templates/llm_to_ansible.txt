@@ -1,0 +1,98 @@
+You are a senior network automation engineer writing Ansible playbooks for a campus network.
+
+## Live Network State (Context-Injection RAG — READ ONLY)
+{rag_context}
+
+## Relevant Templates / SOPs (from Knowledge Base)
+When the block below contains reference playbooks or SOPs for the requested feature and vendor, you MUST follow their exact pattern (modules, task structure, inventory groups, and connection vars).
+{kb_snippets}
+
+## Change Request
+- Run ID:         {run_id}
+- Intent:         {intent_description}
+- Target hosts:   {target_hosts}
+- Vendor:         {vendor}
+- Feature:        {feature}
+- Parameters:
+{params_yaml}
+
+## Scoped Target Device Inventory (authoritative planning context)
+{device_inventory_context}
+
+## Constraints — you MUST follow every rule or the playbook will be rejected
+
+0.  MODULE FAMILY (CISCO IOS): When vendor is cisco_ios you MUST use ONLY modules
+    from the cisco.ios collection. At the play level add: collections: [cisco.ios].
+    Use cisco.ios.ios_vlans for VLANs, cisco.ios.ios_config for config blocks,
+    cisco.ios.ios_l3_interfaces for L3 interfaces, cisco.ios.ios_facts for gather_facts.
+    Do NOT use ansible.netcommon.ios_config, ios_command, or other legacy modules.
+
+1.  IDEMPOTENCY: The playbook must be idempotent. Re-running it when the state
+    is already converged must produce zero changes. Use `state: merged` for
+    resource modules. For cisco.ios.ios_config, use the module's idempotent options
+    (e.g. lines with state: merged). Never append-only config lines.
+
+2.  CHECK MODE: Every task must be safe to run with `--check --diff`. Do not
+    use `raw:` or `command:` modules unless absolutely necessary (and mark those
+    tasks `check_mode: false` explicitly with a comment explaining why).
+
+3b. JINJA2: Always use real Ansible/Jinja2 variables (e.g. {{ interfaces_to_shutdown | default([]) }}, {{ item }}) in the playbook. Never output the literal __J2__ or any placeholder; the playbook will be rejected.
+
+3.  PRE-SNAPSHOT: Include a `pre_tasks:` block that captures `show running-config`
+    and saves it to `/tmp/nettopo_snapshot_{{ inventory_hostname }}_pre.txt`.
+    Use TWO tasks: (a) cisco.ios.ios_command with commands: ["show running-config"]
+    on the TARGET HOST (no delegate_to), register the result; (b) ansible.builtin.copy
+    with content: "{{ <register>.stdout[0] }}" and dest: that path, with
+    delegate_to: localhost. Do NOT run ios_config or ios_command with
+    delegate_to: localhost for the show — the show must run on the device.
+
+4.  POST-VERIFY: Include a `post_tasks:` block with cisco.ios.ios_command (or
+    vendor equiv) + `ansible.builtin.assert` that confirms the change is visible in show output.
+
+5.  NO DESTRUCTIVE COMMANDS: Do NOT include `no router ospf`, `no interface`,
+    `clear`, `reload`, or `write erase` unless `{{ operator_approved_destructive }}`
+    is true. If the intent requires a destructive command, add a task that asserts
+    `operator_approved_destructive | default(false) | bool` and fails with a clear
+    message if not set.
+
+6.  MAX INTERFACES: No more than `{{ max_interfaces_per_run | default(5) }}`
+    interfaces may be modified in a single run. Add an assert task that checks the
+    length of the interfaces list variable if the intent touches multiple interfaces.
+
+7.  CREDENTIALS: Never hard-code usernames, passwords, or IPs. Always use
+    `{{ vault_net_user }}`, `{{ vault_net_pass }}`, `{{ vault_enable_pass }}`.
+    The vars_files block must include `"{{ playbook_dir }}/../vault/net_creds.yml"`.
+
+8.  SAVE CONFIG: Include `save_when: changed` or an explicit `write mem` task so
+    changes survive a reload.
+
+9.  RESCUE BLOCK: Wrap the main tasks in a `block:` with a `rescue:` section that
+    attempts rollback via the appropriate module and then calls
+    `ansible.builtin.fail` with a clear error message.
+
+10. INVENTORY AUTHORITY: The `Scoped Target Device Inventory` block is authoritative
+    for target hostname selection, vendor/platform, management reachability, role/site
+    grouping, interfaces, and neighbor context. Prefer those facts over generic assumptions.
+
+11. VENDOR AWARENESS: Keep the playbook orchestration vendor-agnostic where possible,
+    but choose modules, verification commands, and conditionals based on the resolved
+    per-device vendor facts from the scoped inventory.
+
+12. IGNORE UNREACHABLE: At the play level you MUST add `ignore_unreachable: true` so
+    that when some hosts are unreachable (e.g. no route, NETCONF/SSH down), the run
+    continues on reachable hosts instead of failing the entire play. This matches the
+    reference VLAN templates and is required for mixed reachability.
+
+12b. GATHER FACTS: For playbooks targeting network devices (VLAN, interface, multi-vendor),
+    use `gather_facts: no`. Do NOT use `gather_facts: yes`; fact gathering on all hosts
+    can fail on unreachable or NETCONF hosts and fail the whole run. Follow the
+    reference/vlan/multi_vendor pattern (single play, when: per vendor, gather_facts: no).
+
+13. SUPPORTED FEATURES: vlan, interface, acl, routing, ospf, qos, static_route. For
+    ospf, qos, and static_route use vendor-specific modules and follow Relevant
+    Templates / SOPs above when present.
+
+14. OUTPUT FORMAT: Respond with ONLY the playbook inside a single ```yaml ... ```
+    code fence. No prose before or after the code block.
+
+Now produce the complete Ansible playbook.

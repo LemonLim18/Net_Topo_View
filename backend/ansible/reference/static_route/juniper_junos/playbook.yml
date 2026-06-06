@@ -1,0 +1,13 @@
+---
+- name: Configure Static Routes (Junos)
+  hosts: "{{ target_hosts | default('all') }}"
+  gather_facts: no
+  ignore_unreachable: true
+  tasks:
+    - name: Configure static route (Junos)
+      juniper_junos.junos_config:
+        lines:
+          - "set routing-options static route {{ destination_network }}/{{ prefix_length | string }} next-hop {{ next_hop }}"
+      when:
+        - inventory_hostname in groups.get('vendor_juniper_junos', [])
+

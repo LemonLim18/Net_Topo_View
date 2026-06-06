@@ -1,0 +1,71 @@
+# ===== Day-0 Bootstrap: {{ hostname }} (Huawei VRP) =====
+sys im
+#
+sysname {{ hostname }}
+#
+interface {{ mgmt_interface }}
+ ip address {{ mgmt_ip }} {{ mgmt_prefix_len if mgmt_prefix_len is defined else 24 }}
+ undo shutdown
+ quit
+#
+aaa
+ local-user {{ ssh_user }} password irreversible-cipher {{ ssh_password }}
+ local-user {{ ssh_user }} level 3
+ local-user {{ ssh_user }} service-type ssh snetconf terminal http 
+ local-user {{ ssh_user }} service-type snmp
+ quit
+#
+rsa local-key-pair create
+ssh user {{ ssh_user }} authentication-type password
+ssh user {{ ssh_user }} service-type snetconf
+ssh user {{ ssh_user }} service-type stelnet
+stelnet server enable
+#
+user-interface vty 0 4
+ authentication-mode aaa
+ protocol inbound ssh
+ idle-timeout 30 0
+ quit
+#
+lldp enable
+lldp mdn enable
+#
+{% for iface in discovery_interfaces | default([]) %}
+interface {{ iface }}
+ undo shutdown
+ lldp enable
+ quit
+#
+{% endfor %}
+{% set effective_snmp_community = snmp_huawei_community | default(snmp_community, true) %}
+{% if effective_snmp_community %}
+snmp-agent
+snmp-agent sys-info version v2c
+snmp-agent mib-view included ALL_ACCESS iso
+snmp-agent community read cipher {{ effective_snmp_community }} mib-view ALL_ACCESS
+{% if snmp_location %}
+snmp-agent sys-info location {{ snmp_location }}
+{% endif %}
+{% if snmp_contact %}
+snmp-agent sys-info contact {{ snmp_contact }}
+{% endif %}
+{% if snmp_host_ip %}
+snmp-agent target-host trap address udp-domain {{ snmp_host_ip }} params securityname {{ effective_snmp_community }} v2c
+{% endif %}
+#
+netconf
+    protocol inbound ssh port 830
+    work-mode yang
+
+{% endif %}
+{% if syslog_host_ip %}
+info-center loghost {{ syslog_host_ip }} port {{ syslog_device_port | default(syslog_port | default(514)) }} facility local7
+#
+{% endif %}
+{% if ntp_server_ip %}
+ntp unicast-server {{ ntp_server_ip }}
+undo ntp disable
+#
+{% endif %}
+return
+save

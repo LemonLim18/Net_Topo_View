@@ -1,0 +1,22 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "properties": {
+    "target_hosts": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "policy_name": { "type": "string", "minLength": 1 },
+    "traffic_type": { "type": "string", "minLength": 1 },
+    "police_rate": { "type": "string", "minLength": 1 },
+    "conform_action": { "type": "string", "minLength": 1 },
+    "exceed_action": { "type": "string", "minLength": 1 },
+    "interface_apply": {},
+    "direction": {
+      "type": "string",
+      "enum": ["in", "out", "inbound", "outbound"]
+    }
+  },
+  "required": ["target_hosts", "policy_name", "traffic_type", "police_rate"]
+}

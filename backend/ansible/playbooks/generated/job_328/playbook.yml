@@ -1,0 +1,10 @@
+- name: Configure interfaces (Juniper Junos)
+  hosts: Juniper_Acc_4
+  gather_facts: false
+  vars:
+    interfaces_config: '[]'
+    interfaces_to_shutdown: '[]'
+    interfaces_admin_enabled: 'false'
+  ignore_unreachable: true
+  roles:
+  - generated/job_328/interface

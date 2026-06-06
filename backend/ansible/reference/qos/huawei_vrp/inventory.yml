@@ -1,0 +1,15 @@
+---
+all:
+  children:
+    vendor_huawei_vrp:
+      vars:
+        ansible_network_os: ce
+        ansible_connection: network_cli
+        ansible_user: "{{ vault_net_user }}"
+        ansible_password: "{{ vault_net_pass }}"
+      hosts:
+        sw3:
+          ansible_host: 192.168.1.30
+    access_switches:
+      children:
+        vendor_huawei_vrp: {}

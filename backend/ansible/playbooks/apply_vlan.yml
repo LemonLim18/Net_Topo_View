@@ -1,0 +1,107 @@
+# backend/ansible/playbooks/apply_vlan.yml
+# Applies access VLAN configuration to Cisco IOS/IOS-XE devices.
+# Generated or executed by the NetTopoView LLM Orchestrator.
+#
+# Usage:
+#   ansible-playbook playbooks/apply_vlan.yml \
+#     -e vlan_id=100 -e vlan_name=staff -e interface=GigabitEthernet0/2 \
+#     --limit access-sw-02 --check --diff
+---
+- name: "NetTopoView — Apply access VLAN configuration"
+  hosts:          "{{ target_hosts | default('vendor_cisco_ios') }}"
+  gather_facts:   false
+  vars_files:
+    - "{{ playbook_dir }}/../vault/net_creds.yml"
+  vars:
+    vlan_id:                    "{{ vlan_id }}"
+    vlan_name:                  "{{ vlan_name | default('data') }}"
+    interface:                  "{{ interface }}"
+    description:                "{{ description | default('Managed by NetTopoView') }}"
+    shutdown:                   "{{ shutdown | default(false) }}"
+    spanning_tree_portfast:     "{{ spanning_tree_portfast | default(true) }}"
+    max_interfaces_per_run:     "{{ max_interfaces_per_run | default(5) }}"
+    operator_approved_destructive: "{{ operator_approved_destructive | default(false) }}"
+
+  pre_tasks:
+    - name: "SNAPSHOT PRE — capture running config before change"
+      cisco.ios.ios_command:
+        commands:
+          - "show running-config"
+      register: pre_snapshot
+      tags: [snapshot, always]
+
+    - name: "SNAPSHOT PRE — save to artefact file"
+      ansible.builtin.copy:
+        content: "{{ pre_snapshot.stdout[0] }}"
+        dest:    "/tmp/nettopo_snapshot_{{ inventory_hostname }}_pre.txt"
+      delegate_to: localhost
+      tags: [snapshot, always]
+
+  tasks:
+    - name: "Safety — assert max interfaces per run not exceeded"
+      ansible.builtin.assert:
+        that:
+          - "1 <= max_interfaces_per_run | int"
+        fail_msg: "max_interfaces_per_run must be >= 1"
+      tags: [safety]
+
+    - block:
+        - name: "Apply access_vlan role"
+          ansible.builtin.include_role:
+            name: access_vlan
+          vars:
+            vlan_id:                vlan_id
+            vlan_name:              vlan_name
+            interface:              interface
+            description:            description
+            shutdown:               shutdown
+            spanning_tree_portfast: spanning_tree_portfast
+
+      rescue:
+        - name: "ROLLBACK — revert to pre-change config"
+          cisco.ios.ios_config:
+            src: "/tmp/nettopo_snapshot_{{ inventory_hostname }}_pre.txt"
+          ignore_errors: true
+
+        - name: "ROLLBACK — save after rollback"
+          cisco.ios.ios_config:
+            save_when: always
+          ignore_errors: true
+
+        - name: "ROLLBACK — report failure"
+          ansible.builtin.fail:
+            msg: >
+              Configuration change FAILED on {{ inventory_hostname }} and was
+              rolled back to the pre-change snapshot. Check /tmp/nettopo_snapshot_
+              {{ inventory_hostname }}_pre.txt for the restored state.
+
+  post_tasks:
+    - name: "POST-VERIFY — check VLAN is active"
+      cisco.ios.ios_command:
+        commands:
+          - "show vlan id {{ vlan_id }}"
+      register: vlan_check
+      tags: [postverify]
+
+    - name: "POST-VERIFY — assert VLAN active"
+      ansible.builtin.assert:
+        that:
+          - "vlan_id | string in vlan_check.stdout[0]"
+          - "'active' in vlan_check.stdout[0]"
+        fail_msg: "VLAN {{ vlan_id }} not active after change on {{ inventory_hostname }}"
+        success_msg: "VLAN {{ vlan_id }} confirmed active ✓"
+      tags: [postverify]
+
+    - name: "SNAPSHOT POST — capture running config after change"
+      cisco.ios.ios_command:
+        commands:
+          - "show running-config"
+      register: post_snapshot
+      tags: [snapshot, always]
+
+    - name: "SNAPSHOT POST — save to artefact file"
+      ansible.builtin.copy:
+        content: "{{ post_snapshot.stdout[0] }}"
+        dest:    "/tmp/nettopo_snapshot_{{ inventory_hostname }}_post.txt"
+      delegate_to: localhost
+      tags: [snapshot, always]

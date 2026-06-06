@@ -1,0 +1,10 @@
+{% if acl_type is defined and acl_type == "extended" %}
+ip access-list extended {{ acl_name }}
+{% else %}
+ip access-list standard {{ acl_name }}
+{% endif %}
+{% for rule in rules %}
+{% if rule.seq is defined %} {{ rule.seq }}{% endif %} {{ rule.action }}{% if rule.protocol is defined %} {{ rule.protocol }}{% endif %} {{ rule.source }}{% if rule.source_wildcard is defined %} {{ rule.source_wildcard }}{% endif %}{% if rule.destination is defined %} {{ rule.destination }}{% endif %}{% if rule.dest_wildcard is defined %} {{ rule.dest_wildcard }}{% endif %}{% if rule.port is defined %} eq {{ rule.port }}{% endif %}{% if rule.log is defined and rule.log %} log{% endif %}
+
+{% endfor %}
+!

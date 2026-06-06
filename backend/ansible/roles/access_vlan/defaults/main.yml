@@ -1,0 +1,11 @@
+# roles/access_vlan/defaults/main.yml
+# All role variables with their defaults.
+# Override via host_vars, group_vars, or playbook vars.
+---
+vlan_id:      10
+vlan_name:    "data"
+interface:    "GigabitEthernet0/1"
+mode:         "access"
+description:  "Managed by NetTopoView"
+shutdown:     false
+spanning_tree_portfast: true

@@ -1,0 +1,26 @@
+{% if ssh_version is defined and ssh_version %}
+ssh server compatible-ssh1x disable
+stelnet server enable
+{% endif %}
+{% if rsa_key_size is defined and rsa_key_size %}
+rsa local-key-pair create {{ rsa_key_size }}
+{% endif %}
+{% if ssh_timeout is defined and ssh_timeout %}
+ssh server timeout {{ ssh_timeout }}
+{% endif %}
+{% if ssh_retries is defined and ssh_retries %}
+ssh server authentication-retries {{ ssh_retries }}
+{% endif %}
+user-interface vty 0 4
+ authentication-mode aaa
+ protocol inbound ssh
+{% if exec_timeout_minutes is defined %}
+ idle-timeout {{ exec_timeout_minutes }} {{ exec_timeout_seconds | default(0) }}
+{% endif %}
+{% if vty_acl is defined and vty_acl %}
+ acl {{ vty_acl }} inbound
+{% endif %}
+{% if disable_telnet is defined and disable_telnet %}
+ protocol inbound ssh
+{% endif %}
+return

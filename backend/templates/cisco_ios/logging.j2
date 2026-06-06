@@ -1,0 +1,19 @@
+{% if buffer_size is defined and buffer_size %}
+logging buffered {{ buffer_size }}
+{% endif %}
+{% if console_level is defined and console_level %}
+logging console {{ console_level }}
+{% endif %}
+{% if trap_level is defined and trap_level %}
+logging trap {{ trap_level }}
+{% endif %}
+{% if source_interface is defined and source_interface %}
+logging source-interface {{ source_interface }}
+{% endif %}
+{% if facility is defined and facility %}
+logging facility {{ facility }}
+{% endif %}
+{% for server in syslog_servers %}
+logging host {{ server }} transport udp port {{ syslog_port | default(6514) }}
+{% endfor %}
+!

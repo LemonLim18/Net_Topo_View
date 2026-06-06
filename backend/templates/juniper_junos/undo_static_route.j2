@@ -1,0 +1,3 @@
+{% for route in routes %}
+delete routing-options static route {{ route.prefix }}/{{ route.prefix_length | default(24) }}
+{% endfor %}

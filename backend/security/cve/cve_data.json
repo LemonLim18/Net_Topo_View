@@ -1,0 +1,204 @@
+{
+  "cves": [
+    {
+      "id": "CVE-2023-20198",
+      "severity": "critical",
+      "cvss": 10.0,
+      "description": "Cisco IOS XE Web UI privilege escalation — allows remote attacker to create admin account",
+      "affected_vendors": ["cisco_ios"],
+      "affected_versions": ["16.12", "17.3", "17.6", "17.9"],
+      "remediation": "Disable HTTP/HTTPS server: no ip http server / no ip http secure-server",
+      "reference": "https://nvd.nist.gov/vuln/detail/CVE-2023-20198"
+    },
+    {
+      "id": "CVE-2023-20109",
+      "severity": "high",
+      "cvss": 8.1,
+      "description": "Cisco IOS/IOS XE Group Encrypted Transport VPN out-of-bounds write",
+      "affected_vendors": ["cisco_ios"],
+      "affected_versions": ["15.6", "15.7", "15.8", "15.9", "16.12"],
+      "remediation": "Upgrade to patched version; disable GET VPN if not in use",
+      "reference": "https://nvd.nist.gov/vuln/detail/CVE-2023-20109"
+    },
+    {
+      "id": "CVE-2023-20072",
+      "severity": "high",
+      "cvss": 8.6,
+      "description": "Cisco IOS XE fragmented tunnel protocol packet DoS",
+      "affected_vendors": ["cisco_ios"],
+      "affected_versions": ["17.6", "17.9", "17.10"],
+      "remediation": "Upgrade IOS XE to fixed release",
+      "reference": "https://nvd.nist.gov/vuln/detail/CVE-2023-20072"
+    },
+    {
+      "id": "CVE-2022-20920",
+      "severity": "high",
+      "cvss": 7.7,
+      "description": "Cisco IOS/IOS XE SSH DoS vulnerability",
+      "affected_vendors": ["cisco_ios"],
+      "affected_versions": ["15.4", "15.5", "15.6", "15.7", "15.8", "15.9"],
+      "remediation": "Upgrade to IOS 15.9(3)M7 or later",
+      "reference": "https://nvd.nist.gov/vuln/detail/CVE-2022-20920"
+    },
+    {
+      "id": "CVE-2023-20231",
+      "severity": "high",
+      "cvss": 8.8,
+      "description": "Cisco IOS XE Web UI command injection vulnerability",
+      "affected_vendors": ["cisco_ios"],
+      "affected_versions": ["17.3", "17.6", "17.9"],
+      "remediation": "Disable web UI or upgrade to patched release",
+      "reference": "https://nvd.nist.gov/vuln/detail/CVE-2023-20231"
+    },
+    {
+      "id": "CVE-2021-1497",
+      "severity": "critical",
+      "cvss": 9.8,
+      "description": "Cisco IOS XE SD-WAN remote code execution via vManage",
+      "affected_vendors": ["cisco_ios"],
+      "affected_versions": ["17.2", "17.3", "17.4"],
+      "remediation": "Upgrade to IOS XE 17.5.1a or later",
+      "reference": "https://nvd.nist.gov/vuln/detail/CVE-2021-1497"
+    },
+    {
+      "id": "CVE-2020-3566",
+      "severity": "high",
+      "cvss": 8.6,
+      "description": "Cisco IOS XR DVMRP memory exhaustion DoS",
+      "affected_vendors": ["cisco_ios"],
+      "affected_versions": ["6.6", "7.0", "7.1"],
+      "remediation": "Disable IGMP on untrusted interfaces; upgrade to patched version",
+      "reference": "https://nvd.nist.gov/vuln/detail/CVE-2020-3566"
+    },
+    {
+      "id": "CVE-2023-20032",
+      "severity": "critical",
+      "cvss": 9.8,
+      "description": "ClamAV HFS+ file system image parsing heap buffer overflow (affects IOS with UTD)",
+      "affected_vendors": ["cisco_ios"],
+      "affected_versions": ["17.6", "17.9", "17.10", "17.11"],
+      "remediation": "Upgrade ClamAV / IOS XE UTD engine",
+      "reference": "https://nvd.nist.gov/vuln/detail/CVE-2023-20032"
+    },
+    {
+      "id": "CVE-2021-40438",
+      "severity": "critical",
+      "cvss": 9.0,
+      "description": "Apache HTTP Server SSRF via mod_proxy (affects Cisco IOS XE webui)",
+      "affected_vendors": ["cisco_ios"],
+      "affected_versions": ["17.2", "17.3", "17.4", "17.5"],
+      "remediation": "Disable HTTP server; upgrade IOS XE",
+      "reference": "https://nvd.nist.gov/vuln/detail/CVE-2021-40438"
+    },
+    {
+      "id": "CVE-2023-20025",
+      "severity": "critical",
+      "cvss": 9.0,
+      "description": "Cisco Small Business RV Series routers authentication bypass",
+      "affected_vendors": ["cisco_ios"],
+      "affected_versions": ["1.0", "4.2"],
+      "remediation": "No fix available — EOL product. Replace hardware.",
+      "reference": "https://nvd.nist.gov/vuln/detail/CVE-2023-20025"
+    },
+    {
+      "id": "CVE-2023-46850",
+      "severity": "critical",
+      "cvss": 9.8,
+      "description": "Huawei VRP stack buffer overflow in web management interface",
+      "affected_vendors": ["huawei_vrp"],
+      "affected_versions": ["V200R005", "V200R006", "V200R007", "V200R008"],
+      "remediation": "Upgrade VRP to V200R009C00SPC500 or later; disable HTTP access",
+      "reference": "https://www.huawei.com/en/psirt"
+    },
+    {
+      "id": "CVE-2022-41923",
+      "severity": "high",
+      "cvss": 8.1,
+      "description": "Huawei VRP SNMP remote code execution",
+      "affected_vendors": ["huawei_vrp"],
+      "affected_versions": ["V200R005", "V200R006", "V200R007"],
+      "remediation": "Disable SNMPv1/v2c; upgrade to patched VRP version",
+      "reference": "https://www.huawei.com/en/psirt"
+    },
+    {
+      "id": "CVE-2021-22555",
+      "severity": "high",
+      "cvss": 7.8,
+      "description": "Huawei VRP kernel privilege escalation in netfilter",
+      "affected_vendors": ["huawei_vrp"],
+      "affected_versions": ["V200R003", "V200R005", "V200R006"],
+      "remediation": "Apply Huawei security patch HWPSIRT-2021-56312",
+      "reference": "https://www.huawei.com/en/psirt"
+    },
+    {
+      "id": "CVE-2023-36845",
+      "severity": "critical",
+      "cvss": 9.8,
+      "description": "Juniper Junos J-Web PHP environment variable manipulation RCE",
+      "affected_vendors": ["juniper_junos"],
+      "affected_versions": ["20.4", "21.1", "21.2", "21.3", "21.4", "22.1", "22.2", "22.3", "22.4", "23.1", "23.2"],
+      "remediation": "Disable J-Web or restrict access to trusted hosts; upgrade Junos OS",
+      "reference": "https://nvd.nist.gov/vuln/detail/CVE-2023-36845"
+    },
+    {
+      "id": "CVE-2023-36844",
+      "severity": "medium",
+      "cvss": 5.3,
+      "description": "Juniper Junos J-Web PHP external variable modification",
+      "affected_vendors": ["juniper_junos"],
+      "affected_versions": ["20.4", "21.1", "21.2", "21.3", "21.4", "22.1", "22.2", "22.3"],
+      "remediation": "Disable J-Web; upgrade Junos OS",
+      "reference": "https://nvd.nist.gov/vuln/detail/CVE-2023-36844"
+    },
+    {
+      "id": "CVE-2023-36851",
+      "severity": "medium",
+      "cvss": 5.3,
+      "description": "Juniper Junos SRX Series file upload without authentication via J-Web",
+      "affected_vendors": ["juniper_junos"],
+      "affected_versions": ["20.4", "21.1", "21.2", "21.3", "21.4", "22.1"],
+      "remediation": "Disable J-Web; apply Junos security update",
+      "reference": "https://nvd.nist.gov/vuln/detail/CVE-2023-36851"
+    },
+    {
+      "id": "CVE-2022-22241",
+      "severity": "critical",
+      "cvss": 9.8,
+      "description": "Juniper Junos J-Web phar deserialization RCE",
+      "affected_vendors": ["juniper_junos"],
+      "affected_versions": ["19.1", "19.2", "19.3", "19.4", "20.1", "20.2", "20.3", "20.4", "21.1", "21.2"],
+      "remediation": "Upgrade Junos OS to fixed release; disable J-Web",
+      "reference": "https://nvd.nist.gov/vuln/detail/CVE-2022-22241"
+    },
+    {
+      "id": "CVE-2023-44487",
+      "severity": "high",
+      "cvss": 7.5,
+      "description": "HTTP/2 Rapid Reset DDoS vulnerability (affects multiple vendors)",
+      "affected_vendors": ["cisco_ios", "juniper_junos"],
+      "affected_versions": ["17.9", "17.10", "17.11", "22.3", "22.4", "23.1"],
+      "remediation": "Apply vendor-specific patches; enable HTTP/2 rate limiting",
+      "reference": "https://nvd.nist.gov/vuln/detail/CVE-2023-44487"
+    },
+    {
+      "id": "CVE-2021-44228",
+      "severity": "critical",
+      "cvss": 10.0,
+      "description": "Log4Shell — affects network management platforms (vManage, NSO, etc.)",
+      "affected_vendors": ["cisco_ios", "juniper_junos", "huawei_vrp"],
+      "affected_versions": ["17.3", "17.4", "17.5", "21.1", "21.2", "V200R007"],
+      "remediation": "Patch management platform; upgrade Log4j to 2.17.1+",
+      "reference": "https://nvd.nist.gov/vuln/detail/CVE-2021-44228"
+    },
+    {
+      "id": "CVE-2023-0286",
+      "severity": "high",
+      "cvss": 7.4,
+      "description": "OpenSSL X.509 certificate name constraint check confusion (embedded in many network OS)",
+      "affected_vendors": ["cisco_ios", "juniper_junos", "huawei_vrp"],
+      "affected_versions": ["15.7", "15.8", "15.9", "17.3", "20.4", "21.1", "V200R005", "V200R006"],
+      "remediation": "Upgrade to firmware bundling OpenSSL 3.0.8+ or 1.1.1t+",
+      "reference": "https://nvd.nist.gov/vuln/detail/CVE-2023-0286"
+    }
+  ]
+}

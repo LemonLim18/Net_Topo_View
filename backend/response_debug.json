@@ -1,0 +1,233 @@
+{
+  "role": "assistant",
+  "content": "proposed safely\n\nNote: Some required evidence is stale or missing.\n\nℹ️ *Based on inventory data last refreshed 79 days ago.*",
+  "type": "text",
+  "grounding_meta": {
+    "query_class": "inventory_only",
+    "answer_scope": "planned",
+    "freshness_class": "stale",
+    "source_used": [
+      "local_db"
+    ],
+    "source_age": [
+      {
+        "source": "local_db",
+        "scope": "planned_inventory",
+        "captured_at": "2026-03-09T10:00:00+00:00",
+        "freshness_class": "stale",
+        "age_seconds": 6875406,
+        "confidence": 0.85
+      }
+    ],
+    "tool_evidence": [
+      "get_inventory_device",
+      "plan_change"
+    ],
+    "conflicts": [],
+    "confidence": {
+      "level": "medium",
+      "score": 0.77,
+      "reason": "Computed from 1 authoritative evidence snapshot(s); degraded by tool errors"
+    },
+    "assumptions": [
+      "At least one evidence source is stale, so the answer may lag behind the current network state.",
+      "One or more authoritative reads failed, so the answer relies on the successful evidence that remained available."
+    ],
+    "evidence_authority": {
+      "query_class": "inventory_only",
+      "preferred_families": [
+        "planned"
+      ],
+      "supporting_families": [
+        "live"
+      ],
+      "observed_families": [
+        "planned"
+      ],
+      "preferred_evidence_present": true,
+      "supporting_families_used": [],
+      "unexpected_families": [],
+      "mixed_authority": false,
+      "substitution_risk": false,
+      "requires_disclosure": false,
+      "summary": "Observed evidence matches the primary authority family for this query class: planned."
+    },
+    "evidence_record": {
+      "version": "phase2_step6_v1",
+      "source_used": [
+        "local_db"
+      ],
+      "source_age": [
+        {
+          "source": "local_db",
+          "scope": "planned_inventory",
+          "captured_at": "2026-03-09T10:00:00+00:00",
+          "freshness_class": "stale",
+          "age_seconds": 6875406,
+          "confidence": 0.85
+        }
+      ],
+      "freshness_class": "stale",
+      "confidence": {
+        "level": "medium",
+        "score": 0.77,
+        "reason": "Computed from 1 authoritative evidence snapshot(s); degraded by tool errors"
+      },
+      "answer_scope": "planned",
+      "conflicts": [],
+      "assumptions": [
+        "At least one evidence source is stale, so the answer may lag behind the current network state.",
+        "One or more authoritative reads failed, so the answer relies on the successful evidence that remained available."
+      ],
+      "evidence_authority": {
+        "query_class": "inventory_only",
+        "preferred_families": [
+          "planned"
+        ],
+        "supporting_families": [
+          "live"
+        ],
+        "observed_families": [
+          "planned"
+        ],
+        "preferred_evidence_present": true,
+        "supporting_families_used": [],
+        "unexpected_families": [],
+        "mixed_authority": false,
+        "substitution_risk": false,
+        "requires_disclosure": false,
+        "summary": "Observed evidence matches the primary authority family for this query class: planned."
+      }
+    },
+    "structured_rationale": {
+      "current_state": "Grounded in planned evidence from local_db with overall freshness stale. Observed evidence families: planned.",
+      "target_state": "Requested planned or source-of-truth inventory state for the queried device or devices.",
+      "key_risk_or_uncertainty": "Some evidence is stale, so very recent network changes may not yet be reflected.",
+      "verification_plan": "Refresh the relevant evidence first, then re-run inventory lookup or planned-vs-live comparison before making an operational decision."
+    },
+    "authority_map": {
+      "version": "phase4_step13_v1",
+      "semantics_version": "phase6_step22_v1",
+      "query_class": "inventory_only"
+    },
+    "answer_policy": {
+      "name": "default_grounding",
+      "reason": "General authoritative grounding policy.",
+      "required_tools": [],
+      "recommended_tools": [],
+      "executed_required_tools": [],
+      "missing_required_tools": [],
+      "satisfied": true
+    },
+    "controller_flow": {
+      "version": "phase1_step4_v1",
+      "mode": "reason_act_observe",
+      "query_class": "inventory_only",
+      "reason": {
+        "user_message": "Configure VLAN 20 on SW1",
+        "declared_required_domains": [
+          "planned_inventory",
+          "planned_topology"
+        ],
+        "required_domains": [
+          "planned_inventory"
+        ],
+        "hostnames": [
+          "SW1"
+        ],
+        "answer_policy": {
+          "name": "default_grounding",
+          "reason": "General authoritative grounding policy.",
+          "required_tools": [],
+          "recommended_tools": [],
+          "executed_required_tools": [],
+          "missing_required_tools": [],
+          "satisfied": true
+        },
+        "controller_policy": {
+          "requires_change_workflow": false,
+          "required_sequence": []
+        }
+      },
+      "act": {
+        "observed_tool_calls": [
+          "get_inventory_device",
+          "plan_change"
+        ],
+        "blocked_tool_calls": [
+          "plan_change"
+        ]
+      },
+      "observe": {
+        "domain_coverage": {
+          "planned_inventory": [
+            "get_inventory_device"
+          ]
+        },
+        "satisfied_domains": [
+          "planned_inventory"
+        ],
+        "missing_domains": [],
+        "change_workflow": {
+          "completed_steps": [],
+          "missing_steps": [],
+          "satisfied": true
+        },
+        "self_correction": {
+          "version": "phase1_step5_v1",
+          "max_attempts": 2,
+          "attempts": [],
+          "escalations": []
+        }
+      },
+      "release": {
+        "decision": "allow",
+        "reason": "Required reasoning, action, and observation checks are satisfied.",
+        "recovery_tool_calls": [],
+        "missing_domains": [],
+        "missing_required_tools": [],
+        "missing_change_steps": []
+      }
+    },
+    "self_correction": {
+      "version": "phase1_step5_v1",
+      "max_attempts": 2,
+      "attempts": [],
+      "escalations": []
+    },
+    "answer_release": {
+      "version": "phase2_step8_v1",
+      "query_class": "inventory_only",
+      "decision": "allow_limited",
+      "reason": "Some required evidence is stale or missing.",
+      "limited": true,
+      "refresh_recommended": true,
+      "refresh_attempted": false,
+      "refresh_tool_calls": [
+        {
+          "name": "get_last_sync_status",
+          "arguments": {}
+        },
+        {
+          "name": "trigger_context_refresh",
+          "arguments": {
+            "target": "inventory",
+            "wait": false
+          }
+        }
+      ],
+      "degraded_signals": [
+        "stale_or_missing_evidence"
+      ],
+      "conflict_codes": [],
+      "stale_sources": [
+        {
+          "source": "local_db",
+          "scope": "planned_inventory",
+          "freshness_class": "stale"
+        }
+      ],
+      "authority_summary": "Observed evidence matches the primary authority family for this query class: planned."
+    }
+  }
+}

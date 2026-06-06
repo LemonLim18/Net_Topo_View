@@ -1,0 +1,17 @@
+---
+# Minimal inventory pattern for Juniper Junos (NETCONF port 830).
+all:
+  children:
+    vendor_juniper_junos:
+      vars:
+        ansible_network_os: junos
+        ansible_connection: netconf
+        ansible_port: 830
+        ansible_user: "{{ vault_net_user }}"
+        ansible_password: "{{ vault_net_pass }}"
+      hosts:
+        acc-junos-01:
+          ansible_host: 192.168.1.51
+    access_switches:
+      children:
+        vendor_juniper_junos: {}

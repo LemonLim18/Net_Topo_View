@@ -1,0 +1,27 @@
+---
+- name: Ensure VLAN exists
+  community.network.huawei_vrp.vlan:
+    vlan_id: '{{ vlan_id }}'
+    name: '{{ vlan_name }}'
+    state: present
+- name: Verify VLAN exists
+  community.network.huawei_vrp.vlan:
+    vlan_id: '{{ vlan_id }}'
+    name: '{{ vlan_name }}'
+    state: query
+  register: vlan_info
+- name: Ensure VLAN is configured on interfaces
+  community.network.huawei_vrp.vlan_interfaces:
+    vlan_id: '{{ vlan_id }}'
+    interfaces:
+      - name: 'GigabitEthernet0/1'
+      - name: 'GigabitEthernet0/2'
+    state: present
+- name: Verify VLAN interfaces are configured
+  community.network.huawei_vrp.vlan_interfaces:
+    vlan_id: '{{ vlan_id }}'
+    interfaces:
+      - name: 'GigabitEthernet0/1'
+      - name: 'GigabitEthernet0/2'
+    state: query
+  register: vlan_interfaces_info

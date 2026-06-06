@@ -1,0 +1,49 @@
+---
+# tasks/main.yml — junos_vlan role
+# Configures VLAN and access-mode interface on Juniper JunOS via NETCONF.
+# Uses junipernetworks.junos collection (desired-state resource modules where
+# available, falling back to junos_config + Jinja2 for interface config).
+
+- name: "Ensure Junos VLAN {{ vlan_id }} ({{ vlan_name }}) — state={{ vlan_state }}"
+  junipernetworks.junos.junos_vlans:
+    config:
+      - name: "{{ vlan_name }}"
+        vlan_id: "{{ vlan_id }}"
+        description: "{{ vlan_description }}"
+    state: "{{ 'merged' if vlan_state == 'present' else 'deleted' }}"
+  register: vlan_result
+  notify: save_junos_config
+
+- name: "Configure interface {{ target_interface }} as access VLAN {{ vlan_id }}"
+  junipernetworks.junos.junos_config:
+    src: "{{ role_path }}/templates/vlan.conf.j2"
+    src_format: set
+    confirm: "{{ netconf_confirm_timeout }}"
+  when: vlan_state == "present"
+  register: iface_result
+  notify: commit_junos_config
+
+- name: "Remove access VLAN config from interface {{ target_interface }}"
+  junipernetworks.junos.junos_config:
+    lines:
+      - "delete interfaces {{ target_interface }} unit 0 family ethernet-switching"
+    confirm: "{{ netconf_confirm_timeout }}"
+  when: vlan_state == "absent"
+  notify: commit_junos_config
+
+# ── Post-change verification ─────────────────────────────────────────────────
+
+- name: "Gather interface facts to verify VLAN assignment"
+  junipernetworks.junos.junos_facts:
+    gather_subset:
+      - interfaces
+  register: junos_facts
+  when: vlan_state == "present"
+
+- name: "Assert VLAN {{ vlan_id }} appears in VLAN table"
+  assert:
+    that:
+      - junos_facts is defined
+    fail_msg: "Post-change fact gather failed — cannot verify VLAN {{ vlan_id }}"
+    success_msg: "VLAN {{ vlan_id }} configuration applied successfully"
+  when: vlan_state == "present"

@@ -1,0 +1,87 @@
+# ============================================================
+# Policy Rules — NetAutoController
+# ============================================================
+# Declarative rules evaluated by the Policy Engine (policy.py)
+# before any configuration change is generated or executed.
+#
+# Rule types:
+#   rbac               — Role-based access control
+#   change_window      — Restrict changes to approved time slots
+#   naming             — Naming convention enforcement
+#   feature_restriction — Block certain features on certain devices
+#   blast_radius       — Limit the number of devices affected
+#   conflict           — VLAN/IP/ACL conflict detection
+#   preflight          — Verify device exists and is reachable
+# ============================================================
+
+rules:
+
+  # ── 1. RBAC Check ──────────────────────────────────────────
+  - rule_id: rbac_basic
+    name: "Role-Based Access Control"
+    rule_type: rbac
+    enabled: true
+    params:
+      # Features that require admin role (operator is blocked)
+      operator_blocked_features:
+        - bgp
+        - acl
+        - firewall
+        - nat
+
+  # ── 2. Change Window ───────────────────────────────────────
+  - rule_id: change_window
+    name: "Change Window Enforcement"
+    rule_type: change_window
+    enabled: true
+    params:
+      # Preferred change window (UTC).
+      # Changes outside this window generate a WARNING (not blocked).
+      # Admin role bypasses this check entirely.
+      allowed_hours_utc: [0, 6]     # 00:00 – 06:00 UTC
+      block_weekends: false          # set true to hard-block weekends
+
+  # ── 3. Naming Convention ───────────────────────────────────
+  - rule_id: naming_policy
+    name: "Naming Convention"
+    rule_type: naming
+    enabled: true
+    params:
+      # Regex that VLAN names and ACL names must match.
+      name_pattern: "^[A-Za-z][A-Za-z0-9_-]{2,30}$"
+
+  # ── 4. Feature Restriction — Access Switches ───────────────
+  - rule_id: no_bgp_on_access
+    name: "No BGP on Access Switches"
+    rule_type: feature_restriction
+    enabled: true
+    params:
+      restricted_features:
+        - bgp
+        - nat
+        - firewall
+      device_pattern: "^SW"          # devices whose hostname starts with SW
+
+  # ── 5. Blast Radius Limit ─────────────────────────────────
+  - rule_id: blast_radius_limit
+    name: "Blast Radius Limit"
+    rule_type: blast_radius
+    enabled: true
+    params:
+      max_devices: 24                # hard-block if > 24 devices (e.g. full lab)
+
+  # ── 6. Conflict Detection ─────────────────────────────────
+  - rule_id: conflict_check
+    name: "VLAN / IP Conflict Detection"
+    rule_type: conflict
+    enabled: true
+    params: {}
+
+  # ── 7. Pre-flight Check ───────────────────────────────────
+  - rule_id: preflight_check
+    name: "Pre-flight Device Verification"
+    rule_type: preflight
+    enabled: true
+    params:
+      # When true, "not in inventory" is a warning only — allows plan/generate before devices are registered
+      inventory_missing_as_warning: true

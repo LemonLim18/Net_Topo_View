@@ -1,0 +1,218 @@
+! =============================================================
+! CogniShield Lab — Cisco IOS/IOS-XE Base Configuration
+! Template for: CSR 1000v (Core), IOL L3 (Dist), IOL L2 (Access)
+! =============================================================
+! VARIABLES TO REPLACE:
+!   {{HOSTNAME}}      — e.g. Cisco_Core_1, Dist_Cisco_SW1, Acc_Cisco_1
+!   {{MGMT_IP}}       — e.g. 192.168.1.40
+!   {{ROUTER_ID}}     — usually same as MGMT_IP
+!   {{ROLE}}          — core | distribution | access
+!
+! INTERFACE NAMING BY IMAGE (EVE-NG):
+!
+!   CSR 1000v (CORE-R1, CORE-R2):
+!     GigabitEthernet1–Gi5      → data-plane links to other EVE-NG nodes
+!     GigabitEthernet6          → Cloud0 (management, 192.168.1.0/24 real LAN)
+!     NOTE: Cloud0 maps to whichever port you drag it to in EVE-NG.
+!           Check your wiring — Gi number = EVE-NG interface slot order.
+!
+!   IOL L3 (DIST-SW1–SW4):
+!     Ethernet0/0               → Cloud0 (management)
+!     Ethernet0/1               → uplink to Core
+!     Ethernet0/2, e0/3...      → downlinks to Access switches
+!
+!   IOL L2 (ACC-SW1–SW6) — pure L2 switch, NO IP on physical ports:
+!     Ethernet0/0               → Cloud0 (management, carries VLAN 100 as access port)
+!     Ethernet0/1               → uplink to Distribution switch (trunk)
+!     Ethernet0/2, e0/3...      → access ports (simulated end-hosts)
+!     interface Vlan100         → SVI — THIS is where the management IP lives
+!     ip default-gateway 192.168.1.1  → needed because L2 switch has no routing
+!
+! USE THE BLOCK THAT MATCHES YOUR IMAGE — delete the others.
+! =============================================================
+
+! --- Hostname & Domain ---
+hostname {{HOSTNAME}}
+ip domain-name cognishield.lab
+
+! --- Disable DNS lookup ---
+no ip domain-lookup
+
+! --- Enable password encryption ---
+service password-encryption
+
+! --- Local credentials ---
+username cognishield privilege 15 secret CogniShield@Lab2026
+enable secret CogniShield@Lab2026
+
+! --- Management Interface (→ Cloud0 → 192.168.1.0/24 real LAN) ---
+!
+! Rule: put the management IP on the Cloud0-connected interface.
+! For ROUTERS (CSR, IOL L3): IP goes directly on the physical port — no VLAN.
+! For L2 SWITCHES (IOL L2): physical port has NO IP (it's a switchport);
+!   IP goes on the SVI (interface Vlan100) + set ip default-gateway.
+!
+! ── BLOCK A: CSR 1000v (CORE-R1, CORE-R2) ──────────────────
+! Cloud0 port = whichever GiX you wired Cloud0 to in EVE-NG.
+! Example: if Cloud0 is on the 6th interface slot → GigabitEthernet6.
+interface GigabitEthernet{{CLOUD0_GI_NUM}}
+ description MGMT-CLOUD0-REAL-LAN
+ ip address {{MGMT_IP}} 255.255.255.0
+ no ip proxy-arp
+ negotiation auto
+ no mop enabled
+ no mop sysid
+ no shutdown
+!
+! ── BLOCK B: IOL L3 (DIST-SW1–SW4) — use instead of Block A ─
+! e0/0 defaults to a ROUTED port on IOL L3, so IP directly on it is fine.
+! interface Ethernet0/0
+!  description MGMT-CLOUD0-REAL-LAN
+!  ip address {{MGMT_IP}} 255.255.255.0
+!  no ip proxy-arp
+!  no shutdown
+!
+! ── BLOCK C: IOL L2 (ACC-SW1–SW6) — use instead of Block A ──
+! ALL ports on IOL L2 are switchports. You CANNOT put an IP on e0/0.
+! Instead: set e0/0 as access port for VLAN 100, put the IP on the SVI.
+! interface Ethernet0/0
+!  description MGMT-CLOUD0-ACCESS-VLAN100
+!  switchport mode access
+!  switchport access vlan 100
+!  no shutdown
+! !
+! interface Vlan100
+!  description MGMT-SVI
+!  ip address {{MGMT_IP}} 255.255.255.0
+!  no shutdown
+! !
+! ip default-gateway 192.168.1.1   ! your LAN gateway — enables SSH/SNMP reach from outside
+!
+
+! --- Loopback0 / OSPF Router-ID (Core + Distribution) ---
+!
+! You CANNOT reuse the management IP on Loopback0 — IOS rejects the overlap.
+! Pick ONE of these two approaches:
+!
+! OPTION A (recommended — no loopback needed):
+!   Just set router-id explicitly under OSPF:
+!     router ospf 1
+!      router-id {{MGMT_IP}}
+!
+! OPTION B (separate loopback — for BGP/MPLS source later):
+!   Use a dedicated range like 10.255.0.x/32:
+!   interface Loopback0
+!    description ROUTER-ID
+!    ip address 10.255.0.{{LAST_OCTET}} 255.255.255.255
+!    no shutdown
+!   Then reference it: router-id 10.255.0.{{LAST_OCTET}}
+!
+
+! --- Data-Plane Interfaces (→ other EVE-NG nodes only) ---
+!
+! CSR 1000v — data-plane L3 links (Gi1–Gi5, or however you wired them):
+! Each link gets a /30 subnet. Adjust descriptions + IPs per your actual wiring.
+!
+! interface GigabitEthernet1
+!  description TO-CORE-R2
+!  ip address 10.0.0.1 255.255.255.252
+!  negotiation auto
+!  no mop enabled
+!  no mop sysid
+!  no shutdown
+! interface GigabitEthernet2
+!  description TO-DIST-SW1
+!  ip address 10.0.1.1 255.255.255.252
+!  negotiation auto
+!  no mop enabled
+!  no mop sysid
+!  no shutdown
+! interface GigabitEthernet3
+!  description TO-DIST-SW2
+!  ip address 10.0.1.5 255.255.255.252
+!  negotiation auto
+!  no mop enabled
+!  no mop sysid
+!  no shutdown
+!
+! IOL L3 Distribution — L3 uplink + L2 trunk downlinks:
+! interface Ethernet0/1
+!  description UPLINK-TO-CORE
+!  ip address 10.0.1.2 255.255.255.252
+!  no shutdown
+! interface Ethernet0/2
+!  description DOWNLINK-TO-ACC-SW1
+!  switchport trunk encapsulation dot1q
+!  switchport mode trunk
+!  no shutdown
+!
+! IOL L2 Access — all ports L2 (no IPs):
+! interface Ethernet0/1
+!  description UPLINK-TO-DIST
+!  switchport trunk encapsulation dot1q
+!  switchport mode trunk
+!  no shutdown
+! interface Ethernet0/2
+!  description ACCESS-PORT-VLAN10
+!  switchport mode access
+!  switchport access vlan 10
+!  no shutdown
+!
+
+! --- SSH Configuration ---
+crypto key generate rsa modulus 2048
+ip ssh version 2
+ip ssh time-out 60
+ip ssh authentication-retries 3
+line vty 0 15
+ transport input ssh
+ login local
+ exec-timeout 30 0
+
+! --- Console ---
+line console 0
+ login local
+ exec-timeout 30 0
+
+! --- SNMP v2c ---
+snmp-server community cognishield RO
+snmp-server location CogniShield-Lab-EVE-NG
+snmp-server contact admin@cognishield.lab
+snmp-server enable traps snmp linkdown linkup coldstart
+snmp-server enable traps config
+snmp-server host 192.168.1.250 version 2c cognishield
+
+! --- LLDP (all platforms) ---
+lldp run
+
+! --- CDP (Cisco only) ---
+cdp run
+
+! --- Syslog ---
+logging host 192.168.1.250 transport udp port 6514
+logging trap informational
+logging source-interface GigabitEthernet{{CLOUD0_GI_NUM}}   ! CSR 1000v — Block A
+! logging source-interface Ethernet0/0       ! IOL L3  — Block B
+! logging source-interface Vlan100           ! IOL L2  — Block C (SVI, not physical port)
+
+! --- NTP ---
+ntp server 192.168.1.3
+
+! --- NetFlow (if supported) ---
+! ip flow-export version 9
+! ip flow-export destination 192.168.1.250 2055
+! ip flow-export source GigabitEthernet0/0
+
+! --- OSPF (Core + Distribution only) ---
+! Uncomment for core/distribution devices:
+! router ospf 1
+!  router-id {{ROUTER_ID}}
+!  network 192.168.1.0 0.0.0.255 area 0
+!  network 10.10.0.0 0.0.255.255 area 0
+!  passive-interface GigabitEthernet{{CLOUD0_GI_NUM}}   ! CSR 1000v — Block A
+!  passive-interface Ethernet0/0        ! IOL L3   — Block B
+! (IOL L2 access switches do NOT run OSPF — skip this section entirely)
+
+! --- Save ---
+end
+write memory

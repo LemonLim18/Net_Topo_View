@@ -1,0 +1,564 @@
+% Options for packages loaded elsewhere
+\PassOptionsToPackage{unicode}{hyperref}
+\PassOptionsToPackage{hyphens}{url}
+%
+\documentclass[
+]{article}
+\usepackage{amsmath,amssymb}
+\usepackage{lmodern}
+\usepackage{iftex}
+\ifPDFTeX
+  \usepackage[T1]{fontenc}
+  \usepackage[utf8]{inputenc}
+  \usepackage{textcomp} % provide euro and other symbols
+\else % if luatex or xetex
+  \usepackage{unicode-math}
+  \defaultfontfeatures{Scale=MatchLowercase}
+  \defaultfontfeatures[\rmfamily]{Ligatures=TeX,Scale=1}
+\fi
+% Use upquote if available, for straight quotes in verbatim environments
+\IfFileExists{upquote.sty}{\usepackage{upquote}}{}
+\IfFileExists{microtype.sty}{% use microtype if available
+  \usepackage[]{microtype}
+  \UseMicrotypeSet[protrusion]{basicmath} % disable protrusion for tt fonts
+}{}
+\makeatletter
+\@ifundefined{KOMAClassName}{% if non-KOMA class
+  \IfFileExists{parskip.sty}{%
+    \usepackage{parskip}
+  }{% else
+    \setlength{\parindent}{0pt}
+    \setlength{\parskip}{6pt plus 2pt minus 1pt}}
+}{% if KOMA class
+  \KOMAoptions{parskip=half}}
+\makeatother
+\usepackage{xcolor}
+\usepackage{graphicx}
+\makeatletter
+\def\maxwidth{\ifdim\Gin@nat@width>\linewidth\linewidth\else\Gin@nat@width\fi}
+\def\maxheight{\ifdim\Gin@nat@height>\textheight\textheight\else\Gin@nat@height\fi}
+\makeatother
+% Scale images if necessary, so that they will not overflow the page
+% margins by default, and it is still possible to overwrite the defaults
+% using explicit options in \includegraphics[width, height, ...]{}
+\setkeys{Gin}{width=\maxwidth,height=\maxheight,keepaspectratio}
+% Set default figure placement to htbp
+\makeatletter
+\def\fps@figure{htbp}
+\makeatother
+\setlength{\emergencystretch}{3em} % prevent overfull lines
+\providecommand{\tightlist}{%
+  \setlength{\itemsep}{0pt}\setlength{\parskip}{0pt}}
+\setcounter{secnumdepth}{-\maxdimen} % remove section numbering
+\ifLuaTeX
+  \usepackage{selnolig}  % disable illegal ligatures
+\fi
+\IfFileExists{bookmark.sty}{\usepackage{bookmark}}{\usepackage{hyperref}}
+\IfFileExists{xurl.sty}{\usepackage{xurl}}{} % add URL line breaks if available
+\urlstyle{same} % disable monospaced font for URLs
+\hypersetup{
+  hidelinks,
+  pdfcreator={LaTeX via pandoc}}
+
+\author{}
+\date{}
+
+\begin{document}
+
+\textbf{Chapter 1 -- Introduction}
+
+\begin{quote}
+\textbf{1.1 Background}
+
+Campus network, or also known as the campus area network, is a
+proprietary local area network (LAN) or a set of multiple interconnected
+LANs owned by a specific organization such as university, corporate or
+hospital (Contributor, 2025). In general, the campus network could span
+different geographical areas, from linking multiple university faculties
+in close distance to connecting headquarter and branch offices which are
+geographically dispersed. According to Upravnik (2022)\textbf{,} a
+campus network is typically designed using a three-tier hierarchical
+model, which involves the core layer, aggregation or distribution layer
+and finally the access layer for the purpose of scalability, reliability
+and security.
+
+Each layer comes with its own specialized functions, for instance, the
+core layer is used to provide high-speed routing as well as connect to
+other parts of the network like internet, network management zone, data
+center, demilitarized zone and other campus branches. The aggregation
+layer, which connects the core layer to the access layer, is used to
+aggregate traffic from the access layer, perform the routing and
+filtering between different network segments, as well as enforce QOS and
+security policies. Lastly, the access layer, being the layer closest to
+the end-user, provides wired and wireless connection to terminals, like
+desktops, phones, wireless access points and IoT devices (\emph{Access,
+Distribution and Core Layers Explained}, 2025).
+\end{quote}
+
+\includegraphics[width=4.19861in,height=2.64583in]{vertopal_de581486deb04d809884e452fca13b13/media/image1.png}
+
+\emph{Figure 1: Three-tier Hierarchical Model (Upravnik, 2022)}
+
+\begin{quote}
+With many devices and systems joining in the network, the campus
+networks have grown in scale and complexity, causing the network
+administrators to have a hard time to manage these devices (Huawei
+Technologies Co., Ltd., 2025). To work this out, the Network Management
+Zone is connected to the core layer switches, giving the administrators
+a central view of the whole network topology as well as allowing them to
+perform centralized network device administration and monitoring (Huawei
+Technologies Co., Ltd., n.d.). Nowadays, many vendors have also provided
+their management platform solution to support centralized network
+administration, for instance, Cisco DNA center, Juniper Mist and Huawei
+NCE.
+
+However, these platforms fall short in respective different aspects. For
+example, most proprietary ecosystems are closed, others lacking
+multi-vendor interoperability and almost all of them are too expensive
+to implement due to high-priced licence (\emph{Cisco DNA Center Reviews
+\& Product Details}, n.d.). Not only that, there also exists an obvious
+gap between operator's intention and the actual network commands in
+today's existing open-source and proprietary vendor platform. For
+example, an operator may want to isolate a department's network, but to
+do that, they need to manually write multiple vendor-specific
+configurations or navigate through different vendor tools. This process
+could require the operator to have vast knowledge of different vendor
+commands and syntaxes, not to mention it could possibly lead to errors,
+inconsistencies and delays. Although some automation tools exist, many
+are expensive and only support specific vendors.
+\end{quote}
+
+\includegraphics[width=4.45833in,height=3.5625in]{vertopal_de581486deb04d809884e452fca13b13/media/image2.png}
+
+\begin{quote}
+\emph{Figure 2: Network Management Zone Connected to Core Layer Switches
+(Huawei Technologies Co., Ltd., n.d.)}
+
+This project proposes \textbf{CogniShield}, an LLM-assisted campus
+network configuration and automation platform that uses natural language
+instructions to abstract vendor-specific syntax differences and convert
+them into Ansible-based automation playbooks. Instead of fully
+replicating enterprise platforms such as Cisco DNA Center or Huawei
+iMaster NCE, CogniShield focuses on selected features such as
+multi-vendor configuration abstraction, configuration generation and
+controlled deployment across selected network devices. The system
+emphasizes Day-1 and Day-2 automation, where devices are already
+reachable and supports human validation before critical changes are
+executed. CogniShield will be developed as an open-source and
+vendor-neutral platform to make network automation more accessible for
+universities, small enterprises and research institutions without
+requiring expensive licenses or proprietary hardware.
+
+\textbf{1.2 Problem Statements}
+
+In today's world, there are numerous complex network automation systems
+used in campus or enterprise networks, where most of which are owned by
+well-known companies such as Cisco, Juniper, Aruba and Huawei. Despite
+the fact that these platforms are quite robust, for instance Cisco DNA
+Center, Juniper Mist and Huawei iMaster NCE, they all have one thing in
+common, which is they are not widely accessible or open to the public
+(\emph{Open Networking Alternative to Cisco, Juniper, Arista, Nokia},
+2025). The primary reason here is due to their proprietary licensing
+system. In this context, licenses, software subscriptions and hardware
+are all extremely expensive, making them tough for small and
+medium-sized businesses, startups and even certain institutions to
+purchase (\emph{Cisco DNA Center Reviews \& Product Details}, n.d.).
+What is more distressing is that there are no other viable open-source
+alternatives for the network community. Such circumstances present a
+significant challenge for individuals who cannot afford or wish to
+construct their own configurable network automation or zero-trust system
+without relying on a provider. As a result, the organization will have
+to invest more time, money and labor in the traditional manual
+configuration and monitoring of its network. Moreover, the proprietary
+licensing also affects students, researchers and network hobbyists by
+restraining them from investigating or learning how these network
+automation tools work. And because the majority of the resources and
+underlying architecture are restricted and not released publicly, it is
+difficult to conduct community reviews or collaborative development with
+the public (\emph{Free and Open Source Software in Education \textbar{}
+Research Starters \textbar{} EBSCO Research}, n.d.). As a result,
+innovation faces stagnation and open, low-budget, vendor-neutral network
+automation systems struggle to come into existence.
+
+Aside from that, another issue in the current network field is that,
+while there are many automation tools or management platforms available,
+the majority of them still lack practical LLM-assisted features that
+help convert network engineers\textquotesingle{} natural language
+instructions into usable device configurations and automation playbooks.
+For example, if a network administrator wishes to segregate one
+department\textquotesingle s network, they must still manually write
+commands or navigate through multiple interfaces such as Command Line
+Interface (CLI), Application Programming Interface (API), or Graphical
+User Interface (GUI) across various vendor devices to implement firewall
+rules (5 Intent-Based Networking Vendors, n.d.). This
+
+manual method takes a long time and requires extensive technical
+knowledge of each vendor\textquotesingle s system and configuration
+syntaxes. As the number of devices increases and the network
+infrastructure becomes increasingly complex, such manual processes
+become inefficient and may introduce human errors such as configuration
+drift or inconsistency. Ultimately, this significantly reduces the
+overall system\textquotesingle s flexibility, maintainability, and
+scalability (``Transforming Network Configuration Management: Challenges
+and Solutions,'' 2022).
+
+\textbf{1.3 Motivation}
+
+It was my experience during an internship at Huawei Malaysia that
+inspired me to start this project. Back then, I was assigned many
+repetitive network tasks. I realized that most of these tasks followed
+predefined routines and could therefore be automated. Since then, I have
+written many automation scripts to facilitate the workflow, which saved
+a significant amount of time and effort. Later on, what truly sparked my
+interest in doing this automation project was getting to see how their
+internal network management platform, Huawei iMaster NCE, works and
+looks like. From the platform, I got a glimpse of how network
+configurations and administration, which I had learned in the CST337
+course instructed by Dr. Chong Yung Wey, could be simplified and
+automated in a real-world environment. On top of that, I was also
+fortunate to be given the opportunity to study for and take the Huawei
+Certified ICT Professional (HCIP) Network Automation Developer course
+and examination, where I learned a vast amount of knowledge on
+automation technologies, concepts, and tools. This further exposed me to
+the possibilities of automation and AI-assisted configuration management
+in networking.
+
+Given this internship exposure and certification opportunity, I decided
+to explore this technology more deeply. That was when I realized that
+much of this technology is largely locked within proprietary vendor
+ecosystems and is not easily accessible to everyone. Surprisingly, there
+are still very limited open-source systems that allow students,
+universities, and smaller organizations to gain hands-on experience with
+network automation. That was when I came up with the idea of creating an
+open-source network configuration and automation platform specifically
+for campus and SME environments. I decided to start this project after
+realizing how much time and effort network administrators could save by
+automating repetitive configuration tasks and reducing dependency on
+vendor-specific syntax. This tool could be highly beneficial for small
+enterprises such as startups, small institutions, students, and
+researchers who cannot afford expensive commercial platforms and who
+would like to customize the tools according to their own needs. I want
+to build something that makes network automation easier, faster, and
+more accessible for everyone without heavy licensing restrictions. With
+CogniShield, I aim to simplify multi-vendor network configuration by
+using natural language to generate automation playbooks while keeping
+the system affordable, practical, and suitable for educational and
+research purposes.
+
+\textbf{1.4 System Objectives}
+
+1.\hspace{0pt} To develop an open-source and vendor-neutral network
+configuration automation platform that improves accessibility for SMEs,
+universities and research communities.\hspace{0pt}
+
+2.\hspace{0pt} To implement an LLM-assisted network automation system
+that uses natural language instructions to abstract vendor-specific
+syntax differences and generate Ansible playbooks for multi-vendor
+device configuration.\hspace{0pt}
+
+3.\hspace{0pt} To support controlled Day-1 and Day-2 network automation,
+including configuration generation, validation and deployment while
+maintaining human-in-the-loop approval for critical changes.
+
+\textbf{1.5 Proposed Solutions}
+
+In hope of solving issues faced in the problem statement, this project
+proposes a new concept called CogniShield, an LLM-assisted network
+configuration automation platform powered by the Large Language Model
+(LLM). It is neither a simple network management tool nor a closed
+commercialized platform, but an AI-driven open-source automation system,
+aiming to provide a free community alternative for selected automation
+features found in existing vendor platforms. Instead of fully mimicking
+the whole functionality of Cisco DNA Center, Huawei iMaster NCE, or
+Juniper Mist, this project focuses on improving selected features such
+as natural-language-assisted configuration generation, vendor syntax
+abstraction, and Ansible-based deployment across selected network
+devices. Ultimately, this network automation platform shall be connected
+to the campus network and placed at the network management zone as shown
+in Figure 3.
+
+To begin with, the entire concept of CogniShield is based on open-system
+architecture, in which the whole system is built upon open-source
+components and does not require expensive software subscriptions or
+proprietary hardware components to run it. With that being said, the
+system can run and function seamlessly on top of standard servers with
+the help of virtualization technology such as Proxmox and virtual
+machines (Proxmox, n.d.). All these ensure that small-to-medium
+enterprises, startups, universities, and research institutes can also
+build and use the system without needing to worry too much about
+hardware costs, licensing fees, and vendor restrictions.
+
+From the perspective of the architecture, the system is made up of
+stable open-source components such as NetBox for network device
+inventory management and Ansible for automation deployment (Ansible
+Documentation --- Ansible Community Documentation, n.d.). In terms of
+monitoring and visualization, CogniShield would use SNMP, Telemetry and
+to perform monitoring, InfluxDB for time-series databases
+(\emph{Overview \textbar{} Prometheus}, n.d.; InfluxDB OSS V2
+Documentation, n.d.). In this project, open architecture is highly
+emphasized with the goal of promoting the cost-saving, flexibility and
+interoperability, not to mention allowing the enterprises or users to
+develop and customize the system based on their environment and
+operational needs. For students, researchers and community developers,
+the system serves more like a free experimental field, where they could
+explore, innovate and
+
+share their research together on this open platform, contributing their
+findings and promoting community-driven development.
+
+Among all the components integrated, the Large Language Model (LLM) is
+the core of CogniShield, where it helps interpret natural language
+instructions and bridge the gap between network engineer requests and
+vendor-specific device configurations. For example, when the network
+administrator provides an instruction such as ``Configure OSPF process 1
+on router 1, router 2, and router 3 in area 0'' or ``Create static
+routing from router 1 to router 2 using the next-hop address,'' the
+system generates the corresponding automation scripts in the form of
+Ansible playbooks based on the selected vendor and device information.
+This process reduces the complexity of manually writing multi-vendor
+configuration scripts, minimizes human error, and enables operators
+without extensive vendor-specific knowledge to manage network
+configurations more efficiently.
+
+Another important point is that regardless of how much automation the
+system provides, CogniShield is only meant to assist engineers in
+generating and deploying network configurations rather than acting as a
+fully autonomous AI network engineer. When it comes to critical network
+changes, the generated configurations still need to undergo manual
+review and approval before actual implementation. Human intervention
+remains necessary because LLM responses may not always be fully accurate
+and could potentially generate unsafe or incorrect configuration
+commands. That being said, this system ultimately serves as an assistant
+tool to ease configuration generation and deployment workflow rather
+than a fully autonomous network controller that acts on its own.
+
+\includegraphics[width=10.29167in,height=5.09306in]{vertopal_de581486deb04d809884e452fca13b13/media/image3.png}
+\end{quote}
+
+\emph{Figure 3: Integration of CogniShield to Campus Network in
+High-Level Architecture View}
+
+\begin{quote}
+\textbf{1.6 Benefits / Impact / Significance of Project}
+
+\textbf{For Network Admins and IT Professionals:}
+
+●\hspace{0pt} \textbf{Less Human Work and Error}: With repeated
+configuration tasks automated by CogniShield, administrators can spend
+more time on network planning instead of performing repetitive manual
+configurations. It also helps reduce human error and configuration drift
+by converting natural language configuration requests into Ansible
+playbooks for deployment\\
+●\hspace{0pt} \textbf{Simplified Multi-Vendor Configuration:}
+CogniShield helps reduce the complexity of handling vendor-specific
+syntax differences by allowing engineers to describe configuration tasks
+in natural language and generating the corresponding playbooks
+automatically. This improves efficiency, especially in mixed-vendor
+environments.●\hspace{0pt} \textbf{Cross-Vendor Flexibility:} Since
+CogniShield is developed as an open-source and vendor-neutral platform,
+it supports automation across selected devices from different vendors
+without relying heavily on a single proprietary ecosystem. This helps
+organizations with mixed hardware environments reduce operational
+complexity and cost.
+
+●\hspace{0pt} \textbf{Improved Configuration Management:} With the
+integration of NetBox and Ansible, administrators can manage device
+inventory, configuration generation, and deployment in a more
+centralized and organized manner, which simplifies operational workflows
+and troubleshooting.
+
+\textbf{For Educational and Research Organizations:}
+
+●\hspace{0pt} \textbf{Open Experimentation and Learning:} Because
+CogniShield is open-source software, students and researchers can access
+the framework, understand how network automation works internally, and
+further improve or customize it according to their needs without
+licensing restrictions.
+
+●\hspace{0pt} \textbf{Hands-on Network Automation Learning:} The project
+can be used as a practical platform for universities and research
+institutions to train students on modern network automation concepts
+using a realistic and accessible lab environment.
+
+●\hspace{0pt} \textbf{Low-Cost Deployment:} CogniShield can be installed
+on standard servers and virtualized environments such as Proxmox without
+requiring expensive proprietary
+
+hardware or software subscriptions, making it more accessible for
+universities and research communities.
+
+\textbf{For Small Organizations and Small Businesses:}
+
+●\hspace{0pt} \textbf{Low Deployment Cost:} Since CogniShield is
+open-source, small organizations can adopt network automation without
+expensive licensing charges or proprietary platform dependencies, making
+automation more affordable.
+
+●\hspace{0pt} \textbf{Simplified and Efficient Operations} Automated
+repetitive configuration tasks such as routing setup, interface
+configuration, and playbook-based deployment help small organizations
+manage stable networks with fewer technical personnel and reduced manual
+workload.
+
+●\hspace{0pt} \textbf{Accessible Network Automation Platform:} By
+simplifying configuration generation through natural language and
+Ansible automation, CogniShield allows smaller organizations to adopt
+automation practices that are usually limited to large enterprises with
+expensive commercial platforms.
+
+\textbf{1.7 Uniqueness of Proposed Solution}
+
+When it comes to the uniqueness of the project, CogniShield may not be
+the first to introduce the idea of centralized network automation.
+However, CogniShield is differentiated from existing solutions by
+focusing on selected automation features while maintaining
+accessibility, openness, and flexibility for students, SMEs, and
+research communities.
+
+Unlike existing vendor platforms, CogniShield is developed as a free and
+open-source platform. No proprietary ecosystem or expensive licensing is
+required in order to use the system. In addition, CogniShield is
+designed to be vendor-neutral, allowing configuration automation across
+selected devices from different vendors without relying heavily on a
+single vendor ecosystem. The system can run on standard servers using
+Proxmox and virtualized environments, making it more affordable and
+practical for educational institutions, SMEs and research organizations.
+
+Beyond the cost perspective, CogniShield's LLM-assisted architecture
+gives it another major advantage. While vendor platforms such as Cisco
+DNA Center and Huawei iMaster NCE provide advanced centralized
+management, they are often expensive and tightly coupled with their own
+ecosystems. Instead of fully replicating these enterprise platforms,
+CogniShield focuses on selected features such as
+natural-language-assisted configuration generation, vendor syntax
+abstraction, and Ansible-based deployment across selected network
+devices.
+
+In this project, the LLM helps convert natural language configuration
+requests into Ansible playbooks while reducing the complexity of
+manually writing vendor-specific commands. For example, network
+engineers can describe tasks such as configuring OSPF, static routing,
+VLAN settings or interface parameters using structured natural language
+and the system generates the corresponding deployment playbooks. This
+reduces manual effort, improves consistency and makes network automation
+more accessible to users without extensive vendor-specific expertise.
+
+In short, CogniShield's uniqueness lies in its openness, affordability,
+vendor neutrality and practical use of LLM-assisted automation for
+configuration generation and deployment. Rather than replacing
+enterprise platforms such as Cisco DNA Center, Huawei iMaster NCE, or
+Juniper Mist, it implements a focused subset of useful features and
+improves accessibility for users who require a low-cost and customizable
+network automation platform. The
+
+following table shows a comprehensive comparison between CogniShield and
+existing solutions in terms of features and functionalities.
+
+\textbf{1.8 Summary}
+
+This chapter provides an overview of the project called CogniShield. It
+begins by explaining the background of campus networks and the
+challenges involved in managing large-scale network infrastructures. As
+modern campus networks become increasingly complex and require faster
+adaptation to operational changes, it is observed that many existing
+proprietary solutions have inherent limitations in providing flexible
+automation, intelligent configuration support, and affordable deployment
+options. These challenges highlight the need for a free, open-source,
+intelligent, and user-friendly network automation system.
+
+The chapter also discusses the main problems faced in current
+environments, such as the lack of accessible open-source automation
+platforms, the limited use of AI in assisting network engineers with
+translating operational requirements into configuration tasks, and the
+difficulty of maintaining network stability under rapidly changing
+conditions. The motivation for this project comes from the student's own
+internship experience, where real-world enterprise network automation
+systems were observed in practice. This inspired the development of a
+free, vendor-neutral, AI-powered platform that can support practical
+network operations without relying on expensive proprietary solutions.
+
+The goals of the system are to address these challenges by developing an
+open-source orchestration platform, applying AI to assist in translating
+semi-structured network operation requests into deployable
+configurations, and supporting adaptive, real-time configuration
+adjustments based on network conditions. Rather than functioning as a
+fully autonomous network controller, CogniShield is designed as an
+intelligent assistant that helps engineers simplify configuration
+workflows, improve operational efficiency, and reduce human error while
+maintaining necessary human review and approval for critical changes.
+
+The proposed solution, CogniShield, is described in detail by
+highlighting its architecture, AI-assisted features, validation
+mechanisms, and deployment workflow, showing how it improves network
+management tasks in a practical and controlled manner. The chapter also
+explains the benefits and unique qualities of the system, including
+usability, adaptability, vendor neutrality, and suitability for
+educational institutions, research environments, and small to
+medium-sized enterprises.
+
+In summary, this chapter sets the foundation for the report by
+explaining the context, challenges, objectives, and proposed solution of
+the project, along with the motivation and importance of developing
+CogniShield. The following chapters will further elaborate on the system
+design, implementation, testing, and evaluation.
+
+\textbf{1.9 Organization of the Report}
+
+From this chapter onwards, the report is structured to guide the reader
+through the detailed study and development of the CogniShield system.
+Following the current chapter, Chapter 2, Background and Related Work,
+provides the general context of network automation, AI-assisted
+orchestration, and semi-structured configuration management,
+highlighting the operational challenges and requirements that motivate
+this project. It presents the problem statements that the system aims to
+solve, explains the motivations for conducting the study, and defines
+the system objectives. The proposed solution is described in detail,
+including the system architecture, overall module structure, and the
+distinctive features of the platform that differentiate it from existing
+approaches. This chapter also reviews relevant past projects, enterprise
+platforms, and academic literature to provide context, introduce key
+concepts, and explain important terminology, ensuring that readers can
+understand the technical and operational foundations of the project.
+
+Chapter 3, System Requirements and Design, focuses on translating the
+concepts and proposals from the background study into actionable system
+specifications. The chapter begins by defining the project scope, system
+capabilities, and implementation boundaries, followed by project
+management planning including the Work Breakdown Structure (WBS),
+milestone timelines, and Gantt charts to illustrate scheduling and
+resource allocation. A SWOT analysis is presented to highlight the
+strengths, weaknesses, opportunities, and risks associated with the
+project. The development methodology is then explained in the context of
+the system's requirements and operational priorities, showing why a
+structured approach such as the Waterfall SDLC is selected to ensure
+controlled implementation, validation, and deployment safety.
+
+This chapter further elaborates on the detailed system requirements,
+including both functional and non-functional requirements, and presents
+analysis using appropriate design tools such as UML use case diagrams,
+class diagrams, sequence diagrams, and process flowcharts. Each system
+module is described in terms of its purpose, functionality, and
+interaction with other components, supported by module diagrams and
+architectural views for clarity. Particular attention is given to the
+LLM-assisted playbook generation workflow, validation mechanisms,
+approval process, and deployment orchestration. Where applicable, the
+sources of training, topology context, and test data are explained to
+support LLM grounding,
+
+validation accuracy, and system reliability. The chapter also discusses
+the technologies used, including hardware specifications, software
+tools, programming languages, frameworks, libraries, and operating
+systems involved during development and deployment, ensuring
+reproducibility within the laboratory environment and providing a
+foundation for future system expansion.
+
+Overall, the report is organized to progress logically from background
+and motivation, through detailed requirements and system design, to
+implementation, testing, and operational considerations. Each subsequent
+chapter builds upon the previous one, allowing the reader to understand
+the system in a structured manner and clearly observe how the design
+decisions and technical implementations are informed by the initial
+research, approved scope, and practical deployment constraints.
+\end{quote}
+
+\end{document}

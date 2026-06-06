@@ -1,0 +1,8 @@
+---
+- name: Ensure VLAN 200 exists
+  cisco.ios.ios_vlans:
+    config:
+      - vlan_id: '200'
+        name: TEST
+        state: active
+    state: merged

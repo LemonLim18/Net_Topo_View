@@ -1,0 +1,111 @@
+---
+# Interface config - Juniper Junos only (single-vendor reference).
+# Use junos_config with CLI `set`/`delete` lines to avoid module XML mappings
+# that fail on older Junos releases such as 12.1X46.
+- name: Configure interfaces (Juniper Junos)
+  hosts: "{{ target_hosts }}"
+  gather_facts: no
+  ignore_unreachable: true
+  vars:
+    interfaces_config: {{ interfaces_config_json }}
+    interfaces_admin_enabled: "{{ ((interfaces_admin_enabled | default(false) | string | trim | lower) in ['1', 'true', 'yes', 'on']) | string | lower }}"
+    junos_prefix_map:
+      255.255.255.255: "32"
+      255.255.255.254: "31"
+      255.255.255.252: "30"
+      255.255.255.248: "29"
+      255.255.255.240: "28"
+      255.255.255.224: "27"
+      255.255.255.192: "26"
+      255.255.255.128: "25"
+      255.255.255.0: "24"
+      255.255.254.0: "23"
+      255.255.252.0: "22"
+      255.255.248.0: "21"
+      255.255.240.0: "20"
+      255.255.224.0: "19"
+      255.255.192.0: "18"
+      255.255.128.0: "17"
+      255.255.0.0: "16"
+      255.254.0.0: "15"
+      255.252.0.0: "14"
+      255.248.0.0: "13"
+      255.240.0.0: "12"
+      255.224.0.0: "11"
+      255.192.0.0: "10"
+      255.128.0.0: "9"
+      255.0.0.0: "8"
+      254.0.0.0: "7"
+      252.0.0.0: "6"
+      248.0.0.0: "5"
+      240.0.0.0: "4"
+      224.0.0.0: "3"
+      192.0.0.0: "2"
+      128.0.0.0: "1"
+{% if interfaces_shutdown_use_nettopo %}
+    {% raw %}
+    interfaces_to_shutdown: "{{ nettopo_interfaces | default([]) | rejectattr('ip_address', 'equalto', (hostvars[inventory_hostname].ansible_host | default(''))) | map(attribute='name') | map('trim') | reject('equalto', '') | reject('match', '(?i).*(management|mgmt|meth|vty|console).*') | list }}"
+    {% endraw %}
+{% else %}
+    interfaces_to_shutdown: {{ interfaces_to_shutdown_json }}
+{% endif %}
+  tasks:
+{% raw %}
+    - name: Configure interface (Juniper Junos)
+      juniper.device.junos_config:
+        lines: "{{ _junos_interface_lines }}"
+      vars:
+        _junos_ip_raw: "{{ item.get('ip', {}).get('address', item.get('ip_address', '')) | string | trim }}"
+        _junos_mask_raw: "{{ item.get('ip', {}).get('prefix_length', item.get('prefix_length', item.get('ip', {}).get('mask', item.get('ip', {}).get('netmask', item.get('subnet_mask', ''))))) | string | trim }}"
+        _junos_prefix_value: "{{ _junos_mask_raw if (_junos_mask_raw | regex_search('^[0-9]+$')) else (junos_prefix_map.get(_junos_mask_raw, '') | string) }}"
+        _junos_ip_cidr: "{{ _junos_ip_raw if (_junos_ip_raw and ('/' in _junos_ip_raw)) else ((_junos_ip_raw ~ '/' ~ _junos_prefix_value) if (_junos_ip_raw and _junos_prefix_value) else '') }}"
+        _junos_access_vlan: "{{ item.get('access', {}).get('vlan', '') | string | trim }}"
+        _junos_allowed_vlans_raw: "{{ item.get('trunk', {}).get('allowed_vlans', '') }}"
+        _junos_allowed_vlans_rendered: >-
+          {{
+            'all'
+            if (_junos_allowed_vlans_raw is string and (_junos_allowed_vlans_raw | trim | lower) == 'all')
+            else (
+              '[ ' ~ ((_junos_allowed_vlans_raw | string | replace(',', ' ')) | trim) ~ ' ]'
+              if (_junos_allowed_vlans_raw is string and (_junos_allowed_vlans_raw | trim))
+              else (
+                '[ ' ~ ((_junos_allowed_vlans_raw | map('string') | join(' ')) | trim) ~ ' ]'
+                if (_junos_allowed_vlans_raw is iterable and _junos_allowed_vlans_raw is not string and (_junos_allowed_vlans_raw | length > 0))
+                else ''
+              )
+            )
+          }}
+        _junos_interface_lines: "{{ [
+          (('set interfaces ' ~ item.name ~ ' description \"' ~ (item.description | string | replace('\"', '\\\"')) ~ '\"') if (item.description is defined and (item.description | string | trim)) else ''),
+          (('set interfaces ' ~ item.name ~ ' disable') if (item.enabled is defined and not item.enabled) else ''),
+          (('delete interfaces ' ~ item.name ~ ' disable') if (item.enabled is defined and item.enabled) else ''),
+          (('delete interfaces ' ~ item.name ~ ' unit 0 family inet') if (item.mode is defined and item.mode == 'access') else ''),
+          (('set interfaces ' ~ item.name ~ ' unit 0 family ethernet-switching port-mode access') if (item.mode is defined and item.mode == 'access') else ''),
+          (('set interfaces ' ~ item.name ~ ' unit 0 family ethernet-switching vlan members ' ~ _junos_access_vlan) if (item.mode is defined and item.mode == 'access' and _junos_access_vlan) else ''),
+          (('delete interfaces ' ~ item.name ~ ' unit 0 family inet') if (item.mode is defined and item.mode == 'trunk') else ''),
+          (('set interfaces ' ~ item.name ~ ' unit 0 family ethernet-switching port-mode trunk') if (item.mode is defined and item.mode == 'trunk') else ''),
+          (('set interfaces ' ~ item.name ~ ' unit 0 family ethernet-switching vlan members ' ~ _junos_allowed_vlans_rendered) if (item.mode is defined and item.mode == 'trunk' and _junos_allowed_vlans_rendered) else ''),
+          (('set interfaces ' ~ item.name ~ ' native-vlan-id ' ~ (item.get('trunk', {}).get('native_vlan') | string)) if (item.mode is defined and item.mode == 'trunk' and item.get('trunk', {}).get('native_vlan') is not none) else ''),
+          (('delete interfaces ' ~ item.name ~ ' unit 0 family ethernet-switching') if ((item.mode is defined and item.mode == 'routed') or _junos_ip_cidr) else ''),
+          (('set interfaces ' ~ item.name ~ ' unit 0 family inet address ' ~ _junos_ip_cidr) if _junos_ip_cidr else '')
+        ] | reject('equalto', '') | list }}"
+      loop: "{{ interfaces_config | default([]) }}"
+      loop_control:
+        label: "{{ item.name }}"
+      when:
+        - inventory_hostname in groups.get('vendor_juniper_junos', [])
+        - (interfaces_config | default([])) | length > 0
+        - (_junos_interface_lines | default([])) | length > 0
+
+    - name: Toggle interface admin state (Juniper Junos)
+      juniper.device.junos_config:
+        lines:
+          - "{{ ('delete interfaces ' ~ item ~ ' disable') if ((interfaces_admin_enabled | default(false) | string | trim | lower) in ['1', 'true', 'yes', 'on']) else ('set interfaces ' ~ item ~ ' disable') }}"
+      loop: "{{ interfaces_to_shutdown | default([]) }}"
+      loop_control:
+        label: "{{ item }}"
+      when:
+        - inventory_hostname in groups.get('vendor_juniper_junos', [])
+        - (interfaces_config | default([])) | length == 0
+        - (interfaces_to_shutdown | default([])) | length > 0
+{% endraw %}

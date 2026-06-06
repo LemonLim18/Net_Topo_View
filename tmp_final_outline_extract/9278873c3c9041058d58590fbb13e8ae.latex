@@ -1,0 +1,278 @@
+% Options for packages loaded elsewhere
+\PassOptionsToPackage{unicode}{hyperref}
+\PassOptionsToPackage{hyphens}{url}
+%
+\documentclass[
+]{article}
+\usepackage{amsmath,amssymb}
+\usepackage{lmodern}
+\usepackage{iftex}
+\ifPDFTeX
+  \usepackage[T1]{fontenc}
+  \usepackage[utf8]{inputenc}
+  \usepackage{textcomp} % provide euro and other symbols
+\else % if luatex or xetex
+  \usepackage{unicode-math}
+  \defaultfontfeatures{Scale=MatchLowercase}
+  \defaultfontfeatures[\rmfamily]{Ligatures=TeX,Scale=1}
+\fi
+% Use upquote if available, for straight quotes in verbatim environments
+\IfFileExists{upquote.sty}{\usepackage{upquote}}{}
+\IfFileExists{microtype.sty}{% use microtype if available
+  \usepackage[]{microtype}
+  \UseMicrotypeSet[protrusion]{basicmath} % disable protrusion for tt fonts
+}{}
+\makeatletter
+\@ifundefined{KOMAClassName}{% if non-KOMA class
+  \IfFileExists{parskip.sty}{%
+    \usepackage{parskip}
+  }{% else
+    \setlength{\parindent}{0pt}
+    \setlength{\parskip}{6pt plus 2pt minus 1pt}}
+}{% if KOMA class
+  \KOMAoptions{parskip=half}}
+\makeatother
+\usepackage{xcolor}
+\usepackage{longtable,booktabs,array}
+\usepackage{calc} % for calculating minipage widths
+% Correct order of tables after \paragraph or \subparagraph
+\usepackage{etoolbox}
+\makeatletter
+\patchcmd\longtable{\par}{\if@noskipsec\mbox{}\fi\par}{}{}
+\makeatother
+% Allow footnotes in longtable head/foot
+\IfFileExists{footnotehyper.sty}{\usepackage{footnotehyper}}{\usepackage{footnote}}
+\makesavenoteenv{longtable}
+\usepackage{graphicx}
+\makeatletter
+\def\maxwidth{\ifdim\Gin@nat@width>\linewidth\linewidth\else\Gin@nat@width\fi}
+\def\maxheight{\ifdim\Gin@nat@height>\textheight\textheight\else\Gin@nat@height\fi}
+\makeatother
+% Scale images if necessary, so that they will not overflow the page
+% margins by default, and it is still possible to overwrite the defaults
+% using explicit options in \includegraphics[width, height, ...]{}
+\setkeys{Gin}{width=\maxwidth,height=\maxheight,keepaspectratio}
+% Set default figure placement to htbp
+\makeatletter
+\def\fps@figure{htbp}
+\makeatother
+\setlength{\emergencystretch}{3em} % prevent overfull lines
+\providecommand{\tightlist}{%
+  \setlength{\itemsep}{0pt}\setlength{\parskip}{0pt}}
+\setcounter{secnumdepth}{-\maxdimen} % remove section numbering
+\ifLuaTeX
+  \usepackage{selnolig}  % disable illegal ligatures
+\fi
+\IfFileExists{bookmark.sty}{\usepackage{bookmark}}{\usepackage{hyperref}}
+\IfFileExists{xurl.sty}{\usepackage{xurl}}{} % add URL line breaks if available
+\urlstyle{same} % disable monospaced font for URLs
+\hypersetup{
+  hidelinks,
+  pdfcreator={LaTeX via pandoc}}
+
+\author{}
+\date{}
+
+\begin{document}
+
+\includegraphics[width=4.65278in,height=1.93259in]{vertopal_9278873c3c9041058d58590fbb13e8ae/media/image35.png}\includegraphics[width=1.61111in,height=0.125in]{vertopal_9278873c3c9041058d58590fbb13e8ae/media/image36.png}
+
+\begin{quote}
+\includegraphics[width=3.54167in,height=0.16667in]{vertopal_9278873c3c9041058d58590fbb13e8ae/media/image1.png}
+\end{quote}
+
+\includegraphics[width=1.48611in,height=0.15278in]{vertopal_9278873c3c9041058d58590fbb13e8ae/media/image2.png}
+
+\includegraphics[width=2.13889in,height=0.16667in]{vertopal_9278873c3c9041058d58590fbb13e8ae/media/image3.png}
+
+\begin{longtable}[]{@{}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 2\tabcolsep) * \real{0.5000}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 2\tabcolsep) * \real{0.5000}}@{}}
+\toprule()
+\begin{minipage}[b]{\linewidth}\raggedright
+\begin{quote}
+\includegraphics[width=0.875in,height=0.18056in]{vertopal_9278873c3c9041058d58590fbb13e8ae/media/image4.png}
+\end{quote}
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+\begin{quote}
+\includegraphics[width=2.30972in,height=0.59444in]{vertopal_9278873c3c9041058d58590fbb13e8ae/media/image5.png}
+\end{quote}
+\end{minipage} \\
+\midrule()
+\endhead
+\bottomrule()
+\end{longtable}
+
+\begin{quote}
+\includegraphics[width=5.36111in,height=0.13889in]{vertopal_9278873c3c9041058d58590fbb13e8ae/media/image6.png}
+
+\includegraphics[width=2.625in,height=0.125in]{vertopal_9278873c3c9041058d58590fbb13e8ae/media/image7.png}
+
+\includegraphics[width=0.94444in,height=0.18056in]{vertopal_9278873c3c9041058d58590fbb13e8ae/media/image8.png}
+\end{quote}
+
+\includegraphics[width=5.29167in,height=0.13889in]{vertopal_9278873c3c9041058d58590fbb13e8ae/media/image9.png}
+
+\begin{quote}
+\includegraphics[width=0.875in,height=0.13889in]{vertopal_9278873c3c9041058d58590fbb13e8ae/media/image10.png}
+
+\includegraphics[width=1.69444in,height=0.19444in]{vertopal_9278873c3c9041058d58590fbb13e8ae/media/image11.png}
+
+\includegraphics[width=4.65278in,height=0.13889in]{vertopal_9278873c3c9041058d58590fbb13e8ae/media/image12.png}
+
+\includegraphics[width=0.91667in,height=0.11111in]{vertopal_9278873c3c9041058d58590fbb13e8ae/media/image13.png}
+
+\includegraphics[width=4.01389in,height=0.13889in]{vertopal_9278873c3c9041058d58590fbb13e8ae/media/image14.png}
+
+\includegraphics[width=0.73611in,height=0.11111in]{vertopal_9278873c3c9041058d58590fbb13e8ae/media/image15.png}
+
+\includegraphics[width=2.98611in,height=0.125in]{vertopal_9278873c3c9041058d58590fbb13e8ae/media/image16.png}
+
+\includegraphics[width=1.38889in,height=0.13889in]{vertopal_9278873c3c9041058d58590fbb13e8ae/media/image17.png}
+
+\includegraphics[width=4.84722in,height=0.125in]{vertopal_9278873c3c9041058d58590fbb13e8ae/media/image18.png}
+
+\includegraphics[width=4.625in,height=0.13889in]{vertopal_9278873c3c9041058d58590fbb13e8ae/media/image19.png}
+
+\includegraphics[width=4.61111in,height=0.13889in]{vertopal_9278873c3c9041058d58590fbb13e8ae/media/image20.png}
+
+\includegraphics[width=4.625in,height=0.125in]{vertopal_9278873c3c9041058d58590fbb13e8ae/media/image21.png}
+
+\includegraphics[width=4.625in,height=0.125in]{vertopal_9278873c3c9041058d58590fbb13e8ae/media/image22.png}
+
+\includegraphics[width=3.97222in,height=0.13889in]{vertopal_9278873c3c9041058d58590fbb13e8ae/media/image23.png}
+
+\includegraphics[width=2.15278in,height=0.13889in]{vertopal_9278873c3c9041058d58590fbb13e8ae/media/image24.png}
+
+\includegraphics[width=4.38889in,height=0.13889in]{vertopal_9278873c3c9041058d58590fbb13e8ae/media/image25.png}
+\end{quote}
+
+\includegraphics[width=1.48611in,height=0.13889in]{vertopal_9278873c3c9041058d58590fbb13e8ae/media/image26.png}
+
+\begin{quote}
+\includegraphics[width=4.15278in,height=0.13889in]{vertopal_9278873c3c9041058d58590fbb13e8ae/media/image27.png}
+\end{quote}
+
+\includegraphics[width=4.01389in,height=0.13889in]{vertopal_9278873c3c9041058d58590fbb13e8ae/media/image28.png}
+
+\includegraphics[width=3.77778in,height=0.13889in]{vertopal_9278873c3c9041058d58590fbb13e8ae/media/image29.png}
+
+\includegraphics[width=3.79167in,height=0.125in]{vertopal_9278873c3c9041058d58590fbb13e8ae/media/image30.png}
+
+\includegraphics[width=3.79167in,height=0.125in]{vertopal_9278873c3c9041058d58590fbb13e8ae/media/image31.png}
+
+\includegraphics[width=3.77778in,height=0.13889in]{vertopal_9278873c3c9041058d58590fbb13e8ae/media/image32.png}
+
+\includegraphics[width=2.69444in,height=0.13889in]{vertopal_9278873c3c9041058d58590fbb13e8ae/media/image33.png}
+
+\includegraphics{vertopal_9278873c3c9041058d58590fbb13e8ae/media/image34.png}
+
+\begin{quote}
+\includegraphics[width=1.61111in,height=0.13889in]{vertopal_9278873c3c9041058d58590fbb13e8ae/media/image37.png}
+\end{quote}
+
+\includegraphics[width=2.42361in,height=1.18056in]{vertopal_9278873c3c9041058d58590fbb13e8ae/media/image38.png}
+
+\begin{quote}
+\includegraphics[width=1.98611in,height=0.13889in]{vertopal_9278873c3c9041058d58590fbb13e8ae/media/image39.png}
+
+\includegraphics[width=3.86111in,height=0.13889in]{vertopal_9278873c3c9041058d58590fbb13e8ae/media/image40.png}
+\end{quote}
+
+\includegraphics[width=0.59722in,height=0.13889in]{vertopal_9278873c3c9041058d58590fbb13e8ae/media/image41.png}
+
+\begin{quote}
+\includegraphics[width=2.30556in,height=0.13889in]{vertopal_9278873c3c9041058d58590fbb13e8ae/media/image42.png}
+
+\includegraphics[width=3.25in,height=0.13889in]{vertopal_9278873c3c9041058d58590fbb13e8ae/media/image43.png}
+
+\includegraphics[width=4.38889in,height=0.13889in]{vertopal_9278873c3c9041058d58590fbb13e8ae/media/image44.png}
+\end{quote}
+
+\includegraphics[width=4.18056in,height=0.13889in]{vertopal_9278873c3c9041058d58590fbb13e8ae/media/image45.png}
+
+\includegraphics[width=1.72222in,height=0.125in]{vertopal_9278873c3c9041058d58590fbb13e8ae/media/image46.png}
+
+\begin{quote}
+\includegraphics[width=1.86111in,height=0.125in]{vertopal_9278873c3c9041058d58590fbb13e8ae/media/image47.png}
+
+\includegraphics[width=4.38889in,height=0.13889in]{vertopal_9278873c3c9041058d58590fbb13e8ae/media/image48.png}
+\end{quote}
+
+\includegraphics[width=1.47222in,height=0.13889in]{vertopal_9278873c3c9041058d58590fbb13e8ae/media/image49.png}
+
+\begin{quote}
+\includegraphics[width=2.97222in,height=0.11111in]{vertopal_9278873c3c9041058d58590fbb13e8ae/media/image50.png}
+
+\includegraphics[width=4.38889in,height=0.13889in]{vertopal_9278873c3c9041058d58590fbb13e8ae/media/image51.png}
+\end{quote}
+
+\includegraphics[width=2.94444in,height=0.125in]{vertopal_9278873c3c9041058d58590fbb13e8ae/media/image52.png}
+
+\begin{quote}
+\includegraphics[width=3.875in,height=0.13889in]{vertopal_9278873c3c9041058d58590fbb13e8ae/media/image53.png}
+
+\includegraphics[width=4.38889in,height=0.125in]{vertopal_9278873c3c9041058d58590fbb13e8ae/media/image54.png}
+\end{quote}
+
+\includegraphics[width=4.16667in,height=0.13889in]{vertopal_9278873c3c9041058d58590fbb13e8ae/media/image55.png}
+
+\includegraphics[width=0.48611in,height=0.125in]{vertopal_9278873c3c9041058d58590fbb13e8ae/media/image56.png}
+
+\begin{quote}
+\includegraphics[width=2.02778in,height=0.13889in]{vertopal_9278873c3c9041058d58590fbb13e8ae/media/image57.png}
+
+\includegraphics[width=1.76389in,height=0.11111in]{vertopal_9278873c3c9041058d58590fbb13e8ae/media/image58.png}
+
+\includegraphics[width=3.56944in,height=0.13889in]{vertopal_9278873c3c9041058d58590fbb13e8ae/media/image59.png}
+
+\includegraphics[width=4.40278in,height=0.13889in]{vertopal_9278873c3c9041058d58590fbb13e8ae/media/image60.png}
+\end{quote}
+
+\includegraphics[width=4.16667in,height=0.13889in]{vertopal_9278873c3c9041058d58590fbb13e8ae/media/image61.png}
+
+\includegraphics[width=4.16667in,height=0.125in]{vertopal_9278873c3c9041058d58590fbb13e8ae/media/image62.png}
+
+\includegraphics[width=1.72222in,height=0.13889in]{vertopal_9278873c3c9041058d58590fbb13e8ae/media/image63.png}
+
+\begin{quote}
+\includegraphics[width=4.38889in,height=0.13889in]{vertopal_9278873c3c9041058d58590fbb13e8ae/media/image64.png}
+\end{quote}
+
+\includegraphics[width=0.51389in,height=\textheight]{vertopal_9278873c3c9041058d58590fbb13e8ae/media/image65.png}
+
+\begin{quote}
+\includegraphics[width=2.30556in,height=0.13889in]{vertopal_9278873c3c9041058d58590fbb13e8ae/media/image66.png}
+
+\includegraphics[width=4.38889in,height=0.13889in]{vertopal_9278873c3c9041058d58590fbb13e8ae/media/image67.png}
+\end{quote}
+
+\includegraphics[width=4.18056in,height=0.125in]{vertopal_9278873c3c9041058d58590fbb13e8ae/media/image68.png}
+
+\includegraphics[width=1.18056in,height=0.125in]{vertopal_9278873c3c9041058d58590fbb13e8ae/media/image69.png}
+
+\begin{quote}
+\includegraphics[width=0.90278in,height=0.11111in]{vertopal_9278873c3c9041058d58590fbb13e8ae/media/image70.png}
+
+\includegraphics[width=4.38889in,height=0.125in]{vertopal_9278873c3c9041058d58590fbb13e8ae/media/image71.png}
+\end{quote}
+
+\includegraphics[width=0.66667in,height=0.11111in]{vertopal_9278873c3c9041058d58590fbb13e8ae/media/image72.png}
+
+\begin{quote}
+\includegraphics[width=3.36111in,height=0.13889in]{vertopal_9278873c3c9041058d58590fbb13e8ae/media/image73.png}
+
+\includegraphics[width=0.93056in,height=0.125in]{vertopal_9278873c3c9041058d58590fbb13e8ae/media/image74.png}
+
+\includegraphics[width=4.38889in,height=0.13889in]{vertopal_9278873c3c9041058d58590fbb13e8ae/media/image75.png}
+\end{quote}
+
+\includegraphics[width=4.16667in,height=0.13889in]{vertopal_9278873c3c9041058d58590fbb13e8ae/media/image76.png}
+
+\includegraphics[width=0.77778in,height=0.125in]{vertopal_9278873c3c9041058d58590fbb13e8ae/media/image77.png}
+
+\includegraphics[width=5.43056in,height=0.13889in]{vertopal_9278873c3c9041058d58590fbb13e8ae/media/image78.png}
+
+\includegraphics[width=\textwidth,height=0.11111in]{vertopal_9278873c3c9041058d58590fbb13e8ae/media/image79.png}
+
+\end{document}

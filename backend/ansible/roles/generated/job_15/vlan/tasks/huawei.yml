@@ -1,0 +1,20 @@
+---
+# Huawei VRP: use community.network.ce_config (CLI); community.network.network_config does not exist.
+- name: Ensure VLAN 200 exists (Huawei VRP)
+  community.network.ce_config:
+    lines:
+      - vlan batch 200
+      - vlan 200
+      - name TEST
+- name: Configure access VLAN on Gi1/0/1 (Huawei VRP)
+  community.network.ce_config:
+    lines:
+      - port link-type access
+      - port default vlan 200
+    parents: interface GigabitEthernet1/0/1
+- name: Configure access VLAN on Gi1/0/2 (Huawei VRP)
+  community.network.ce_config:
+    lines:
+      - port link-type access
+      - port default vlan 200
+    parents: interface GigabitEthernet1/0/2

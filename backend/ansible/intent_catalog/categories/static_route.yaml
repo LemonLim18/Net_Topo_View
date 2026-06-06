@@ -1,0 +1,39 @@
+category_key: static_route
+display_name: Static route
+category_description: Static routing path configurations.
+legacy_feature: static_route
+shared_fields: []
+
+operations:
+  add_default_route:
+    action: add_default_route
+    feature: static_route
+    required_parameters: [next_hop, target_devices]
+    implicit_requires_targets: true
+    optional_parameters: [destination, administrative_distance]
+    keyword_triggers:
+      - "default route"
+      - "0.0.0.0"
+    rules:
+      - "Default route; destination may be omitted or 0.0.0.0/0; set default_route true if no prefix."
+
+  configure_static_route:
+    action: configure_static_route
+    feature: static_route
+    required_parameter_groups:
+      any_of:
+        - [destination, next_hop, target_devices]
+        - [destination, egress_interface, target_devices]
+    implicit_requires_targets: true
+    optional_parameters:
+      - administrative_distance
+      - vrf
+      - default_route
+      - gateway
+    keyword_triggers:
+      - "static route"
+      - "default route"
+      - "next hop"
+      - "next-hop"
+    rules:
+      - "Static routes: IPv4/IPv6 prefix + next-hop IP **or** egress interface; include targets."

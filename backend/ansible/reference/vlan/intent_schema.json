@@ -1,0 +1,38 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "properties": {
+    "vlan": {
+      "type": "object",
+      "properties": {
+        "id": { "type": "integer", "minimum": 1, "maximum": 4094 },
+        "name": { "type": "string" }
+      },
+      "required": ["id"]
+    },
+    "target_hosts": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "interfaces": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": { "type": "string" },
+          "mode": { "type": "string", "enum": ["access", "trunk"] },
+          "access_vlan": { "type": "integer" },
+          "allowed_vlans": { "type": "array", "items": { "type": "integer" } },
+          "native_vlan": {
+            "anyOf": [
+              { "type": "integer", "minimum": 1, "maximum": 4094 },
+              { "type": "null" }
+            ]
+          }
+        },
+        "required": ["name", "mode"]
+      }
+    }
+  },
+  "required": ["vlan", "target_hosts"]
+}

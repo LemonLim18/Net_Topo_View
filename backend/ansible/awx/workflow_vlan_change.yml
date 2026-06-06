@@ -1,0 +1,32 @@
+# backend/ansible/awx/workflow_vlan_change.yml
+# AWX Workflow: check → operator approval → apply
+---
+- name: "NetTopoView — VLAN Change Workflow"
+  description: >
+    Chains a check-mode dry-run, a human approval gate, and the live apply.
+    Operator must review the diff and approve before any device changes occur.
+  ask_variables_on_launch: true
+  ask_limit_on_launch:     true
+  workflow_nodes:
+    - identifier: check_run
+      unified_job_template: "NetTopoView — Apply Access VLAN (Check Mode)"
+      on_success:
+        - identifier: approval_gate
+
+    - identifier: approval_gate
+      approval_node:
+        name:        "Operator Approval — Review VLAN Diff"
+        description: >
+          Review the check-mode diff in the job above.
+          Approve to proceed with the live change, or deny to abort.
+        timeout:     3600     # 1 hour before auto-deny
+      on_success:
+        - identifier: apply_run
+      on_failure:
+        - identifier: notify_denied
+
+    - identifier: apply_run
+      unified_job_template: "NetTopoView — Apply Access VLAN"
+
+    - identifier: notify_denied
+      unified_job_template: "NetTopoView — Notify Denied"   # webhook / email job

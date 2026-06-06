@@ -1,0 +1,27 @@
+---
+- name: Ensure VLAN exists
+  community.network.ce_config:
+    lines:
+      - vlan {{ vlan_id }}
+        name {{ vlan_name }}
+    parents:
+      - vlan
+    state: merged
+- name: Apply VLAN to interfaces
+  community.network.ce_config:
+    lines:
+      - interface {{ item }}
+        switchport access vlan {{ vlan_id }}
+    parents:
+      - interface
+    state: merged
+  loop: '{{ interfaces[ansible_network_os] }}'
+- name: Verify VLAN and interfaces
+  community.network.ce_config:
+    lines:
+      - interface {{ item }}
+        switchport access vlan {{ vlan_id }}
+    parents:
+      - interface
+    state: merged
+  loop: '{{ interfaces[ansible_network_os] }}'

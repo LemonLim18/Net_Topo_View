@@ -1,0 +1,31 @@
+# Intent schema: Create QoS policy (class-map / policy-map)
+action: create_qos_policy
+feature: qos
+required:
+  - policy_name
+  - target_devices
+  - qos_type
+  - classification_rules
+optional:
+  - description
+  - classes
+  - actions
+resolution_order:
+  policy_name:
+    - from_intent
+    - ask_user
+  target_devices:
+    - from_intent
+    - from_inventory
+    - ask_user
+  qos_type:
+    - from_intent
+    - ask_user
+  classification_rules:
+    - from_intent
+    - ask_user
+questions:
+  policy_name: "QoS policy name?"
+  target_devices: "Which devices?"
+  qos_type: "QoS construct type (class-map, policy-map, or service-policy)?"
+  classification_rules: "Classification (match DSCP/ACL/COS/IP) and actions?"

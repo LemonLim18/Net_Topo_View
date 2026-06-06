@@ -1,0 +1,24 @@
+---
+- name: Configure OSPF (Cisco IOS)
+  hosts: "{{ target_hosts | default('all') }}"
+  gather_facts: no
+  ignore_unreachable: true
+  tasks:
+    - name: Configure OSPF process and advertised networks (Cisco IOS)
+      cisco.ios.ios_config:
+        parents: "router ospf {{ process_id }}"
+        lines:
+{% if router_id %}
+          - "router-id {{ router_id }}"
+{% endif %}
+{% for net in networks | default([]) %}
+          - "network {{ net.network }} {{ net.wildcard }} area {{ net.area }}"
+{% endfor %}
+{% for iface in passive_interfaces | default([]) %}
+          - "passive-interface {{ (iface | string).split(':')[-1] }}"
+{% endfor %}
+{% for proto in redistribution | default([]) %}
+          - "redistribute {{ proto }}"
+{% endfor %}
+      when:
+        - inventory_hostname in groups.get('vendor_cisco_ios', [])

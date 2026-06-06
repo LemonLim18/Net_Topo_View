@@ -1,0 +1,28 @@
+# Intent schema: Apply existing QoS policy to interface
+action: apply_qos_policy_to_interface
+feature: qos
+required:
+  - policy_name
+  - target_devices
+  - interface_apply
+optional:
+  - direction
+resolution_order:
+  policy_name:
+    - from_intent
+    - ask_user
+  target_devices:
+    - from_intent
+    - from_inventory
+    - ask_user
+  interface_apply:
+    - from_intent
+    - ask_user
+  direction:
+    - from_intent
+    - ask_user
+questions:
+  policy_name: "QoS policy name to apply?"
+  target_devices: "Which devices?"
+  interface_apply: "Which interface(s) should this QoS policy be applied to?"
+  direction: "Direction on the interface (inbound/in or outbound/out)?"

@@ -1,0 +1,46 @@
+# Intent schema: VLAN database (create / ensure VLAN exists on switches)
+# Required: vlan_id, vlan_name, target_devices. Optional: interface_binding, desired_state
+# For L2 port binding (access/trunk), use configure_interface + feature interface — not this action.
+#
+# Trunk binding: ``interfaces[].trunk_vlans`` / ``allowed_vlans`` — empty list does not mean
+# trunk ``all``; templates use at least ``vlan_id``. Merge with planned inventory iface VLANs
+# when available. ``native_vlan`` only if explicitly set (see intent_operation_reference.md).
+# Cisco/Juniper generated tasks use ``trunk.allowed_vlans`` per ``ios_l2_interfaces`` / ``junos_l2_interfaces``.
+# Composite: "create VLAN … and set native VLAN on …" → primary ``create_vlan`` + secondary
+# ``configure_interface`` (trunk + ``native_vlan``); see ``docs/intent_operation_reference.md``.
+# Preview ``interfaces_for_selection`` coexists with ``interfaces_inventory_validation`` (invalid LLM
+# names do not hide planned-inventory checklists).
+action: create_vlan
+feature: vlan
+required:
+  - vlan_id
+  - vlan_name
+  - target_devices
+optional:
+  - interface_binding
+  - desired_state
+resolution_order:
+  vlan_id:
+    - from_intent
+    - ask_user
+  vlan_name:
+    - from_intent
+    - ask_user
+  target_devices:
+    - from_intent
+    - from_inventory
+    - ask_user
+  interface_binding:
+    - from_intent
+    - from_topology
+    - ask_user
+  desired_state:
+    - from_intent
+    - ask_user
+questions:
+  vlan_id: "Which VLAN ID (1-4094)?"
+  vlan_name: "VLAN name?"
+  target_devices: "Which devices?"
+  # Playbook Studio maps this to Access / Trunk / No; "No" = VLAN database only (no L2 port tasks).
+  interface_binding: "Configure L2 on ports? (No = VLAN DB only; Access or Trunk = bind interfaces)"
+  desired_state: "Desired state (present or absent)?"

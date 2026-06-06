@@ -1,0 +1,9 @@
+# roles/access_vlan/handlers/main.yml
+---
+- name: reload_interface_if_needed
+  cisco.ios.ios_config:
+    lines:
+      - "shutdown"
+      - "no shutdown"
+    parents: "interface {{ interface }}"
+  listen: reload_interface_if_needed

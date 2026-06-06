@@ -1,0 +1,15 @@
+{
+  "case_id": "qos_mark_dscp_46_on_sw2",
+  "started_at": "2026-03-20T12:21:19.647032",
+  "intent_description": "Mark traffic with DSCP 46 for voice on access switch 2",
+  "preview_initial": {
+    "status_code": 200,
+    "text": "{\"categories\":[\"qos\",\"dscp\"],\"references\":[],\"parsed_intent\":{\"id\":\"59058b98\",\"intent_type\":\"configure\",\"action\":\"configure_interface\",\"feature\":\"dscp\",\"vendor\":\"\",\"parameters\":{\"device_hostnames\":[\"Acc_Cisco_2\"],\"interfaces\":[{\"interface_name\":\"Ethernet0/1\",\"dscp\":46}],\"device_deduction\":{\"deduced\":[\"Acc_Cisco_2\"],\"mapping\":[{\"hostname\":\"Acc_Cisco_2\",\"reason\":\"matched role=access; matched prompt number\"}],\"why\":\"Backend selected the closest inventory names from the prompt wording.\"}},\"scope\":{\"device_hostnames\":[],\"device_role\":null,\"building\":null,\"vendor_filter\":null,\"all_devices\":false},\"risk_level\":\"medium\",\"justification\":\"\",\"raw_user_input\":\"Mark traffic with DSCP 46 for voice on access switch 2\",\"requires_disambiguation\":false,\"disambiguation_message\":\"\",\"requires_resolution\":false,\"resolved_devices\":[\"Acc_Cisco_2\"],\"created_at\":\"2026-03-20T12:21:53.987501+00:00\",\"secondary_intents\":[],\"inventory_unknown_device_tokens\":[],\"device_deduction\":{\"deduced\":[\"Acc_Cisco_2\"],\"why\":\"Role keywords were matched against inventory roles and hostname prefixes. Numeric selectors were treated as positional filters within the matched role group.\",\"clues\":[\"role=access\",\"keyword=switches\",\"indices=2\"],\"mapping\":[{\"hostname\":\"Acc_Cisco_2\",\"reason\":\"matched role=access; matched numeric selector 2\"}]},\"disambiguation\":null,\"validation_errors\":[\"'access_vlan' is a required property at interfaces/0\"]},\"policy_approved\":true,\"reasoning\":[\"### 1. Intent\\n- **Type:** configure · **Action:** configure_interface\\n- **Feature:** dscp\\n- **Categories (for templates):** qos, dscp. You can add or remove above.\",\"### 2. Target devices\\n- **Resolved:** Acc_Cisco_2. You can change them in **Target inventory** below.\\n- **Why these devices:**\\n  - Acc_Cisco_2: matched role=access; matched numeric selector 2\\n\",\"### 3. Vendor & templates\\n- **Vendor hint:** cisco_ios. Only vendor-specific reference templates are shown (multi-vendor hidden).\",\"### 4. Reference templates (RAG)\\n- RAG retrieved **"
+  },
+  "preview_initial_assert": {
+    "ok": true,
+    "notes": []
+  },
+  "finished_at": "2026-03-20T12:22:19.830351",
+  "result_ok": true
+}

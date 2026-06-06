@@ -1,0 +1,12 @@
+{
+  "required": ["ntp_servers"],
+  "properties": {
+    "ntp_servers": {
+      "type": "array",
+      "description": "List of NTP server IPs",
+      "items": { "type": "string" }
+    },
+    "timezone": { "type": "string", "description": "Timezone name (e.g. UTC, MYT)" },
+    "timezone_offset": { "type": "integer", "description": "UTC offset in hours" }
+  }
+}

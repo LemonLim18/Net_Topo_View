@@ -1,0 +1,75 @@
+---
+# VLAN 200 named TEST on access switches; Cisco Gi0/1, Gi0/2; Huawei Gi1/0/1, Gi1/0/2
+# Connection/ansible_network_os come from the pipeline inventory (build_inventory sets them per host).
+# Job 13 uses one play per vendor and sets connection: network_cli in the play; both styles work.
+- name: Configure VLANs on access switches
+  hosts: access_switches
+  gather_facts: no
+  ignore_unreachable: true   # continue when some hosts are unreachable (e.g. No route to host, NETCONF port closed)
+  tasks:
+    - name: Ensure VLAN 200 exists (Cisco IOS)
+      cisco.ios.ios_vlans:
+        config:
+          - vlan_id: '200'
+            name: TEST
+            state: active
+        state: merged
+      when: inventory_hostname in groups.get('vendor_cisco_ios', [])
+
+    - name: Configure access VLAN on Gi0/1 and Gi0/2 (Cisco IOS)
+      cisco.ios.ios_l2_interfaces:
+        config:
+          - name: GigabitEthernet0/1
+            mode: access
+            access:
+              vlan: '200'
+          - name: GigabitEthernet0/2
+            mode: access
+            access:
+              vlan: '200'
+        state: merged
+      when: inventory_hostname in groups.get('vendor_cisco_ios', [])
+
+    - name: Ensure VLAN 200 exists (Huawei VRP)
+      community.network.ce_config:
+        lines:
+          - vlan batch 200
+          - vlan 200
+          - name TEST
+      when: inventory_hostname in groups.get('vendor_huawei_vrp', [])
+
+    - name: Configure access VLAN on Gi1/0/1 (Huawei VRP)
+      community.network.ce_config:
+        lines:
+          - port link-type access
+          - port default vlan 200
+        parents: interface GigabitEthernet1/0/1
+      when: inventory_hostname in groups.get('vendor_huawei_vrp', [])
+
+    - name: Configure access VLAN on Gi1/0/2 (Huawei VRP)
+      community.network.ce_config:
+        lines:
+          - port link-type access
+          - port default vlan 200
+        parents: interface GigabitEthernet1/0/2
+      when: inventory_hostname in groups.get('vendor_huawei_vrp', [])
+
+    - name: Ensure VLAN 200 exists (Juniper Junos)
+      juniper.device.junos_vlans:
+        config:
+          - name: TEST
+            vlan_id: '200'
+        state: merged
+      when: inventory_hostname in groups.get('vendor_juniper_junos', [])
+
+    - name: Configure access VLAN on ge-0/0/0 and ge-0/0/1 (Juniper Junos)
+      juniper.device.junos_l2_interfaces:
+        config:
+          - name: ge-0/0/0
+            access:
+              vlan: '200'
+          - name: ge-0/0/1
+            access:
+              vlan: '200'
+        state: merged
+      when: inventory_hostname in groups.get('vendor_juniper_junos', [])

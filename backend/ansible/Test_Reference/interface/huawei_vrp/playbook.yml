@@ -1,0 +1,9 @@
+---
+# Placeholder: interface config Huawei VRP
+- name: Configure interfaces (Huawei)
+  hosts: vendor_huawei_vrp
+  gather_facts: no
+  tasks:
+    - name: Placeholder — replace with ce_config interface tasks
+      ansible.builtin.debug:
+        msg: "Use community.network.ce_config with parents: interface ..."

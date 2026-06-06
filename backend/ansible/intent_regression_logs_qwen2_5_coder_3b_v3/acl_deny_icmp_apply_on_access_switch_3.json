@@ -1,0 +1,17 @@
+{
+  "case_id": "acl_deny_icmp_apply_on_access_switch_3",
+  "started_at": "2026-03-20T12:18:25.132726",
+  "intent_description": "Create ACL to deny ICMP and apply it on access switch 3",
+  "preview_initial": {
+    "status_code": 422,
+    "text": "{\"detail\":{\"message\":\"Missing required parameters. Please provide them via preview (params) or clarify your intent.\",\"missing_fields\":[\"acl_type\"],\"questions\":[{\"field\":\"acl_type\",\"question\":\"ACL type (ipv4, ipv6, mac, or l2)?\"}]}}"
+  },
+  "preview_initial_assert": {
+    "ok": false,
+    "notes": [
+      "HTTP status mismatch: expected 200, got 422"
+    ]
+  },
+  "finished_at": "2026-03-20T12:18:48.576892",
+  "result_ok": false
+}

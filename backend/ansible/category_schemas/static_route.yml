@@ -1,0 +1,12 @@
+category: static_route
+display_name: Static route
+description: Static routes including default route; VRF-aware where supported.
+parameter_vocabulary:
+  - name: destination
+    description: Destination prefix (CIDR).
+  - name: next_hop
+    description: Next hop IP or egress interface.
+  - name: admin_distance
+    description: Administrative distance (optional).
+  - name: vrf_name
+    description: VRF name when applicable (optional).

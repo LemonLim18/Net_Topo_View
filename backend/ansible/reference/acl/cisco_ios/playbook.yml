@@ -1,0 +1,109 @@
+- name: Configure ACL (Cisco IOS)
+  hosts: "{{ target_hosts | default('all') }}"
+  gather_facts: no
+  connection: network_cli
+  tasks:
+{% set _is_numbered = ((acl_name | string) | trim).isdigit() %}
+{% set _has_rules = (rules is defined) and ((rules | length) > 0) %}
+{% if _is_numbered %}
+{% if _has_rules %}
+    - name: Reset numbered ACL on Cisco IOS (replace semantics)
+      cisco.ios.ios_config:
+        match: none
+        lines:
+          - "no access-list {{ acl_name }}"
+{% endif %}
+
+{% if _has_rules %}
+    - name: Configure numbered ACL on Cisco IOS
+      cisco.ios.ios_config:
+        match: line
+        replace: line
+        lines:
+{% for rule in rules %}
+{% if rule is string %}
+          - "{{ rule }}"
+{% else %}
+{% set _src = (rule.source | default('any') | string) %}
+{% set _dst = (rule.destination | default('any') | string) %}
+{% set _src_wc = (rule.source_wildcard | default('') | string) %}
+{% set _dst_wc = (rule.dest_wildcard | default('') | string) %}
+{% set _src_part = _src if (_src | lower) == 'any' else (_src ~ (' ' ~ _src_wc if _src_wc else '')) %}
+{% set _dst_part = _dst if (_dst | lower) == 'any' else (_dst ~ (' ' ~ _dst_wc if _dst_wc else '')) %}
+{% set _sport = (rule.source_port | default('') | string) %}
+{% set _dport = (rule.port | default('') | string) %}
+{% set _sport_part = (' eq ' ~ _sport) if (_sport and not (_sport | lower).startswith('eq')) else ((' ' ~ _sport) if _sport else '') %}
+{% set _dport_part = (' eq ' ~ _dport) if (_dport and not (_dport | lower).startswith('eq')) else ((' ' ~ _dport) if _dport else '') %}
+          - "access-list {{ acl_name }} {{ rule.action }}{% if rule.protocol is defined %} {{ rule.protocol }}{% endif %} {{ _src_part }}{{ _sport_part }} {{ _dst_part }}{{ _dport_part }}{% if rule.log is defined and rule.log %} log{% endif %}"
+{% endif %}
+{% endfor %}
+{% endif %}
+{% else %}
+{% if _has_rules %}
+    - name: Reset named ACL on Cisco IOS (replace semantics)
+      cisco.ios.ios_config:
+        match: none
+        lines:
+          - "no ip access-list extended {{ acl_name }}"
+{% endif %}
+
+{% if _has_rules %}
+    - name: Configure named ACL on Cisco IOS
+      cisco.ios.ios_config:
+        match: line
+        replace: line
+        parents:
+          - "ip access-list extended {{ acl_name }}"
+        lines:
+{% set ns = namespace(has_deny=false, has_permit_any_any=false) %}
+{% for rule in rules %}
+{% if rule is string %}
+          - "{{ rule }}"
+{% else %}
+{% set _src = (rule.source | default('any') | string) %}
+{% set _dst = (rule.destination | default('any') | string) %}
+{% set _src_wc = (rule.source_wildcard | default('') | string) %}
+{% set _dst_wc = (rule.dest_wildcard | default('') | string) %}
+{% set _src_part = _src if (_src | lower) == 'any' else (_src ~ (' ' ~ _src_wc if _src_wc else '')) %}
+{% set _dst_part = _dst if (_dst | lower) == 'any' else (_dst ~ (' ' ~ _dst_wc if _dst_wc else '')) %}
+{% set _sport = (rule.source_port | default('') | string) %}
+{% set _dport = (rule.port | default('') | string) %}
+{% set _sport_part = (' eq ' ~ _sport) if (_sport and not (_sport | lower).startswith('eq')) else ((' ' ~ _sport) if _sport else '') %}
+{% set _dport_part = (' eq ' ~ _dport) if (_dport and not (_dport | lower).startswith('eq')) else ((' ' ~ _dport) if _dport else '') %}
+{% set _seq_raw = (rule.seq | string) if (rule.seq is defined and (rule.seq | string) | trim) else '' %}
+{% set _seq_num = (_seq_raw | int) if _seq_raw else 0 %}
+{% set _seq = (_seq_raw if _seq_num >= 10 else ((loop.index * 10) | string)) %}
+{% if (rule.action | default('') | string | lower) == 'deny' %}{% set ns.has_deny = true %}{% endif %}
+{% if (rule.action | default('') | string | lower) == 'permit' and (rule.protocol | default('') | string | lower) == 'ip' and (_src | lower) == 'any' and (_dst | lower) == 'any' %}{% set ns.has_permit_any_any = true %}{% endif %}
+          - "{{ _seq }} {{ rule.action }}{% if rule.protocol is defined %} {{ rule.protocol }}{% endif %} {{ _src_part }}{{ _sport_part }} {{ _dst_part }}{{ _dport_part }}{% if rule.log is defined and rule.log %} log{% endif %}"
+{% endif %}
+{% endfor %}
+{% if ns.has_deny and not ns.has_permit_any_any %}
+          - "{{ ((rules | length) + 1) * 10 }} permit ip any any"
+{% endif %}
+{% endif %}
+{% endif %}
+
+{% for ap in (apply_to or []) %}
+{% if ap is string %}
+{% set _tok = (ap | string) %}
+{% set _parts = _tok.split() %}
+{% set _last = (_parts[-1] if (_parts | length) > 0 else '') %}
+{% set _dir = (_last if _last in ['in','out'] else (acl_direction | default('in'))) %}
+{% set _iface_tok = (' '.join(_parts[:-1]) if _last in ['in','out'] else _tok) %}
+{% set _iface = (_iface_tok.split(':', 1)[1] if ':' in _iface_tok else _iface_tok) %}
+{% else %}
+{% set _iface = (ap.interface | default(ap.get('interface')) | default(ap.get('name')) | string) %}
+{% set _dir = (ap.direction | default(ap.get('direction')) | default(acl_direction | default('in')) | string) %}
+{% endif %}
+{% if _iface | trim %}
+    - name: Apply ACL to {{ _iface }} on Cisco IOS (replace semantics)
+      cisco.ios.ios_config:
+        match: none
+        parents:
+          - "interface {{ _iface }}"
+        lines:
+          - "{% if (acl_type | default('ipv4') | lower) == 'ipv6' %}no ipv6 traffic-filter{% else %}no ip access-group{% endif %}"
+          - "{% if (acl_type | default('ipv4') | lower) == 'ipv6' %}ipv6 traffic-filter {{ acl_name }} {{ _dir }}{% else %}ip access-group {{ acl_name }} {{ _dir }}{% endif %}"
+{% endif %}
+{% endfor %}

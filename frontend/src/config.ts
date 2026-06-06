@@ -1,7 +1,24 @@
 // Backend API configuration
 export const API_CONFIG = {
-  // Use environment variable or default to localhost
-  WS_URL: import.meta.env.VITE_WS_URL || 'ws://192.168.1.250:8000/ws',
-  API_URL: import.meta.env.VITE_API_URL || 'http://192.168.1.250:8000',
+  // Use environment variable or default to current host
+  WS_URL: import.meta.env.VITE_WS_URL || `ws://${window.location.hostname}:8000/ws`,
+  API_URL: import.meta.env.VITE_API_URL || `http://${window.location.hostname}:8000`,
 };
+
+/** Default LLM before GET /llm/.../runtime returns (overridden by server). */
+export const DEFAULT_LLM_PROVIDER =
+  (import.meta.env.VITE_DEFAULT_LLM_PROVIDER as string | undefined)?.trim() || 'ollama';
+export const DEFAULT_OLLAMA_MODEL =
+  (import.meta.env.VITE_DEFAULT_OLLAMA_MODEL as string | undefined)?.trim() || 'qwen2.5-coder:3b';
+/** Browser → Ollama API; override with VITE_OLLAMA_BASE_URL or localStorage. */
+export const DEFAULT_OLLAMA_BASE_URL =
+  (import.meta.env.VITE_OLLAMA_BASE_URL as string | undefined)?.trim() || 'http://192.168.1.251:11434';
+
+/** Temporary feature flag for SDN controller UI surfaces. */
+export const SHOW_SDN_CONTROLLER =
+  ((import.meta.env.VITE_SHOW_SDN_CONTROLLER as string | undefined)?.trim().toLowerCase() || "false") === "true";
+
+/** Phase gate: keep drift/compliance push toasts disabled until that module is finalized. */
+export const ENABLE_DRIFT_NOTIFICATIONS =
+  ((import.meta.env.VITE_ENABLE_DRIFT_NOTIFICATIONS as string | undefined)?.trim().toLowerCase() || 'false') === 'true';
 

@@ -1,0 +1,13 @@
+category: interface
+display_name: Interface
+description: >
+  Physical/logical interface admin state, L2 access/trunk, routed ports; shutdown vs configure are separate operations.
+parameter_vocabulary:
+  - name: target_devices
+    description: Devices hosting the interfaces (API often uses target_hosts).
+  - name: interfaces
+    description: List of interface objects (name, mode, access_vlan, trunk_vlans, native_vlan, etc.).
+  - name: interfaces_to_shutdown
+    description: Names to shutdown (shutdown_interface action).
+  - name: default_mode
+    description: Default L2 mode when expanding "all interfaces".

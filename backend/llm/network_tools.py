@@ -1,0 +1,2896 @@
+"""
+Network tools — topology and config tools for the LLM agent.
+
+These are the functions that Gemini can call to interact with the
+network controller.  They are registered with the ``ToolRegistry``.
+"""
+
+import json
+import logging
+import re
+import time
+from difflib import SequenceMatcher
+from typing import Any, Dict, List, Optional
+
+from llm.context_contract import (
+    CONTEXT_DOMAIN_CONFIG,
+    CONTEXT_DOMAIN_DRIFT,
+    CONTEXT_DOMAIN_INVENTORY,
+    CONTEXT_DOMAIN_INCIDENTS,
+    CONTEXT_DOMAIN_KNOWLEDGE,
+    CONTEXT_DOMAIN_LIVE_TOPOLOGY,
+    CONTEXT_DOMAIN_PLANNED_TOPOLOGY,
+    CONTEXT_DOMAIN_SECURITY,
+    CONTEXT_DOMAIN_TELEMETRY,
+    build_source_matrix,
+    compute_freshness,
+    missing_freshness,
+)
+from llm.context_state import get_context_state_manager
+from llm.refresh_state import get_refresh_state_manager
+from llm.semantics import (
+    AUTHORITY_MAP_VERSION,
+    annotate_inventory_records,
+    annotate_planned_links,
+    build_canonical_authority_map,
+    build_canonical_device_matrix,
+    build_canonical_semantics_map,
+    canonical_device_record,
+    device_state_index,
+)
+
+
+logger = logging.getLogger("llm.network_tools")
+
+_DEVICE_QUERY_STOPWORDS = {
+    "a",
+    "an",
+    "and",
+    "are",
+    "by",
+    "can",
+    "current",
+    "device",
+    "devices",
+    "for",
+    "get",
+    "in",
+    "inventory",
+    "ip",
+    "is",
+    "management",
+    "me",
+    "mgmt",
+    "of",
+    "on",
+    "planned",
+    "primary",
+    "show",
+    "tell",
+    "the",
+    "to",
+    "what",
+}
+
+_DEVICE_TOKEN_ALIASES = {
+    "acc": "access",
+    "dist": "distribution",
+    "disribution": "distribution",
+    "huawei_vrp": "huawei",
+    "cisco_ios": "cisco",
+    "cisco_xe": "cisco",
+    "juniper_junos": "juniper",
+}
+
+
+# -----------------------------------------------------------------------
+# Global reference to the DB manager (set by the agent at startup)
+# -----------------------------------------------------------------------
+_db_manager = None
+_NETBOX_INVENTORY_CACHE_TTL_SECONDS = 30.0
+_NETBOX_INVENTORY_FAILURE_BACKOFF_SECONDS = 15.0
+_netbox_inventory_cache: Dict[str, Any] = {
+    "records": None,
+    "fetched_at": 0.0,
+    "failed_at": 0.0,
+}
+
+
+def set_db_manager(db) -> None:
+    """Called once at startup to inject the DatabaseManager."""
+    global _db_manager
+    _db_manager = db
+
+
+def _topology_source_metadata(topo: Dict[str, Any]) -> Dict[str, Any]:
+    timestamp = topo.get("timestamp") if isinstance(topo, dict) else None
+    metadata = compute_freshness(
+        domain=CONTEXT_DOMAIN_LIVE_TOPOLOGY,
+        captured_at=timestamp,
+        ingested_at=timestamp,
+        source="crawler_cache",
+        scope="live_topology",
+        confidence=0.9 if topo.get("nodes") else 0.0,
+    )
+    return metadata.to_dict()
+
+
+def _inventory_source_metadata(source: str, captured_at: Optional[str], confidence: float = 0.85) -> Dict[str, Any]:
+    metadata = compute_freshness(
+        domain=CONTEXT_DOMAIN_INVENTORY,
+        captured_at=captured_at,
+        ingested_at=captured_at,
+        source=source,
+        scope="planned_inventory",
+        confidence=confidence,
+    )
+    return metadata.to_dict()
+
+
+def _planned_topology_source_metadata(source: str, captured_at: Optional[str], confidence: float = 0.75) -> Dict[str, Any]:
+    metadata = compute_freshness(
+        domain=CONTEXT_DOMAIN_PLANNED_TOPOLOGY,
+        captured_at=captured_at,
+        ingested_at=captured_at,
+        source=source,
+        scope="planned_topology",
+        confidence=confidence,
+    )
+    return metadata.to_dict()
+
+
+def _config_source_metadata(source: str, captured_at: Optional[str], confidence: float = 0.9) -> Dict[str, Any]:
+    metadata = compute_freshness(
+        domain=CONTEXT_DOMAIN_CONFIG,
+        captured_at=captured_at,
+        ingested_at=captured_at,
+        source=source,
+        scope="device_configs",
+        confidence=confidence,
+    )
+    return metadata.to_dict()
+
+
+def _incident_source_metadata(source: str, captured_at: Optional[str], confidence: float = 0.9, scope: str = "incident_state") -> Dict[str, Any]:
+    metadata = compute_freshness(
+        domain=CONTEXT_DOMAIN_INCIDENTS,
+        captured_at=captured_at,
+        ingested_at=captured_at,
+        source=source,
+        scope=scope,
+        confidence=confidence,
+    )
+    return metadata.to_dict()
+
+
+def _drift_source_metadata(source: str, captured_at: Optional[str], confidence: float = 0.9) -> Dict[str, Any]:
+    metadata = compute_freshness(
+        domain=CONTEXT_DOMAIN_DRIFT,
+        captured_at=captured_at,
+        ingested_at=captured_at,
+        source=source,
+        scope="drift_state",
+        confidence=confidence,
+    )
+    return metadata.to_dict()
+
+
+def _knowledge_source_metadata(source: str, captured_at: Optional[str], confidence: float = 0.95) -> Dict[str, Any]:
+    metadata = compute_freshness(
+        domain=CONTEXT_DOMAIN_KNOWLEDGE,
+        captured_at=captured_at,
+        ingested_at=captured_at,
+        source=source,
+        scope="knowledge_documents",
+        confidence=confidence,
+    )
+    return metadata.to_dict()
+
+
+def _telemetry_source_metadata(source: str, captured_at: Optional[str], confidence: float = 0.9) -> Dict[str, Any]:
+    metadata = compute_freshness(
+        domain=CONTEXT_DOMAIN_TELEMETRY,
+        captured_at=captured_at,
+        ingested_at=captured_at,
+        source=source,
+        scope="device_metrics",
+        confidence=confidence,
+    )
+    return metadata.to_dict()
+
+
+def _normalize_inventory_device(record: Any, source: str) -> Dict[str, Any]:
+    if isinstance(record, dict):
+        hostname = record.get("hostname") or record.get("name") or "unknown"
+        management_ip = record.get("management_ip") or record.get("mgmt_ip")
+        vendor = record.get("vendor") or record.get("platform") or "unknown"
+        model = record.get("model")
+        status = record.get("status") or "unknown"
+        role = record.get("role")
+        updated_at = record.get("updated_at") or record.get("last_updated")
+    else:
+        hostname = str(getattr(record, "name", "unknown"))
+        primary_ip = getattr(record, "primary_ip4", None) or getattr(record, "primary_ip", None)
+        management_ip = str(primary_ip).split("/")[0] if primary_ip else None
+        platform = getattr(record, "platform", None)
+        vendor = str(getattr(platform, "slug", platform or "unknown"))
+        device_type = getattr(record, "device_type", None)
+        model = str(getattr(device_type, "model", device_type or "")) or None
+        raw_status = getattr(record, "status", None)
+        status = str(getattr(raw_status, "value", raw_status or "unknown"))
+        raw_role = getattr(record, "role", None)
+        role = str(getattr(raw_role, "slug", raw_role or "")) or None
+        updated_at = str(getattr(record, "last_updated", "") or "") or None
+
+    return {
+        "id": getattr(record, "id", None) if not isinstance(record, dict) else record.get("id"),
+        "hostname": hostname,
+        "management_ip": management_ip,
+        "vendor": vendor,
+        "model": model,
+        "status": status,
+        "role": role,
+        "source": source,
+        "updated_at": updated_at,
+    }
+
+
+def _inventory_records_from_netbox() -> List[Dict[str, Any]]:
+    now = time.monotonic()
+    cached_records = _netbox_inventory_cache.get("records")
+    fetched_at = float(_netbox_inventory_cache.get("fetched_at") or 0.0)
+    failed_at = float(_netbox_inventory_cache.get("failed_at") or 0.0)
+
+    if cached_records is not None and (now - fetched_at) < _NETBOX_INVENTORY_CACHE_TTL_SECONDS:
+        return list(cached_records)
+    if failed_at and (now - failed_at) < _NETBOX_INVENTORY_FAILURE_BACKOFF_SECONDS:
+        return list(cached_records or [])
+
+    try:
+        from netbox.client import NetBoxClient
+
+        client = NetBoxClient.get_client()
+        if not client or not getattr(client, "api", None):
+            return []
+
+        records = [_normalize_inventory_device(device, "netbox") for device in client.get_devices()]
+        _netbox_inventory_cache["records"] = list(records)
+        _netbox_inventory_cache["fetched_at"] = now
+        _netbox_inventory_cache["failed_at"] = 0.0
+        return records
+    except Exception:
+        _netbox_inventory_cache["failed_at"] = now
+        return list(cached_records or [])
+
+
+def _inventory_records_from_local_db() -> List[Dict[str, Any]]:
+    if not _db_manager:
+        return []
+
+    if not hasattr(_db_manager, "get_all_devices"):
+        return []
+
+    devices = []
+    for device in _db_manager.get_all_devices():
+        devices.append(
+            {
+                "id": device.id,
+                "hostname": device.hostname,
+                "management_ip": device.management_ip,
+                "management_subnet_mask": getattr(device, "management_subnet_mask", None),
+                "management_interface": getattr(device, "management_interface", None),
+                "vendor": device.vendor,
+                "model": device.model,
+                "os_version": getattr(device, "os_version", None),
+                "serial_number": getattr(device, "serial_number", None),
+                "status": device.status,
+                "role": device.role,
+                "source": device.source or "local_db",
+                "inventory_authority": "local_db",
+                "updated_at": device.updated_at or device.created_at or device.last_polled,
+            }
+        )
+    return devices
+
+
+def _find_inventory_record(records: List[Dict[str, Any]], hostname: str) -> Optional[Dict[str, Any]]:
+    # 1. Try case-insensitive exact match
+    h_lower = str(hostname or "").lower().strip()
+    for record in records:
+        if str(record.get("hostname", "")).lower() == h_lower:
+            return record
+            
+    # 2. Try normalized match (space, underscore, dash transparency)
+    h_norm = _normalize_device_phrase(h_lower)
+    for record in records:
+        if _normalize_device_phrase(str(record.get("hostname", ""))) == h_norm:
+            return record
+            
+    return None
+
+
+def _enrich_inventory_record(record: Dict[str, Any]) -> Dict[str, Any]:
+    """Fetch detailed interfaces and links for a device from its source."""
+    if not record or not record.get("hostname"):
+        return record
+
+    source = record.get("inventory_authority") or record.get("source", "local_db")
+    hostname = record["hostname"]
+
+    # Initialize empty slots
+    record["interfaces"] = []
+    record["links"] = []
+
+    try:
+        if source == "netbox" and record.get("id"):
+            from netbox.client import NetBoxClient
+            client = NetBoxClient.get_client()
+            if client and client.api:
+                ifaces = client.get_interfaces_for_device(record["id"])
+                record["interfaces"] = ifaces
+                
+                # Derrive links from connected_endpoint info in interfaces
+                links = []
+                for iface in ifaces:
+                    peer = iface.get("connected_endpoint")
+                    if peer:
+                        links.append({
+                            "peer_hostname": peer.get("device"),
+                            "local_interface": iface.get("name"),
+                            "peer_interface": peer.get("interface"),
+                            "status": iface.get("link_status", "unknown")
+                        })
+                record["links"] = links
+
+        elif source == "local_db" and _db_manager:
+            # Query local DB for interfaces and links
+            dev_id = record.get("id")
+            if dev_id:
+                local_ifaces = _db_manager.get_interfaces_for_device(dev_id)
+                record["interfaces"] = [
+                    {
+                        "id": i.id,
+                        "name": i.name,
+                        "ip_address": i.ip_address,
+                        "subnet_mask": i.subnet_mask,
+                        "mac_address": i.mac_address,
+                        "interface_type": getattr(i, "interface_type", "l2") or "l2",
+                        "is_management": bool(getattr(i, "is_management", False)),
+                        "status": i.status
+                    }
+                    for i in local_ifaces
+                ]
+                
+                local_links = _db_manager.get_links_for_device(dev_id)
+                record["links"] = []
+                for l in local_links:
+                    # Resolve peer hostname
+                    peer_id = l.dst_device_id if l.src_device_id == dev_id else l.src_device_id
+                    peer_dev = _db_manager.get_device_by_id(peer_id)
+                    
+                    # Resolve interface names if possible
+                    local_iface_id = l.src_interface_id if l.src_device_id == dev_id else l.dst_interface_id
+                    peer_iface_id = l.dst_interface_id if l.src_device_id == dev_id else l.src_interface_id
+                    
+                    local_iface_name = "Unknown"
+                    peer_iface_name = "Unknown"
+                    
+                    # This is slightly expensive (N queries), but fine for single-device lookup
+                    if local_iface_id:
+                        with _db_manager._connect() as conn:
+                            row = conn.execute("SELECT name FROM interfaces WHERE id = ?", (local_iface_id,)).fetchone()
+                            if row: local_iface_name = row["name"]
+                    if peer_iface_id:
+                        with _db_manager._connect() as conn:
+                            row = conn.execute("SELECT name FROM interfaces WHERE id = ?", (peer_iface_id,)).fetchone()
+                            if row: peer_iface_name = row["name"]
+
+                    record["links"].append({
+                        "peer_hostname": peer_dev.hostname if peer_dev else "Unknown",
+                        "local_interface": local_iface_name,
+                        "peer_interface": peer_iface_name,
+                        "status": "up" # Local links don't track dynamic status yet
+                    })
+    except Exception as e:
+        logger.warning(f"Failed to enrich inventory record for '{hostname}': {e}")
+
+    return record
+
+
+def _normalize_device_phrase(text: str) -> str:
+    normalized = str(text or "").replace("_", " ").replace("-", " ")
+    normalized = re.sub(r"([A-Za-z])(\d)", r"\1 \2", normalized)
+    normalized = re.sub(r"(\d)([A-Za-z])", r"\1 \2", normalized)
+    normalized = re.sub(r"[^a-zA-Z0-9]+", " ", normalized.lower()).strip()
+    return " ".join(_DEVICE_TOKEN_ALIASES.get(token, token) for token in normalized.split())
+
+
+def _device_query_tokens(text: str) -> List[str]:
+    tokens = []
+    for token in _normalize_device_phrase(text).split():
+        if token in _DEVICE_QUERY_STOPWORDS:
+            continue
+        tokens.append(token)
+    return tokens
+
+
+def _device_query_phrases(query: str) -> List[str]:
+    phrases: List[str] = []
+    for part in re.split(r"\b(?:and|plus)\b|,|&|/", str(query or ""), flags=re.IGNORECASE):
+        cleaned = part.strip()
+        if cleaned:
+            phrases.append(cleaned)
+    full_query = str(query or "").strip()
+    if full_query and full_query not in phrases:
+        phrases.append(full_query)
+    return phrases
+
+
+def _inventory_candidate_score(record: Dict[str, Any], query: str) -> float:
+    query_tokens = _device_query_tokens(query)
+    if not query_tokens:
+        return 0.0
+
+    numeric_tokens = {token for token in query_tokens if token.isdigit()}
+    hostname_tokens = set(_device_query_tokens(str(record.get("hostname") or "")))
+    metadata_tokens = set(
+        _device_query_tokens(
+            " ".join(
+                str(record.get(field) or "")
+                for field in ("vendor", "model", "role", "management_ip")
+            )
+        )
+    )
+    candidate_tokens = hostname_tokens | metadata_tokens
+    candidate_numeric = {token for token in candidate_tokens if token.isdigit()}
+    if numeric_tokens and candidate_numeric and not numeric_tokens.issubset(candidate_numeric):
+        return 0.0
+
+    token_overlap = len(set(query_tokens) & candidate_tokens) / max(len(set(query_tokens)), 1)
+    sequence_ratio = SequenceMatcher(
+        None,
+        " ".join(query_tokens),
+        " ".join(_device_query_tokens(" ".join(str(record.get(field) or "") for field in ("hostname", "vendor", "role", "model")))),
+    ).ratio()
+    hostname_ratio = SequenceMatcher(
+        None,
+        " ".join(query_tokens),
+        " ".join(_device_query_tokens(str(record.get("hostname") or ""))),
+    ).ratio()
+    return max(token_overlap, hostname_ratio * 0.8 + sequence_ratio * 0.2)
+
+
+def _rank_inventory_records(records: List[Dict[str, Any]], query: str, limit: int) -> List[Dict[str, Any]]:
+    scored: List[tuple[float, Dict[str, Any]]] = []
+    for record in records:
+        best_score = max((_inventory_candidate_score(record, phrase) for phrase in _device_query_phrases(query)), default=0.0)
+        if best_score < 0.58:
+            continue
+        enriched = dict(record)
+        enriched["match_score"] = round(best_score, 3)
+        scored.append((best_score, enriched))
+    scored.sort(key=lambda item: (-item[0], str(item[1].get("hostname") or "")))
+    return [item[1] for item in scored[: max(limit, 1)]]
+
+
+def _resolve_inventory_record(records: List[Dict[str, Any]], query: str) -> Optional[Dict[str, Any]]:
+    exact = _find_inventory_record(records, query)
+    if exact is not None:
+        return exact
+
+    ranked = _rank_inventory_records(records, query, limit=2)
+    if not ranked:
+        return None
+
+    best = ranked[0]
+    second_score = ranked[1].get("match_score", 0.0) if len(ranked) > 1 else 0.0
+    best_score = best.get("match_score", 0.0)
+    if best_score >= 0.8 or (best_score >= 0.68 and (best_score - second_score) >= 0.08):
+        return best
+    return None
+
+
+def _resolve_hostname_alias(hostname: str) -> str:
+    inventory_records = _inventory_records_from_local_db()
+    if not inventory_records:
+        inventory_records, _source = _get_inventory_records()
+    inventory_match = _resolve_inventory_record(inventory_records, hostname)
+    if inventory_match is not None:
+        return str(inventory_match.get("hostname") or hostname)
+
+    if _db_manager:
+        topo = _db_manager.get_topology() or {}
+        live_names = [{"hostname": name} for name in (topo.get("nodes") or {}).keys()]
+        live_match = _resolve_inventory_record(live_names, hostname)
+        if live_match is not None:
+            return str(live_match.get("hostname") or hostname)
+    return hostname
+
+
+def suggest_device_hostnames(query: str, limit: int = 3) -> List[str]:
+    candidates = _rank_inventory_records(_inventory_records_from_local_db(), query, limit)
+    if not candidates:
+        candidates = _rank_inventory_records(_inventory_records_from_netbox(), query, limit)
+    seen = set()
+    suggestions: List[str] = []
+    for record in candidates:
+        hostname = str(record.get("hostname") or "")
+        if not hostname or hostname.lower() in seen:
+            continue
+        seen.add(hostname.lower())
+        suggestions.append(hostname)
+    return suggestions[: max(limit, 1)]
+
+
+def _search_inventory_records(records: List[Dict[str, Any]], query: str, limit: int) -> List[Dict[str, Any]]:
+    query_lower = query.lower().strip()
+    direct_matches = []
+    for record in records:
+        haystack = " ".join(
+            str(record.get(field) or "")
+            for field in ("hostname", "management_ip", "vendor", "model", "role")
+        ).lower()
+        if query_lower and query_lower in haystack:
+            direct_matches.append(record)
+
+    if direct_matches:
+        return sorted(direct_matches, key=lambda item: str(item.get("hostname") or ""))[: max(limit, 1)]
+    return _rank_inventory_records(records, query, limit)
+
+
+def _get_inventory_records() -> tuple[List[Dict[str, Any]], str]:
+    netbox_records = _inventory_records_from_netbox()
+    if netbox_records:
+        return netbox_records, "netbox"
+    return _inventory_records_from_local_db(), "local_db"
+
+
+def _should_prefer_local_inventory_lookup(query: str) -> bool:
+    tokens = _normalize_device_phrase(query).split()
+    if len(tokens) > 1:
+        return True
+    return any(
+        term in tokens
+        for term in ("core", "distribution", "access", "switch", "router", "firewall", "cisco", "huawei", "juniper")
+    )
+
+
+def _planned_topology_links_from_nodes(nodes: Dict[str, Any]) -> List[Dict[str, Any]]:
+    links: List[Dict[str, Any]] = []
+    seen = set()
+    for src_hostname, node in nodes.items():
+        if not isinstance(node, dict):
+            continue
+        for src_interface, edge in (node.get("edgeLink") or {}).items():
+            if not isinstance(edge, dict):
+                continue
+            dst_hostname = edge.get("remote_node")
+            dst_interface = edge.get("remote_interface")
+            if not dst_hostname:
+                continue
+            key = tuple(sorted((str(src_hostname), str(dst_hostname)))) + tuple(sorted((str(src_interface), str(dst_interface or "?"))))
+            if key in seen:
+                continue
+            seen.add(key)
+            links.append(
+                {
+                    "src_hostname": src_hostname,
+                    "src_interface": src_interface,
+                    "dst_hostname": dst_hostname,
+                    "dst_interface": dst_interface,
+                    "discovery_protocol": "netbox",
+                    "updated_at": None,
+                }
+            )
+    return sorted(links, key=lambda link: (str(link.get("src_hostname") or ""), str(link.get("dst_hostname") or ""), str(link.get("src_interface") or "")))
+
+
+def _get_planned_topology_data() -> Dict[str, Any]:
+    netbox_timestamp = None
+    if _db_manager:
+        try:
+            from netbox.sync_topology import TopologySyncer
+
+            planned = TopologySyncer(_db_manager).get_planned_topology()
+            nodes = planned.get("nodes", {}) if isinstance(planned, dict) else {}
+            if nodes and not planned.get("error") and planned.get("status") != "no_connection":
+                netbox_timestamp = planned.get("timestamp")
+                return {
+                    "topology": planned,
+                    "links": _planned_topology_links_from_nodes(nodes),
+                    "source": "netbox",
+                    "captured_at": netbox_timestamp,
+                }
+        except Exception:
+            pass
+
+    if not _db_manager:
+        return {
+            "topology": {"nodes": {}},
+            "links": [],
+            "source": "local_db",
+            "captured_at": None,
+        }
+
+    with _db_manager._connect() as conn:
+        links = conn.execute(
+            "SELECT sd.hostname AS src_hostname, si.name AS src_interface, dd.hostname AS dst_hostname, di.name AS dst_interface, l.discovery_protocol, l.updated_at "
+            "FROM links l "
+            "LEFT JOIN devices sd ON sd.id = l.src_device_id "
+            "LEFT JOIN devices dd ON dd.id = l.dst_device_id "
+            "LEFT JOIN interfaces si ON si.id = l.src_interface_id "
+            "LEFT JOIN interfaces di ON di.id = l.dst_interface_id "
+            "ORDER BY sd.hostname, dd.hostname"
+        ).fetchall()
+
+    planned_links = [dict(link) for link in links]
+    captured_at = max((link.get("updated_at") for link in planned_links if link.get("updated_at")), default=None)
+    return {
+        "topology": {"nodes": {}},
+        "links": planned_links,
+        "source": "local_db",
+        "captured_at": captured_at,
+    }
+
+
+# -----------------------------------------------------------------------
+# Topology Tools
+# -----------------------------------------------------------------------
+
+def get_topology_summary() -> str:
+    """
+    Get a summary of the current network topology including all devices,
+    their status, management IPs, and connections.
+    """
+    if not _db_manager:
+        return json.dumps({"error": "Database not available"})
+
+    topo = _db_manager.get_topology()
+    if not topo or not topo.get("nodes"):
+        return json.dumps({"message": "No topology data. Run a crawl first."})
+
+    nodes = topo.get("nodes", {})
+    summary = {
+        "timestamp": topo.get("timestamp", "unknown"),
+        "source_metadata": _topology_source_metadata(topo),
+        "total_devices": len(nodes),
+        "devices": [],
+    }
+
+    for hostname, data in nodes.items():
+        if not isinstance(data, dict):
+            continue
+        device = {
+            "hostname": hostname,
+            "status": "down" if data.get("down") else "up",
+            "mgmt_ip": data.get("mgmt_ip", "N/A"),
+            "neighbors": data.get("connectedNode", []),
+            "neighbor_count": len(data.get("connectedNode", [])),
+        }
+        summary["devices"].append(device)
+
+    return json.dumps(summary, ensure_ascii=False)
+
+
+def get_device_details(hostname: str) -> str:
+    """
+    Get detailed information about a specific network device including
+    its interfaces, IP addresses, LLDP neighbors, and edge links.
+    """
+    if not _db_manager:
+        return json.dumps({"error": "Database not available"})
+
+    hostname = _resolve_hostname_alias(hostname)
+    topo = _db_manager.get_topology()
+    if not topo or not topo.get("nodes"):
+        return json.dumps({"error": "No topology data available"})
+
+    node = topo["nodes"].get(hostname)
+    if not node:
+        # Try case-insensitive search
+        for name, data in topo["nodes"].items():
+            if name.lower() == hostname.lower():
+                node = data
+                hostname = name
+                break
+
+    if not node:
+        available = list(topo["nodes"].keys())
+        return json.dumps({
+            "error": f"Device '{hostname}' not found",
+            "available_devices": available,
+        })
+
+    ifaces = node.get("interfaceList", [{}])
+    iface_dict = ifaces[0] if ifaces else {}
+
+    details = {
+        "hostname": hostname,
+        "source_metadata": _topology_source_metadata(topo),
+        "status": "down" if node.get("down") else "up",
+        "mgmt_ip": node.get("mgmt_ip", "N/A"),
+        "interfaces": iface_dict if isinstance(iface_dict, dict) else {},
+        "neighbors": node.get("connectedNode", []),
+        "edge_links": node.get("edgeLink", {}),
+    }
+
+    return json.dumps(details, ensure_ascii=False)
+
+
+def _get_live_device_records() -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    if not _db_manager:
+        return [], {}
+
+    topo = _db_manager.get_topology()
+    if not topo or not topo.get("nodes"):
+        return [], topo or {}
+
+    devices = []
+    timestamp = topo.get("timestamp")
+    for hostname, data in topo.get("nodes", {}).items():
+        if not isinstance(data, dict):
+            continue
+        devices.append(
+            {
+                "hostname": hostname,
+                "management_ip": data.get("mgmt_ip", "N/A"),
+                "status": "down" if data.get("down") else "up",
+                "scope": "live",
+                "source_label": "crawler_cache",
+                "captured_at": timestamp,
+            }
+        )
+
+    return devices, topo
+
+
+def _build_canonical_state_payload(hostname: str = "") -> Dict[str, Any]:
+    inventory_records, inventory_source = _get_inventory_records()
+    topo = _db_manager.get_topology() if _db_manager else {}
+    live_nodes = topo.get("nodes", {}) if isinstance(topo, dict) else {}
+    hostnames = [hostname] if hostname else None
+    device_matrix = build_canonical_device_matrix(
+        inventory_records,
+        live_nodes,
+        inventory_source=inventory_source,
+        hostnames=hostnames,
+    )
+
+    planned_only = sorted(device["hostname"] for device in device_matrix if device.get("presence_state") == "planned_only")
+    live_only = sorted(device["hostname"] for device in device_matrix if device.get("presence_state") == "live_only")
+    matching = []
+    for device in device_matrix:
+        if device.get("presence_state") != "planned_and_live":
+            continue
+        matching.append(
+            {
+                "hostname": device["hostname"],
+                "planned_management_ip": device.get("planned_management_ip"),
+                "live_management_ip": device.get("live_management_ip"),
+                "status_match": device.get("management_ip_alignment") == "match",
+                "presence_state": device.get("presence_state"),
+            }
+        )
+
+    inventory_captured_at = max((record.get("updated_at") for record in inventory_records if record.get("updated_at")), default=None)
+    return {
+        "devices": device_matrix,
+        "matching_devices": matching,
+        "planned_only": planned_only,
+        "live_only": live_only,
+        "source_used": inventory_source,
+        "captured_at": inventory_captured_at,
+        "inventory_source_metadata": _inventory_source_metadata(inventory_source, inventory_captured_at),
+        "live_source_metadata": _topology_source_metadata(topo),
+        "authority_map_version": AUTHORITY_MAP_VERSION,
+        "authority_map": build_canonical_authority_map(),
+        "semantics_map": build_canonical_semantics_map(),
+        "source_matrix": build_source_matrix(),
+    }
+
+
+def get_canonical_semantics_map() -> str:
+    """
+    Get the shared semantics contract used across tools, MCP, REST, and prompt bundles.
+    """
+    return json.dumps(
+        {
+            "version": AUTHORITY_MAP_VERSION,
+            "authority_map_version": AUTHORITY_MAP_VERSION,
+            "authority_map": build_canonical_authority_map(),
+            "semantics_map": build_canonical_semantics_map(),
+            "source_matrix": build_source_matrix(),
+        },
+        ensure_ascii=False,
+    )
+
+
+def list_all_devices(scope: str = "live") -> str:
+    """
+    List devices with explicit scope semantics: live, inventory, or both.
+    """
+    if not _db_manager:
+        return json.dumps({"error": "Database not available"})
+
+    normalized_scope = (scope or "live").strip().lower()
+    if normalized_scope not in {"live", "inventory", "both"}:
+        return json.dumps(
+            {
+                "error": "Invalid scope. Use one of: live, inventory, both",
+                "scope_requested": normalized_scope,
+            },
+            ensure_ascii=False,
+        )
+
+    live_devices, topo = _get_live_device_records()
+    inventory_devices, inventory_source = _get_inventory_records()
+    live_nodes = topo.get("nodes", {}) if isinstance(topo, dict) else {}
+    device_matrix = build_canonical_device_matrix(inventory_devices, live_nodes, inventory_source=inventory_source)
+    semantics_index = device_state_index(device_matrix)
+
+    if normalized_scope == "live":
+        scoped_live = []
+        for device in live_devices:
+            hostname = str(device.get("hostname") or "")
+            semantics = semantics_index.get(
+                hostname,
+                canonical_device_record(
+                    hostname,
+                    live_record=live_nodes.get(hostname),
+                    inventory_source=inventory_source,
+                ),
+            )
+            scoped_live.append(
+                {
+                    **device,
+                    **{
+                        key: semantics[key]
+                        for key in (
+                            "presence_state",
+                            "management_ip_alignment",
+                            "source_scopes",
+                            "source_labels",
+                            "semantics_version",
+                        )
+                    },
+                }
+            )
+        return json.dumps(
+            {
+                "devices": scoped_live,
+                "total": len(scoped_live),
+                "scope_requested": "live",
+                "source_used": "crawler_cache",
+                "source_metadata": _topology_source_metadata(topo),
+                "authority_map_version": AUTHORITY_MAP_VERSION,
+                "semantics_map": build_canonical_semantics_map(),
+            },
+            ensure_ascii=False,
+        )
+
+    inventory_captured_at = max(
+        (record.get("updated_at") for record in inventory_devices if record.get("updated_at")),
+        default=None,
+    )
+    if normalized_scope == "inventory":
+        scoped_devices = []
+        for record in annotate_inventory_records(inventory_devices, live_nodes, inventory_source):
+            scoped = dict(record)
+            scoped["scope"] = "inventory"
+            scoped["source_label"] = inventory_source
+            scoped["captured_at"] = record.get("updated_at")
+            scoped_devices.append(scoped)
+
+        return json.dumps(
+            {
+                "devices": scoped_devices,
+                "total": len(scoped_devices),
+                "scope_requested": "inventory",
+                "source_used": inventory_source,
+                "source_metadata": _inventory_source_metadata(inventory_source, inventory_captured_at),
+                "authority_map_version": AUTHORITY_MAP_VERSION,
+                "semantics_map": build_canonical_semantics_map(),
+            },
+            ensure_ascii=False,
+        )
+
+    merged: List[Dict[str, Any]] = []
+    live_map = {str(device.get("hostname")): device for device in live_devices}
+    inventory_map = {str(device.get("hostname")): device for device in inventory_devices}
+    for hostname in sorted(set(live_map) | set(inventory_map)):
+        live_device = live_map.get(hostname)
+        inventory_device = inventory_map.get(hostname)
+        source_labels = []
+        scopes_present = []
+        if live_device is not None:
+            scopes_present.append("live")
+            source_labels.append("crawler_cache")
+        if inventory_device is not None:
+            scopes_present.append("inventory")
+            source_labels.append(inventory_source)
+
+        merged.append(
+            {
+                "hostname": hostname,
+                "scopes_present": scopes_present,
+                "source_labels": source_labels,
+                "presence_state": semantics_index.get(hostname, {}).get("presence_state", "unknown"),
+                "management_ip_alignment": semantics_index.get(hostname, {}).get("management_ip_alignment", "unknown"),
+                "device_state": semantics_index.get(hostname),
+                "live": live_device,
+                "inventory": (
+                    {
+                        **inventory_device,
+                        "scope": "inventory",
+                        "source_label": inventory_source,
+                        "captured_at": inventory_device.get("updated_at"),
+                    }
+                    if inventory_device is not None else None
+                ),
+            }
+        )
+
+    return json.dumps(
+        {
+            "devices": merged,
+            "total": len(merged),
+            "scope_requested": "both",
+            "source_used": ["crawler_cache", inventory_source],
+            "source_metadata": {
+                "live": _topology_source_metadata(topo),
+                "inventory": _inventory_source_metadata(inventory_source, inventory_captured_at),
+            },
+            "authority_map_version": AUTHORITY_MAP_VERSION,
+            "semantics_map": build_canonical_semantics_map(),
+        },
+        ensure_ascii=False,
+    )
+
+
+def get_context_health() -> str:
+    """
+    Get current context versions and the latest invalidation/refresh events.
+    """
+    snapshot = get_context_state_manager().snapshot()
+    if _db_manager and hasattr(_db_manager, "get_context_event_log"):
+        snapshot["durable_recent_events"] = _db_manager.get_context_event_log(limit=10)
+    return json.dumps(snapshot, ensure_ascii=False)
+
+
+def get_context_event_log(limit: int = 20, source: str = "", domain: str = "") -> str:
+    """
+    Get the durable context event log with downstream invalidation details.
+    """
+    if not _db_manager or not hasattr(_db_manager, "get_context_event_log"):
+        return json.dumps({"events": [], "error": "Context event log unavailable"}, ensure_ascii=False)
+    return json.dumps(
+        {
+            "events": _db_manager.get_context_event_log(
+                limit=limit,
+                source=source or None,
+                domain=domain or None,
+            )
+        },
+        ensure_ascii=False,
+    )
+
+
+def get_last_sync_status() -> str:
+    """
+    Get the latest refresh status across live crawl and source-of-truth sync operations.
+    """
+    refresh_state = get_refresh_state_manager()
+    return json.dumps(
+        {
+            "operations": refresh_state.get_operation_statuses(),
+            "context_versions": get_context_state_manager().snapshot().get("versions", {}),
+        },
+        ensure_ascii=False,
+    )
+
+
+def trigger_context_refresh(target: str = "all", wait: bool = False) -> str:
+    """
+    Trigger refresh execution for live topology, inventory, planned topology, or all.
+    """
+    normalized_target = (target or "all").strip().lower()
+    if normalized_target not in {"all", "live_topology", "inventory", "planned_topology"}:
+        return json.dumps(
+            {
+                "error": "Invalid target. Use one of: all, live_topology, inventory, planned_topology",
+                "target": normalized_target,
+            },
+            ensure_ascii=False,
+        )
+
+    refresh_state = get_refresh_state_manager()
+    if wait:
+        return json.dumps(
+            refresh_state.run_refresh(normalized_target, requested_by="tool_wait"),
+            ensure_ascii=False,
+        )
+
+    return json.dumps(
+        refresh_state.start_refresh_job(normalized_target, requested_by="tool_async"),
+        ensure_ascii=False,
+    )
+
+
+def get_refresh_job_status(job_id: str) -> str:
+    """
+    Get the status of a previously triggered refresh job.
+    """
+    refresh_state = get_refresh_state_manager()
+    job = refresh_state.get_job(job_id)
+    if job is None:
+        return json.dumps({"error": f"Refresh job '{job_id}' not found"}, ensure_ascii=False)
+    return json.dumps(job, ensure_ascii=False)
+
+
+def get_recent_incidents(limit: int = 10, status: str = "") -> str:
+    """
+    Get recent incidents and alerts with freshness metadata from the incident store.
+    """
+    try:
+        from incidents.store import IncidentStore
+
+        rows = IncidentStore().list_all(status=status or None, limit=limit)
+        latest_updated = max(
+            ((row.get("updated_at") or row.get("created_at")) for row in rows if row.get("updated_at") or row.get("created_at")),
+            default=None,
+        )
+        return json.dumps(
+            {
+                "incidents": rows,
+                "total": len(rows),
+                "source_metadata": _incident_source_metadata("incident_store", latest_updated),
+            },
+            ensure_ascii=False,
+        )
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+def get_recent_drift_events(limit: int = 10, hostname: str = "") -> str:
+    """
+    Get recent drift events with freshness metadata.
+    """
+    if not _db_manager:
+        return json.dumps({"error": "Database not available"})
+
+    try:
+        resolved_hostname = _resolve_hostname_alias(hostname) if hostname else ""
+        rows = _db_manager.get_drift_events(limit=limit)
+        events = []
+        for row in rows:
+            if resolved_hostname and str(getattr(row, "hostname", "")).lower() != resolved_hostname.lower():
+                continue
+            events.append(
+                {
+                    "device_id": row.device_id,
+                    "hostname": row.hostname,
+                    "has_drift": row.has_drift,
+                    "severity": row.severity,
+                    "timestamp": row.timestamp,
+                }
+            )
+
+        latest_timestamp = max((event.get("timestamp") for event in events if event.get("timestamp")), default=None)
+        return json.dumps(
+            {
+                "events": events,
+                "total": len(events),
+                "source_metadata": _drift_source_metadata("drift_store", latest_timestamp, confidence=0.9 if events else 0.0),
+            },
+            ensure_ascii=False,
+        )
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+def get_device_telemetry_snapshot(hostname: str, limit: int = 20) -> str:
+    """
+    Retrieve recent telemetry samples and anomaly baselines for a device.
+    """
+    if not _db_manager:
+        return json.dumps({"error": "Database not available"})
+
+    try:
+        from rag.context_bundle import ContextBundleBuilder
+
+        hostname = _resolve_hostname_alias(hostname)
+        inventory_records, _inventory_source = _get_inventory_records()
+        inventory_record = _find_inventory_record(inventory_records, hostname)
+        topo = _db_manager.get_topology() if _db_manager else {}
+        live_nodes = topo.get("nodes", {}) if isinstance(topo, dict) else {}
+
+        live_record = None
+        for node_name, node_data in live_nodes.items():
+            if str(node_name).lower() == hostname.lower() and isinstance(node_data, dict):
+                hostname = str(node_name)
+                live_record = node_data
+                break
+
+        management_ip = None
+        if isinstance(inventory_record, dict):
+            management_ip = inventory_record.get("management_ip")
+        if not management_ip and isinstance(live_record, dict):
+            management_ip = live_record.get("mgmt_ip")
+
+        if not management_ip:
+            return json.dumps(
+                {
+                    "hostname": hostname,
+                    "metrics": [],
+                    "total": 0,
+                    "anomaly_baselines": [],
+                    "change_markers": [],
+                    "source_metadata": missing_freshness(
+                        CONTEXT_DOMAIN_TELEMETRY,
+                        "influxdb",
+                        "device_metrics",
+                    ).to_dict(),
+                    "error": f"No management IP available for telemetry lookup on '{hostname}'",
+                },
+                ensure_ascii=False,
+            )
+
+        builder = ContextBundleBuilder(db_manager=_db_manager)
+        telemetry = builder._fetch_telemetry([management_ip], hostnames=[hostname])
+        freshness = telemetry.freshness.to_dict() if telemetry.freshness else _telemetry_source_metadata("influxdb", None, confidence=0.0)
+        return json.dumps(
+            {
+                "hostname": hostname,
+                "management_ip": management_ip,
+                "metrics": telemetry.metrics[: max(limit, 1)],
+                "total": len(telemetry.metrics),
+                "policy_name": telemetry.policy_name,
+                "query_range": telemetry.query_range,
+                "anomaly_baselines": telemetry.anomaly_baselines,
+                "change_markers": telemetry.change_markers,
+                "source_metadata": freshness,
+            },
+            ensure_ascii=False,
+        )
+    except Exception as e:
+        return json.dumps(
+            {
+                "hostname": hostname,
+                "metrics": [],
+                "total": 0,
+                "anomaly_baselines": [],
+                "change_markers": [],
+                "source_metadata": missing_freshness(
+                    CONTEXT_DOMAIN_TELEMETRY,
+                    "influxdb",
+                    "device_metrics",
+                ).to_dict(),
+                "error": str(e),
+            },
+            ensure_ascii=False,
+        )
+
+
+def get_network_telemetry_summary(limit: int = 20) -> str:
+    """
+    Get a network-wide telemetry summary for the latest monitored devices.
+    """
+    try:
+        from monitor.api import _get_device_metrics_summary_sync
+
+        limit = max(1, min(int(limit), 200))
+        payload = _get_device_metrics_summary_sync(limit=limit)
+        devices = list(payload.get("devices") or [])
+        latest_polled = max((str(device.get("last_polled") or "") for device in devices if device.get("last_polled")), default=None)
+        return json.dumps(
+            {
+                "devices": devices,
+                "total": len(devices),
+                "source": payload.get("source") or "influxdb",
+                "source_metadata": _telemetry_source_metadata(str(payload.get("source") or "influxdb"), latest_polled, confidence=0.85 if devices else 0.0),
+            },
+            ensure_ascii=False,
+        )
+    except Exception as e:
+        return json.dumps(
+            {
+                "devices": [],
+                "total": 0,
+                "source_metadata": missing_freshness(
+                    CONTEXT_DOMAIN_TELEMETRY,
+                    "influxdb",
+                    "device_metrics",
+                ).to_dict(),
+                "error": str(e),
+            },
+            ensure_ascii=False,
+        )
+
+
+def get_config_snapshot_summary(limit: int = 20) -> str:
+    """
+    Get the latest configuration snapshot timestamp per device.
+    """
+    if not _db_manager:
+        return json.dumps({"error": "Database not available"})
+
+    try:
+        limit = max(1, min(int(limit), 200))
+        with _db_manager._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT d.hostname, d.management_ip, d.vendor, d.model,
+                       cs.captured_at, LENGTH(COALESCE(cs.config_text, '')) AS config_length
+                FROM config_snapshots cs
+                JOIN devices d ON d.id = cs.device_id
+                JOIN (
+                    SELECT device_id, MAX(captured_at) AS latest_captured_at
+                    FROM config_snapshots
+                    GROUP BY device_id
+                ) latest
+                  ON latest.device_id = cs.device_id
+                 AND latest.latest_captured_at = cs.captured_at
+                ORDER BY cs.captured_at DESC, d.hostname ASC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+
+        snapshots = [
+            {
+                "hostname": r["hostname"],
+                "management_ip": r["management_ip"],
+                "vendor": r["vendor"] or "",
+                "model": r["model"] or "",
+                "captured_at": r["captured_at"],
+                "config_length": int(r["config_length"] or 0),
+            }
+            for r in rows
+        ]
+        latest_captured = max((item.get("captured_at") for item in snapshots if item.get("captured_at")), default=None)
+        return json.dumps(
+            {
+                "snapshots": snapshots,
+                "total": len(snapshots),
+                "source_metadata": _config_source_metadata("config_snapshots", latest_captured, confidence=0.9 if snapshots else 0.0),
+            },
+            ensure_ascii=False,
+        )
+    except Exception as e:
+        return json.dumps(
+            {
+                "snapshots": [],
+                "total": 0,
+                "source_metadata": _config_source_metadata("config_snapshots", None, confidence=0.0),
+                "error": str(e),
+            },
+            ensure_ascii=False,
+        )
+
+
+def get_knowledge_base_status(limit: int = 10) -> str:
+    """
+    Get knowledge base document summaries and freshness metadata.
+    """
+    try:
+        from llm.vector_store import KnowledgeVectorStore
+        from rag.knowledge_curation import build_curation_audit
+
+        store = KnowledgeVectorStore(embedder=None)
+        if not store.available:
+            return json.dumps(
+                {
+                    "documents": [],
+                    "total_documents": 0,
+                    "total_chunks": 0,
+                    "curation_audit": build_curation_audit([]),
+                    "source_metadata": _knowledge_source_metadata("vector_store", None, confidence=0.0),
+                },
+                ensure_ascii=False,
+            )
+
+        all_documents = store.list_documents()
+        documents = all_documents[: max(limit, 1)]
+        latest_ingested = max((doc.get("ingested_at") for doc in all_documents if doc.get("ingested_at")), default=None)
+        return json.dumps(
+            {
+                "documents": documents,
+                "total_documents": len(all_documents),
+                "total_chunks": store.count(),
+                "partition_counts": store.count_by_partition() if hasattr(store, "count_by_partition") else {},
+                "curation_audit": build_curation_audit(all_documents),
+                "source_metadata": _knowledge_source_metadata("vector_store", latest_ingested, confidence=0.95 if documents else 0.0),
+            },
+            ensure_ascii=False,
+        )
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+def list_inventory_devices(vendor: str = "", status: str = "", limit: int = 50) -> str:
+    """
+    List devices from source-of-truth inventory with NetBox preferred and local DB fallback.
+    """
+    records, source = _get_inventory_records()
+    filtered = []
+    vendor_filter = vendor.lower().strip()
+    status_filter = status.lower().strip()
+
+    for record in records:
+        record_vendor = str(record.get("vendor") or "").lower()
+        record_status = str(record.get("status") or "").lower()
+        if vendor_filter and vendor_filter not in record_vendor:
+            continue
+        if status_filter and status_filter != record_status:
+            continue
+        filtered.append(record)
+
+    filtered = sorted(filtered, key=lambda item: str(item.get("hostname") or ""))[: max(limit, 1)]
+    topo = _db_manager.get_topology() if _db_manager else {}
+    live_nodes = topo.get("nodes", {}) if isinstance(topo, dict) else {}
+    filtered = annotate_inventory_records(filtered, live_nodes, source)
+    captured_at = max((record.get("updated_at") for record in filtered if record.get("updated_at")), default=None)
+    return json.dumps(
+        {
+            "devices": filtered,
+            "total": len(filtered),
+            "source_used": source,
+            "captured_at": captured_at,
+            "source_metadata": _inventory_source_metadata(source, captured_at),
+            "semantics_map": build_canonical_semantics_map(),
+        },
+        ensure_ascii=False,
+    )
+
+
+def get_inventory_device(hostname: str) -> str:
+    """
+    Retrieve a specific device from source-of-truth inventory.
+    """
+    local_records = _inventory_records_from_local_db()
+    if _should_prefer_local_inventory_lookup(hostname):
+        record = _resolve_inventory_record(local_records, hostname)
+        if record is not None:
+            record = _enrich_inventory_record(record)
+            topo = _db_manager.get_topology() if _db_manager else {}
+            live_nodes = topo.get("nodes", {}) if isinstance(topo, dict) else {}
+            semantics = canonical_device_record(
+                record.get("hostname") or hostname,
+                inventory_record=record,
+                live_record=live_nodes.get(record.get("hostname")),
+                inventory_source="local_db",
+            )
+            return json.dumps(
+                {
+                    "device": {
+                        **record,
+                        **{
+                            key: semantics[key]
+                            for key in (
+                                "presence_state",
+                                "live_status",
+                                "management_ip_alignment",
+                                "source_scopes",
+                                "source_labels",
+                                "semantics_version",
+                            )
+                        },
+                    },
+                    "query_hostname": hostname,
+                    "resolved_hostname": record.get("hostname") or hostname,
+                    "source_used": "local_db",
+                    "captured_at": record.get("updated_at"),
+                    "source_metadata": _inventory_source_metadata("local_db", record.get("updated_at")),
+                    "authority_map_version": AUTHORITY_MAP_VERSION,
+                    "semantics_map": build_canonical_semantics_map(),
+                },
+                ensure_ascii=False,
+            )
+
+    netbox_records = _inventory_records_from_netbox()
+    record = _resolve_inventory_record(netbox_records, hostname)
+    if record is not None:
+        record = _enrich_inventory_record(record)
+        topo = _db_manager.get_topology() if _db_manager else {}
+        live_nodes = topo.get("nodes", {}) if isinstance(topo, dict) else {}
+        semantics = canonical_device_record(
+            record.get("hostname") or hostname,
+            inventory_record=record,
+            live_record=live_nodes.get(record.get("hostname")),
+            inventory_source="netbox",
+        )
+        return json.dumps(
+            {
+                "device": {
+                    **record,
+                    **{
+                        key: semantics[key]
+                        for key in (
+                            "presence_state",
+                            "live_status",
+                            "management_ip_alignment",
+                            "source_scopes",
+                            "source_labels",
+                            "semantics_version",
+                        )
+                    },
+                },
+                "query_hostname": hostname,
+                "resolved_hostname": record.get("hostname") or hostname,
+                "source_used": "netbox",
+                "captured_at": record.get("updated_at"),
+                "source_metadata": _inventory_source_metadata("netbox", record.get("updated_at")),
+                "authority_map_version": AUTHORITY_MAP_VERSION,
+                "semantics_map": build_canonical_semantics_map(),
+            },
+            ensure_ascii=False,
+        )
+
+    record = _resolve_inventory_record(local_records, hostname)
+    if record is not None:
+        # If it's a NetBox record, try to enrich with interfaces and links
+        if record.get("source") == "netbox" and record.get("id"):
+            try:
+                from netbox.client import NetBoxClient
+                client = NetBoxClient.get_client()
+                if client and client.api:
+                    record["interfaces"] = client.get_interfaces_for_device(record["id"])
+                    # Links (cables)
+                    all_cables = client.get_cables()
+                    device_links = []
+                    for cable in all_cables:
+                        # Cable endpoints in pynetbox are a list of terminations
+                        a_terms = getattr(cable, "a_terminations", [])
+                        b_terms = getattr(cable, "b_terminations", [])
+                        
+                        involved = False
+                        peer_hostname = None
+                        local_iface = None
+                        peer_iface = None
+                        
+                        # Simplified link extraction for the device
+                        for term in a_terms + b_terms:
+                            if getattr(term, "object_type", "") == "dcim.interface":
+                                term_device = getattr(term, "device", None)
+                                if term_device and term_device.id == record["id"]:
+                                    involved = True
+                                    local_iface = term.name
+                                else:
+                                    peer_hostname = getattr(term_device, "name", "Unknown") if term_device else "Unknown"
+                                    peer_iface = term.name
+                                    
+                        if involved and peer_hostname:
+                            device_links.append({
+                                "peer_hostname": peer_hostname,
+                                "local_interface": local_iface,
+                                "peer_interface": peer_iface,
+                                "status": str(getattr(cable, "status", "unknown")),
+                            })
+                    record["links"] = device_links
+            except Exception as e:
+                logger.warning(f"Failed to enrich NetBox record for '{hostname}': {e}")
+
+        topo = _db_manager.get_topology() if _db_manager else {}
+        live_nodes = topo.get("nodes", {}) if isinstance(topo, dict) else {}
+        semantics = canonical_device_record(
+            record.get("hostname") or hostname,
+            inventory_record=record,
+            live_record=live_nodes.get(record.get("hostname")),
+            inventory_source="local_db",
+        )
+        return json.dumps(
+            {
+                "device": {
+                    **record,
+                    **{
+                        key: semantics[key]
+                        for key in (
+                            "presence_state",
+                            "live_status",
+                            "management_ip_alignment",
+                            "source_scopes",
+                            "source_labels",
+                            "semantics_version",
+                        )
+                    },
+                },
+                "query_hostname": hostname,
+                "resolved_hostname": record.get("hostname") or hostname,
+                "source_used": "local_db",
+                "captured_at": record.get("updated_at"),
+                "source_metadata": _inventory_source_metadata("local_db", record.get("updated_at")),
+                "authority_map_version": AUTHORITY_MAP_VERSION,
+                "semantics_map": build_canonical_semantics_map(),
+            },
+            ensure_ascii=False,
+        )
+
+    suggested = _rank_inventory_records(netbox_records or local_records, hostname, limit=3)
+    return json.dumps(
+        {
+            "error": f"Inventory device '{hostname}' not found",
+            "suggested_devices": [record.get("hostname") for record in suggested if record.get("hostname")],
+            "source_used": "local_db" if local_records else "netbox",
+            "captured_at": None,
+            "source_metadata": _inventory_source_metadata("netbox" if netbox_records else "local_db", None, confidence=0.0),
+            "authority_map_version": AUTHORITY_MAP_VERSION,
+            "semantics_map": build_canonical_semantics_map(),
+        },
+        ensure_ascii=False,
+    )
+
+
+def search_inventory_devices(query: str, limit: int = 20) -> str:
+    """
+    Search source-of-truth inventory by hostname, management IP, vendor, model, or role.
+    """
+    local_matches = _search_inventory_records(_inventory_records_from_local_db(), query, limit)
+    if local_matches and _should_prefer_local_inventory_lookup(query):
+        source = "local_db"
+        matches = local_matches
+    else:
+        netbox_matches = _search_inventory_records(_inventory_records_from_netbox(), query, limit)
+        if netbox_matches:
+            source = "netbox"
+            matches = netbox_matches
+        else:
+            source = "local_db"
+            matches = local_matches
+
+    captured_at = max((record.get("updated_at") for record in matches if record.get("updated_at")), default=None)
+    topo = _db_manager.get_topology() if _db_manager else {}
+    live_nodes = topo.get("nodes", {}) if isinstance(topo, dict) else {}
+    return json.dumps(
+        {
+            "matches": annotate_inventory_records(matches, live_nodes, source),
+            "total": len(matches),
+            "source_used": source,
+            "captured_at": captured_at,
+            "source_metadata": _inventory_source_metadata(source, captured_at),
+            "authority_map_version": AUTHORITY_MAP_VERSION,
+            "semantics_map": build_canonical_semantics_map(),
+        },
+        ensure_ascii=False,
+    )
+
+
+def get_planned_topology() -> str:
+    """
+    Get planned topology from NetBox when available, with local DB fallback.
+    """
+    if not _db_manager:
+        return json.dumps({"error": "Database not available"})
+
+    planned = _get_planned_topology_data()
+    planned_links = planned["links"]
+    source = planned["source"]
+    captured_at = planned["captured_at"]
+    inventory_records, inventory_source = _get_inventory_records()
+    topo = _db_manager.get_topology() if _db_manager else {}
+    live_nodes = topo.get("nodes", {}) if isinstance(topo, dict) else {}
+    device_matrix = build_canonical_device_matrix(inventory_records, live_nodes, inventory_source=inventory_source)
+    semantics_index = device_state_index(device_matrix)
+    return json.dumps(
+        {
+            "topology": planned["topology"],
+            "links": annotate_planned_links(planned_links, semantics_index),
+            "total": len(planned_links),
+            "source_used": source,
+            "captured_at": captured_at,
+            "source_metadata": _planned_topology_source_metadata(source, captured_at, confidence=0.85 if source == "netbox" else 0.75),
+            "canonical_devices": device_matrix,
+            "authority_map_version": AUTHORITY_MAP_VERSION,
+            "semantics_map": build_canonical_semantics_map(),
+        },
+        ensure_ascii=False,
+    )
+
+
+def compare_planned_vs_live(hostname: str = "") -> str:
+    """
+    Compare planned inventory devices with live discovered topology, optionally scoped to a hostname.
+    """
+    resolved_hostname = _resolve_hostname_alias(hostname) if hostname else ""
+    return json.dumps(_build_canonical_state_payload(resolved_hostname), ensure_ascii=False)
+
+
+def find_path(source: str, destination: str) -> str:
+    """
+    Find the network path between two devices by tracing
+    neighbor adjacencies in the topology.
+    """
+    if not _db_manager:
+        return json.dumps({"error": "Database not available"})
+
+    source = _resolve_hostname_alias(source)
+    destination = _resolve_hostname_alias(destination)
+
+    topo = _db_manager.get_topology()
+    if not topo or not topo.get("nodes"):
+        return json.dumps({"error": "No topology data"})
+
+    nodes = topo["nodes"]
+
+    # Normalize hostnames (case-insensitive lookup)
+    src = dst = None
+    for name in nodes:
+        if name.lower() == source.lower():
+            src = name
+        if name.lower() == destination.lower():
+            dst = name
+
+    if not src:
+        return json.dumps({"error": f"Source '{source}' not found"})
+    if not dst:
+        return json.dumps({"error": f"Destination '{destination}' not found"})
+
+    # BFS to find shortest path
+    from collections import deque
+    visited = {src}
+    queue = deque([(src, [src])])
+
+    while queue:
+        current, path = queue.popleft()
+        if current == dst:
+            return json.dumps({
+                "path": path,
+                "hops": len(path) - 1,
+                "source": src,
+                "destination": dst,
+            })
+
+        node_data = nodes.get(current, {})
+        for neighbor in node_data.get("connectedNode", []):
+            if neighbor not in visited and neighbor in nodes:
+                visited.add(neighbor)
+                queue.append((neighbor, path + [neighbor]))
+
+    return json.dumps({
+        "error": f"No path found between {src} and {dst}",
+        "source": src,
+        "destination": dst,
+    })
+
+
+# -----------------------------------------------------------------------
+# Configuration Tools (M3 integration)
+# -----------------------------------------------------------------------
+
+def generate_config(vendor: str, feature: str, params: str) -> str:
+    """
+    Generate device configuration commands using the M3 template engine.
+
+    Args:
+        vendor:  Device vendor (e.g. 'cisco_ios', 'huawei_vrp', 'juniper_junos')
+        feature: Configuration feature (e.g. 'vlan', 'ospf', 'interface', 'acl')
+        params:  JSON string of template parameters
+    """
+    try:
+        from config_engine.renderer import TemplateRenderer
+
+        renderer = TemplateRenderer()
+
+        # Parse params from JSON string (LLM sends strings)
+        if isinstance(params, str):
+            parsed_params = json.loads(params)
+        else:
+            parsed_params = params
+
+        config = renderer.render(vendor, feature, parsed_params)
+        return json.dumps({
+            "vendor": vendor,
+            "feature": feature,
+            "config": config,
+            "line_count": len(config.strip().splitlines()),
+        })
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+def generate_rollback(vendor: str, feature: str, params: str) -> str:
+    """
+    Generate rollback/undo commands for a configuration change.
+
+    Args:
+        vendor:  Device vendor
+        feature: Configuration feature
+        params:  JSON string of template parameters
+    """
+    try:
+        from config_engine.renderer import TemplateRenderer
+
+        renderer = TemplateRenderer()
+
+        if isinstance(params, str):
+            parsed_params = json.loads(params)
+        else:
+            parsed_params = params
+
+        config = renderer.render_undo(vendor, feature, parsed_params)
+        return json.dumps({
+            "vendor": vendor,
+            "feature": feature,
+            "rollback_config": config,
+        })
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+def list_templates(vendor: str = "") -> str:
+    """
+    List all available configuration templates, optionally filtered
+    by vendor (e.g. 'cisco_ios').
+    """
+    try:
+        from config_engine.renderer import TemplateRenderer
+
+        renderer = TemplateRenderer()
+        templates = renderer.list_templates(vendor=vendor if vendor else None)
+
+        return json.dumps({
+            "templates": templates,
+            "total": len(templates),
+        })
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+def get_template_schema(feature: str) -> str:
+    """
+    Get the JSON schema (expected parameters) for a configuration template.
+    Helps understand what parameters are needed for a feature.
+
+    Args:
+        feature: Template name (e.g. 'vlan', 'ospf', 'interface')
+    """
+    try:
+        from config_engine.renderer import TemplateRenderer
+
+        renderer = TemplateRenderer()
+        schema = renderer.get_schema(feature)
+
+        if schema:
+            return json.dumps(schema, ensure_ascii=False)
+        else:
+            return json.dumps({"message": f"No schema found for '{feature}'"})
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+def diff_configs(old_config: str, new_config: str) -> str:
+    """
+    Compare two configuration texts and show the differences
+    in unified diff format.
+
+    Args:
+        old_config: The original/current configuration text
+        new_config: The new/proposed configuration text
+    """
+    try:
+        from config_engine.differ import ConfigDiffer
+
+        differ = ConfigDiffer()
+        diff_result = differ.unified_diff(old_config, new_config)
+
+        return json.dumps({
+            "diff": diff_result,
+            "has_changes": bool(diff_result.strip()),
+        })
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+# -----------------------------------------------------------------------
+# Audit / History Tools
+# -----------------------------------------------------------------------
+
+def get_audit_log(limit: int = 20) -> str:
+    """
+    Get the recent audit log entries showing what actions have been
+    performed on the network.
+    """
+    if not _db_manager:
+        return json.dumps({"error": "Database not available"})
+
+    try:
+        entries = _db_manager.get_audit_log(limit=limit)
+        log = []
+        for entry in entries:
+            log.append({
+                "timestamp": entry.get("timestamp", ""),
+                "user": entry.get("user_id", ""),
+                "action": entry.get("action", ""),
+                "target": entry.get("target", ""),
+                "details": entry.get("details", ""),
+            })
+        return json.dumps({"audit_log": log, "total": len(log)})
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+# -----------------------------------------------------------------------
+# Security Tools (M13 integration)
+# -----------------------------------------------------------------------
+
+def run_security_audit(hostname: str) -> str:
+    """
+    Run a CIS benchmark security audit on a device and return the
+    security score and findings (pass/fail for each check).
+
+    Args:
+        hostname: Device hostname to audit
+    """
+    if not _db_manager:
+        return json.dumps({"error": "Database not available"})
+
+    try:
+        from security.engine import SecurityAuditEngine
+
+        # Find device by hostname
+        device = _db_manager.get_device_by_hostname(hostname)
+        if not device:
+            # Try topology
+            topo = _db_manager.get_topology()
+            if topo and topo.get("nodes"):
+                for name in topo["nodes"]:
+                    if name.lower() == hostname.lower():
+                        return json.dumps({"error": f"Device '{hostname}' found in topology but not in inventory database. Run a crawl first."})
+            return json.dumps({"error": f"Device '{hostname}' not found"})
+
+        # Get latest config
+        history = _db_manager.get_config_history(device.id, limit=1)
+        if not history:
+            return json.dumps({"error": f"No config snapshot for '{hostname}'. Crawl the device first."})
+
+        engine = SecurityAuditEngine()
+        audit = engine.run_audit(device.id, history[0].config_text, device.vendor or "cisco_ios")
+
+        findings_summary = []
+        for r in audit.results:
+            findings_summary.append({
+                "rule": r.rule.id,
+                "category": r.rule.category,
+                "severity": r.rule.severity,
+                "status": r.status,
+                "description": r.rule.description,
+                "evidence": r.evidence[:100] if r.evidence else "",
+                "remediation": r.remediation[:100] if r.remediation else "",
+            })
+
+        return json.dumps({
+            "hostname": hostname,
+            "score": audit.score,
+            "total_checks": audit.total_checks,
+            "passed": audit.passed,
+            "failed": audit.failed,
+            "critical_failures": audit.critical,
+            "high_failures": audit.high,
+            "findings": findings_summary,
+        }, ensure_ascii=False)
+
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+def get_security_events(limit: int = 10) -> str:
+    """
+    Get recent security events and threats detected on the network,
+    including Suricata alerts, brute force attempts, and rogue devices.
+
+    Args:
+        limit: Maximum number of events to return (default 10)
+    """
+    if not _db_manager:
+        return json.dumps({"error": "Database not available"})
+
+    try:
+        with _db_manager._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM security_events ORDER BY created_at DESC LIMIT ?",
+                (limit,)
+            ).fetchall()
+
+        events = []
+        for r in rows:
+            events.append({
+                "id": r["id"],
+                "type": r["event_type"],
+                "severity": r["severity"],
+                "source_ip": r["source_ip"] or "",
+                "dest_ip": r["dest_ip"] or "",
+                "description": r["description"] or "",
+                "status": r["status"],
+                "time": r["created_at"],
+            })
+
+        latest_created = max((event.get("time") for event in events if event.get("time")), default=None)
+        return json.dumps({
+            "events": events,
+            "total": len(events),
+            "source_metadata": _incident_source_metadata("security_events", latest_created, confidence=0.85 if events else 0.0, scope="security_alerts"),
+        })
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+def get_device_syslog_events(device: str, limit: int = 20, source_ip: str = "", q: str = "") -> str:
+    """
+    Get recent raw syslog events for a device or source IP.
+
+    This is the device-scoped syslog tool for System AI. It returns the
+    direct syslog feed that can be used without forcing telemetry.
+    """
+    if not _db_manager:
+        return json.dumps({"error": "Database not available"})
+
+    try:
+        limit = max(1, min(int(limit), 1000))
+    except Exception:
+        limit = 20
+
+    device_filter = str(device or "").strip()
+    source_ip_filter = str(source_ip or "").strip()
+    query_filter = str(q or "").strip()
+
+    where: List[str] = []
+    params: List[Any] = []
+    if device_filter:
+        where.append("(d.hostname = ? OR d.management_ip = ? OR e.source_ip = ?)")
+        params.extend([device_filter, device_filter, device_filter])
+    if source_ip_filter:
+        where.append("e.source_ip = ?")
+        params.append(source_ip_filter)
+    if query_filter:
+        needle = f"%{query_filter}%"
+        where.append("(e.raw_message LIKE ? OR e.message LIKE ? OR d.hostname LIKE ?)")
+        params.extend([needle, needle, needle])
+
+    query = (
+        "SELECT e.id, e.source_ip, e.source_host, e.device_id, d.hostname AS device_hostname, "
+        "e.severity, e.facility, e.mnemonic, e.message, e.raw_message, e.created_at "
+        "FROM device_syslog_events e "
+        "LEFT JOIN devices d ON e.device_id = d.id "
+    )
+    if where:
+        query += "WHERE " + " AND ".join(where) + " "
+    query += "ORDER BY e.created_at DESC LIMIT ?"
+    params.append(limit)
+
+    try:
+        with _db_manager._connect() as conn:
+            rows = conn.execute(query, tuple(params)).fetchall()
+
+        events = [
+            {
+                "id": int(r["id"]),
+                "source_ip": str(r["source_ip"] or ""),
+                "source_host": r["source_host"],
+                "device_id": r["device_id"],
+                "device_hostname": r["device_hostname"],
+                "severity": r["severity"],
+                "facility": r["facility"],
+                "mnemonic": r["mnemonic"],
+                "message": r["message"],
+                "raw_message": str(r["raw_message"] or ""),
+                "created_at": r["created_at"],
+            }
+            for r in rows
+        ]
+        latest_created = max((event.get("created_at") for event in events if event.get("created_at")), default=None)
+        return json.dumps(
+            {
+                "device": device_filter or None,
+                "events": events,
+                "total": len(events),
+                "source_metadata": _incident_source_metadata(
+                    "device_syslog_events",
+                    latest_created,
+                    confidence=0.9 if events else 0.0,
+                    scope="security_alerts",
+                ),
+            },
+            ensure_ascii=False,
+        )
+    except Exception as e:
+        return json.dumps(
+            {
+                "device": device_filter or None,
+                "events": [],
+                "total": 0,
+                "source_metadata": _incident_source_metadata(
+                    "device_syslog_events",
+                    None,
+                    confidence=0.0,
+                    scope="security_alerts",
+                ),
+                "error": str(e),
+            },
+            ensure_ascii=False,
+        )
+
+
+def analyze_security_alert(event_id: int) -> str:
+    """
+    Analyze a specific security alert and recommend response actions
+    including remediation config commands and playbook execution.
+
+    Args:
+        event_id: ID of the security event to analyze
+    """
+    if not _db_manager:
+        return json.dumps({"error": "Database not available"})
+
+    try:
+        from security.response.responder import IncidentResponder
+        from security.response.playbooks import PlaybookEngine
+        from security.models import SecurityEvent
+
+        with _db_manager._connect() as conn:
+            row = conn.execute("SELECT * FROM security_events WHERE id = ?", (event_id,)).fetchone()
+
+        if not row:
+            return json.dumps({"error": f"Event {event_id} not found"})
+
+        event = SecurityEvent(
+            event_type=row["event_type"], severity=row["severity"],
+            source_ip=row["source_ip"] or "", dest_ip=row["dest_ip"] or "",
+            device_id=row["device_id"], description=row["description"] or "",
+            raw_data=json.loads(row["raw_data"]) if row["raw_data"] else None,
+            status=row["status"], id=row["id"],
+        )
+
+        responder = IncidentResponder()
+        action = responder.respond(event)
+
+        playbook_engine = PlaybookEngine()
+        playbook = playbook_engine.get_playbook(event.event_type)
+
+        result = {
+            "event_id": event_id,
+            "event_type": event.event_type,
+            "severity": event.severity,
+            "response": {
+                "action_type": action.action_type,
+                "description": action.description,
+                "config_snippet": action.config_snippet,
+                "requires_approval": action.requires_approval,
+            },
+        }
+
+        if playbook:
+            result["playbook"] = {
+                "name": playbook.name,
+                "mode": playbook.mode,
+                "steps": [{"action": s.action, "description": s.description, "auto": s.auto_execute} for s in playbook.steps],
+            }
+
+        return json.dumps(result, ensure_ascii=False)
+
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+def generate_security_remediation(hostname: str, finding_id: str) -> str:
+    """
+    Generate remediation configuration commands for a specific security
+    audit finding on a device.
+
+    Args:
+        hostname: Device hostname
+        finding_id: The CIS rule ID to remediate (e.g. 'CIS-1.1.1')
+    """
+    if not _db_manager:
+        return json.dumps({"error": "Database not available"})
+
+    try:
+        from security.rules import SECURITY_RULES
+        from security.checks.cisco_ios import CHECK_REGISTRY
+
+        device = _db_manager.get_device_by_hostname(hostname)
+        if not device:
+            return json.dumps({"error": f"Device '{hostname}' not found"})
+
+        # Find the rule
+        rule = None
+        for r in SECURITY_RULES:
+            if r.id == finding_id:
+                rule = r
+                break
+
+        if not rule:
+            available = [r.id for r in SECURITY_RULES]
+            return json.dumps({"error": f"Rule '{finding_id}' not found", "available_rules": available})
+
+        # Get device config and run the specific check
+        history = _db_manager.get_config_history(device.id, limit=1)
+        if not history:
+            return json.dumps({"error": f"No config snapshot for '{hostname}'"})
+
+        check_fn = CHECK_REGISTRY.get(rule.check_fn)
+        if not check_fn:
+            return json.dumps({"error": f"Check function not implemented for {finding_id}"})
+
+        result = check_fn(history[0].config_text, device.vendor or "cisco_ios")
+
+        return json.dumps({
+            "hostname": hostname,
+            "rule_id": finding_id,
+            "description": rule.description,
+            "status": result.status,
+            "evidence": result.evidence,
+            "remediation_config": result.remediation,
+            "severity": rule.severity,
+        }, ensure_ascii=False)
+
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+# -----------------------------------------------------------------------
+# QoS Tools (M18 integration)
+# -----------------------------------------------------------------------
+
+def apply_qos_policy(vendor: str, interface: str, direction: str, rules_json: str) -> str:
+    """
+    Generate a 5-step QoS policy (Classify, Mark, Police/Shape, Queue, Schedule)
+    for a specific device interface to manage bandwidth allocation.
+
+    The 5 QoS steps are:
+      1. Classification — identify traffic type (VoIP, Video, Web, Downloads)
+      2. Marking — tag with DSCP value (EF, AF41, BE, CS1)
+      3. Policing/Shaping — rate-limit or smooth bursty traffic
+      4. Queuing — place packets in priority queues
+      5. Scheduling — determine which queue is served first (LLQ, WFQ)
+
+    Args:
+        vendor:     Device vendor: cisco_ios, huawei_vrp, or juniper_junos
+        interface:  Interface to apply QoS (e.g. GigabitEthernet0/1)
+        direction:  input or output
+        rules_json: JSON string matching the qos.json schema with class_maps and policy_classes
+    """
+    try:
+        from config_engine.renderer import TemplateRenderer
+
+        renderer = TemplateRenderer()
+
+        # Parse rules from JSON string
+        if isinstance(rules_json, str):
+            params = json.loads(rules_json)
+        else:
+            params = rules_json
+
+        # Ensure interface and direction are set
+        params["interface"] = interface
+        params["direction"] = direction
+        if "policy_name" not in params:
+            params["policy_name"] = "AI_QOS_POLICY"
+
+        config = renderer.render(vendor, "qos", params)
+        return json.dumps({
+            "vendor": vendor,
+            "interface": interface,
+            "direction": direction,
+            "qos_config": config,
+            "line_count": len(config.strip().splitlines()),
+            "note": "QoS policy generated. Submit via deployment pipeline for approval.",
+        })
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+# -----------------------------------------------------------------------
+# Intent Pipeline Tools  (Stage 1–3)
+# -----------------------------------------------------------------------
+
+# --- Verification mapping: feature → show commands + expected patterns ---
+FEATURE_VERIFICATION_MAP: Dict[str, List[Dict[str, str]]] = {
+    "vlan": [
+        {"name": "VLAN exists", "check_type": "command_output",
+         "command": "show vlan brief", "expected": ""},  # filled at runtime with vlan_id
+    ],
+    "ospf": [
+        {"name": "OSPF neighbor up", "check_type": "command_output",
+         "command": "show ip ospf neighbor", "expected": "FULL"},
+    ],
+    "bgp": [
+        {"name": "BGP peer established", "check_type": "command_output",
+         "command": "show bgp summary", "expected": "Estab"},
+    ],
+    "interface": [
+        {"name": "Interface up/up", "check_type": "interface_up",
+         "command": "", "expected": "up"},
+    ],
+    "acl": [
+        {"name": "ACL present", "check_type": "command_output",
+         "command": "show access-lists", "expected": ""},
+    ],
+    "static_route": [
+        {"name": "Route in table", "check_type": "command_output",
+         "command": "show ip route static", "expected": ""},
+    ],
+    "ntp": [
+        {"name": "NTP synchronized", "check_type": "command_output",
+         "command": "show ntp status", "expected": "synchronized|Clock is synchronized"},
+    ],
+    "ssh_harden": [
+        {"name": "SSH v2 enabled", "check_type": "command_output",
+         "command": "show ip ssh", "expected": "version 2"},
+    ],
+    "logging": [
+        {"name": "Logging active", "check_type": "command_output",
+         "command": "show logging", "expected": "Logging.*enabled"},
+    ],
+}
+
+
+def _build_verification_checks(feature: str, params: dict) -> List[Dict]:
+    """
+    Auto-generate verification checks for a given feature and parameters.
+    Returns a list of dicts compatible with ``VerificationCheck``.
+    """
+    templates = FEATURE_VERIFICATION_MAP.get(feature, [])
+    checks: List[Dict] = []
+
+    for tmpl in templates:
+        check = {
+            "name": tmpl["name"],
+            "check_type": tmpl["check_type"],
+            "target": tmpl.get("command", ""),
+            "expected": tmpl.get("expected", ""),
+        }
+        # Customize expected pattern based on parameters
+        if feature == "vlan":
+            vlans = params.get("vlans", [])
+            if vlans:
+                ids = [str(v.get("id", "")) for v in vlans if v.get("id")]
+                check["expected"] = "|".join(ids) if ids else "."
+        elif feature == "interface":
+            iface = params.get("name", params.get("interface", ""))
+            if iface:
+                check["target"] = iface  # interface_up uses target as the interface name
+        elif feature == "acl":
+            acl_name = params.get("name", "")
+            if acl_name:
+                check["expected"] = acl_name
+        elif feature == "static_route":
+            routes = params.get("routes", [])
+            if routes:
+                dests = [r.get("destination", "") for r in routes if r.get("destination")]
+                check["expected"] = "|".join(dests) if dests else "."
+
+        checks.append(check)
+    return checks
+
+
+def parse_intent(user_message: str) -> str:
+    """
+    Parse a natural-language network request into a structured intent object.
+
+    This is Stage 1 of the intent pipeline.  The LLM extracts:
+    - intent_type (configure/troubleshoot/query/audit/rollback)
+    - action, feature, vendor, parameters
+    - target device scope
+    - risk level
+
+    Returns a JSON-encoded ParsedIntent.
+
+    Args:
+        user_message: The user's natural language request
+    """
+    try:
+        from llm.intent import IntentParser
+        parser = IntentParser(provider=_intent_provider, db_manager=_db_manager)
+        # Build topology context for device resolution
+        topo_ctx = ""
+        if _db_manager:
+            topo = _db_manager.get_topology()
+            if topo and topo.get("nodes"):
+                hosts = list(topo["nodes"].keys())
+                topo_ctx = f"Discovered devices: {', '.join(hosts)}"
+        return parser.parse(user_message, topology_context=topo_ctx)
+    except Exception as e:
+        logger.error("parse_intent failed: %s", e)
+        return json.dumps({"error": str(e)})
+
+
+def validate_intent(intent_json: str, user_role: str = "operator") -> str:
+    """
+    Validate a structured intent against policy rules.
+
+    This is Stage 2 of the intent pipeline.  Checks:
+    - RBAC permissions
+    - Change window
+    - Naming conventions
+    - Blast radius
+    - VLAN/IP conflicts
+    - Device reachability
+
+    Returns a JSON-encoded PolicyResult with approved/violations/warnings.
+
+    Args:
+        intent_json: JSON string of the ParsedIntent from parse_intent
+        user_role: The authenticated user's role (admin/operator/auditor)
+    """
+    try:
+        from llm.policy import PolicyEngine
+        engine = PolicyEngine(db_manager=_db_manager)
+        return engine.validate(intent_json, user_role=user_role)
+    except Exception as e:
+        logger.error("validate_intent failed: %s", e)
+        return json.dumps({"error": str(e)})
+
+
+def plan_change(intent_json: str) -> str:
+    """
+    Generate a complete change plan from a validated intent.
+
+    This is Stage 3 of the intent pipeline.  For each target device:
+    1. Generates CLI config via Jinja2 templates
+    2. Generates rollback/undo commands
+    3. Validates syntax (per-vendor structural checks)
+    4. Computes unified diff
+    5. Auto-generates post-deploy verification checks
+    6. Determines execution engine (Ansible/SSH)
+
+    Returns a JSON-encoded ChangePlan with all artifacts.
+
+    Args:
+        intent_json: JSON string of the ParsedIntent (must have resolved_devices)
+    """
+    try:
+        from config_engine.rollback_planner import build_rollback_plan
+        from config_engine.renderer import TemplateRenderer
+        from config_engine.safety import validate_cli_artifact
+        from config_engine.validator import SyntaxValidator
+        from config_engine.differ import ConfigDiffer
+        from llm.intent import ParsedIntent
+
+        intent = ParsedIntent.model_validate_json(intent_json)
+        renderer = TemplateRenderer()
+        validator = SyntaxValidator()
+        differ = ConfigDiffer()
+
+        if not intent.feature:
+            return json.dumps({"error": "No feature specified in intent. Cannot generate config."})
+
+        if not intent.resolved_devices:
+            return json.dumps({"error": "No target devices resolved. Specify device hostnames."})
+
+        # Determine vendor — from intent or from device inventory
+        vendor = intent.vendor
+        devices_plan: List[Dict[str, Any]] = []
+
+        for hostname in intent.resolved_devices:
+            dev_vendor = vendor
+            device = None
+            if not dev_vendor and _db_manager:
+                device = _db_manager.get_device_by_hostname(hostname)
+                if device and device.vendor:
+                    dev_vendor = device.vendor
+            if not dev_vendor:
+                dev_vendor = "cisco_ios"  # safe default
+
+            # --- Generate config ---
+            try:
+                config = renderer.render(dev_vendor, intent.feature, intent.parameters)
+            except Exception as e:
+                devices_plan.append({
+                    "hostname": hostname,
+                    "vendor": dev_vendor,
+                    "error": f"Config generation failed: {e}",
+                })
+                continue
+
+            # --- Generate rollback ---
+            try:
+                rollback = renderer.render_undo(dev_vendor, intent.feature, intent.parameters)
+            except Exception:
+                rollback = ""
+
+            rollback_plan = build_rollback_plan(
+                db_manager=_db_manager,
+                hostname=hostname,
+                vendor=dev_vendor,
+                feature=intent.feature,
+                params=intent.parameters,
+                generated_config=config,
+                template_rollback_config=rollback,
+            )
+
+            # --- Syntax validation ---
+            syntax_warnings = validator.validate(dev_vendor, config)
+
+            # --- Diff against latest known snapshot if available ---
+            snapshot_current = ""
+            if rollback_plan.get("latest_snapshot", {}).get("available") and _db_manager and device:
+                history = _db_manager.get_config_history(device.id, limit=1)
+                if history:
+                    snapshot_current = history[0].config_text or ""
+            diff_text = differ.unified_diff(snapshot_current, config, from_label=f"{hostname} current", to_label=f"{hostname} proposed")
+
+            # --- Verification checks ---
+            ver_checks = _build_verification_checks(intent.feature, intent.parameters)
+
+            # --- Execution engine routing ---
+            exec_engine = "ssh_fallback"
+            try:
+                from ansible.router import route_execution
+                plan = route_execution(
+                    intent={"vendor": dev_vendor, "feature": intent.feature,
+                            "rendered_commands": config.strip().splitlines()},
+                    device_vars={"nettopo_vendor": dev_vendor},
+                    rag_state_matches=False,
+                )
+                exec_engine = plan.action.value
+            except Exception:
+                pass
+
+            devices_plan.append({
+                "hostname": hostname,
+                "vendor": dev_vendor,
+                "generated_config": config,
+                "rollback_config": rollback,
+                "diff_text": diff_text,
+                "rollback_plan": rollback_plan,
+                "syntax_warnings": syntax_warnings,
+                "execution_engine": exec_engine,
+                "verification_checks": ver_checks,
+                "safety_validation": validate_cli_artifact(
+                    vendor=dev_vendor,
+                    feature=intent.feature,
+                    params=intent.parameters,
+                    generated_config=config,
+                    rollback_config=rollback,
+                    execution_engine=exec_engine,
+                    rollback_plan=rollback_plan,
+                    require_render_match=True,
+                ),
+                "line_count": len(config.strip().splitlines()),
+            })
+
+        total_blast = len(devices_plan)
+        approval_ready = all(
+            bool((device.get("safety_validation") or {}).get("passed", False))
+            for device in devices_plan
+            if not device.get("error")
+        )
+        return json.dumps({
+            "intent_id": intent.id,
+            "action": intent.action,
+            "feature": intent.feature,
+            "risk_level": intent.risk_level,
+            "total_devices": total_blast,
+            "devices": devices_plan,
+            "approval_ready": approval_ready,
+            "verification_plan": {
+                "auto_checks": sum(len(d.get("verification_checks", [])) for d in devices_plan),
+                "description": f"Auto-generated {intent.feature} verification for {total_blast} device(s).",
+            },
+        }, default=str)
+
+    except Exception as e:
+        logger.error("plan_change failed: %s", e)
+        return json.dumps({"error": str(e)})
+
+
+def analyze_change_intelligence(intent_json: str, user_role: str = "operator") -> str:
+    """
+    Build a deterministic Step 29 change-intelligence report for a proposed change.
+
+    The report combines intent memory, change outcome learning, cross-domain
+    risk scoring, root-cause graph evidence, and a policy-aware what-if
+    simulation before approval.
+    """
+    if not _db_manager:
+        return json.dumps({"error": "Database not available"})
+
+    try:
+        from llm.change_intelligence import analyze_change_intelligence as _analyze_change_intelligence
+
+        return json.dumps(
+            _analyze_change_intelligence(_db_manager, intent_json, user_role=user_role),
+            ensure_ascii=False,
+        )
+    except Exception as e:
+        logger.error("analyze_change_intelligence failed: %s", e)
+        return json.dumps({"error": str(e)})
+
+
+def get_device_running_config(hostname: str) -> str:
+    """
+    Retrieve the last known running configuration snapshot for a device.
+
+    This provides context for the LLM to understand what is already
+    configured before proposing changes.
+
+    Args:
+        hostname: Device hostname to look up
+    """
+    if not _db_manager:
+        return json.dumps({"error": "Database not available"})
+
+    try:
+        hostname = _resolve_hostname_alias(hostname)
+        device = _db_manager.get_device_by_hostname(hostname)
+        if not device:
+            return json.dumps({"error": f"Device '{hostname}' not found"})
+
+        history = _db_manager.get_config_history(device.id, limit=1)
+        if not history:
+            return json.dumps({
+                "hostname": hostname,
+                "config": "(no config snapshot available — device has not been polled yet)",
+                "note": "Run a discovery crawl to capture the running configuration.",
+                "source_metadata": _config_source_metadata("config_snapshots", None, confidence=0.0),
+            })
+
+        config_text = history[0].config_text or ""
+        captured_at = str(history[0].captured_at) if hasattr(history[0], 'captured_at') else None
+        return json.dumps({
+            "hostname": hostname,
+            "config_length": len(config_text),
+            "config": config_text[:8000],  # cap at 8k chars to avoid token overflow
+            "snapshot_time": captured_at or "unknown",
+            "truncated": len(config_text) > 8000,
+            "source_metadata": _config_source_metadata("config_snapshots", captured_at, confidence=0.9),
+        })
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+def get_digital_twin(hostname: str = "", vendor_filter: str = "", include_telemetry: bool = True, include_sdn: bool = True) -> str:
+    """
+    Build the formal Step 30 digital-twin graph snapshot for one device or the whole network.
+
+    The twin unifies planned topology, live topology, intended config, actual config,
+    telemetry trends, incidents, and drift into one graph-oriented payload.
+    """
+    if not _db_manager:
+        return json.dumps({"error": "Database not available"})
+
+    try:
+        from rag.digital_twin import DigitalTwinBuilder
+
+        snapshot = DigitalTwinBuilder(db_manager=_db_manager).build_snapshot(
+            device_hostnames=[hostname] if hostname else None,
+            vendor_filter=vendor_filter or None,
+            include_telemetry=include_telemetry,
+            include_sdn=include_sdn,
+        )
+        payload = snapshot.to_dict()
+        payload["prompt_text"] = snapshot.to_prompt_text()
+        return json.dumps(payload, ensure_ascii=False)
+    except Exception as e:
+        logger.error("get_digital_twin failed: %s", e)
+        return json.dumps({"error": str(e)})
+
+
+# -----------------------------------------------------------------------
+# LLM Provider for intent parsing (set at startup)
+# -----------------------------------------------------------------------
+_intent_provider = None
+
+
+def set_intent_provider(provider) -> None:
+    """Called once at startup to inject the LLM provider for intent parsing."""
+    global _intent_provider
+    _intent_provider = provider
+
+
+# -----------------------------------------------------------------------
+# Tool registration helper
+# -----------------------------------------------------------------------
+
+def register_all_tools(registry) -> None:
+    """Register all network tools with the given ToolRegistry."""
+
+    # Topology tools
+    registry.register(
+        get_topology_summary,
+        description="Get a summary of the current network topology including all devices, their status, and connections.",
+    )
+    registry.register(
+        get_device_details,
+        description="Get detailed information about a specific device by hostname.",
+        param_descriptions={"hostname": "The device hostname to look up"},
+    )
+    registry.register(
+        list_all_devices,
+        description="List devices with explicit scope semantics: live discovery, source-of-truth inventory, or both.",
+        param_descriptions={
+            "scope": "Device scope to return: live, inventory, or both",
+        },
+    )
+    registry.register(
+        list_inventory_devices,
+        description="List devices from source-of-truth inventory with NetBox preferred and local DB fallback.",
+        param_descriptions={
+            "vendor": "Optional vendor filter",
+            "status": "Optional status filter",
+            "limit": "Maximum number of devices to return",
+        },
+    )
+    registry.register(
+        get_inventory_device,
+        description="Get a specific source-of-truth inventory device by hostname.",
+        param_descriptions={"hostname": "The inventory hostname to look up"},
+    )
+    registry.register(
+        search_inventory_devices,
+        description="Search source-of-truth inventory by hostname, management IP, vendor, model, or role.",
+        param_descriptions={
+            "query": "Search text",
+            "limit": "Maximum number of matches to return",
+        },
+    )
+    registry.register(
+        get_planned_topology,
+        description="Get planned topology links from the persistent inventory/link database.",
+    )
+    registry.register(
+        compare_planned_vs_live,
+        description="Compare source-of-truth inventory against live topology, optionally scoped to one hostname.",
+        param_descriptions={"hostname": "Optional device hostname to scope the comparison"},
+    )
+    registry.register(
+        get_canonical_semantics_map,
+        description="Get the canonical semantics map that defines planned-vs-live state meanings shared across tools, MCP, REST, and prompt bundles.",
+    )
+    registry.register(
+        get_context_health,
+        description="Get context versions, last-updated timestamps, and recent invalidation events across live and planned network state.",
+    )
+    registry.register(
+        get_context_event_log,
+        description="Get the durable context event log, including downstream caches or refresh targets invalidated by each event.",
+        param_descriptions={
+            "limit": "Maximum number of events to return",
+            "source": "Optional source filter such as netbox_webhook or deployment_pipeline",
+            "domain": "Optional context domain filter such as live_topology or planned_inventory",
+        },
+    )
+    registry.register(
+        get_last_sync_status,
+        description="Get the latest crawl and sync status across live topology and source-of-truth refresh operations.",
+    )
+    registry.register(
+        trigger_context_refresh,
+        description="Trigger a refresh job for live topology, inventory, planned topology, or all sources.",
+        param_descriptions={
+            "target": "Refresh target: all, live_topology, inventory, or planned_topology",
+            "wait": "Whether to wait for completion before returning",
+        },
+    )
+    registry.register(
+        get_refresh_job_status,
+        description="Get the current status and result of a previously triggered refresh job.",
+        param_descriptions={
+            "job_id": "The job identifier returned by trigger_context_refresh",
+        },
+    )
+    registry.register(
+        get_recent_incidents,
+        description="Get recent incidents and alerts with freshness metadata from the incident store.",
+        param_descriptions={
+            "limit": "Maximum number of incidents to return",
+            "status": "Optional lifecycle status filter",
+        },
+    )
+    registry.register(
+        get_recent_drift_events,
+        description="Get recent drift events with freshness metadata.",
+        param_descriptions={
+            "limit": "Maximum number of drift events to return",
+            "hostname": "Optional hostname filter",
+        },
+    )
+    registry.register(
+        get_device_telemetry_snapshot,
+        description="Get recent telemetry samples, anomaly baselines, and telemetry freshness for a specific device.",
+        param_descriptions={
+            "hostname": "Device hostname to inspect",
+            "limit": "Maximum number of telemetry samples to return",
+        },
+    )
+    registry.register(
+        get_network_telemetry_summary,
+        description="Get a network-wide telemetry summary from the latest monitored devices.",
+        param_descriptions={
+            "limit": "Maximum number of devices to include in the telemetry summary",
+        },
+    )
+    registry.register(
+        get_knowledge_base_status,
+        description="Get knowledge base document summaries and freshness metadata.",
+        param_descriptions={"limit": "Maximum number of documents to return"},
+    )
+    registry.register(
+        find_path,
+        description="Find the shortest network path between two devices.",
+        param_descriptions={
+            "source": "Source device hostname",
+            "destination": "Destination device hostname",
+        },
+    )
+
+    # Config tools
+    registry.register(
+        generate_config,
+        description="Generate CLI configuration commands for a device using Jinja2 templates.",
+        param_descriptions={
+            "vendor": "Device vendor: cisco_ios, huawei_vrp, or juniper_junos",
+            "feature": "Config feature: vlan, ospf, bgp, interface, acl, static_route, ntp, logging, banner, ssh_harden",
+            "params": "JSON string of template parameters (use get_template_schema to see expected format)",
+        },
+    )
+    registry.register(
+        generate_rollback,
+        description="Generate rollback/undo commands that reverse a configuration change.",
+        param_descriptions={
+            "vendor": "Device vendor",
+            "feature": "Config feature name",
+            "params": "JSON string of the same parameters used in generate_config",
+        },
+    )
+    registry.register(
+        list_templates,
+        description="List all available configuration templates, optionally filtered by vendor.",
+        param_descriptions={"vendor": "Optional vendor filter (e.g. 'cisco_ios')"},
+    )
+    registry.register(
+        get_template_schema,
+        description="Get the JSON schema showing required parameters for a configuration template.",
+        param_descriptions={"feature": "Template name (e.g. 'vlan', 'ospf')"},
+    )
+    registry.register(
+        diff_configs,
+        description="Compare two configuration texts and show differences.",
+        param_descriptions={
+            "old_config": "Original configuration text",
+            "new_config": "New/proposed configuration text",
+        },
+    )
+
+    # Audit tools
+    registry.register(
+        get_audit_log,
+        description="Get recent audit log entries showing performed actions.",
+        param_descriptions={"limit": "Maximum number of entries to return (default 20)"},
+    )
+
+    # Security tools (M13)
+    registry.register(
+        run_security_audit,
+        description="Run a CIS benchmark security audit on a device, returning score and pass/fail findings.",
+        param_descriptions={"hostname": "Device hostname to audit"},
+    )
+    registry.register(
+        get_security_events,
+        description="Get recent security events/threats (brute force, port scans, Suricata alerts, rogue devices).",
+        param_descriptions={"limit": "Max events to return (default 10)"},
+    )
+    registry.register(
+        get_device_syslog_events,
+        description="Get raw syslog events for a specific device, hostname, or management IP.",
+        param_descriptions={
+            "device": "Device hostname or management IP",
+            "limit": "Maximum number of syslog events to return",
+            "source_ip": "Optional source IP filter",
+            "q": "Optional text filter against the syslog message",
+        },
+    )
+    registry.register(
+        analyze_security_alert,
+        description="Analyze a security alert by ID and get recommended response actions and playbook steps.",
+        param_descriptions={"event_id": "Security event ID to analyze"},
+    )
+    registry.register(
+        generate_security_remediation,
+        description="Generate remediation config commands for a specific CIS finding on a device.",
+        param_descriptions={
+            "hostname": "Device hostname",
+            "finding_id": "CIS rule ID (e.g. 'CIS-1.1.1', 'CIS-7.1.1')",
+        },
+    )
+
+    # QoS tools (M18)
+    registry.register(
+        apply_qos_policy,
+        description=(
+            "Generate a 5-step QoS policy (Classify, Mark, Police/Shape, Queue, Schedule) "
+            "for a device interface. Use this to prioritize VoIP, throttle downloads, "
+            "or remediate bandwidth congestion."
+        ),
+        param_descriptions={
+            "vendor": "Device vendor: cisco_ios, huawei_vrp, or juniper_junos",
+            "interface": "Interface to apply QoS (e.g. GigabitEthernet0/1)",
+            "direction": "Direction: input or output",
+            "rules_json": (
+                'JSON string with policy_name, class_maps (name + matches), '
+                'and policy_classes (class_name, dscp, priority_percent, bandwidth_percent, '
+                'police_rate, shape_average). Use get_template_schema(\"qos\") to see full schema.'
+            ),
+        },
+    )
+
+    # Intent Pipeline tools (Stage 1-3)
+    registry.register(
+        parse_intent,
+        description=(
+            "Parse a natural-language network request into a structured intent object (JSON). "
+            "This is STAGE 1 of the intent pipeline. Call this FIRST for any configuration request. "
+            "Returns: intent_type, action, feature, vendor, parameters, scope, risk_level, resolved_devices."
+        ),
+        param_descriptions={
+            "user_message": "The user's natural language request to parse into a structured intent",
+        },
+    )
+    registry.register(
+        validate_intent,
+        description=(
+            "Validate a structured intent against policy rules (RBAC, change window, naming, "
+            "blast radius, conflicts, device reachability). This is STAGE 2 — call AFTER parse_intent. "
+            "Returns: approved (bool), violations, warnings, blast_radius."
+        ),
+        param_descriptions={
+            "intent_json": "JSON string of the ParsedIntent from parse_intent",
+            "user_role": "The user's role: admin, operator, or auditor (default: operator)",
+        },
+    )
+    registry.register(
+        plan_change,
+        description=(
+            "Generate a complete change plan from a validated intent. This is STAGE 3 — "
+            "call AFTER validate_intent returns approved=true. Generates CLI config, rollback, "
+            "syntax validation, diff preview, and auto verification checks for each target device."
+        ),
+        param_descriptions={
+            "intent_json": "JSON string of the ParsedIntent (must have resolved_devices)",
+        },
+    )
+    registry.register(
+        analyze_change_intelligence,
+        description=(
+            "Build a deterministic pre-approval change-intelligence report for a validated intent. "
+            "This is the Step 29 strategic layer: it combines intent memory, recent change outcomes, "
+            "root-cause graph evidence across planned/live/drift/incident/security state, cross-domain risk scoring, "
+            "and a policy-aware what-if simulation before approval."
+        ),
+        param_descriptions={
+            "intent_json": "JSON string of the ParsedIntent to analyze before approval",
+            "user_role": "The user's role: admin, operator, or auditor (default: operator)",
+        },
+    )
+    registry.register(
+        get_device_running_config,
+        description=(
+            "Retrieve the last known running-config snapshot for a device. "
+            "Use this to understand what is already configured before proposing changes."
+        ),
+        param_descriptions={
+            "hostname": "Device hostname to look up",
+        },
+    )
+    registry.register(
+        get_config_snapshot_summary,
+        description="Get the latest configuration snapshot summary across devices.",
+        param_descriptions={
+            "limit": "Maximum number of devices to include",
+        },
+    )
+    registry.register(
+        get_digital_twin,
+        description=(
+            "Build the formal digital-twin graph snapshot for a device or the network. "
+            "This Step 30 layer unifies planned topology, live topology, intended config, actual config, telemetry trends, incidents, and drift into one graph-oriented payload."
+        ),
+        param_descriptions={
+            "hostname": "Optional device hostname to scope the digital twin",
+            "vendor_filter": "Optional vendor filter when building a network-wide digital twin",
+            "include_telemetry": "Whether telemetry trends should be included in the twin graph",
+            "include_sdn": "Whether SDN state should be included while building the twin context",
+        },
+    )
+
+    logger.info("Registered %d network tools", len(registry.list_tools()))
+

@@ -1,0 +1,24 @@
+---
+- name: Ensure VLAN exists on Juniper switches
+  junipernetworks.junos.junos_vlan:
+    vlan_id: '{{ vlan_id }}'
+    name: '{{ vlan_name }}'
+    state: present
+
+- name: Ensure VLAN is applied to interfaces on Juniper switches
+  junipernetworks.junos.junos_l2_interfaces:
+    interface: '{{ interface_cisco }}'
+    mode: access
+    access_vlan: '{{ vlan_id }}'
+
+- name: Verify VLAN configuration on Juniper switches
+  junipernetworks.junos.junos_vlan:
+    vlan_id: '{{ vlan_id }}'
+    name: '{{ vlan_name }}'
+    state: present
+
+- name: Verify interface configuration on Juniper switches
+  junipernetworks.junos.junos_l2_interfaces:
+    interface: '{{ interface_cisco }}'
+    mode: access
+    access_vlan: '{{ vlan_id }}'

@@ -1,0 +1,222 @@
+---
+# Interface — multi-vendor (shutdown and multi-scenario: description, access/trunk, IP).
+# Huawei uses reference template: per-interface description / shutdown|undo shutdown / mode / IP.
+# Vars: interfaces_config = [ { name, description?, enabled?, mode?, access?: { vlan }, trunk?: { allowed_vlans }, ip?: { address, mask } } ], or interfaces_to_shutdown = [ names ].
+- name: Configure interfaces
+  hosts: "{{ target_hosts | default('all') }}"
+  gather_facts: no
+  ignore_unreachable: true
+  vars:
+    interfaces_config_defaults: {{ interfaces_config_override | default([]) | tojson }}
+    interfaces_config: {{ interfaces_config_override | default([]) | tojson }}
+    interfaces_admin_enabled: "{{ ((interfaces_admin_enabled | default(false) | string | trim | lower) in ['1', 'true', 'yes', 'on']) | string | lower }}"
+    junos_prefix_map:
+      255.255.255.255: "32"
+      255.255.255.254: "31"
+      255.255.255.252: "30"
+      255.255.255.248: "29"
+      255.255.255.240: "28"
+      255.255.255.224: "27"
+      255.255.255.192: "26"
+      255.255.255.128: "25"
+      255.255.255.0: "24"
+      255.255.254.0: "23"
+      255.255.252.0: "22"
+      255.255.248.0: "21"
+      255.255.240.0: "20"
+      255.255.224.0: "19"
+      255.255.192.0: "18"
+      255.255.128.0: "17"
+      255.255.0.0: "16"
+      255.254.0.0: "15"
+      255.252.0.0: "14"
+      255.248.0.0: "13"
+      255.240.0.0: "12"
+      255.224.0.0: "11"
+      255.192.0.0: "10"
+      255.128.0.0: "9"
+      255.0.0.0: "8"
+      254.0.0.0: "7"
+      252.0.0.0: "6"
+      248.0.0.0: "5"
+      240.0.0.0: "4"
+      224.0.0.0: "3"
+      192.0.0.0: "2"
+      128.0.0.0: "1"
+{% if interfaces_config_use_nettopo | default(false) %}
+    # Per-host expanded config from nettopo_interfaces (mgmt excluded by name + mgmt IP match).
+{% raw %}
+    interfaces_config: "{{ [ ((interfaces_config_defaults | default([]) | first | default({})) | combine({'name': n})) for n in (nettopo_interfaces | default([]) | rejectattr('ip_address', 'equalto', (hostvars[inventory_hostname].ansible_host | default(''))) | map(attribute='name') | map('trim') | reject('equalto', '') | reject('match', '(?i).*(management|mgmt|meth|vty|console).*') | list) ] }}"
+{% endraw %}
+{% endif %}
+{% if interfaces_to_shutdown_override is defined and interfaces_to_shutdown_override is not none and interfaces_to_shutdown_override | length > 0 %}
+    interfaces_to_shutdown: {{ interfaces_to_shutdown_override | tojson }}
+{% else %}
+{% raw %}
+    interfaces_to_shutdown: "{{ nettopo_interfaces | default([]) | rejectattr('ip_address', 'equalto', (hostvars[inventory_hostname].ansible_host | default(''))) | map(attribute='name') | map('trim') | reject('equalto', '') | reject('match', '(?i).*(management|mgmt|meth|vty|console).*') | list }}"
+{% endraw %}
+{% endif %}
+  tasks:
+{% raw %}
+    - name: Configure L2 interface mode (Cisco IOS)
+      cisco.ios.ios_config:
+        parents: "interface {{ item.name }}"
+        lines: "{{ [
+          ('switchport mode access' if (item.mode is defined and item.mode == 'access') else ''),
+          (('switchport access vlan ' ~ (item.access.vlan | string)) if (item.mode is defined and item.mode == 'access' and item.access is defined and item.access.vlan is defined) else ''),
+          ('switchport trunk encapsulation dot1q' if (item.mode is defined and item.mode == 'trunk') else ''),
+          ('switchport mode trunk' if (item.mode is defined and item.mode == 'trunk') else ''),
+          (('switchport trunk allowed vlan add ' ~ ((item.trunk.allowed_vlans | default([]) | map('string') | join(',')))) if (item.mode is defined and item.mode == 'trunk' and item.trunk is defined and item.trunk.allowed_vlans is defined) else ''),
+          (('switchport trunk native vlan ' ~ (item.trunk.native_vlan | string)) if (item.mode is defined and item.mode == 'trunk' and item.trunk is defined and item.trunk.native_vlan is defined) else '')
+        ] | reject('equalto', '') | list }}"
+      loop: "{{ interfaces_config | default([]) }}"
+      loop_control:
+        label: "{{ item.name }}"
+      when:
+        - inventory_hostname in groups.get('vendor_cisco_ios', [])
+        - (interfaces_config | default([])) | length > 0
+        - item.mode is defined
+        - item.mode in ['access', 'trunk']
+
+    - name: Configure routed interface (L3) (Cisco IOS)
+      cisco.ios.ios_config:
+        parents: "interface {{ item.name }}"
+        lines: "{{ [
+          'no switchport',
+          (('ip address ' ~ (item.ip.address | string) ~ ' ' ~ ((item.ip.mask | default(item.ip.netmask) | default('')) | string)) if (item.ip is defined and item.ip.address is defined and (item.ip.mask is defined or item.ip.netmask is defined)) else ''),
+          (('ip address ' ~ (item.ip_address | string) ~ ' ' ~ (item.subnet_mask | string)) if (item.ip_address is defined and item.subnet_mask is defined and item.ip is not defined) else '')
+        ] | reject('equalto', '') | list }}"
+      loop: "{{ interfaces_config | default([]) }}"
+      loop_control:
+        label: "{{ item.name }}"
+      when:
+        - inventory_hostname in groups.get('vendor_cisco_ios', [])
+        - (interfaces_config | default([])) | length > 0
+        - item.mode is defined
+        - item.mode == 'routed'
+
+    - name: Shutdown interface (Cisco IOS)
+      cisco.ios.ios_interfaces:
+        config:
+          - name: "{{ item }}"
+            enabled: "{{ ((interfaces_admin_enabled | default(false) | string | trim | lower) in ['1', 'true', 'yes', 'on']) | string | lower }}"
+        state: merged
+      loop: "{{ interfaces_to_shutdown | default([]) }}"
+      loop_control:
+        label: "{{ item }}"
+      when:
+        - inventory_hostname in groups.get('vendor_cisco_ios', [])
+        - (interfaces_to_shutdown | default([])) | length > 0
+{% endraw %}
+
+# Huawei VRP — multi-scenario (description, shutdown, access/trunk, IP) per reference template
+{% if interfaces_config_use_nettopo | default(false) %}
+{% raw %}
+    - name: Configure interface (Huawei VRP) [all interfaces]
+      community.network.ce_config:
+        parents: "interface {{ (item.name | string).split(':') | last | trim | replace('TenGigabitEthernet', '10GE') | replace('GigabitEthernet', 'GE') }}"
+        lines: "{{ [
+          (('description ' ~ item.description) if (item.description is defined and item.description) else none),
+          ('shutdown' if (item.enabled is defined and item.enabled == false) else 'undo shutdown'),
+          ('port link-type access' if (item.mode is defined and item.mode == 'access') else none),
+          (('port default vlan ' ~ (item.access.vlan | string)) if (item.mode is defined and item.mode == 'access' and item.access is defined and item.access.vlan is defined) else none),
+          ('port link-type trunk' if (item.mode is defined and item.mode == 'trunk') else none),
+          (('port trunk allow-pass vlan ' ~ ((item.trunk.allowed_vlans | default(item.trunk.allow_pass_vlans) | default([]) | map('string') | join(' ')))) if (item.mode is defined and item.mode == 'trunk' and item.trunk is defined) else none),
+          (('ip address ' ~ (item.ip.address | string) ~ ' ' ~ ((item.ip.mask | default(item.ip.netmask) | default('255.255.255.0')) | string)) if (item.ip is defined and item.ip.address is defined) else none)
+        ] | reject('equalto', none) | list }}"
+      loop: "{{ interfaces_config | default([]) }}"
+      loop_control:
+        label: "{{ (item.name | string).split(':') | last | trim | replace('TenGigabitEthernet', '10GE') | replace('GigabitEthernet', 'GE') }}"
+      when:
+        - inventory_hostname in groups.get('vendor_huawei_vrp', [])
+        - item.enabled is defined
+{% endraw %}
+{% else %}
+{% for item in interfaces_config | default([]) %}
+{% set ns = namespace(lines=[]) %}
+{% if item.description is defined and item.description %}{% set _ = ns.lines.append('description ' + (item.description | string)) %}{% endif %}
+{% if item.enabled is defined and item.enabled == false %}{% set _ = ns.lines.append('shutdown') %}{% elif item.enabled is defined and item.enabled != false %}{% set _ = ns.lines.append('undo shutdown') %}{% endif %}
+{% if item.mode is defined and item.mode == 'access' and item.access is defined %}{% set _ = ns.lines.append('port link-type access') %}{% set _ = ns.lines.append('port default vlan ' + (item.access.vlan | string)) %}{% elif item.mode is defined and item.mode == 'trunk' and item.trunk is defined %}{% set _ = ns.lines.append('port link-type trunk') %}{% set _ = ns.lines.append('port trunk allow-pass vlan ' + (item.trunk.allowed_vlans | default(item.trunk.allow_pass_vlans) | default([]) | map('string') | join(' '))) %}{% endif %}
+{% if item.ip is defined and item.ip and item.ip.address is defined %}{% set _ = ns.lines.append('ip address ' + (item.ip.address | string) + ' ' + (item.ip.mask | default(item.ip.netmask) | default('255.255.255.0') | string)) %}{% endif %}
+    - name: Configure interface {{ (item.name | string).split(':') | last | trim | replace('TenGigabitEthernet', '10GE') | replace('GigabitEthernet', 'GE') }} (Huawei VRP)
+      community.network.ce_config:
+        parents: "interface {{ (item.name | string).split(':') | last | trim | replace('TenGigabitEthernet', '10GE') | replace('GigabitEthernet', 'GE') }}"
+        lines: {{ ns.lines | tojson }}
+      when:
+        - inventory_hostname in groups.get('vendor_huawei_vrp', [])
+        - ns.lines | length > 0
+{% endfor %}
+{% endif %}
+{% raw %}
+    # Same truthy normalization as play vars — avoid (false == "false") missing shutdown after JSON merge.
+    - name: Shutdown interface (Huawei VRP)
+      community.network.ce_config:
+        lines:
+          - "{{ 'shutdown' if not ((interfaces_admin_enabled | default(false) | string | trim | lower) in ['1', 'true', 'yes', 'on']) else 'undo shutdown' }}"
+        parents: "interface {{ (item | string).split(':') | last | trim | replace('TenGigabitEthernet', '10GE') | replace('GigabitEthernet', 'GE') }}"
+      loop: "{{ interfaces_to_shutdown | default([]) }}"
+      loop_control:
+        label: "{{ (item | string).split(':') | last | trim | replace('TenGigabitEthernet', '10GE') | replace('GigabitEthernet', 'GE') }}"
+      when:
+        - inventory_hostname in groups.get('vendor_huawei_vrp', [])
+        - (interfaces_config | default([])) | length == 0
+        - (interfaces_to_shutdown | default([])) | length > 0
+
+    - name: Configure interface (Juniper Junos)
+      juniper.device.junos_config:
+        lines: "{{ _junos_interface_lines }}"
+      vars:
+        _junos_ip_raw: "{{ item.get('ip', {}).get('address', item.get('ip_address', '')) | string | trim }}"
+        _junos_mask_raw: "{{ item.get('ip', {}).get('prefix_length', item.get('prefix_length', item.get('ip', {}).get('mask', item.get('ip', {}).get('netmask', item.get('subnet_mask', ''))))) | string | trim }}"
+        _junos_prefix_value: "{{ _junos_mask_raw if (_junos_mask_raw | regex_search('^[0-9]+$')) else (junos_prefix_map.get(_junos_mask_raw, '') | string) }}"
+        _junos_ip_cidr: "{{ _junos_ip_raw if (_junos_ip_raw and ('/' in _junos_ip_raw)) else ((_junos_ip_raw ~ '/' ~ _junos_prefix_value) if (_junos_ip_raw and _junos_prefix_value) else '') }}"
+        _junos_access_vlan: "{{ item.get('access', {}).get('vlan', '') | string | trim }}"
+        _junos_allowed_vlans_raw: "{{ item.get('trunk', {}).get('allowed_vlans', '') }}"
+        _junos_allowed_vlans_rendered: >-
+          {{
+            'all'
+            if (_junos_allowed_vlans_raw is string and (_junos_allowed_vlans_raw | trim | lower) == 'all')
+            else (
+              '[ ' ~ ((_junos_allowed_vlans_raw | string | replace(',', ' ')) | trim) ~ ' ]'
+              if (_junos_allowed_vlans_raw is string and (_junos_allowed_vlans_raw | trim))
+              else (
+                '[ ' ~ ((_junos_allowed_vlans_raw | map('string') | join(' ')) | trim) ~ ' ]'
+                if (_junos_allowed_vlans_raw is iterable and _junos_allowed_vlans_raw is not string and (_junos_allowed_vlans_raw | length > 0))
+                else ''
+              )
+            )
+          }}
+        _junos_interface_lines: "{{ [
+          (('set interfaces ' ~ item.name ~ ' description \"' ~ (item.description | string | replace('\"', '\\\"')) ~ '\"') if (item.description is defined and (item.description | string | trim)) else ''),
+          (('set interfaces ' ~ item.name ~ ' disable') if (item.enabled is defined and not item.enabled) else ''),
+          (('delete interfaces ' ~ item.name ~ ' disable') if (item.enabled is defined and item.enabled) else ''),
+          (('delete interfaces ' ~ item.name ~ ' unit 0 family inet') if (item.mode is defined and item.mode == 'access') else ''),
+          (('set interfaces ' ~ item.name ~ ' unit 0 family ethernet-switching port-mode access') if (item.mode is defined and item.mode == 'access') else ''),
+          (('set interfaces ' ~ item.name ~ ' unit 0 family ethernet-switching vlan members ' ~ _junos_access_vlan) if (item.mode is defined and item.mode == 'access' and _junos_access_vlan) else ''),
+          (('delete interfaces ' ~ item.name ~ ' unit 0 family inet') if (item.mode is defined and item.mode == 'trunk') else ''),
+          (('set interfaces ' ~ item.name ~ ' unit 0 family ethernet-switching port-mode trunk') if (item.mode is defined and item.mode == 'trunk') else ''),
+          (('set interfaces ' ~ item.name ~ ' unit 0 family ethernet-switching vlan members ' ~ _junos_allowed_vlans_rendered) if (item.mode is defined and item.mode == 'trunk' and _junos_allowed_vlans_rendered) else ''),
+          (('set interfaces ' ~ item.name ~ ' native-vlan-id ' ~ (item.get('trunk', {}).get('native_vlan') | string)) if (item.mode is defined and item.mode == 'trunk' and item.get('trunk', {}).get('native_vlan') is not none) else ''),
+          (('delete interfaces ' ~ item.name ~ ' unit 0 family ethernet-switching') if ((item.mode is defined and item.mode == 'routed') or _junos_ip_cidr) else ''),
+          (('set interfaces ' ~ item.name ~ ' unit 0 family inet address ' ~ _junos_ip_cidr) if _junos_ip_cidr else '')
+        ] | reject('equalto', '') | list }}"
+      loop: "{{ interfaces_config | default([]) }}"
+      loop_control:
+        label: "{{ item.name }}"
+      when:
+        - inventory_hostname in groups.get('vendor_juniper_junos', [])
+        - (interfaces_config | default([])) | length > 0
+        - (_junos_interface_lines | default([])) | length > 0
+
+    - name: Toggle interface admin state (Juniper Junos)
+      juniper.device.junos_config:
+        lines:
+          - "{{ ('delete interfaces ' ~ item ~ ' disable') if ((interfaces_admin_enabled | default(false) | string | trim | lower) in ['1', 'true', 'yes', 'on']) else ('set interfaces ' ~ item ~ ' disable') }}"
+      loop: "{{ interfaces_to_shutdown | default([]) }}"
+      loop_control:
+        label: "{{ item }}"
+      when:
+        - inventory_hostname in groups.get('vendor_juniper_junos', [])
+        - (interfaces_config | default([])) | length == 0
+        - (interfaces_to_shutdown | default([])) | length > 0
+{% endraw %}

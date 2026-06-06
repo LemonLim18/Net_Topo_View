@@ -1,0 +1,9 @@
+---
+# Placeholder: interface config Cisco IOS — test then move to reference/
+- name: Configure interfaces (Cisco IOS)
+  hosts: vendor_cisco_ios
+  gather_facts: no
+  tasks:
+    - name: Placeholder — replace with real tasks
+      ansible.builtin.debug:
+        msg: "Use cisco.ios.ios_interfaces / ios_l2_interfaces / ios_l3_interfaces"

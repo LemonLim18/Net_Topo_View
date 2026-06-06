@@ -1,0 +1,39 @@
+# roles/access_vlan/tasks/main.yml
+---
+- name: "Ensure VLAN {{ vlan_id }} ({{ vlan_name }}) exists on the device"
+  cisco.ios.ios_vlans:
+    config:
+      - vlan_id: "{{ vlan_id }}"
+        name:    "{{ vlan_name }}"
+        state:   active
+    state: merged
+  tags: [vlan]
+
+- name: "Apply interface configuration from template (idempotent)"
+  cisco.ios.ios_config:
+    src: "{{ role_path }}/templates/interface.j2"
+  tags: [interface]
+  notify: reload_interface_if_needed
+
+- name: "Save running config if changed"
+  cisco.ios.ios_config:
+    save_when: changed
+  tags: [save]
+
+- name: "Verify — capture switchport output"
+  cisco.ios.ios_command:
+    commands:
+      - "show interfaces {{ interface }} switchport"
+  register: swport_out
+  tags: [verify]
+
+- name: "Verify — assert interface is in access mode for VLAN {{ vlan_id }}"
+  ansible.builtin.assert:
+    that:
+      - "'Access Mode VLAN' in swport_out.stdout[0]"
+      - "vlan_id | string in swport_out.stdout[0]"
+    fail_msg: >
+      Interface {{ interface }} on {{ inventory_hostname }} is not configured
+      as access VLAN {{ vlan_id }}. Check device logs.
+    success_msg: "Interface {{ interface }} confirmed access VLAN {{ vlan_id }} ✓"
+  tags: [verify]

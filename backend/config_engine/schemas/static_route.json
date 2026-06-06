@@ -1,0 +1,21 @@
+{
+  "required": ["routes"],
+  "properties": {
+    "routes": {
+      "type": "array",
+      "description": "List of static routes",
+      "items": {
+        "type": "object",
+        "required": ["prefix", "next_hop"],
+        "properties": {
+          "prefix": { "type": "string", "description": "Destination network" },
+          "mask": { "type": "string", "description": "Subnet mask (Cisco/Huawei)" },
+          "prefix_length": { "type": "integer", "description": "CIDR prefix length (Junos)" },
+          "next_hop": { "type": "string", "description": "Next-hop IP or exit interface" },
+          "name": { "type": "string", "description": "Route name/tag" },
+          "distance": { "type": "integer", "description": "Administrative distance" }
+        }
+      }
+    }
+  }
+}

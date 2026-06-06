@@ -1,0 +1,15 @@
+{
+  "required": [],
+  "properties": {
+    "ssh_version": { "type": "integer", "description": "SSH version (1 or 2)" },
+    "ssh_timeout": { "type": "integer", "description": "SSH timeout in seconds" },
+    "ssh_retries": { "type": "integer", "description": "SSH authentication retries" },
+    "disable_telnet": { "type": "boolean", "description": "Disable Telnet on VTY lines" },
+    "vty_acl": { "type": "string", "description": "ACL name to apply on VTY lines" },
+    "exec_timeout_minutes": { "type": "integer", "description": "Exec timeout in minutes" },
+    "exec_timeout_seconds": { "type": "integer", "description": "Exec timeout seconds" },
+    "enable_secret": { "type": "string", "description": "Enable secret password" },
+    "domain_name": { "type": "string", "description": "Domain name for RSA key generation" },
+    "rsa_key_size": { "type": "integer", "description": "RSA key modulus size (1024/2048/4096)" }
+  }
+}

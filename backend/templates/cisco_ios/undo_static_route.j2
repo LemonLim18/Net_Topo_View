@@ -1,0 +1,4 @@
+{% for route in routes %}
+no ip route {{ route.prefix }} {{ route.mask }} {{ route.next_hop }}
+{% endfor %}
+!

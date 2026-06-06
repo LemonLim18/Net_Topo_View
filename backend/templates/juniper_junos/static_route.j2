@@ -1,0 +1,9 @@
+{% for route in routes %}
+set routing-options static route {{ route.prefix }}/{{ route.prefix_length | default(24) }} next-hop {{ route.next_hop }}
+{% if route.name is defined and route.name %}
+set routing-options static route {{ route.prefix }}/{{ route.prefix_length | default(24) }} tag {{ route.name }}
+{% endif %}
+{% if route.distance is defined %}
+set routing-options static route {{ route.prefix }}/{{ route.prefix_length | default(24) }} preference {{ route.distance }}
+{% endif %}
+{% endfor %}

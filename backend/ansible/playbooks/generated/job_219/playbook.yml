@@ -1,0 +1,48 @@
+- name: Configure ACL (Cisco IOS)
+  hosts: "Acc_Cisco_1"
+  gather_facts: no
+  connection: network_cli
+  tasks:
+    - name: Configure numbered ACL on Cisco IOS
+      cisco.ios.ios_config:
+        match: line
+        replace: line
+        lines:
+
+
+
+
+
+
+
+
+
+
+          - "access-list BLOCK_HTTP deny tcp any any eq 80"
+
+
+      when:
+        - ((acl_name | string) | trim).isdigit()
+
+    - name: Configure named ACL on Cisco IOS
+      cisco.ios.ios_config:
+        match: line
+        replace: line
+        parents:
+          - "ip access-list extended BLOCK_HTTP"
+        lines:
+
+
+
+
+
+
+
+
+
+
+          - "1 deny tcp any any eq 80"
+
+
+      when:
+        - not (((acl_name | string) | trim).isdigit())

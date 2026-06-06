@@ -1,0 +1,89 @@
+Section	Task ID	Task Name	Start Week	End Week	WK01	WK02	WK03	WK04	WK05	WK06	WK07	WK08	WK09	WK10	WK11	WK12	WK13	WK14	WK15	WK16	WK17	WK18	WK19	WK20	WK21	WK22	WK23	WK24	WK25	WK26	WK27	WK28	WK29	WK30
+Module 1: Network Topology Visualization Module																																		
+Phase	01	Project Planning	WK01	WK02	X	X																												
+Task	01.01	Define project scope	WK01	WK01	X																													
+Task	01.02	Develop WBS and build schedule for topology visualization module	WK01	WK01	X																													
+Task	01.03	Risk planning	WK02	WK02		X																												
+Phase	02	Analysis	WK02	WK04		X	X	X																										
+Task	02.01	Gather and analyze planned inventory and live discovery data structures	WK02	WK03		X	X																											
+Task	02.02	Identify key topology entities and comparison attributes	WK03	WK03			X																											
+Task	02.03	Define and prioritize planned/live visualization requirements	WK03	WK04			X	X																										
+Task	02.04	Model topology view and comparison flow using UML	WK04	WK04				X																										
+Phase	03	Design	WK05	WK06					X	X																								
+Task	03.01	Design topology snapshot and cache handling	WK05	WK05					X																									
+Task	03.02	Design GUI layouts for planned and live topology views	WK05	WK06					X	X																								
+Task	03.03	Design planned-versus-live comparison interactions	WK06	WK06						X																								
+Phase	04	Build	WK06	WK09						X	X	X	X																					
+Task	04.01	Implement planned topology view	WK06	WK07						X	X																							
+Task	04.02	Implement live topology view	WK07	WK08							X	X																						
+Task	04.03	Implement planned-versus-live comparison and device detail interaction	WK08	WK09								X	X																					
+Phase	05	Testing	WK09	WK11									X	X	X																			
+Task	05.01	Perform unit testing: topology parsing and visualization logic	WK09	WK09									X																					
+Task	05.02	Perform integration test: GUI + backend + data source	WK09	WK10									X	X																				
+Task	05.03	Perform system and acceptance test	WK10	WK11										X	X																			
+Module 2: Knowledge-Grounded LLM Playbook Generation Module																																		
+Phase	06	Project Planning	WK01	WK03	X	X	X																											
+Task	06.01	Define project scope	WK01	WK02	X	X																												
+Task	06.02	Develop WBS and build schedule and then plan the work	WK02	WK02		X																												
+Task	06.03	Risk planning	WK02	WK03		X	X																											
+Phase	07	Analysis	WK03	WK05			X	X	X																									
+Task	07.01	Gather and analyze prompt-to-playbook requirements	WK03	WK03			X																											
+Task	07.02	Review and analyze supported automation categories and vendor workflows	WK04	WK04				X																										
+Task	07.03	Define and prioritize prompt, context, and generation requirements	WK04	WK05				X	X																									
+Task	07.04	Model prompt -> preview -> clarify -> generate flow using UML	WK05	WK05					X																									
+Phase	08	Design	WK05	WK07					X	X	X																							
+Task	08.01	Design prompt/request data structure and generated artifact storage	WK05	WK06					X	X																								
+Task	08.02	Design GUI layouts for Ansible Studio prompt and preview flow	WK06	WK06						X																								
+Task	08.03	Design schema/context and knowledge-grounded generation endpoints	WK07	WK07							X																							
+Phase	09	Build	WK07	WK08							X	X																						
+Task	09.01	Implement prompt submission and preview workflow	WK07	WK08							X	X																						
+Task	09.02	Implement clarification and context-supported playbook generation flow	WK08	WK08								X																						
+Phase	10	Testing	WK08	WK10								X	X	X																				
+Task	10.01	Perform unit testing: prompt parsing and generation flow	WK08	WK09								X	X																					
+Task	10.02	Perform integration test: GUI + backend + context sources	WK09	WK09									X																					
+Task	10.03	Perform system and acceptance test	WK10	WK10										X																				
+Module 3: Playbook Validation, Approval & Execution Module																																		
+Phase	11	Project Planning	WK10	WK11										X	X																			
+Task	11.01	Define project scope	WK10	WK10										X																				
+Task	11.02	Develop WBS and build schedule and then plan the work	WK10	WK11										X	X																			
+Task	11.03	Risk planning (check, approval, and execution safety)	WK11	WK11											X																			
+Phase	12	Analysis	WK11	WK13											X	X	X																	
+Task	12.01	Gather and analyze playbook validation and dry-run requirements	WK11	WK12											X	X																		
+Task	12.02	Define approval workflow and deployment gates	WK12	WK12												X																		
+Task	12.03	Analyze execution logging and job traceability needs	WK12	WK13												X	X																	
+Task	12.04	Model end-to-end validation -> approval -> deploy flow using UML	WK13	WK13													X																	
+Phase	13	Design	WK14	WK15														X	X															
+Task	13.01	Design check result reporting and artifact handling	WK14	WK14														X																
+Task	13.02	Design approval interface and workflow logic	WK14	WK15														X	X															
+Task	13.03	Design controlled deployment and execution logging flow	WK15	WK15															X															
+Phase	14	Build	WK16	WK18																X	X	X												
+Task	14.01	Implement playbook check and result reporting	WK16	WK16																X														
+Task	14.02	Implement approval UI and workflow	WK16	WK17																X	X													
+Task	14.03	Implement controlled deployment execution and log streaming	WK17	WK18																	X	X												
+Task	14.04	Implement post-deployment status and result handling	WK18	WK18																		X												
+Phase	15	Testing	WK19	WK20																			X	X										
+Task	15.01	Perform unit testing: check + approval + execution	WK19	WK19																			X											
+Task	15.02	Perform integration test: full governed workflow	WK19	WK20																			X	X										
+Task	15.03	Perform system and acceptance test	WK20	WK20																				X										
+Module 4: Performance Metric Monitoring Module																																		
+Phase	16	Project Planning	WK20	WK21																				X	X									
+Task	16.01	Define project scope	WK20	WK20																				X										
+Task	16.02	Develop WBS and build schedule	WK21	WK21																					X									
+Task	16.03	Risk planning (metric accuracy and alert noise)	WK21	WK21																					X									
+Phase	17	Analysis	WK22	WK24																						X	X	X						
+Task	17.01	Gather and analyze performance metrics and alert indicators	WK22	WK22																						X								
+Task	17.02	Define dashboard KPI and threshold display requirements	WK22	WK23																						X	X							
+Task	17.03	Identify device/interface drill-down and trend-view needs	WK23	WK23																							X							
+Task	17.04	Model monitoring view workflow using UML	WK23	WK24																							X	X						
+Phase	18	Design	WK24	WK26																								X	X	X				
+Task	18.01	Design metric aggregation and query flow	WK24	WK24																								X						
+Task	18.02	Design performance dashboard and alert views	WK25	WK25																									X					
+Task	18.03	Design drill-down charts and trend presentation	WK25	WK26																									X	X				
+Phase	19	Build	WK26	WK28																										X	X	X		
+Task	19.01	Implement performance summary cards and charts	WK26	WK26																										X				
+Task	19.02	Implement active alert and threshold views	WK27	WK27																											X			
+Task	19.03	Implement device and interface drill-down monitoring screens	WK27	WK28																											X	X		
+Phase	20	Testing	WK28	WK30																												X	X	X
+Task	20.01	Perform unit testing	WK28	WK29																												X	X	
+Task	20.02	Perform integration test	WK29	WK29																													X	
+Task	20.03	Perform system and acceptance test	WK29	WK30																													X	X

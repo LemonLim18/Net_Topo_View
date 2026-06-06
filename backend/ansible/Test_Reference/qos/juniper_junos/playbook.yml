@@ -1,0 +1,8 @@
+---
+- name: Configure QoS (Junos)
+  hosts: vendor_juniper_junos
+  gather_facts: no
+  tasks:
+    - name: Placeholder — use Junos QoS modules
+      ansible.builtin.debug:
+        msg: "Replace with real QoS tasks"

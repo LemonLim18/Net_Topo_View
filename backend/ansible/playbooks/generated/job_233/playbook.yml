@@ -1,0 +1,114 @@
+- name: Configure ACL / firewall (multi-vendor)
+  hosts: "Acc_Cisco_1,Acc_Huawei_3,Acc_Juniper_4"
+  gather_facts: no
+  tasks:
+    - name: Configure numbered ACL on Cisco IOS
+      cisco.ios.ios_config:
+        match: none
+        lines:
+          - "no access-list 2000"
+      when:
+        - inventory_hostname in groups.get('vendor_cisco_ios', [])
+        - ((acl_name | string) | trim).isdigit()
+
+    - name: Apply numbered ACL on Cisco IOS
+      cisco.ios.ios_config:
+        match: line
+        replace: line
+        lines:
+
+
+
+
+
+
+
+
+
+
+          - "access-list 2000 permit tcp 192.168.1.0 0.0.0.255 any eq 22"
+
+
+      when:
+        - inventory_hostname in groups.get('vendor_cisco_ios', [])
+        - ((acl_name | string) | trim).isdigit()
+
+    - name: Configure named ACL on Cisco IOS
+      cisco.ios.ios_config:
+        match: none
+        lines:
+          - "no ip access-list extended 2000"
+      when:
+        - inventory_hostname in groups.get('vendor_cisco_ios', [])
+        - not (((acl_name | string) | trim).isdigit())
+
+    - name: Apply named ACL on Cisco IOS
+      cisco.ios.ios_config:
+        match: line
+        replace: line
+        parents:
+          - "ip access-list extended 2000"
+        lines:
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+          - "10 permit tcp 192.168.1.0 0.0.0.255 any eq 22"
+
+
+
+      when:
+        - inventory_hostname in groups.get('vendor_cisco_ios', [])
+        - not (((acl_name | string) | trim).isdigit())
+
+    - name: Configure ACL on Huawei VRP
+      community.network.ce_config:
+        lines:
+
+
+          - "undo acl number 2000"
+          - "acl number 2000"
+
+
+
+          - "rule 1 permit tcp source 192.168.1.0 0.0.0.255 destination any destination-port eq 22"
+
+
+          - "return"
+      when:
+        - inventory_hostname in groups.get('vendor_huawei_vrp', [])
+
+    - name: Configure firewall filter on Juniper Junos
+      junipernetworks.junos.junos_config:
+        lines:
+          - "delete firewall family inet filter 2000"
+
+
+
+
+          - "set firewall family inet filter 2000 term t1 from source-address 192.168.1.0/32"
+
+
+
+          - "set firewall family inet filter 2000 term t1 from protocol tcp"
+
+
+          - "set firewall family inet filter 2000 term t1 from destination-port 22"
+
+          - "set firewall family inet filter 2000 term t1 then accept"
+
+
+      when:
+        - inventory_hostname in groups.get('vendor_juniper_junos', [])

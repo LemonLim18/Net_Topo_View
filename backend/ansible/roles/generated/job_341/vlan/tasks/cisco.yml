@@ -1,0 +1,15 @@
+---
+- name: Ensure VLAN 43 exists
+  cisco.ios.ios_vlans:
+    config:
+      - vlan_id: '{{ vlan_id }}'
+        name: '{{ vlan_name }}'
+        state: merged
+
+- name: Configure access ports on interfaces
+  cisco.ios.ios_l2_interfaces:
+    config:
+      - name: '{{ item.name }}'
+        mode: access
+        access.vlan: '{{ item.access_vlan }}'
+    loop: '{{ interfaces }}'

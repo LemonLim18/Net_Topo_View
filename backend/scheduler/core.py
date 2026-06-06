@@ -1,0 +1,167 @@
+"""
+M16 — Task Scheduler core.
+
+Uses APScheduler's AsyncIOScheduler to manage periodic background tasks.
+Intervals are configurable via environment variables.
+"""
+
+import logging
+import os
+from typing import Callable, Awaitable, Optional
+
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.interval import IntervalTrigger
+
+from scheduler.jobs import (
+    job_crawl,
+    job_inventory_sync,
+    job_local_to_netbox_sync,
+    job_drift_check,
+    job_compliance_scan,
+    job_security_audit,
+    job_cve_rescan,
+    job_anomaly_detect,
+    set_crawl_function,
+    set_inventory_sync_function,
+    set_local_to_netbox_sync_function,
+    set_orchestrator,
+    set_broadcast_fn,
+)
+
+logger = logging.getLogger("scheduler.core")
+
+# ────────────────────────────────────────────────────────
+# Singleton scheduler instance
+# ────────────────────────────────────────────────────────
+_scheduler: AsyncIOScheduler | None = None
+
+
+def _env_int(name: str, default: int) -> int:
+    """Read an integer from an environment variable with a fallback."""
+    try:
+        return int(os.getenv(name, default))
+    except (TypeError, ValueError):
+        return default
+
+
+def start_scheduler(
+    crawl_fn: Callable[..., Awaitable],
+    orchestrator=None,
+    broadcast_fn=None,
+    inventory_sync_fn: Optional[Callable[[], object]] = None,
+    local_to_netbox_sync_fn: Optional[Callable[[], object]] = None,
+) -> None:
+    """
+    Create, configure, and start the global scheduler.
+
+    Args:
+        crawl_fn:      The async crawl-and-broadcast function from backend.py.
+        orchestrator:  IncidentOrchestrator instance (optional).
+        broadcast_fn:  WebSocket broadcast function for push events (optional).
+    """
+    global _scheduler
+
+    if _scheduler is not None:
+        logger.warning("Scheduler already running — skipping start")
+        return
+
+    # Inject dependencies into jobs module
+    set_crawl_function(crawl_fn)
+    if inventory_sync_fn is not None:
+        set_inventory_sync_function(inventory_sync_fn)
+    if local_to_netbox_sync_fn is not None:
+        set_local_to_netbox_sync_function(local_to_netbox_sync_fn)
+    if orchestrator is not None:
+        set_orchestrator(orchestrator)
+    if broadcast_fn is not None:
+        set_broadcast_fn(broadcast_fn)
+
+    # Read configurable intervals
+    crawl_min   = _env_int("SCHED_CRAWL_MINUTES", 15)
+    netbox_sync_min = _env_int("SCHED_NETBOX_SYNC_MINUTES", 10)
+    local_to_netbox_sync_min = _env_int("SCHED_LOCAL_TO_NETBOX_SYNC_MINUTES", 5)
+    drift_min   = _env_int("SCHED_DRIFT_MINUTES", 30)
+    compliance_min = _env_int("SCHED_COMPLIANCE_MINUTES", 30)
+    audit_hrs   = _env_int("SCHED_AUDIT_HOURS", 6)
+    cve_hrs     = _env_int("SCHED_CVE_HOURS", 24)
+    anomaly_min = _env_int("SCHED_ANOMALY_MINUTES", 5)
+
+    _scheduler = AsyncIOScheduler(timezone="UTC")
+
+    # ── Register jobs ──
+    _scheduler.add_job(
+        job_crawl,
+        trigger=IntervalTrigger(minutes=crawl_min),
+        id="network_crawl",
+        name="Network Crawl",
+        replace_existing=True,
+    )
+    _scheduler.add_job(
+        job_inventory_sync,
+        trigger=IntervalTrigger(minutes=netbox_sync_min),
+        id="inventory_sync",
+        name="Inventory Sync",
+        replace_existing=True,
+    )
+    _scheduler.add_job(
+        job_local_to_netbox_sync,
+        trigger=IntervalTrigger(minutes=local_to_netbox_sync_min),
+        id="local_to_netbox_sync",
+        name="Local DB to NetBox Sync",
+        replace_existing=True,
+    )
+
+    _scheduler.add_job(
+        job_drift_check,
+        trigger=IntervalTrigger(minutes=drift_min),
+        id="drift_check",
+        name="Drift Detection",
+        replace_existing=True,
+    )
+
+    _scheduler.add_job(
+        job_compliance_scan,
+        trigger=IntervalTrigger(minutes=compliance_min),
+        id="compliance_scan",
+        name="Policy Compliance Scan",
+        replace_existing=True,
+    )
+
+    _scheduler.add_job(
+        job_security_audit,
+        trigger=IntervalTrigger(hours=audit_hrs),
+        id="security_audit",
+        name="Security Audit",
+        replace_existing=True,
+    )
+
+    _scheduler.add_job(
+        job_cve_rescan,
+        trigger=IntervalTrigger(hours=cve_hrs),
+        id="cve_rescan",
+        name="CVE Rescan",
+        replace_existing=True,
+    )
+
+    _scheduler.add_job(
+        job_anomaly_detect,
+        trigger=IntervalTrigger(minutes=anomaly_min),
+        id="anomaly_detect",
+        name="Anomaly Detection & Incident Response",
+        replace_existing=True,
+    )
+
+    _scheduler.start()
+    logger.info(
+        "Scheduler started with %d jobs — Crawl: %dm, InventorySync: %dm, Local→NetBox: %dm, Drift: %dm, Compliance: %dm, Audit: %dh, CVE: %dh, Anomaly: %dm",
+        len(_scheduler.get_jobs()), crawl_min, netbox_sync_min, local_to_netbox_sync_min, drift_min, compliance_min, audit_hrs, cve_hrs, anomaly_min,
+    )
+
+
+def stop_scheduler() -> None:
+    """Gracefully shut down the scheduler."""
+    global _scheduler
+    if _scheduler is not None:
+        _scheduler.shutdown(wait=False)
+        logger.info("Scheduler stopped")
+        _scheduler = None

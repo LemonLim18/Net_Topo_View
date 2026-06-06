@@ -1,0 +1,16 @@
+# Category vocabulary: VLAN (template/RAG grouping). Required/optional per task → intent_schemas/create_vlan.yml.
+category: vlan
+display_name: VLAN
+description: >
+  Switch VLAN database (create/ensure VLAN IDs), optional L2 port binding via separate interface operations.
+parameter_vocabulary:
+  - name: vlan_id
+    description: Numeric VLAN ID (1–4094).
+  - name: vlan_name
+    description: Human-readable VLAN name.
+  - name: target_devices
+    description: Target switch hostnames (API often uses target_hosts).
+  - name: interface_binding
+    description: Whether to configure L2 on ports (see configure_interface for port-level fields).
+  - name: desired_state
+    description: present or absent.

@@ -1,0 +1,14 @@
+components/intent_parser/CategoryEditor.tsx(3,10): error TS1484: 'IntentSchemaCategory' is a type and must be imported using a type-only import when 'verbatimModuleSyntax' is enabled.
+components/intent_parser/IntentGraphCanvas.tsx(3,10): error TS1484: 'IntentSchema' is a type and must be imported using a type-only import when 'verbatimModuleSyntax' is enabled.
+components/intent_parser/IntentGraphCanvas.tsx(45,40): error TS6133: 'j' is declared but its value is never read.
+components/intent_parser/IntentTreePanel.tsx(2,18): error TS6133: 'FolderOpen' is declared but its value is never read.
+components/intent_parser/IntentTreePanel.tsx(2,40): error TS6133: 'Link' is declared but its value is never read.
+components/intent_parser/IntentTreePanel.tsx(3,10): error TS1484: 'IntentSchema' is a type and must be imported using a type-only import when 'verbatimModuleSyntax' is enabled.
+components/intent_parser/OperationEditor.tsx(3,10): error TS1484: 'IntentSchemaOperation' is a type and must be imported using a type-only import when 'verbatimModuleSyntax' is enabled.
+views/IntentHistoryView.tsx(62,45): error TS6133: 'setView' is declared but its value is never read.
+views/IntentParserView.tsx(2,10): error TS6133: 'Network' is declared but its value is never read.
+views/IntentParserView.tsx(2,42): error TS6133: 'Activity' is declared but its value is never read.
+views/IntentParserView.tsx(4,10): error TS1484: 'IntentSchema' is a type and must be imported using a type-only import when 'verbatimModuleSyntax' is enabled.
+views/SDNDashboardView.tsx(8,8): error TS6133: 'React' is declared but its value is never read.
+views/SDNDashboardView.tsx(28,42): error TS6133: 'setView' is declared but its value is never read.
+views/TemplateStudioView.tsx(48,46): error TS7006: Parameter 'lang' implicitly has an 'any' type.

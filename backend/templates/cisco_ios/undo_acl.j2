@@ -1,0 +1,6 @@
+{% if acl_type is defined and acl_type == "extended" %}
+no ip access-list extended {{ acl_name }}
+{% else %}
+no ip access-list standard {{ acl_name }}
+{% endif %}
+!

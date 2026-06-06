@@ -1,0 +1,17 @@
+{% for rule in rules %}
+set firewall family inet filter {{ acl_name }} term rule{{ rule.seq | default(loop.index) }} from {% if rule.protocol is defined %}protocol {{ rule.protocol }}{% endif %}
+
+{% if rule.source is defined and rule.source != "any" %}
+set firewall family inet filter {{ acl_name }} term rule{{ rule.seq | default(loop.index) }} from source-address {{ rule.source }}
+{% endif %}
+{% if rule.destination is defined and rule.destination != "any" %}
+set firewall family inet filter {{ acl_name }} term rule{{ rule.seq | default(loop.index) }} from destination-address {{ rule.destination }}
+{% endif %}
+{% if rule.port is defined %}
+set firewall family inet filter {{ acl_name }} term rule{{ rule.seq | default(loop.index) }} from destination-port {{ rule.port }}
+{% endif %}
+set firewall family inet filter {{ acl_name }} term rule{{ rule.seq | default(loop.index) }} then {{ rule.action }}
+{% if rule.log is defined and rule.log %}
+set firewall family inet filter {{ acl_name }} term rule{{ rule.seq | default(loop.index) }} then log
+{% endif %}
+{% endfor %}

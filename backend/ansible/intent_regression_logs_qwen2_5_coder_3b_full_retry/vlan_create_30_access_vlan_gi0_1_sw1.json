@@ -1,0 +1,11 @@
+{
+  "case_id": "vlan_create_30_access_vlan_gi0_1_sw1",
+  "started_at": "2026-03-20T13:04:23.411428",
+  "intent_description": "Create VLAN 30 and apply it as access VLAN on GigabitEthernet1/0/1 on SW1",
+  "preview_initial_error": {
+    "error": "('Connection aborted.', ConnectionResetError(10054, 'An existing connection was forcibly closed by the remote host', None, 10054, None))",
+    "type": "ConnectionError"
+  },
+  "finished_at": "2026-03-20T13:05:13.926976",
+  "result_ok": false
+}

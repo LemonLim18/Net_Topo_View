@@ -1,0 +1,168 @@
+# Intent operations reference (canonical)
+
+**Purpose:** One place that defines **operation-specific** intent schemas. The UI may group work under broad **categories** (e.g. “VLAN”), but the **LLM must choose the correct `action` + `feature` pair** — each pair has its own required vs optional parameters.
+
+---
+
+## Source of truth (project rule)
+
+**From this point onward, every intent operation and change must reference and stay in sync with:**
+
+| Artifact | Role |
+|----------|------|
+| **`docs/intent_operation_reference.md`** (this file) | Human-readable spec + LLM narrative: when to use which `action`/`feature`, required vs optional, anti-patterns. Injected into the intent parser via `get_intent_operation_reference_for_prompt()`. |
+| **`backend/ansible/intent_schemas/*.yml`** | **Authoritative** per-**action** schema: `action`, `feature`, `required`, `optional`, `resolution_order`, `questions`. Drives validation, disambiguation, `get_required_params_hint_for_prompt()`, early tree completeness (`build_params_disambiguation_fields_from_intent`), and the Playbook Studio **intent_schema_inspector**. |
+| **`backend/ansible/intent_schemas/*.schema.json`** (where present) | JSON Schema for **type** validation of filled parameters (ranges, shapes). |
+| **`backend/ansible/intent_graph.yml`** | Intent Parsing Tree skeleton: root `target_devices` concept + **categories** → list of **operations** (each operation must have a matching `intent_schemas/<action>.yml`). Validated by `python -m ansible.validate_intent_artifacts`. |
+| **`backend/ansible/intent_keywords.yml`** | Editable **classification keywords** and rule-based heuristics (query/audit patterns, broad device scope, create-VLAN fast path, role/vendor aliases). Consumed by `intent_artifacts.py` and `llm/intent.py`. |
+| **`backend/ansible/category_schemas/*.yml`** | Per-category **parameter vocabulary** (descriptions only; not required/optional). Injected into the LLM parser via `get_category_vocabulary_for_prompt()`. |
+| **`backend/ansible/intent_tree.json`** | Legacy **documentation / tooling** only; duplicate required/optional lists were removed. Do not treat as authoritative for validation. |
+
+**When you add or change an operation:** update **`intent_schemas/<action>.yml`** first, add the **`action`** under the right category in **`intent_graph.yml`**, then **this markdown** (tables + wording), then any **`.schema.json`** and code references (`intent_validation.py`, `api.py`, `llm/intent.py`, tests). Do not define required/optional fields only in code or only in the prompt.
+
+**Cross-layer trunk fields (VLAN + interface):** Intent parameters use **`interfaces[].trunk_vlans`** and/or **`interfaces[].allowed_vlans`** (synonyms for “allowed VLAN IDs on trunk”). **`configure_interface.schema.json`** accepts either for trunk mode; **`configure_interface_conditional_disambiguation_fields()`** treats **`allowed_vlans`** as satisfying trunk when **`trunk_vlans`** is empty. Rendered Ansible for Cisco/Juniper uses **`trunk.allowed_vlans`** only — see **Ansible trunk key** above.
+
+**Backend / tree engine:** `evaluate_intent_tree()` applies **data-driven** broad-scope checks (`intent_keywords.yml` via `intent_artifacts.intent_explicitly_requests_broad_device_scope`) and **operation-schema-driven** early missing-parameter questions via `build_params_disambiguation_fields_from_intent()` — except **`configure_interface`** / **`shutdown_interface`**, where preview/plan keeps owning disambiguation (inventory pickers, `requires_resolution`). If the client sends **explicit** `target_hosts` (or `params.target_hosts` / `target_devices`) on `/ansible/preview-intent` or `/ansible/.../plan-ansible`, bulk-resolution heuristics must **not** clear the selection — see `explicit_targets_from_request` in `intent_tree_engine.py`.
+
+**Preview path:** `_preview_parse_and_rag()` used to run `_target_resolution_is_unclear()` **before** `preview_intent` could apply the explicit-target flag, clearing even user-selected hosts (e.g. 3+ devices). It now skips that clear when **`target_hosts`** or **`params.target_hosts` / `target_devices`** is present (same idea as the tree engine). When the prompt does not mention role/hostname clues, `_deduce_target_devices()` used to label every host as **“matched by inventory similarity”**; with two explicit picks that was **100%** similarity-only and tripped the ≥75% “unclear” rule. Explicit UI/API targets now set **`explicit_user_targets`**, which bypasses that heuristic and shows **“User-selected target (Target inventory or API)”** in Section 2 instead.
+
+**Create-and-plan:** `_resolve_backend_intent_request()` had the same **unclear-bulk** 422 when the LLM returned many `resolved_devices` but the studio sent **`target_hosts: ['all']`** as a fallback (expands to full inventory). The handler now (1) prefers **`params.target_hosts`** over a lone **`['all']`** request, and (2) skips the unclear check when **`req.target_hosts`** or **`params` targets** are present. The Playbook Studio UI must not default to **`['all']`** when no host is selected.
+
+**Ansible chat preview follow-ups:** `AnsibleChatPanel` keeps **`previewLockedTargetHosts`** and **`previewAccumulatedParams`** across device picker → params wizard → interface picker so each **`previewIntent`** call resends the user’s device choice and prior answers (e.g. `vlan_id` / `vlan_name`). The lightweight `parseIntent()` no longer defaults missing hosts to **`['all']`** (that caused full-inventory resolution and repeated device/VLAN prompts). Invalid interface names still surface **`interfaces_disambiguation`** with messages from `validate_interface_params_against_context` (e.g. interface not on the selected host).
+
+**Device hints vs L2 jargon:** The LLM sometimes puts words like **`trunk`**, **`port`**, or interface-looking strings into **`resolved_devices`**. Those tokens are **not** inventory hostnames — `is_spurious_device_hint_token()` in `context_entity_validation.py` filters them before alias matching and device disambiguation, so users are not asked to “pick devices” for English words from “trunk port … on SW1”.
+
+**Trunk allowed VLANs (chat wizard):** When the preview asks for **`trunk_vlans`**, the backend may attach **`control: "multi_select_integers"`** and **`options`** (VLAN IDs from the merged intent, e.g. `create_vlan` **vlan_id**, plus VLAN-like fields on interfaces in **planned context**). The UI renders checkboxes instead of a comma-separated text field to reduce typos. If no candidates are found, the wizard falls back to text entry (same merge path in `api.py` for list or string).
+
+**Trunk semantics (template + resolver):** Do **not** treat an **empty** **`allowed_vlans` / `trunk_vlans`** list as “carry **all** VLANs on the trunk.” That is too broad for prompts like “allow VLAN **10** on the trunk.” When the list is missing or empty, **`reference_resolver.get_template_vars()`** defaults the trunk allow-list to at least the **operation VLAN** (**`vlan_id`** / VLAN being created). **Append vs replace:** when **planned inventory** exposes **`allowed_vlans` / `trunk_vlans` / `vlans`** on the same interface name for the selected host(s), the backend **merges** (**union**) those IDs with the intent list so new VLANs are **added** rather than silently replacing the whole device state in the rendered playbook (best-effort; if inventory has no L2 fields, only intent applies). The literal string **`"all"`** is still honored when the user or API **explicitly** requests trunk **all** (rare).
+
+**Native VLAN:** **`native_vlan`** is **optional**. Omit it when the user did not ask to change the native/untagged VLAN. Do **not** assume **`native_vlan: 1`** unless the user (or authoritative params) specified VLAN 1. Playbook Studio and **`get_template_vars()`** only emit **`native_vlan`** in L2 module config when it is set.
+
+**Ansible trunk key (Cisco / Juniper resource modules):** **`cisco.ios.ios_l2_interfaces`** and **`juniper.device.junos_l2_interfaces`** accept **`trunk.allowed_vlans`** only — **`trunk.trunk_vlans`** is invalid and fails at runtime. **Intent** still uses **`interfaces[].trunk_vlans`** and/or **`interfaces[].allowed_vlans`** (LLM/UI); **`reference_resolver.get_template_vars()`** maps those into **`trunk: { allowed_vlans: "<csv-or-all>" }`** in **`interfaces_config_with_vlan`**. Huawei **`ce_config`** tasks consume the same value from **`iface.trunk.allowed_vlans`** in templates (CLI text, not the Cisco module schema).
+
+**Preview wizard vs raw prompt:** `vlan_schema_fields_missing_from_user_prompt()` only inspects **`intent_description`**. Values typed in the chat wizard (e.g. VLAN name **HR**) are merged into **`parameters`** but do not change the original message. **`vlan_schema_fields_missing_from_user_prompt_respecting_params()`** skips `vlan_id` / `vlan_name` when those keys are **trusted** from **`req.params`** (wizard/API), not when the LLM invented them in **`parameters`**, so the UI does not loop on “VLAN name?” forever and does not accept hallucinated names as final.
+
+**Multi-operation preview (primary + `secondary_intents`):** For one user message, the LLM may return **`create_vlan`** as primary and **`configure_interface`** in **`secondary_intents[0]`** (see composite table below). Preview **merges missing required fields from every slice’s operation-specific YAML** (`backend/ansible/intent_schemas/*.yml`) into a **single** top-level **`params_disambiguation`**. Fields that belong to a secondary slice include **`secondary_intent_index`** (0-based) and an optional **`label`** (e.g. “Also required: configure_interface (interface)”). The chat submits answers via **`params.secondary_intents`** patches (merged server-side into `parsed_intent.secondary_intents`); primary keys still merge into **`parameters`** as before. **`secondary_intent_previews`** continues to list **`missing_fields` / `validation_errors`** per slice; nested per-secondary **`params_disambiguation`** is **not** used (avoid duplicate wizards). **Generic pipeline and extension points:** see **`docs/multi_intent_operations.md`** (`strip_stale_secondary_params_after_primary_authoritative`, `merge_prompt_aware_disambiguation_for_schema`, `SECONDARY_INTENT_CONDITIONAL_DISAMBIGUATION_BY_ACTION`).
+
+**Scaling (3+ operations):** The array **`secondary_intents`** can hold **any number** of slices; the backend loops all indices for schema completeness and the params wizard tags each question with **`secondary_intent_index`**. **Caveat:** the **planned-inventory interface picker** (when names are invalid) applies selections to the **first** secondary whose action is **`configure_interface`** (or feature **`interface`**). If you have **two** distinct interface-configuration tasks in one message, complete one via the picker / wizard, then use a follow-up prompt or fill the other slice’s **`interfaces`** in the params wizard (text) — full multi-picker orchestration for N interface slices is not implemented yet.
+
+**Playbook Studio modal:** “Target interfaces” chips are filled from **`parsed_intent.parameters.interfaces`** **and** from every **`parsed_intent.secondary_intents[].parameters.interfaces`** (composite prompts). Generate passes **`params._secondary_intents`** (same convention as the LLM parser) so create-and-plan does not treat port work as **`interfaces_to_shutdown`**.
+
+**Intent schema inspector (preview API + Studio):** **`POST /ansible/preview-intent`** includes **`intent_schema_inspector`**, built by **`build_intent_schema_inspector_payload()`** in **`intent_validation.py`**. It lists **primary** and each **`secondary_intents`** slice with the matching **`intent_schemas/<action>.yml`**, **required vs optional** fields per operation, **filled / missing / optional-empty** status, **`param_key`** (API field name, e.g. `target_devices` → `target_hosts`), and type-validation errors when JSON-Schema is available. The Playbook Studio overlay renders this as a form-style table for review. **Authoritative chat/UI answers:** Before building the inspector and returning **`parsed_intent`**, **`api.py`** calls **`_merge_client_authoritative_preview_params()`** so non-empty keys from **`req.params`** (wizard follow-ups: **`vlan_id`**, **`vlan_name`**, **`target_hosts`**, etc.) overwrite LLM placeholders in **`parsed_intent.parameters`**. The Ansible chat passes **`previewAccumulatedParams`** into Playbook Studio as **`authoritativeMergedParams`** so the **Parameters (schema)** form defaults match user selections. **Opening Studio** after the first successful preview must pass that preview response as **`initialPreviewResult`** (not a blind re-fetch) so the inspector and form stay aligned with the same **`previewIntent`** call. **Rule-based VLAN DB prompts:** short imperatives like *“Create VLAN on devices”* are parsed as **`create_vlan`** without waiting on the LLM (`llm/intent.py` fast path + post-LLM heuristic) so **`params_disambiguation`** can ask for **`vlan_id`** / **`vlan_name`** in the same flow as targets.
+
+**Planned inventory cross-check (devices + interfaces, every slice):** Resolved **target hostnames** are aligned with planned inventory where the backend has inventory (`_filter_resolved_hosts_to_planned_inventory` on relevant paths). **Interface names are not trusted from the LLM alone:** `collect_user_interface_names_from_params()` gathers names from primary **`parameters`** (shutdown/configure/ACL/etc.), from **`parameters._secondary_intents` / `secondary_intents`** when embedded in the request body, and from top-level **`parsed_intent.secondary_intents`** (preview passes this into `validate_interface_params_against_context`). **Composite** prompts (e.g. `create_vlan` + `configure_interface` in `secondary_intents`) are cross-checked the same way as single-action interface intents — invalid names trigger **`interfaces_disambiguation`**, **`interfaces_inventory_validation`**, and reasoning replacement via `backend/ansible/context_entity_validation.py` + `api.py` (no change to **`intent_schemas/*.yml`** required for this behavior).
+
+**Planned-inventory interface checklist (`interfaces_for_selection`) stacks with validation:** **`POST /ansible/preview-intent`** still returns **`interfaces_for_selection`** (per-device checklists from planned context) when the user’s wording requests VLAN/port binding **even if** `validate_interface_params_against_context` flags invalid LLM interface names (`iface_names_invalid`). Otherwise a bogus **GigabitEthernet…** string would hide the checklists and block picking the real **Ethernet…** from inventory. The same applies when the primary **`feature`** is **`interface`** (`configure_interface`) but the prompt clearly binds VLANs to ports — checklists use **`user_prompt_requests_vlan_interface_binding()`** plus action/feature heuristics in **`api.py`** (do not make checklist success mutually exclusive with **`interfaces_inventory_validation.ok`**).
+
+**Planned inventory vs preview text:** Section **“Interfaces to configure”** in preview reasoning is first filled from the parser/LLM. After `validate_interface_params_against_context()` runs against **planned network context** for the **selected** target host(s), if names fail (e.g. **GigabitEthernet1/0/1** not on **Acc_Cisco_1**), that bullet is **replaced** with a cross-checked explanation and **`parsed_intent.interfaces_inventory_validation`** carries structured `ok` / `validation_notice` / `invalid_entities` — same validation path as **`interfaces_disambiguation`** (not VLAN-only).
+
+**Programmer note (note.md rule 1):** Follow-up prompts that alter **one** operation in a composite without resending **`secondary_intents` / `params`** consistently can desync chat vs studio state; prefer resending accumulated **`previewIntent`** params or splitting into separate messages if orchestration conflicts appear.
+
+**Ansible job playbook on disk vs DB:** Reference-only VLAN/interface generation stores **`ansible_entrypoint_path`** as the **virtual** path **`generated/job_<id>/playbook.yml`** while the workspace file is **`playbooks/generated/job_<id>/playbook.yml`**. **`_entrypoint_content_from_disk()`** in **`backend/ansible/api.py`** must try both so **Check (dry-run)** and **Deploy** pick up **manual edits** in the editor; otherwise the runner keeps using the **stale YAML** from the database. Restart the API process after **Python** changes; YAML-only edits need this path resolution (not a restart).
+
+---
+
+**Rules for the parser**
+
+1. **`action`** must match the operation row (e.g. `create_vlan`, not `configure_interface` for “just create a VLAN”).
+2. **`feature`** is the template/RAG category (e.g. `vlan`, `interface`).
+3. **Required** parameters: never invent values. If the user did not state them, omit or leave empty and set `requires_resolution` / let the controller ask — do **not** hallucinate interfaces or host:port strings.
+4. **Optional** parameters: do **not** ask the user unless they mentioned them or they are strictly needed for the chosen operation.
+5. **Same category, different operations:** “VLAN” can mean **VLAN database only** (`create_vlan`) **or** **L2 port configuration** (`configure_interface` on feature `interface`). Use the decision table below.
+
+---
+
+## VLAN category
+
+| User intent (examples) | `action` | `feature` | Required parameters | Optional (do not ask unless relevant) | Do **not** do |
+|------------------------|----------|-----------|----------------------|----------------------------------------|----------------|
+| Create / add a VLAN (name + id) on devices/switches; **no** access/trunk/port wording | **`create_vlan`** | **`vlan`** | **`vlan_id`**, **`vlan_name`**, **`target_devices`** (or `target_hosts`) | `desired_state`, `interface_binding` only if user asked to map ports | Do **not** set `action`=`configure_interface`. Do **not** fill `parameters.interfaces` with `Host:Ethernet…` guesses. |
+| Put VLAN on ports; access/trunk/native/allowed VLANs on **interfaces** | **`configure_interface`** | **`interface`** | **`target_devices`**, **`interfaces`** (with mode/access_vlan/trunk fields as needed) | `default_mode` | Do **not** use `feature: vlan` for pure L2 port work; use **`interface`** + `configure_interface`. |
+| **Native VLAN** on a port (user says *native VLAN*, *set native VLAN*, *PVID* in trunk context) | **`configure_interface`** | **`interface`** | **`target_devices`**, **`interfaces`** with **`mode`: `trunk`**, **`native_vlan`**, and **`trunk_vlans`** / **`allowed_vlans`** (not access-only) | `default_mode` | **Not** the same as **access VLAN**: native VLAN is a **trunk** parameter. Do **not** map “native VLAN 200” to **`mode`: `access`**, **`access_vlan`: 200**. |
+
+**VLAN database-only (`create_vlan`) — required fields**
+
+- **`vlan_id`** — numeric 1–4094 (only if user stated it; do not guess).
+- **`vlan_name`** — string (only if user stated it; do not guess).
+- **`target_devices`** / **`target_hosts`** — list of hostnames or resolved scope (never invent `Device:Interface` tokens).
+
+**Optional for `create_vlan`:** `interface_binding`, `desired_state` — only when the user explicitly wants interface mapping or absent/present semantics.
+
+**Playbook Studio (`interface_binding` → `interfaces_choice`):** The confirm step exposes **No / Access / Trunk**. **No** means **VLAN database only** (`ios_vlans` / equivalent): the merged `params` sent to **create-and-plan** must **not** include `parameters.interfaces` for L2 binding, even if “Target interfaces” chips are filled from the parser (chips are advisory until Access or Trunk is chosen). **Access** / **Trunk** use the chips and/or the planned-inventory checklists to build `interfaces` with `access_vlan` or `trunk_vlans` (see `PlaybookStudioOverlay.tsx` → `buildStudioMergedParams`). Preview inference sets the dropdown from parsed primary/secondary `interfaces[].mode`, **or** from the user’s natural language when the prompt clearly says **trunk port** / **allow on trunk** but the model wrongly returned **`mode`: `access`** (allowed VLAN list defaults to **`vlan_id`**). The same override applies when the user says **native VLAN** / **set native VLAN** (forces **Trunk** + **native VLAN** field, not access). Planned-inventory checkboxes are **pre-selected** when chip names **match** inventory interface names (including loose match on port suffix, e.g. LLM **Gi…** vs inventory **Ethernet…**).
+
+**Composite prompts (multi-intent — same user message):** When the user asks to **create/add a VLAN** (ID + name in the switching database) **and** **configure specific interfaces** (access/trunk, interface names) in one sentence, the intent parser must **not** collapse this into a single `configure_interface` / `feature: vlan` blob. **“Create VLAN … and set native VLAN … on an interface”** is composite: **primary `create_vlan`** + **secondary `configure_interface`** with **trunk** + **`native_vlan`** (see **Native VLAN** row above). Use:
+
+| Step | `action` | `feature` | Role |
+|------|----------|-----------|------|
+| Primary | **`create_vlan`** | **`vlan`** | VLAN DB: `vlan_id`, `vlan_name`, `target_devices` |
+| `secondary_intents[0]` | **`configure_interface`** | **`interface`** | Ports: `interfaces` with `mode`, `access_vlan` / trunk fields |
+
+The LLM JSON already supports `secondary_intents` (see `backend/llm/intent.py`). Preview validates secondaries via `secondary_intent_previews` and **folds** each secondary’s **`intent_schemas` completeness** into **`params_disambiguation`** (see **Multi-operation preview** above). **Playbook execution** may still apply the **primary** intent first until multi-play orchestration is extended for all categories.
+
+---
+
+## Interface category (`feature: interface`)
+
+| User intent | `action` | Required | Optional |
+|-------------|----------|----------|----------|
+| Shutdown / admin-down / disable interfaces | **`shutdown_interface`** | **`target_devices`**, **`interfaces`** (or `interfaces_to_shutdown` per API) | — |
+| L2/L3 changes: access/trunk, VLAN on port, routed IP | **`configure_interface`** | **`target_devices`**, **`interfaces`** | `default_mode` |
+
+---
+
+## Routing: static route (`feature: static_route`)
+
+| `action` | Required | Optional |
+|----------|----------|----------|
+| **`configure_static_route`** | **`target_devices`**, **`destination`**, **`next_hop`** | `admin_distance`, `vrf_name` |
+
+---
+
+## OSPF (`feature: ospf`)
+
+| `action` | Required | Optional |
+|----------|----------|----------|
+| **`configure_ospf`** | **`process_id`**, **`target_devices`**, **`networks`** | `router_id`, `area_definitions`, `passive_interfaces`, `redistribution` |
+
+---
+
+## ACL (`feature: acl`)
+
+| `action` | Required | Optional |
+|----------|----------|----------|
+| **`configure_acl`** | **`acl_name`**, **`acl_type`**, **`rules`**, **`target_devices`** | `apply_to` |
+
+---
+
+## QoS (`feature: qos`)
+
+| `action` | Required | Optional |
+|----------|----------|----------|
+| **`configure_qos`** | **`policy_name`**, **`target_devices`**, **`qos_type`**, **`classification_rules`** | `interface_apply` |
+
+---
+
+## Revision
+
+- **2026-03:** Clarified VLAN **database-only** vs **interface** operations; required `vlan_id`, `vlan_name`, `target_devices` for `create_vlan`.
+- **2026-03:** Declared **dual source of truth**: `docs/intent_operation_reference.md` + `backend/ansible/intent_schemas/*.yml` for all operations going forward.
+- **2026-03:** Multi-intent preview: merged **`params_disambiguation`** from primary + **`secondary_intents`** schemas; **`params.secondary_intents`** wizard patches; **`secondary_intent_index`** on fields.
+- **2026-03:** Planned-inventory interface validation includes **`secondary_intents`** (not only primary **`parameters`**); **`collect_user_interface_names_from_params`** extended accordingly.
+- **2026-03:** **`POST /ansible/preview-intent`**: for **`create_vlan`**, the **Interfaces to configure** line in **`reasoning`** is rebuilt from **merged** `parameters` after `req.params` (wizard / interface picker / target inventory) so it matches **`Ethernet0/x`** (or other inventory names), not a stale LLM guess left from the raw prompt.
+- **2026-03:** When the client sends authoritative primary **`interfaces`** / **`interfaces_config`**, **`secondary_intents`** slices that still contain LLM-invented interface names are cleared (unless that slice is explicitly patched in **`req.params.secondary_intents`**) so planned-inventory validation does not fail on a ghost **GigabitEthernet** token alongside the user’s **Ethernet0/x** pick.
+- **2026-03:** If **`req.params`** includes non-empty **`interfaces`** / **`interfaces_config`**, planned-inventory validation uses **`interface_names_override`** — only those names are checked, so LLM guesses merged elsewhere do not surface **`interfaces_inventory_validation`** errors in the preview modal.
+- **2026-03:** **`explicit_interface_names_from_request_params`** also reads **`interfaces`** / **`interfaces_config`** / **`interfaces_to_shutdown`** under **`secondary_intents`** / **`_secondary_intents`** slices (Playbook Studio used to send port picks only on the secondary for **`create_vlan`** + interface). The Studio now sets **primary** **`params.interfaces`** for **`create_vlan`** when target-interface chips are set, and debounces **`preview-intent`** with merged **`params`** so reasoning and inventory validation match the UI.
+- **2026-03:** VLAN normalization no longer emits **`native_vlan`: null** on access (or unset) interfaces — that broke JSON Schema (`integer` vs `null`). **`reference/vlan/intent_schema.json`**, **`create_vlan.schema.json`**, and **`configure_interface.schema.json`** allow **`native_vlan`** to be **`null`** when present; prefer omitting the key when unused.
+- **2026-03:** **`cisco.ios.ios_l2_interfaces`** / **`juniper.device.junos_l2_interfaces`** require **`trunk.allowed_vlans`** (not **`trunk.trunk_vlans`**). Reference playbooks and **`get_template_vars()`** emit **`allowed_vlans`** under **`trunk`**; intent parameters remain **`trunk_vlans`** / **`allowed_vlans`** on interface objects.
+- **2026-03:** **`_entrypoint_content_from_disk()`** resolves **`generated/job_<id>/playbook.yml`** (DB virtual path) to **`playbooks/generated/job_<id>/playbook.yml`** so manual playbook edits apply to Check/Deploy.
+- **2026-03:** **`configure_interface.schema.json`**: trunk mode accepts **`trunk_vlans`** or **`allowed_vlans`**; **`intent_validation.configure_interface_conditional_disambiguation_fields`** treats **`allowed_vlans`** as present when **`trunk_vlans`** is missing.
+- **2026-03:** **Native VLAN** phrasing in user prompts maps to **trunk** + **`native_vlan`**, not **access** + **`access_vlan`**. LLM parse rules (`backend/llm/intent.py` rule 7b), Playbook Studio inference (`userPromptSuggestsNativeVlanIntent`), and composite **create_vlan** + **configure_interface** for “create VLAN … and set native VLAN on …” documented here and in **`configure_interface.yml`** comments.
+- **2026-03:** Preview **`interfaces_for_selection`** is no longer suppressed when interface names fail inventory validation — checklists and **`interfaces_inventory_validation`** are complementary, not mutually exclusive (`api.py` preview-intent block).
+- **2026-03:** **`POST /ansible/preview-intent`** no longer returns **HTTP 422** when the intent tree detects missing required params (e.g. **`create_vlan`** **`vlan_id`** / **`vlan_name`**). The chat expects **200** + **`params_disambiguation`** so the in-chat wizard can run before Playbook Studio (`api.py`); **`plan-ansible`** / **`create-and-plan`** may still fail fast with 422 where documented.
+- **2026-03:** After merging **`req.params`**, preview recomputes **`resolved_devices`** / **`resolved_hosts`** from **`_coalesce_explicit_preview_target_hosts()`** (top-level **`target_hosts`** or **`params.target_hosts`** / **`target_devices`**) via **`_resolve_target_hosts()`** + planned-inventory filter, clears stale **`pending_devices_disambiguation`**, and strips obsolete **§1c** reasoning blocks when explicit picks resolve to inventory hosts — so a chat device selection is not overwritten by a bulk LLM **`resolved_devices`** list.
+- **2026-03:** **`_NON_HOSTNAME_WORDS`** and the chat **`parseIntent()`** “on …” host extractor ignore tokens like **`devices`** so prompts such as **“Create VLAN on devices”** do not invent a fake hostname **`devices`** or skew device disambiguation.
+- **2026-03:** **`extract_create_vlan_params_from_natural_language()`** + **`merge_extracted_vlan_params_into_parsed_intent()`** / **`merge_extracted_vlan_params_into_flat_params()`** (`intent_validation.py`) pre-fill **`vlan_id`** / **`vlan_name`** from the raw prompt when the LLM omits them (e.g. **“Create VLAN 67 named ShuYing on access switch 1, 2, and 3”**). Used on **`preview-intent`**, **`plan-ansible`**, and **`_resolve_backend_intent_request`** (create-and-plan).
+- **2026-03:** Chat **interface disambiguation** keeps a **per-device** checkbox map and sends **`hostname:interface`** qualified names so identical labels (e.g. **Ethernet0/3**) are not linked across hosts; **native VLAN** prompts from the chat use **trunk** + **`native_vlan`** (shared **`vlanPromptHints.ts`** with Playbook Studio).
+- **2026-03:** **Preview RAG** uses fewer chunks (**k=4** / **3** fallback vs **6** / **4**); **`plan-ansible`** vector snippets **k=3** capped at **2** (was **5** / **3**). **`PlanAnsibleRequest`** / **`CreateAndPlanRequest`** default **`auto_refine=False`**, **`max_refinement_attempts=1`** for faster generation (opt in to refinement via API if needed).
+- **2026-03:** **`_apply_numeric_subset_fallback`** runs only when there are **no** explicit API/UI ``target_hosts`` / ``params`` targets. If the user already selected hostnames, numeric “1,2,3” mapping is skipped so **§1c Target scope (numeric selection)** cannot contradict **Section 2** after ``_coalesce_explicit_preview_target_hosts`` merges a longer list. Stale numeric §1c blocks are also stripped when coalescing explicit targets.
+- **2026-03:** Bare tokens **`access`**, **`core`**, **`distribution`**, **`dist`** are **not** expanded to role-wide host lists in ``_resolve_target_hosts`` (they matched phrases like “on **access** switch 1, 2, and 3” and incorrectly targeted every access device). Use **``all`` + ``access``** (or list hostnames) for “all access-layer devices”. Chat ``parseIntent()`` denylists the same role words after **on …**.

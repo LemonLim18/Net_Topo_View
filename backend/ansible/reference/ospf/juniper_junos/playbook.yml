@@ -1,0 +1,25 @@
+---
+- name: Configure OSPF (Juniper Junos)
+  hosts: "{{ target_hosts | default('all') }}"
+  gather_facts: no
+  ignore_unreachable: true
+  tasks:
+    - name: Configure OSPF process and advertised networks (Juniper Junos)
+      juniper.device.junos_config:
+        lines:
+{% if router_id %}
+          - "set protocols ospf router-id {{ router_id }}"
+{% endif %}
+{% for net in networks | default([]) %}
+          - "set protocols ospf area {{ net.area }} network {{ net.network }}/{{ net.prefix_length | default('24') }}"
+{% endfor %}
+{% for iface in passive_interfaces | default([]) %}
+          - "set protocols ospf area 0.0.0.0 interface {{ (iface | string).split(':')[-1] }} passive"
+{% endfor %}
+{% for proto in redistribution | default([]) %}
+          - "set policy-options policy-statement REDIST_{{ proto | upper }} term 1 from protocol {{ proto }}"
+          - "set policy-options policy-statement REDIST_{{ proto | upper }} term 1 then accept"
+          - "set protocols ospf export REDIST_{{ proto | upper }}"
+{% endfor %}
+      when:
+        - inventory_hostname in groups.get('vendor_juniper_junos', [])

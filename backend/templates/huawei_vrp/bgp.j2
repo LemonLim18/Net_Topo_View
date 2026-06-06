@@ -1,0 +1,23 @@
+bgp {{ asn }}
+ router-id {{ router_id }}
+{% for neighbor in neighbors %}
+ peer {{ neighbor.ip }} as-number {{ neighbor.remote_as }}
+{% if neighbor.description is defined and neighbor.description %}
+ peer {{ neighbor.ip }} description {{ neighbor.description }}
+{% endif %}
+{% if neighbor.update_source is defined and neighbor.update_source %}
+ peer {{ neighbor.ip }} connect-interface {{ neighbor.update_source }}
+{% endif %}
+{% endfor %}
+{% if address_family is defined and address_family %}
+ {{ address_family }}-family unicast
+{% for neighbor in neighbors %}
+  peer {{ neighbor.ip }} enable
+{% endfor %}
+{% if networks is defined and networks %}
+{% for net in networks %}
+  network {{ net.prefix }} {{ net.mask }}
+{% endfor %}
+{% endif %}
+{% endif %}
+return

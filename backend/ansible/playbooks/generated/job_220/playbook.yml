@@ -1,0 +1,48 @@
+- name: Configure ACL (Cisco IOS)
+  hosts: "Acc_Cisco_1"
+  gather_facts: no
+  connection: network_cli
+  tasks:
+    - name: Configure numbered ACL on Cisco IOS
+      cisco.ios.ios_config:
+        match: line
+        replace: line
+        lines:
+
+
+
+
+
+
+
+
+
+
+          - "access-list 2000 permit tcp 192.168.1.0 0.0.0.255 any eq 22"
+
+
+      when:
+        - ((acl_name | string) | trim).isdigit()
+
+    - name: Configure named ACL on Cisco IOS
+      cisco.ios.ios_config:
+        match: line
+        replace: line
+        parents:
+          - "ip access-list extended 2000"
+        lines:
+
+
+
+
+
+
+
+
+
+
+          - "1 permit tcp 192.168.1.0 0.0.0.255 any eq 22"
+
+
+      when:
+        - not (((acl_name | string) | trim).isdigit())

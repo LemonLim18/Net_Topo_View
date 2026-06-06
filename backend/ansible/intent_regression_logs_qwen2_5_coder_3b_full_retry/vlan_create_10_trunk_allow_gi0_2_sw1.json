@@ -1,0 +1,11 @@
+{
+  "case_id": "vlan_create_10_trunk_allow_gi0_2_sw1",
+  "started_at": "2026-03-20T13:05:13.927802",
+  "intent_description": "Create VLAN 10 and allow it on trunk port GigabitEthernet1/0/2 on SW1",
+  "preview_initial_error": {
+    "error": "('Connection aborted.', ConnectionResetError(10054, 'An existing connection was forcibly closed by the remote host', None, 10054, None))",
+    "type": "ConnectionError"
+  },
+  "finished_at": "2026-03-20T13:05:19.265243",
+  "result_ok": false
+}

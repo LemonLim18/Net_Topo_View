@@ -1,0 +1,8 @@
+---
+- name: Configure OSPF (Cisco IOS)
+  hosts: vendor_cisco_ios
+  gather_facts: no
+  tasks:
+    - name: Placeholder — use cisco.ios.ios_ospf / ios_ospf_interfaces
+      ansible.builtin.debug:
+        msg: "Replace with real OSPF tasks"

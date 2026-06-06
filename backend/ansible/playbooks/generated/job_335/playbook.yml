@@ -1,0 +1,18 @@
+---
+- name: Configure OSPF (Cisco IOS)
+  hosts: "Test_Core_Switch"
+  gather_facts: no
+  ignore_unreachable: true
+  tasks:
+    - name: Configure OSPF process and advertised networks (Cisco IOS)
+      cisco.ios.ios_config:
+        parents: "router ospf 1"
+        lines:
+
+
+          - "network 192.168.1.0 0.0.0.255 area 0"
+
+
+
+      when:
+        - inventory_hostname in groups.get('vendor_cisco_ios', [])

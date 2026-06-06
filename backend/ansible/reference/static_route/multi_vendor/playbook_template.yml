@@ -1,0 +1,27 @@
+---
+- name: Configure Static Routes (Multi-vendor)
+  hosts: "{{ target_hosts | default('all') }}"
+  gather_facts: no
+  ignore_unreachable: true
+  tasks:
+    - name: Configure static route (Cisco IOS)
+      cisco.ios.ios_config:
+        lines:
+          - "{% if vrf_name %}ip route vrf {{ vrf_name }} {{ destination_network }} {{ destination_netmask }} {{ next_hop }}{% if admin_distance is not none %} {{ admin_distance }}{% endif %}{% else %}ip route {{ destination_network }} {{ destination_netmask }} {{ next_hop }}{% if admin_distance is not none %} {{ admin_distance }}{% endif %}{% endif %}"
+      when:
+        - inventory_hostname in groups.get('vendor_cisco_ios', [])
+
+    - name: Configure static route (Huawei VRP)
+      community.network.ce_config:
+        lines:
+          - "{% if vrf_name %}ip route-static vpn-instance {{ vrf_name }} {{ destination_network }} {{ destination_netmask }} {{ (next_hop | string | replace('TenGigabitEthernet', '10GE') | replace('GigabitEthernet', 'GE')) }}{% if admin_distance is not none %} preference {{ admin_distance }}{% endif %}{% else %}ip route-static {{ destination_network }} {{ destination_netmask }} {{ (next_hop | string | replace('TenGigabitEthernet', '10GE') | replace('GigabitEthernet', 'GE')) }}{% if admin_distance is not none %} preference {{ admin_distance }}{% endif %}{% endif %}"
+      when:
+        - inventory_hostname in groups.get('vendor_huawei_vrp', [])
+
+    - name: Configure static route (Junos)
+      juniper_junos.junos_config:
+        lines:
+          - "set routing-options static route {{ destination_network }}/{{ prefix_length | string }} next-hop {{ next_hop }}"
+      when:
+        - inventory_hostname in groups.get('vendor_juniper_junos', [])
+

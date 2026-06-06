@@ -1,0 +1,15 @@
+{
+  "case_id": "qos_config_generic_ambiguous",
+  "started_at": "2026-03-20T11:47:44.904836",
+  "intent_description": "Configure QoS on devices (generic / ambiguous test)",
+  "preview_initial": {
+    "status_code": 200,
+    "text": "{\"categories\":[\"qos\"],\"references\":[{\"doc_name\":\"reference.md\",\"feature\":\"vlan\",\"vendor\":\"multi_vendor\",\"path\":\"reference/vlan/multi_vendor/playbook_template.yml\"},{\"doc_name\":\"reference.md\",\"feature\":\"interface\",\"vendor\":\"cisco_ios\",\"path\":\"reference/interface/cisco_ios/playbook.yml\"},{\"doc_name\":\"reference.md\",\"feature\":\"vlan\",\"vendor\":\"cisco_ios\",\"path\":\"reference/vlan/cisco_ios/playbook.yml\"},{\"doc_name\":\"reference.md\",\"feature\":\"vlan\",\"vendor\":\"juniper_junos\",\"path\":\"reference/vlan/juniper_junos/playbook.yml\"},{\"doc_name\":\"reference.md\",\"feature\":\"interface\",\"vendor\":\"multi_vendor\",\"path\":\"reference/interface/multi_vendor/playbook_template.yml\"}],\"parsed_intent\":{\"resolved_devices\":[],\"inventory_unknown_device_tokens\":[],\"device_deduction\":{\"deduced\":[],\"why\":\"No target devices could be resolved from the prompt or inventory.\",\"clues\":[],\"mapping\":[]},\"disambiguation\":null},\"policy_approved\":false,\"reasoning\":[\"### 1. Intent\\nIntent parsing encountered an issue: Ollama API error 404: {\\\"error\\\":\\\"model 'qwen3b' not found\\\"}. Using provided feature/vendor if any.\",\"### 1c. Select target device(s)\\n- No inventory hostname was resolved. Choose device(s) in the chat picker or **Target inventory**, then continue.\\n\",\"### 2. Target devices\\n- **Resolved:** (none — pick specific host(s) in **Target inventory** or answer the device question below). You can change them in **Target inventory** below.\",\"### 3. Vendor & templates\\n- No vendor filter; reference templates may include multi-vendor and vendor-specific.\",\"### 4. Reference templates (RAG)\\n- RAG retrieved **6** ansible_reference chunk(s). Matching playbook paths are listed below.\\n- You can remove or add templates in **Reference templates** before generating.\"],\"target_hosts\":[],\"reasoning_trace\":{\"steps\":[{\"title\":\"1. Parse user intent\",\"detail\":\"type=None  action=None  feature=(auto)  vendor=(auto)\"},{\"title\":\"3. Select reference templates\",\"detail\":\"- reference/vlan/multi_vendor/playbook_template.yml: feature="
+  },
+  "preview_initial_assert": {
+    "ok": true,
+    "notes": []
+  },
+  "finished_at": "2026-03-20T11:47:55.332865",
+  "result_ok": true
+}

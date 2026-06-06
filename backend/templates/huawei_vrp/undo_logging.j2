@@ -1,0 +1,4 @@
+{% for server in syslog_servers %}
+undo info-center loghost {{ server }}
+{% endfor %}
+return

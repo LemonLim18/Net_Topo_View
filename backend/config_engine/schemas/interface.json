@@ -1,0 +1,15 @@
+{
+  "required": ["name"],
+  "properties": {
+    "name": { "type": "string", "description": "Interface name (e.g. GigabitEthernet0/1)" },
+    "ip_address": { "type": "string", "description": "IP address" },
+    "subnet_mask": { "type": "string", "description": "Subnet mask (e.g. 255.255.255.0)" },
+    "prefix_length": { "type": "integer", "description": "CIDR prefix length (Junos)" },
+    "description": { "type": "string", "description": "Interface description" },
+    "shutdown": { "type": "boolean", "description": "True to administratively shut down" },
+    "speed": { "type": "string", "description": "Speed setting (e.g. 1000)" },
+    "duplex": { "type": "string", "description": "Duplex setting (full/half/auto)" },
+    "mtu": { "type": "integer", "description": "Maximum transmission unit" },
+    "vlan": { "type": "integer", "description": "Access VLAN ID" }
+  }
+}

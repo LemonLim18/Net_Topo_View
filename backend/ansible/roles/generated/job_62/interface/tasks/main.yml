@@ -1,0 +1,6 @@
+---
+- name: Shutdown interface
+  cisco.ios.ios_l2_interfaces:
+    lines: '{{ item }}'
+    parents: 'interface {{ item }}'
+    state: shutdown

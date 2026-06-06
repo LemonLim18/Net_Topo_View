@@ -1,0 +1,89 @@
+{
+  "required": [
+    "hostname",
+    "mgmt_ip",
+    "subnet_mask",
+    "mgmt_interface",
+    "vendor",
+    "ssh_user",
+    "ssh_password"
+  ],
+  "properties": {
+    "hostname": {
+      "type": "string",
+      "description": "Device hostname"
+    },
+    "mgmt_ip": {
+      "type": "string",
+      "description": "Management IP address"
+    },
+    "subnet_mask": {
+      "type": "string",
+      "description": "Management subnet mask"
+    },
+    "mgmt_prefix_len": {
+      "type": "integer",
+      "description": "Management prefix length for platforms that prefer CIDR"
+    },
+    "discovery_interfaces": {
+      "type": "array",
+      "description": "Inventory interfaces to enable during Day-0 LLDP/CDP discovery"
+    },
+    "mgmt_interface": {
+      "type": "string",
+      "description": "Management interface name"
+    },
+    "role": {
+      "type": "string",
+      "description": "Device role: core | distribution | access | firewall"
+    },
+    "mgmt_l3_interface": {
+      "type": "boolean",
+      "description": "When true, render routed management interface mode (e.g. no switchport on Cisco)."
+    },
+    "vendor": {
+      "type": "string",
+      "description": "Target vendor key"
+    },
+    "ssh_user": {
+      "type": "string",
+      "description": "SSH username"
+    },
+    "ssh_password": {
+      "type": "string",
+      "description": "SSH password"
+    },
+    "port": {
+      "type": "integer",
+      "description": "SSH port"
+    },
+    "snmp_community": {
+      "type": "string",
+      "description": "SNMP community string inherited from common services profile"
+    },
+    "snmp_huawei_community": {
+      "type": "string",
+      "description": "Huawei-specific SNMP community override inherited from common services profile"
+    },
+    "snmp_location": {
+      "type": "string",
+      "description": "SNMP location"
+    },
+    "snmp_contact": {
+      "type": "string",
+      "description": "SNMP contact"
+    },
+    "snmp_host_ip": {
+      "type": "string",
+      "description": "SNMP server/trap host IP"
+    },
+    "syslog_host_ip": {
+      "type": "string",
+      "description": "Syslog server host IP"
+    },
+    "ntp_server_ip": {
+      "type": "string",
+      "description": "NTP server IP"
+    }
+  }
+}

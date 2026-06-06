@@ -1,0 +1,66 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.eggs/
+dist/
+build/
+*.egg
+.mypy_cache/
+.pytest_cache/
+
+# Node
+frontend/node_modules/
+frontend/.vite/
+
+# Env & Secrets
+.env
+.env.*
+!.env.example
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Database (built at runtime)
+backend/db/*.db
+backend/db/*.db-wal
+backend/db/*.db-shm
+
+# ChromaDB (rebuilt at runtime)
+backend/chroma_db/
+
+# Generated playbooks
+backend/ansible/playbooks/*.yml
+
+# Build artifacts
+frontend/dist/
+
+# Logs
+*.log
+backend/error_trace.txt
+frontend/build_log.txt
+
+# Test / benchmark outputs
+backend/benchmark_report.json
+backend/output.md
+
+# Notes
+Note
+note
+*.md
+!README.md
+!docs/**/*.md
+
+# Git
+.git/
+.gitignore

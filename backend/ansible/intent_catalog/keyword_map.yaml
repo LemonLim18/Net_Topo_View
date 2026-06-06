@@ -1,0 +1,121 @@
+# Category hints (order = priority for first match when multiple keywords appear).
+# Aliases are matched as substrings in lowercased user text.
+
+version: 1
+
+priority_order:
+  - vlan
+  - interface
+  - acl
+  - qos
+  - static_route
+  - ospf
+
+categories:
+  vlan:
+    aliases: ["vlan", "svlan", "lan segment"]
+  interface:
+    aliases:
+      - "interface"
+      - "port"
+      - "link"
+      - "gigabit"
+      - "ethernet"
+      - "loopback"
+      - "shutdown"
+      - "admin-down"
+      - "no shutdown"
+      - "trunk"
+      - "access vlan"
+  acl:
+    aliases: ["acl", "access list", "access-list", "firewall rule"]
+  qos:
+    aliases: ["qos", "quality of service", "traffic policy", "service policy", "service-policy", "policy-map", "class-map", "dscp", "policing"]
+  static_route:
+    aliases: ["static route", "default route", "route to", "next hop"]
+  ospf:
+    aliases: ["ospf", "open shortest path first", "area 0", "router id"]
+
+# Phrase → extra categories and/or preferred operations (substring match on lowercased text).
+operation_hints:
+  shutdown_interface:
+    phrases: ["shutdown", "shut down", "admin down", "admin-down", "disable port", "turn off the port"]
+    categories: [interface]
+    prefer_operations: [shutdown_interface]
+  assign_access_vlan:
+    phrases: ["access vlan", "access port", "untagged vlan", "data vlan on port"]
+    categories: [interface, vlan]
+    prefer_operations: [assign_vlan_to_access_port]
+  trunk_allowed_vlans:
+    phrases: ["allowed vlan", "allowed vlans", "trunk vlan", "tagged vlan", "802.1q"]
+    categories: [interface]
+    prefer_operations: [assign_vlan_to_trunk_port]
+  native_vlan:
+    phrases: ["native vlan", "pvid", "untagged on trunk"]
+    categories: [interface]
+    prefer_operations: [set_native_vlan]
+  create_vlan:
+    phrases: ["create vlan", "add vlan", "new vlan", "vlan database", "define vlan"]
+    categories: [vlan]
+    prefer_operations: [create_vlan]
+  static_route:
+    phrases: ["static route", "default route", "0.0.0.0/0", "next hop", "next-hop"]
+    categories: [static_route]
+    prefer_operations: [configure_static_route]
+  acl:
+    phrases: ["access-list", "access list", "extended acl", "permit tcp", "deny ip"]
+    categories: [acl]
+    prefer_operations: [configure_acl]
+  qos:
+    phrases: ["qos policy", "service policy", "police", "shape", "priority queue"]
+    categories: [qos]
+    prefer_operations: [configure_qos]
+
+  qos_apply_policy:
+    phrases: ["apply qos", "apply qos policy", "service-policy", "service policy"]
+    categories: [qos]
+    prefer_operations: [apply_qos_policy_to_interface]
+
+  qos_mark_dscp:
+    phrases: ["mark traffic", "mark dscp", "set dscp", "dscp 46", "dscp"]
+    categories: [qos]
+    prefer_operations: [mark_qos_dscp]
+
+  qos_policing:
+    phrases: ["policing policy", "create policing", "police http", "police traffic", "rate-limit"]
+    categories: [qos]
+    prefer_operations: [create_qos_policing_policy]
+  ospf:
+    phrases: ["ospf area", "router ospf", "ospf network"]
+    categories: [ospf]
+    prefer_operations: [configure_ospf]
+
+  apply_acl_iface:
+    phrases: ["apply acl", "ip access-group", "traffic-filter acl"]
+    categories: [acl]
+    prefer_operations: [apply_acl_to_interface]
+
+  ospf_passive:
+    phrases: ["passive interface", "passive-interface", "ospf passive"]
+    categories: [ospf]
+    prefer_operations: [configure_passive_interface]
+
+  ospf_redistribute:
+    phrases: ["redistribute static", "redistribution", "redistribute into ospf"]
+    categories: [ospf]
+    prefer_operations: [configure_ospf_redistribute]
+
+  routed_interface:
+    phrases: ["routed interface", "layer 3 interface", "l3 interface", "ip address", "set ip"]
+    categories: [interface]
+    prefer_operations: [configure_interface]
+
+  route_via_interface:
+    phrases: ["via gigabit", "via interface", "outgoing interface", "egress interface"]
+    categories: [static_route]
+    prefer_operations: [configure_static_route]
+
+  qos_uplink:
+    phrases: ["uplink port", "uplink", "mark traffic", "dscp"]
+    categories: [qos]
+    prefer_operations: [configure_qos]

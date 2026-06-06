@@ -1,0 +1,8 @@
+# ===== Strict Rollback: {{ hostname }} (Juniper JunOS) =====
+configure
+#
+delete interfaces {{ mgmt_interface }} unit 0 family inet address {{ mgmt_ip }}/{{ mgmt_prefix_len if mgmt_prefix_len is defined else 24 }}
+delete system login user {{ ssh_user }}
+delete system services ssh
+#
+commit and-quit

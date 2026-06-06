@@ -1,0 +1,15 @@
+{% if description is defined and description %}
+set interfaces {{ name }} description "{{ description }}"
+{% endif %}
+{% if ip_address is defined and ip_address and prefix_length is defined %}
+set interfaces {{ name }} unit 0 family inet address {{ ip_address }}/{{ prefix_length }}
+{% endif %}
+{% if mtu is defined and mtu %}
+set interfaces {{ name }} mtu {{ mtu }}
+{% endif %}
+{% if speed is defined and speed %}
+set interfaces {{ name }} speed {{ speed }}
+{% endif %}
+{% if shutdown is defined and shutdown %}
+set interfaces {{ name }} disable
+{% endif %}

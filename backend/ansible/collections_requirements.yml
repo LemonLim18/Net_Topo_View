@@ -1,0 +1,9 @@
+# Ansible Galaxy collections required for NetTopoView playbooks (Cisco, Huawei, Juniper).
+# On the remote runner (or any host that runs ansible-playbook), install with:
+#   ansible-galaxy collection install -r backend/ansible/collections_requirements.yml
+---
+collections:
+  - name: cisco.ios
+  - name: community.network   # Huawei VRP/CE: use ce_config (not network_config)
+  - name: juniper.device      # Junos; prefer over deprecated junipernetworks.junos
+  - name: ansible.netcommon

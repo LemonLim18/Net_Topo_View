@@ -1,0 +1,15 @@
+{
+  "required": ["syslog_servers"],
+  "properties": {
+    "syslog_servers": {
+      "type": "array",
+      "description": "List of syslog server IPs",
+      "items": { "type": "string" }
+    },
+    "buffer_size": { "type": "integer", "description": "Logging buffer size in bytes" },
+    "console_level": { "type": "string", "description": "Console logging level (e.g. warnings)" },
+    "trap_level": { "type": "string", "description": "Trap logging level (e.g. informational)" },
+    "facility": { "type": "string", "description": "Syslog facility (e.g. local7)" },
+    "source_interface": { "type": "string", "description": "Source interface for syslog" }
+  }
+}

@@ -1,0 +1,31 @@
+---
+- name: Ensure VLAN exists
+  junipernetworks.junos.vlans:
+    vlans:
+      TEST:
+        vlan_id: '{{ vlan_id }}'
+        state: present
+- name: Verify VLAN exists
+  junipernetworks.junos.vlans:
+    vlans:
+      TEST:
+        vlan_id: '{{ vlan_id }}'
+        state: query
+  register: vlan_info
+- name: Ensure VLAN is configured on interfaces
+  junipernetworks.junos.vlan_interfaces:
+    vlans:
+      TEST:
+        interfaces:
+          - name: 'ge-0/0/1'
+          - name: 'ge-0/0/2'
+    state: present
+- name: Verify VLAN interfaces are configured
+  junipernetworks.junos.vlan_interfaces:
+    vlans:
+      TEST:
+        interfaces:
+          - name: 'ge-0/0/1'
+          - name: 'ge-0/0/2'
+    state: query
+  register: vlan_interfaces_info

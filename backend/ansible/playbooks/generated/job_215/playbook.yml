@@ -1,0 +1,15 @@
+- name: Configure ACL (Cisco IOS)
+  hosts: "Acc_Cisco_1"
+  gather_facts: no
+  connection: network_cli
+  tasks:
+    - name: Configure ACL on Cisco IOS
+      cisco.ios.ios_config:
+        lines:
+
+
+
+
+          - "access-list 2000 permit tcp 192.168.1.0 0.0.0.255 any eq 22"
+
+

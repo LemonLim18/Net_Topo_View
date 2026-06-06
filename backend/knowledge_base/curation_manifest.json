@@ -1,0 +1,17 @@
+{
+  "documents": {
+    "01_cisco_ios_xe_ospf_design_baseline.md": {
+      "doc_type": "vendor_doc",
+      "vendor": "cisco",
+      "platform_family": "ios-xe",
+      "applicable_model": "catalyst-9300,isr-4000",
+      "applicable_feature": "ospf,lsdb,passive-interface,area-design",
+      "trust_level": "curated",
+      "source_type": "internal_design_guide",
+      "captured_at": "2026-03-09T00:00:00+00:00",
+      "author": "NetTopoView",
+      "title": "Cisco IOS XE OSPF Design Baseline",
+      "summary": "Operational baseline for OSPF area design, adjacency stability, and validation checks."
+    }
+  }
+}

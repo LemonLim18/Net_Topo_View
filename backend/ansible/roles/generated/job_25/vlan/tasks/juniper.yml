@@ -1,0 +1,27 @@
+---
+- name: Ensure VLAN exists
+  junipernetworks.junos:
+    lines:
+      - vlan {{ vlan_id }}
+        name {{ vlan_name }}
+    parents:
+      - vlan
+    state: merged
+- name: Apply VLAN to interfaces
+  junipernetworks.junos:
+    lines:
+      - interface {{ item }}
+        switchport access vlan {{ vlan_id }}
+    parents:
+      - interface
+    state: merged
+  loop: '{{ interfaces[ansible_network_os] }}'
+- name: Verify VLAN and interfaces
+  junipernetworks.junos:
+    lines:
+      - interface {{ item }}
+        switchport access vlan {{ vlan_id }}
+    parents:
+      - interface
+    state: merged
+  loop: '{{ interfaces[ansible_network_os] }}'

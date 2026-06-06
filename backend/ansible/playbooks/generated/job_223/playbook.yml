@@ -1,0 +1,21 @@
+- name: Configure firewall filter (Juniper Junos)
+  hosts: "Acc_Juniper_4"
+  gather_facts: no
+  connection: netconf
+  tasks:
+    - name: Configure firewall filter from rules
+      junipernetworks.junos.junos_config:
+        lines:
+
+
+
+
+
+
+          - "set firewall family inet filter BLOCK_HTTP term t1 from protocol tcp"
+
+
+          - "set firewall family inet filter BLOCK_HTTP term t1 from destination-port 80"
+
+          - "set firewall family inet filter BLOCK_HTTP term t1 then discard"
+

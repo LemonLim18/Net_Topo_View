@@ -1,0 +1,35 @@
+# roles/access_vlan/molecule/default/verify.yml
+---
+- name: "Verify — access_vlan role idempotency and correctness"
+  hosts: all
+  gather_facts: false
+
+  tasks:
+    - name: "Capture switchport output post-converge"
+      cisco.ios.ios_command:
+        commands:
+          - "show interfaces GigabitEthernet0/1 switchport"
+      register: swport
+
+    - name: "Assert interface is access mode VLAN 100"
+      ansible.builtin.assert:
+        that:
+          - "'100' in swport.stdout[0]"
+          - "'Access' in swport.stdout[0] or 'access' in swport.stdout[0]"
+        fail_msg: "VLAN 100 not applied correctly to GigabitEthernet0/1"
+
+    - name: "Verify idempotency — re-apply role should produce zero changes"
+      ansible.builtin.include_role:
+        name: access_vlan
+      vars:
+        vlan_id:   100
+        vlan_name: "molecule_test"
+        interface: "GigabitEthernet0/1"
+      register: idempotency_run
+
+    # If changed=true here the role failed idempotency
+    - name: "Assert no changes on second apply"
+      ansible.builtin.assert:
+        that:
+          - "not (idempotency_run.changed | default(false))"
+        fail_msg: "Role is not idempotent — second apply produced changes!"

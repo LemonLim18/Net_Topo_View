@@ -1,0 +1,17 @@
+ospf {{ process_id }} router-id {{ router_id }}
+{% for net in networks %}
+ area {{ net.area }}
+  network {{ net.network }} {{ net.wildcard }}
+{% endfor %}
+{% if passive_interfaces is defined and passive_interfaces %}
+{% for intf in passive_interfaces %}
+ silent-interface {{ intf }}
+{% endfor %}
+{% endif %}
+{% if reference_bandwidth is defined and reference_bandwidth %}
+ bandwidth-reference {{ reference_bandwidth }}
+{% endif %}
+{% if default_information_originate is defined and default_information_originate %}
+ default-route-advertise
+{% endif %}
+return

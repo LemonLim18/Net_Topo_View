@@ -1,0 +1,12 @@
+__pycache__/
+venv/
+.vscode/
+topology_store/
+backup_folder/
+_debug*
+# M22  Ansible secrets & ephemeral work directories (vault contents ignored; README is tracked)
+ansible/vault/*
+!ansible/vault/README.md
+ansible/private_data/
+*.retry
+/tmp/nettopo_*

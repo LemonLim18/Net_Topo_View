@@ -1,0 +1,12 @@
+category: acl
+display_name: ACL
+description: Access control lists and application to interfaces or directions.
+parameter_vocabulary:
+  - name: acl_name
+    description: ACL name or number.
+  - name: acl_type
+    description: ipv4, ipv6, mac, l2, etc.
+  - name: rules
+    description: Permit/deny rules or template reference.
+  - name: apply_to
+    description: Where the ACL is applied (optional).

@@ -1,0 +1,14 @@
+{% if source_interface is defined and source_interface %}
+info-center loghost source {{ source_interface }}
+{% endif %}
+{% if facility is defined and facility %}
+info-center loghost facility {{ facility }}
+{% endif %}
+{% if trap_level is defined and trap_level %}
+info-center channel 2 name loghost
+info-center loghost channel 2 trap {{ trap_level }}
+{% endif %}
+{% for server in syslog_servers %}
+info-center loghost {{ server }} port {{ syslog_port | default(6514) }}
+{% endfor %}
+return

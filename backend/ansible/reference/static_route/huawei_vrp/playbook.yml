@@ -1,0 +1,13 @@
+---
+- name: Configure Static Routes (Huawei VRP)
+  hosts: "{{ target_hosts | default('all') }}"
+  gather_facts: no
+  ignore_unreachable: true
+  tasks:
+    - name: Configure static route (Huawei VRP)
+      community.network.ce_config:
+        lines:
+          - "{% if vrf_name %}ip route-static vpn-instance {{ vrf_name }} {{ destination_network }} {{ destination_netmask }} {{ (next_hop | string | replace('TenGigabitEthernet', '10GE') | replace('GigabitEthernet', 'GE')) }}{% if admin_distance is not none %} preference {{ admin_distance }}{% endif %}{% else %}ip route-static {{ destination_network }} {{ destination_netmask }} {{ (next_hop | string | replace('TenGigabitEthernet', '10GE') | replace('GigabitEthernet', 'GE')) }}{% if admin_distance is not none %} preference {{ admin_distance }}{% endif %}{% endif %}"
+      when:
+        - inventory_hostname in groups.get('vendor_huawei_vrp', [])
+

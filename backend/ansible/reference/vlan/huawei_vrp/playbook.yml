@@ -1,0 +1,77 @@
+---
+# Huawei VRP only. Same behavior as multi_vendor: VLAN-only when no interfaces; data-driven interfaces when intent has them.
+# Variables: vlan_id, vlan_name, target_hosts, interfaces_config_with_vlan (from get_template_vars).
+- name: Configure VLANs on access switches
+  hosts: "{{ target_hosts }}"
+  gather_facts: no
+  ignore_unreachable: true
+  tasks:
+    - name: Ensure VLAN {{ vlan_id }} exists (Huawei VRP)
+      community.network.ce_config:
+        lines:
+          - vlan batch {{ vlan_id }}
+          - vlan {{ vlan_id }}
+          - name {{ vlan_name }}
+      when: inventory_hostname in groups.get('vendor_huawei_vrp', [])
+
+{% if interfaces_config_with_vlan_use_nettopo | default(false) %}
+{% if (interfaces_binding_mode | default('access')) == 'access' %}
+    - name: Configure all interfaces as access VLAN {{ vlan_id }} (Huawei VRP)
+      community.network.ce_config:
+        lines:
+          - port link-type access
+          - port default vlan {{ vlan_id }}
+        parents: "interface {{ '{{ (item | string | replace(''TenGigabitEthernet'', ''10GE'') | replace(''GigabitEthernet'', ''GE'')) }}' }}"
+      loop: "{{ '{{ nettopo_interfaces | default([]) | rejectattr(''ip_address'', ''equalto'', (hostvars[inventory_hostname].ansible_host | default(''''))) | map(attribute=''name'') | map(''trim'') | reject(''equalto'', '''') | reject(''match'', ''(?i).*(management|mgmt|meth|vty|console).*'') | list }}' }}"
+      loop_control:
+        label: "{{ '{{ item }}' }}"
+      when: inventory_hostname in groups.get('vendor_huawei_vrp', [])
+{% elif (interfaces_binding_mode | default('access')) == 'trunk' %}
+{% if interfaces_binding_trunk_allowed_vlans is string and interfaces_binding_trunk_allowed_vlans == 'all' %}
+{% set trunk_vlans_csv = 'all' %}
+{% elif interfaces_binding_trunk_allowed_vlans is iterable and interfaces_binding_trunk_allowed_vlans is not string and interfaces_binding_trunk_allowed_vlans | length > 0 %}
+{% set trunk_vlans_csv = interfaces_binding_trunk_allowed_vlans | map('string') | join(' ') %}
+{% else %}
+{% set trunk_vlans_csv = vlan_id|string %}
+{% endif %}
+    - name: Configure all interfaces as trunk (Huawei VRP)
+      community.network.ce_config:
+        lines:
+          - port link-type trunk
+          - port trunk allow-pass vlan {{ trunk_vlans_csv }}
+{% if interfaces_binding_trunk_native_vlan is not none %}
+          - port trunk pvid vlan {{ interfaces_binding_trunk_native_vlan }}
+{% endif %}
+        parents: "interface {{ '{{ (item | string | replace(''TenGigabitEthernet'', ''10GE'') | replace(''GigabitEthernet'', ''GE'')) }}' }}"
+      loop: "{{ '{{ nettopo_interfaces | default([]) | rejectattr(''ip_address'', ''equalto'', (hostvars[inventory_hostname].ansible_host | default(''''))) | map(attribute=''name'') | map(''trim'') | reject(''equalto'', '''') | reject(''match'', ''(?i).*(management|mgmt|meth|vty|console).*'') | list }}' }}"
+      loop_control:
+        label: "{{ '{{ item }}' }}"
+      when: inventory_hostname in groups.get('vendor_huawei_vrp', [])
+{% endif %}
+{% else %}
+{% for iface in interfaces_config_with_vlan %}
+{% if (iface.mode | default('access')) == 'access' %}
+    - name: Configure {{ iface.name }} as access VLAN {{ vlan_id }} (Huawei VRP)
+      community.network.ce_config:
+        lines:
+          - port link-type access
+          - port default vlan {{ iface.access.vlan }}
+        parents: interface {{ iface.name | replace('TenGigabitEthernet', '10GE') | replace('GigabitEthernet', 'GE') }}
+      when: inventory_hostname in groups.get('vendor_huawei_vrp', [])
+{% endif %}
+{% endfor %}
+{% for iface in interfaces_config_with_vlan %}
+{% if (iface.mode | default('access')) == 'trunk' %}
+    - name: Configure {{ iface.name }} as trunk (Huawei VRP)
+      community.network.ce_config:
+        lines:
+          - port link-type trunk
+          - port trunk allow-pass vlan {{ iface.trunk.allowed_vlans }}
+{% if iface.trunk.native_vlan is defined and iface.trunk.native_vlan is not none %}
+          - port trunk pvid vlan {{ iface.trunk.native_vlan }}
+{% endif %}
+        parents: interface {{ iface.name | replace('TenGigabitEthernet', '10GE') | replace('GigabitEthernet', 'GE') }}
+      when: inventory_hostname in groups.get('vendor_huawei_vrp', [])
+{% endif %}
+{% endfor %}
+{% endif %}

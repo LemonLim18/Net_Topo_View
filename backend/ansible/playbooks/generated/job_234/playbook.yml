@@ -1,0 +1,114 @@
+- name: Configure ACL / firewall (multi-vendor)
+  hosts: "Acc_Cisco_1,Acc_Huawei_3,Acc_Juniper_4"
+  gather_facts: no
+  tasks:
+    - name: Configure numbered ACL on Cisco IOS
+      cisco.ios.ios_config:
+        match: none
+        lines:
+          - "no access-list BLOCK_HTTP"
+      when:
+        - inventory_hostname in groups.get('vendor_cisco_ios', [])
+        - ((acl_name | string) | trim).isdigit()
+
+    - name: Apply numbered ACL on Cisco IOS
+      cisco.ios.ios_config:
+        match: line
+        replace: line
+        lines:
+
+
+
+
+
+
+
+
+
+
+          - "access-list BLOCK_HTTP deny tcp any any eq 80"
+
+
+      when:
+        - inventory_hostname in groups.get('vendor_cisco_ios', [])
+        - ((acl_name | string) | trim).isdigit()
+
+    - name: Configure named ACL on Cisco IOS
+      cisco.ios.ios_config:
+        match: none
+        lines:
+          - "no ip access-list extended BLOCK_HTTP"
+      when:
+        - inventory_hostname in groups.get('vendor_cisco_ios', [])
+        - not (((acl_name | string) | trim).isdigit())
+
+    - name: Apply named ACL on Cisco IOS
+      cisco.ios.ios_config:
+        match: line
+        replace: line
+        parents:
+          - "ip access-list extended BLOCK_HTTP"
+        lines:
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+          - "10 deny tcp any any eq 80"
+
+
+
+          - "20 permit ip any any"
+
+      when:
+        - inventory_hostname in groups.get('vendor_cisco_ios', [])
+        - not (((acl_name | string) | trim).isdigit())
+
+    - name: Configure ACL on Huawei VRP
+      community.network.ce_config:
+        lines:
+
+
+          - "undo acl name BLOCK_HTTP"
+          - "acl name BLOCK_HTTP advance"
+
+
+
+          - "rule deny tcp source any destination any destination-port eq 80"
+
+
+          - "return"
+      when:
+        - inventory_hostname in groups.get('vendor_huawei_vrp', [])
+
+    - name: Configure firewall filter on Juniper Junos
+      junipernetworks.junos.junos_config:
+        lines:
+          - "delete firewall family inet filter BLOCK_HTTP"
+
+
+
+
+
+
+          - "set firewall family inet filter BLOCK_HTTP term t1 from protocol tcp"
+
+
+          - "set firewall family inet filter BLOCK_HTTP term t1 from destination-port 80"
+
+          - "set firewall family inet filter BLOCK_HTTP term t1 then discard"
+
+
+      when:
+        - inventory_hostname in groups.get('vendor_juniper_junos', [])

@@ -1,0 +1,5 @@
+views/IntentHistoryView.tsx(62,45): error TS6133: 'setView' is declared but its value is never read.
+views/IntentParserView.tsx(4,29): error TS6196: 'IntentSchemaCategory' is declared but never used.
+views/SDNDashboardView.tsx(8,8): error TS6133: 'React' is declared but its value is never read.
+views/SDNDashboardView.tsx(28,42): error TS6133: 'setView' is declared but its value is never read.
+views/TemplateStudioView.tsx(48,46): error TS7006: Parameter 'lang' implicitly has an 'any' type.

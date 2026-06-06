@@ -1,0 +1,10 @@
+# Optional lab-specific mapping from short prompt tokens (e.g. SW1) to inventory hostnames.
+# Without an entry here, SW1/R1 tokens do **not** resolve — the admin must pick from planned inventory in the UI.
+# The intent parser does not use fuzzy or role/number heuristics for device names.
+#
+# Example:
+#   aliases:
+#     SW1: [Acc_Cisco_1]
+#     SW2: [Acc_Cisco_2]
+version: 1
+aliases: {}

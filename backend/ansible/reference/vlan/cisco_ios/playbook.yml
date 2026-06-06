@@ -1,0 +1,57 @@
+---
+# Cisco IOS only. Same behavior as multi_vendor: VLAN-only when no interfaces; data-driven interfaces when intent has them.
+# Variables: vlan_id, vlan_name, target_hosts, interfaces_config_with_vlan (from get_template_vars).
+- name: Configure VLANs on access switches
+  hosts: "{{ target_hosts }}"
+  gather_facts: no
+  ignore_unreachable: true
+  tasks:
+    - name: Ensure VLAN {{ vlan_id }} exists (Cisco IOS)
+      cisco.ios.ios_vlans:
+        config:
+          - vlan_id: "{{ vlan_id }}"
+            name: "{{ vlan_name }}"
+            state: active
+        state: merged
+      when: inventory_hostname in groups.get('vendor_cisco_ios', [])
+
+{% if interfaces_config_with_vlan_use_nettopo | default(false) %}
+{% set iface_names = nettopo_interfaces | default([]) | rejectattr('ip_address', 'equalto', (hostvars[inventory_hostname].ansible_host | default(''))) | map(attribute='name') | map('trim') | reject('equalto', '') | reject('match', '(?i).*(management|mgmt|meth|vty|console).*') | list %}
+    - name: Configure all interfaces for VLAN {{ vlan_id }} (Cisco IOS)
+      cisco.ios.ios_l2_interfaces:
+        config:
+{% if (interfaces_binding_mode | default('access')) == 'access' %}
+{% for ifn in iface_names %}
+          - name: "{{ ifn }}"
+            mode: access
+            access:
+              vlan: "{{ vlan_id }}"
+{% endfor %}
+{% else %}
+{% if interfaces_binding_trunk_allowed_vlans is string and interfaces_binding_trunk_allowed_vlans == 'all' %}
+{% set trunk_vlans_csv = 'all' %}
+{% elif interfaces_binding_trunk_allowed_vlans is iterable and interfaces_binding_trunk_allowed_vlans is not string and interfaces_binding_trunk_allowed_vlans | length > 0 %}
+{% set trunk_vlans_csv = interfaces_binding_trunk_allowed_vlans | map('string') | join(',') %}
+{% else %}
+{% set trunk_vlans_csv = vlan_id|string %}
+{% endif %}
+{% for ifn in iface_names %}
+          - name: "{{ ifn }}"
+            mode: trunk
+            trunk:
+              allowed_vlans: "{{ trunk_vlans_csv }}"
+{% if interfaces_binding_trunk_native_vlan is defined and interfaces_binding_trunk_native_vlan is not none %}
+              native_vlan: {{ interfaces_binding_trunk_native_vlan }}
+{% endif %}
+{% endfor %}
+{% endif %}
+        state: merged
+      when: inventory_hostname in groups.get('vendor_cisco_ios', [])
+{% elif interfaces_config_with_vlan | length > 0 %}
+    - name: Configure interfaces (Cisco IOS)
+      cisco.ios.ios_l2_interfaces:
+        config:
+{{ interfaces_config_with_vlan_yaml }}
+        state: merged
+      when: inventory_hostname in groups.get('vendor_cisco_ios', [])
+{% endif %}

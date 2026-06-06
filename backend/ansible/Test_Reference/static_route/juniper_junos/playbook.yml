@@ -1,0 +1,8 @@
+---
+- name: Configure static routes (Junos)
+  hosts: vendor_juniper_junos
+  gather_facts: no
+  tasks:
+    - name: Placeholder — use Junos static route modules
+      ansible.builtin.debug:
+        msg: "Replace with real static route tasks"

@@ -1,0 +1,44 @@
+# Intent schema: general interface configuration (L2/L3)
+# Distinct from shutdown_interface (admin down). Use action configure_interface.
+#
+# Trunk allowed VLANs: ``trunk_vlans`` / ``allowed_vlans`` — empty does NOT mean “all VLANs”;
+# resolver/templates default to at least the VLAN being operated on; merge with inventory
+# when present (union / append semantics). See ``docs/intent_operation_reference.md``.
+#
+# Rendered Ansible (Cisco/Juniper L2 resource modules): use ``trunk.allowed_vlans`` in YAML —
+# never ``trunk.trunk_vlans`` (unsupported on ``cisco.ios.ios_l2_interfaces``).
+#
+# ``native_vlan`` — optional; omit unless the user explicitly sets native/untagged VLAN.
+# If the user says *native VLAN* / *set native VLAN*, that is **trunk** semantics (with
+# ``native_vlan`` + ``trunk_vlans`` / ``allowed_vlans``), **not** ``mode: access`` + ``access_vlan``.
+#
+# Trunk allowed VLANs: ``trunk_vlans`` may be collected via the chat preview wizard as
+# **multi-select** (VLAN IDs from intent + planned context); see
+# ``enrich_params_disambiguation_trunk_vlan_controls`` in ``context_entity_validation.py``.
+# Preview API may attach ``interfaces_for_selection`` (planned inventory checklists) when the
+# prompt binds VLANs to ports, even if ``interfaces_inventory_validation`` reports invalid names.
+action: configure_interface
+feature: interface
+required:
+  - target_devices
+  - interfaces
+optional:
+  - default_mode
+  # L3 per-interface fields live on each ``interfaces[]`` object (JSON schema), not as top-level keys:
+  # ``mode: routed``, ``ip_address``, ``subnet_mask``. The inspector shows the whole ``interfaces`` value.
+resolution_order:
+  target_devices:
+    - from_intent
+    - from_inventory
+    - ask_user
+  interfaces:
+    - from_intent
+    - from_topology
+    - ask_user
+  default_mode:
+    - from_intent
+    - ask_user
+questions:
+  target_devices: "Which devices?"
+  interfaces: "Which interfaces should be configured (L2: access/trunk; L3: mode routed + ip_address + subnet_mask)?"
+  default_mode: "Default L2 mode for listed interfaces (access or trunk)?"

@@ -1,0 +1,23 @@
+---
+- name: Ensure VLAN exists
+  junipernetworks.junos.junos_l2_interfaces:
+    config:
+      - name: '{{ interface_gi01 }}'
+        access_vlan: '{{ vlan_id }}'
+      - name: '{{ interface_gi02 }}'
+        access_vlan: '{{ vlan_id }}'
+      - name: '{{ interface_gi101 }}'
+        access_vlan: '{{ vlan_id }}'
+      - name: '{{ interface_gi102 }}'
+        access_vlan: '{{ vlan_id }}'
+    state: merged
+
+- name: Verify VLAN and interfaces
+  junipernetworks.junos.junos_l2_interfaces:
+    state: gathered
+    gather_subset: interfaces
+  register: interfaces
+
+- name: Display VLAN and interface details
+  debug:
+    var: interfaces

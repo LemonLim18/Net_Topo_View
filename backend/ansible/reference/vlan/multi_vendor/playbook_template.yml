@@ -1,0 +1,238 @@
+---
+# VLAN {{ vlan_id }} named {{ vlan_name }} on target hosts.
+# LLM provides intent (vlan id/name, interfaces list). Template does not invent: interfaces empty => no interface config.
+# Only vendors present in target hosts are included (vendors list).
+- name: Configure VLANs on access switches
+  hosts: "{{ target_hosts }}"
+  gather_facts: no
+  ignore_unreachable: true
+  tasks:
+{% if 'cisco_ios' in vendors %}
+    - name: Ensure VLAN {{ vlan_id }} exists (Cisco IOS)
+      cisco.ios.ios_vlans:
+        config:
+          - vlan_id: "{{ vlan_id }}"
+            name: "{{ vlan_name }}"
+            state: active
+        state: merged
+      when: inventory_hostname in groups.get('vendor_cisco_ios', [])
+
+{% if interfaces_config_with_vlan_use_nettopo | default(false) %}
+{% set iface_names = nettopo_interfaces | default([]) | rejectattr('ip_address', 'equalto', (hostvars[inventory_hostname].ansible_host | default(''))) | map(attribute='name') | map('trim') | reject('equalto', '') | reject('match', '(?i).*(management|mgmt|meth|vty|console).*') | list %}
+    - name: Configure all interfaces for VLAN {{ vlan_id }} (Cisco IOS)
+      cisco.ios.ios_l2_interfaces:
+        config:
+{% if (interfaces_binding_mode | default('access')) == 'access' %}
+{% for ifn in iface_names %}
+          - name: "{{ ifn }}"
+            mode: access
+            access:
+              vlan: "{{ vlan_id }}"
+{% endfor %}
+{% else %}
+{% if interfaces_binding_trunk_allowed_vlans is string and interfaces_binding_trunk_allowed_vlans == 'all' %}
+{% set trunk_vlans_csv = 'all' %}
+{% elif interfaces_binding_trunk_allowed_vlans is iterable and interfaces_binding_trunk_allowed_vlans is not string and interfaces_binding_trunk_allowed_vlans | length > 0 %}
+{% set trunk_vlans_csv = interfaces_binding_trunk_allowed_vlans | map('string') | join(',') %}
+{% else %}
+{% set trunk_vlans_csv = vlan_id|string %}
+{% endif %}
+{% for ifn in iface_names %}
+          - name: "{{ ifn }}"
+            mode: trunk
+            trunk:
+              allowed_vlans: "{{ trunk_vlans_csv }}"
+{% if interfaces_binding_trunk_native_vlan is defined and interfaces_binding_trunk_native_vlan is not none %}
+              native_vlan: {{ interfaces_binding_trunk_native_vlan }}
+{% endif %}
+{% endfor %}
+{% endif %}
+        state: merged
+      when: inventory_hostname in groups.get('vendor_cisco_ios', [])
+{% elif interfaces_config_with_vlan | length > 0 %}
+{% for iface in interfaces_config_with_vlan %}
+{% if iface.target_vendor is not defined or not iface.target_vendor or iface.target_vendor == 'cisco_ios' %}
+    - name: Configure {{ iface.name }} as {{ iface.mode | default('access') }} VLAN {{ vlan_id }} (Cisco IOS)
+      cisco.ios.ios_l2_interfaces:
+        config:
+          - name: "{{ iface.name }}"
+            mode: "{{ iface.mode | default('access') }}"
+{% if (iface.mode | default('access')) == 'access' %}
+            access:
+              vlan: "{{ iface.access.vlan }}"
+{% else %}
+            trunk:
+              allowed_vlans: "{{ iface.trunk.allowed_vlans }}"
+{% if iface.trunk.native_vlan is defined and iface.trunk.native_vlan is not none %}
+              native_vlan: {{ iface.trunk.native_vlan }}
+{% endif %}
+{% endif %}
+        state: merged
+      when:
+        - inventory_hostname in groups.get('vendor_cisco_ios', [])
+{% if iface.target_host is defined and iface.target_host %}
+        - inventory_hostname == "{{ iface.target_host }}"
+{% endif %}
+{% endif %}
+{% endfor %}
+{% endif %}
+{% endif %}
+{% if 'huawei_vrp' in vendors %}
+    - name: Ensure VLAN {{ vlan_id }} exists (Huawei VRP)
+      community.network.ce_config:
+        lines:
+          - vlan batch {{ vlan_id }}
+          - vlan {{ vlan_id }}
+          - name {{ vlan_name }}
+      when: inventory_hostname in groups.get('vendor_huawei_vrp', [])
+
+{% if interfaces_config_with_vlan_use_nettopo | default(false) %}
+{% if (interfaces_binding_mode | default('access')) == 'access' %}
+    - name: Configure all interfaces as access VLAN {{ vlan_id }} (Huawei VRP)
+      community.network.ce_config:
+        lines:
+          - port link-type access
+          - port default vlan {{ vlan_id }}
+        parents: "interface {{ '{{ (item | string | replace(''TenGigabitEthernet'', ''10GE'') | replace(''GigabitEthernet'', ''GE'')) }}' }}"
+      loop: "{{ '{{ nettopo_interfaces | default([]) | rejectattr(''ip_address'', ''equalto'', (hostvars[inventory_hostname].ansible_host | default(''''))) | map(attribute=''name'') | map(''trim'') | reject(''equalto'', '''') | reject(''match'', ''(?i).*(management|mgmt|meth|vty|console).*'') | list }}' }}"
+      loop_control:
+        label: "{{ '{{ item }}' }}"
+      when:
+        - inventory_hostname in groups.get('vendor_huawei_vrp', [])
+{% elif (interfaces_binding_mode | default('access')) == 'trunk' %}
+{% if interfaces_binding_trunk_allowed_vlans is string and interfaces_binding_trunk_allowed_vlans == 'all' %}
+{% set trunk_vlans_csv = 'all' %}
+{% elif interfaces_binding_trunk_allowed_vlans is iterable and interfaces_binding_trunk_allowed_vlans is not string and interfaces_binding_trunk_allowed_vlans | length > 0 %}
+{% set trunk_vlans_csv = interfaces_binding_trunk_allowed_vlans | map('string') | join(' ') %}
+{% else %}
+{% set trunk_vlans_csv = vlan_id|string %}
+{% endif %}
+    - name: Configure all interfaces as trunk (Huawei VRP)
+      community.network.ce_config:
+        lines:
+          - port link-type trunk
+          - port trunk allow-pass vlan {{ trunk_vlans_csv }}
+{% if interfaces_binding_trunk_native_vlan is not none %}
+          - port trunk pvid vlan {{ interfaces_binding_trunk_native_vlan }}
+{% endif %}
+        parents: "interface {{ '{{ (item | string | replace(''TenGigabitEthernet'', ''10GE'') | replace(''GigabitEthernet'', ''GE'')) }}' }}"
+      loop: "{{ '{{ nettopo_interfaces | default([]) | rejectattr(''ip_address'', ''equalto'', (hostvars[inventory_hostname].ansible_host | default(''''))) | map(attribute=''name'') | map(''trim'') | reject(''equalto'', '''') | reject(''match'', ''(?i).*(management|mgmt|meth|vty|console).*'') | list }}' }}"
+      loop_control:
+        label: "{{ '{{ item }}' }}"
+      when:
+        - inventory_hostname in groups.get('vendor_huawei_vrp', [])
+{% endif %}
+{% else %}
+{% for iface in interfaces_config_with_vlan %}
+{% if iface.target_vendor is not defined or not iface.target_vendor or iface.target_vendor == 'huawei_vrp' %}
+{% if (iface.mode | default('access')) == 'access' %}
+    - name: Configure {{ iface.name }} as access VLAN {{ vlan_id }} (Huawei VRP)
+      community.network.ce_config:
+        lines:
+          - port link-type access
+          - port default vlan {{ iface.access.vlan }}
+        parents: interface {{ iface.name | replace('TenGigabitEthernet', '10GE') | replace('GigabitEthernet', 'GE') }}
+      when:
+        - inventory_hostname in groups.get('vendor_huawei_vrp', [])
+{% if iface.target_host is defined and iface.target_host %}
+        - inventory_hostname == "{{ iface.target_host }}"
+{% endif %}
+{% endif %}
+{% endif %}
+{% endfor %}
+{% for iface in interfaces_config_with_vlan %}
+{% if iface.target_vendor is not defined or not iface.target_vendor or iface.target_vendor == 'huawei_vrp' %}
+{% if (iface.mode | default('access')) == 'trunk' %}
+    - name: Configure {{ iface.name }} as trunk (Huawei VRP)
+      community.network.ce_config:
+        lines:
+          - port link-type trunk
+          - port trunk allow-pass vlan {{ iface.trunk.allowed_vlans }}
+{% if iface.trunk.native_vlan is defined and iface.trunk.native_vlan is not none %}
+          - port trunk pvid vlan {{ iface.trunk.native_vlan }}
+{% endif %}
+        parents: interface {{ iface.name | replace('TenGigabitEthernet', '10GE') | replace('GigabitEthernet', 'GE') }}
+      when:
+        - inventory_hostname in groups.get('vendor_huawei_vrp', [])
+{% if iface.target_host is defined and iface.target_host %}
+        - inventory_hostname == "{{ iface.target_host }}"
+{% endif %}
+{% endif %}
+{% endif %}
+{% endfor %}
+{% endif %}
+{% endif %}
+{% if 'juniper_junos' in vendors %}
+    - name: Ensure VLAN {{ vlan_id }} exists (Juniper Junos)
+      juniper.device.junos_config:
+        lines:
+          - set vlans {{ vlan_name }} vlan-id {{ vlan_id }}
+      when: inventory_hostname in groups.get('vendor_juniper_junos', [])
+
+{% if interfaces_config_with_vlan_use_nettopo | default(false) %}
+{% set iface_names = nettopo_interfaces | default([]) | rejectattr('ip_address', 'equalto', (hostvars[inventory_hostname].ansible_host | default(''))) | map(attribute='name') | map('trim') | reject('equalto', '') | reject('match', '(?i).*(management|mgmt|meth|vty|console).*') | list %}
+{% if (interfaces_binding_mode | default('access')) == 'access' %}
+{% for ifn in iface_names %}
+    - name: Configure {{ ifn }} as access VLAN {{ vlan_id }} (Juniper Junos)
+      juniper.device.junos_config:
+        lines:
+          - set interfaces {{ ifn }} unit 0 family ethernet-switching port-mode access
+          - set interfaces {{ ifn }} unit 0 family ethernet-switching vlan members {{ vlan_name }}
+      when: inventory_hostname in groups.get('vendor_juniper_junos', [])
+{% endfor %}
+{% else %}
+{% if interfaces_binding_trunk_allowed_vlans is string and interfaces_binding_trunk_allowed_vlans == 'all' %}
+{% set trunk_vlans_cli = 'all' %}
+{% elif interfaces_binding_trunk_allowed_vlans is iterable and interfaces_binding_trunk_allowed_vlans is not string and interfaces_binding_trunk_allowed_vlans | length > 0 %}
+{% set trunk_vlans_cli = '[ ' + (interfaces_binding_trunk_allowed_vlans | map('string') | join(' ')) + ' ]' %}
+{% else %}
+{% set trunk_vlans_cli = '[ ' + vlan_name + ' ]' %}
+{% endif %}
+{% for ifn in iface_names %}
+    - name: Configure {{ ifn }} as trunk carrying VLAN {{ vlan_id }} (Juniper Junos)
+      juniper.device.junos_config:
+        lines:
+          - set interfaces {{ ifn }} unit 0 family ethernet-switching port-mode trunk
+          - set interfaces {{ ifn }} unit 0 family ethernet-switching vlan members {{ trunk_vlans_cli }}
+{% if interfaces_binding_trunk_native_vlan is defined and interfaces_binding_trunk_native_vlan is not none %}
+          - set interfaces {{ ifn }} native-vlan-id {{ interfaces_binding_trunk_native_vlan }}
+{% endif %}
+      when: inventory_hostname in groups.get('vendor_juniper_junos', [])
+{% endfor %}
+{% endif %}
+{% elif interfaces_config_with_vlan | length > 0 %}
+{% for iface in interfaces_config_with_vlan %}
+{% if iface.target_vendor is not defined or not iface.target_vendor or iface.target_vendor == 'juniper_junos' %}
+{% if (iface.mode | default('access')) == 'access' %}
+{% set iface_member = vlan_name if (iface.access.vlan | string) == (vlan_id | string) else (iface.access.vlan | string) %}
+    - name: Configure {{ iface.name }} as access VLAN {{ iface.access.vlan }} (Juniper Junos)
+      juniper.device.junos_config:
+        lines:
+          - set interfaces {{ iface.name }} unit 0 family ethernet-switching port-mode access
+          - set interfaces {{ iface.name }} unit 0 family ethernet-switching vlan members {{ iface_member }}
+{% else %}
+{% if iface.trunk.allowed_vlans is string and iface.trunk.allowed_vlans == 'all' %}
+{% set trunk_member = 'all' %}
+{% elif iface.trunk.allowed_vlans is string and (iface.trunk.allowed_vlans | trim) %}
+{% set trunk_member = '[ ' + (iface.trunk.allowed_vlans | replace(',', ' ')) + ' ]' %}
+{% else %}
+{% set trunk_member = '[ ' + vlan_name + ' ]' %}
+{% endif %}
+    - name: Configure {{ iface.name }} as trunk carrying VLANs (Juniper Junos)
+      juniper.device.junos_config:
+        lines:
+          - set interfaces {{ iface.name }} unit 0 family ethernet-switching port-mode trunk
+          - set interfaces {{ iface.name }} unit 0 family ethernet-switching vlan members {{ trunk_member }}
+{% if iface.trunk.native_vlan is defined and iface.trunk.native_vlan is not none %}
+          - set interfaces {{ iface.name }} native-vlan-id {{ iface.trunk.native_vlan }}
+{% endif %}
+{% endif %}
+      when:
+        - inventory_hostname in groups.get('vendor_juniper_junos', [])
+{% if iface.target_host is defined and iface.target_host %}
+        - inventory_hostname == "{{ iface.target_host }}"
+{% endif %}
+{% endif %}
+{% endfor %}
+{% endif %}
+{% endif %}

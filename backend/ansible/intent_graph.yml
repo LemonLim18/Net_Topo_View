@@ -1,0 +1,53 @@
+# Intent parameter dependency graph (canonical structure).
+#
+# Root concept: target_devices applies to every operation. Each category lists operations;
+# required/optional parameters are defined ONLY in intent_schemas/<action>.yml — not here.
+# This file is used for validation, documentation, and LLM category/operation hints.
+
+version: 1
+
+root:
+  id: target_devices
+  description: >
+    Hostnames or inventory scope where the playbook runs. Resolved from user text,
+    planned inventory, topology, or explicit UI/API target_hosts.
+
+categories:
+  vlan:
+    feature: vlan
+    description: VLAN database (L2 switching) and VLAN-related reference templates.
+    operations:
+      - create_vlan
+
+  interface:
+    feature: interface
+    description: Interface admin state, L2/L3 mode, VLAN on ports, shutdown.
+    operations:
+      - configure_interface
+      - shutdown_interface
+
+  static_route:
+    feature: static_route
+    description: Static routing / default route.
+    feature_aliases:
+      - routing
+    operations:
+      - configure_static_route
+
+  acl:
+    feature: acl
+    description: Access lists and filtering policy.
+    operations:
+      - configure_acl
+
+  qos:
+    feature: qos
+    description: QoS policy, class-maps, service policies.
+    operations:
+      - configure_qos
+
+  ospf:
+    feature: ospf
+    description: OSPF process and area advertisement.
+    operations:
+      - configure_ospf

@@ -1,98 +1,290 @@
 import React, { useState } from 'react';
 import { 
-  LayoutDashboard, 
-  FileCog, 
+  Home,
+  Network,
   BotMessageSquare, 
-  Activity, 
-  ShieldAlert, 
-  ShieldCheck, 
-  ChevronDown, 
-  ChevronRight,
+  Activity,
+  ShieldCheck,
   LogOut,
-  ScanSearch
+  Server,
+  BookOpen,
+  Workflow,
+  PackagePlus,
+  ListChecks,
+  ChevronLeft,
+  ChevronRight,
+  FileCode2,
+  HardDrive,
+  RadioTower,
+  User as UserIcon,
 } from 'lucide-react';
 import type { ViewId, User } from '../types';
+import { normalizeUserRole } from '../types';
+import { Confirm } from '../src/utils/swal';
+import { SHOW_SDN_CONTROLLER } from '../src/config';
 
 interface SidebarProps {
   currentView: ViewId;
   setView: (view: ViewId) => void;
   user: User | null;
   onLogout: () => void;
+  collapsed: boolean;
+  onToggleCollapse: () => void;
+  onEditProfile?: () => void;
 }
 
-const Sidebar: React.FC<SidebarProps> = ({ currentView, setView, user, onLogout }) => {
+const Sidebar: React.FC<SidebarProps> = ({ currentView, setView, user, onLogout, collapsed, onToggleCollapse, onEditProfile }) => {
   const [networkOpen, setNetworkOpen] = useState(true);
-  const [securityOpen, setSecurityOpen] = useState(true);
+  const [automationOpen, setAutomationOpen] = useState(true);
 
   if (!user) return null;
+  const normalizedRole = normalizeUserRole(user.role);
 
-  const MenuItem = ({ id, label, icon: Icon }: { id: ViewId, label: string, icon: any }) => (
-    <li>
-      <a 
-        className={currentView === id ? 'active' : ''} 
-        onClick={() => setView(id)}
-      >
-        <Icon className="h-4 w-4" />
-        {label}
-      </a>
-    </li>
-  );
+  // ── Menu Item ──
+  const MenuItem = ({
+    id,
+    label,
+    icon: Icon,
+    iconColor,
+    textColor,
+    labelClassName,
+    matchViews,
+  }: {
+    id: ViewId;
+    label: string;
+    icon: any;
+    iconColor?: string;
+    textColor?: string;
+    labelClassName?: string;
+    /** Treat these views as active for this row (e.g. legacy drift / policy routes → hub). */
+    matchViews?: ViewId[];
+  }) => {
+    const isActive = matchViews?.length
+      ? matchViews.includes(currentView)
+      : currentView === id;
+    return (
+      <li>
+        <a
+          className={`flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors cursor-pointer 
+            ${isActive
+              ? 'bg-primary/20 text-primary font-semibold border-l-2 border-primary'
+              : 'hover:bg-base-200'
+            }
+            ${collapsed ? 'justify-center px-2' : ''}
+          `}
+          onClick={() => setView(id)}
+          title={label}
+        >
+          <Icon className={`h-4 w-4 shrink-0 ${isActive ? 'text-primary' : (iconColor || '')}`} />
+          {!collapsed && <span className={`whitespace-nowrap overflow-hidden ${isActive ? '' : (textColor || '')} ${labelClassName || ''}`}>{label}</span>}
+        </a>
+      </li>
+    );
+  };
+
+  // ── Section Header (collapsible group) ──
+  const SectionHeader = ({
+    label,
+    icon: Icon,
+    iconColor,
+    open,
+    onToggle,
+    children,
+  }: {
+    label: string;
+    icon: any;
+    iconColor: string;
+    open: boolean;
+    onToggle: () => void;
+    children: React.ReactNode;
+  }) => {
+    if (collapsed) {
+      // In collapsed mode, just render items directly (no group header)
+      return <>{children}</>;
+    }
+    return (
+      <li>
+        <details open={open}>
+          <summary
+            className="cursor-pointer"
+            onClick={(e) => { e.preventDefault(); onToggle(); }}
+          >
+            <Icon className={`h-4 w-4 ${iconColor}`} />
+            <div className={`font-medium ${iconColor}`}>{label}</div>
+          </summary>
+          <ul>{children}</ul>
+        </details>
+      </li>
+    );
+  };
 
   return (
-    <aside className="w-64 bg-base-100 flex-shrink-0 shadow-lg z-10 flex flex-col h-full">
-       <div className="p-4 border-b border-base-200">
-          <div className="flex items-center gap-3">
-              <div className="avatar placeholder">
-                  <div className="bg-neutral text-neutral-content rounded-full w-10 flex items-center justify-center">
-                      <span className="text-lg">{user.username.charAt(0).toUpperCase()}</span>
+    <aside
+      className={`bg-base-100 shrink-0 shadow-lg z-10 flex flex-col h-full transition-all duration-300 ease-in-out
+        ${collapsed ? 'w-16' : 'w-64'}
+      `}
+    >
+      {/* User Avatar Section */}
+      <div 
+        className={`border-b border-base-200 cursor-pointer hover:bg-base-200/50 transition-colors ${collapsed ? 'p-2 flex justify-center' : 'p-4'}`}
+        onClick={onEditProfile}
+        title="Edit Profile Settings"
+      >
+        {collapsed ? (
+          <div className="avatar tooltip tooltip-right" data-tip="Edit Profile Settings">
+            {(() => {
+              if (!user.avatar) {
+                return (
+                  <div className="bg-neutral text-neutral-content rounded-full w-10 h-10 flex items-center justify-center font-bold border border-base-content/10">
+                    <span className="text-lg">{user.username.charAt(0).toUpperCase()}</span>
                   </div>
-              </div>
-              <div>
-                  <div className="font-bold text-sm">{user.username}</div>
-                  <div className="text-xs opacity-60 capitalize">{user.role}</div>
-              </div>
+                );
+              }
+              if (user.avatar.startsWith('avatar-')) {
+                return (
+                  <div className="bg-primary/20 text-primary flex items-center justify-center border border-primary/30 shadow-inner rounded-full w-10 h-10">
+                    <UserIcon className="w-5 h-5" />
+                  </div>
+                );
+              }
+              return (
+                <img
+                  src={user.avatar}
+                  alt="Profile"
+                  className="rounded-full object-cover border border-base-content/20 shadow-sm w-10 h-10"
+                />
+              );
+            })()}
           </div>
-       </div>
+        ) : (
+          <div className="flex items-center gap-3">
+            <div className="avatar">
+              {(() => {
+                if (!user.avatar) {
+                  return (
+                    <div className="bg-neutral text-neutral-content rounded-full w-10 h-10 flex items-center justify-center font-bold border border-base-content/10">
+                      <span className="text-lg">{user.username.charAt(0).toUpperCase()}</span>
+                    </div>
+                  );
+                }
+                if (user.avatar.startsWith('avatar-')) {
+                  return (
+                    <div className="bg-primary/20 text-primary flex items-center justify-center border border-primary/30 shadow-inner rounded-full w-10 h-10">
+                      <UserIcon className="w-5 h-5" />
+                    </div>
+                  );
+                }
+                return (
+                  <img
+                    src={user.avatar}
+                    alt="Profile"
+                    className="rounded-full object-cover border border-base-content/20 shadow-sm w-10 h-10"
+                  />
+                );
+              })()}
+            </div>
+            <div className="min-w-0 flex-1 text-left">
+              <div className="font-bold text-sm truncate" title={user.fullName || user.username}>{user.fullName || user.username}</div>
+              <div className="text-xs opacity-60 capitalize truncate">{normalizedRole}</div>
+            </div>
+          </div>
+        )}
+      </div>
 
-      <ul className="menu p-2 w-full flex-grow overflow-y-auto">
-        
-        {/* Network Domain */}
-        <li>
-          <details open={networkOpen}>
-            <summary onClick={(e) => { e.preventDefault(); setNetworkOpen(!networkOpen); }}>
-              <Activity className="h-4 w-4 text-primary" />
-              Network Domain
-            </summary>
-            <ul>
-                <MenuItem id="dashboard" label="Topology" icon={LayoutDashboard} />
-                <MenuItem id="configuration" label="Configuration" icon={FileCog} />
-                <MenuItem id="net_perf" label="Performance" icon={Activity} />
-                <MenuItem id="net_chat" label="Network Copilot" icon={BotMessageSquare} />
-            </ul>
-          </details>
-        </li>
+      {/* Navigation Menu */}
+      <ul className={`menu ${collapsed ? 'p-1' : 'p-2'} w-full grow overflow-y-auto min-h-0 flex-col flex-nowrap`}>
+        <MenuItem id="overview" label="Dashboard" icon={Home} iconColor="text-warning" textColor="text-warning" labelClassName="font-medium" />
 
-        {/* Security Domain */}
-        <li>
-          <details open={securityOpen} className="mt-2">
-            <summary onClick={(e) => { e.preventDefault(); setSecurityOpen(!securityOpen); }}>
-              <ShieldCheck className="h-4 w-4 text-secondary" />
-              Security Domain
-            </summary>
-            <ul>
-                <MenuItem id="sec_events" label="SIEM & Events" icon={ShieldAlert} />
-                <MenuItem id="sec_analysis" label="Threat Analysis" icon={ScanSearch} />
-                <MenuItem id="sec_chat" label="Security Copilot" icon={BotMessageSquare} />
-            </ul>
-          </details>
-        </li>
+        <SectionHeader
+          label="Network Onboarding"
+          icon={Activity}
+          iconColor="text-primary"
+          open={networkOpen}
+          onToggle={() => setNetworkOpen(!networkOpen)}
+        >
+          
+          <MenuItem id="common_services" label="Global Service Profiles" icon={RadioTower} iconColor="text-primary"/>
+          <MenuItem id="netbox_devices" label="Device Inventory" icon={Server} iconColor="text-primary"/>
+          <MenuItem id="template_studio" label="Template Studio" icon={FileCode2} iconColor="text-primary"/>
+          <MenuItem id="onboarding" label="Onboard Device" icon={PackagePlus} iconColor="text-primary"/>
+        </SectionHeader>
+
+        <SectionHeader
+          label="Safety/Monitoring/Policy"
+          icon={ShieldCheck}
+          iconColor="text-secondary"
+          open={automationOpen}
+          onToggle={() => setAutomationOpen(!automationOpen)}
+        >
+          <MenuItem id="topology" label="Topology Map" icon={Network} iconColor="text-secondary"/>
+          <MenuItem id="net_perf" label="Performance" icon={Activity} iconColor="text-secondary"/>
+          <MenuItem id="config_backup" label="Config Backup" icon={HardDrive} iconColor="text-secondary"/>          
+        </SectionHeader>
+
+        <SectionHeader
+          label="Automation & AI"
+          icon={BotMessageSquare}
+          iconColor="text-accent"
+          open={automationOpen}
+          onToggle={() => setAutomationOpen(!automationOpen)}
+        >
+          {/* <MenuItem id="net_chat" label="Network Copilot" icon={BotMessageSquare} /> */}
+          <MenuItem id="ansible_studio" label="Ansible Studio" icon={Workflow} iconColor="text-accent"/>
+          {/* <MenuItem id="intent_parser" label="Intent Parser" icon={BotMessageSquare} iconColor="text-accent"/> */}
+          {/* <MenuItem id="intent_history" label="Intent History" icon={History} iconColor="text-accent"/> */}
+          {/* <MenuItem id="playbook_comparison" label="Playbook Compare" icon={Columns} /> */}
+          {normalizedRole === 'admin' && (
+            <MenuItem id="approval_queue" label="Approval Queue" icon={ListChecks} iconColor="text-accent"/>
+          )}
+          {SHOW_SDN_CONTROLLER && (
+            <MenuItem id="sdn_dashboard" label="SDN Controllers" icon={Network} iconColor="text-accent"/>
+          )}
+          {/* <MenuItem id="knowledge_base" label="Knowledge Base" icon={BookOpen} iconColor="text-accent"/> */}
+        </SectionHeader>
+        {/* <SectionHeader
+          label="Security"
+          icon={ShieldCheck}
+          iconColor="text-secondary"
+          open={securityOpen}
+          onToggle={() => setSecurityOpen(!securityOpen)}
+          >
+          <MenuItem id="sec_dashboard" label="Security Dashboard" icon={Gauge} iconColor="text-secondary"/>
+          <MenuItem id="sec_events" label="SIEM & Events" icon={ShieldAlert} iconColor="text-secondary"/>
+          <MenuItem id="sec_analysis" label="Threat Analysis" icon={ScanSearch} iconColor="text-secondary"/>
+          <MenuItem id="sec_chat" label="Security Copilot" icon={BotMessageSquare} iconColor="text-secondary"/>
+          <MenuItem id="incidents" label="Incident Response" icon={Siren} iconColor="text-secondary"/>
+        </SectionHeader> */}
       </ul>
 
-      <div className="p-4 border-t border-base-200">
-        <button onClick={onLogout} className="btn btn-outline btn-error btn-sm w-full gap-2">
+      {/* Bottom Section: Collapse Toggle + Logout */}
+      <div className="border-t border-base-200 p-2 flex flex-col gap-1">
+        {/* Collapse toggle */}
+        <button
+          onClick={onToggleCollapse}
+          className="btn btn-ghost btn-sm w-full gap-2"
+          title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+        >
+          {collapsed ? <ChevronRight className="h-4 w-4" /> : <><ChevronLeft className="h-4 w-4" /><span className="text-xs">Collapse</span></>}
+        </button>
+
+        {/* Logout */}
+        {collapsed ? (
+          <button
+            onClick={async () => { if (await Confirm.ask('Log Out?', 'You will need to sign in again.')) onLogout(); }}
+            className="btn btn-ghost btn-sm w-full tooltip tooltip-right"
+            data-tip="Logout"
+          >
+            <LogOut className="h-4 w-4 text-error" />
+          </button>
+        ) : (
+          <button
+            onClick={async () => { if (await Confirm.ask('Log Out?', 'You will need to sign in again.')) onLogout(); }}
+            className="btn btn-outline btn-error btn-sm w-full gap-2"
+          >
             <LogOut className="h-4 w-4" />
             Logout
-        </button>
+          </button>
+        )}
       </div>
     </aside>
   );

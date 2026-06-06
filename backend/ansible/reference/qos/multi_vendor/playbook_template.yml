@@ -1,0 +1,120 @@
+---
+- name: Configure QoS (multi-vendor)
+  hosts: "{{ target_hosts | default('all') }}"
+  gather_facts: no
+  ignore_unreachable: true
+  tasks:
+    - name: Configure QoS policy objects on Cisco IOS
+      cisco.ios.ios_config:
+        match: line
+        replace: line
+        lines:
+          - "class-map match-any {{ policy_name | default('QOS_POLICY', true) }}_CLASS"
+{% for rule in classification_rules | default([]) %}
+{% if rule is string %}
+          - " {{ rule }}"
+{% else %}
+{% set _rtype = (rule.type | default(rule.get('type')) | default(rule.match | default(rule.get('match'))) | default('') | string | trim | lower) %}
+{% set _rval = (rule.value | default(rule.get('value')) | default(rule.dscp | default(rule.get('dscp'))) | default('') | string | trim | lower) %}
+{% if _rtype and _rval %}
+          - " match {{ _rtype }} {{ _rval }}"
+{% elif _rtype %}
+          - " match {{ _rtype }}"
+{% endif %}
+{% endif %}
+{% endfor %}
+          - "policy-map {{ policy_name | default('QOS_POLICY', true) }}"
+          - " class {{ policy_name | default('QOS_POLICY', true) }}_CLASS"
+{% if (marking_dscp | default('', true) | string | trim) != '' %}
+          - "  set dscp {{ marking_dscp }}"
+{% endif %}
+{% if priority_percent | default('', true) | string | trim %}
+          - "  priority percent {{ priority_percent }}"
+{% elif priority_enabled | default(false) %}
+          - "  priority"
+{% endif %}
+{% if police_rate | default('', true) | string | trim %}
+          - "  police {{ police_rate }}"
+{% endif %}
+      when:
+        - inventory_hostname in groups.get('vendor_cisco_ios', [])
+        - ((policy_name | default('QOS_POLICY', true) | string | trim) != '') or ((marking_dscp | default('', true) | string | trim) != '')
+
+    - name: Configure traffic classifier/behavior/policy on Huawei VRP
+      community.network.ce_config:
+        lines:
+          - "traffic classifier {{ policy_name | default('QOS_POLICY', true) }}_CLASS operator and"
+{% for rule in classification_rules | default([]) %}
+{% if rule is string %}
+          - " if-match {{ rule }}"
+{% endif %}
+{% endfor %}
+          - "traffic behavior {{ policy_name | default('QOS_POLICY', true) }}_BEHAVIOR"
+{% if (marking_dscp | default('', true) | string | trim) != '' %}
+          - " remark dscp {{ marking_dscp }}"
+{% endif %}
+{% if police_rate | default('', true) | string | trim %}
+          - " car cir {{ police_rate }}"
+{% endif %}
+          - "traffic policy {{ policy_name | default('QOS_POLICY', true) }}"
+          - " classifier {{ policy_name | default('QOS_POLICY', true) }}_CLASS behavior {{ policy_name | default('QOS_POLICY', true) }}_BEHAVIOR"
+      when:
+        - inventory_hostname in groups.get('vendor_huawei_vrp', [])
+        - ((policy_name | default('QOS_POLICY', true) | string | trim) != '') or ((marking_dscp | default('', true) | string | trim) != '')
+
+    - name: Configure class-of-service objects on Juniper Junos
+      juniper.device.junos_config:
+        lines:
+          - "set class-of-service classifiers dscp {{ policy_name | default('QOS_POLICY', true) }} forwarding-class {{ traffic_type | default('voice', true) }} loss-priority low code-points {{ marking_dscp | default('46', true) }}"
+{% if police_rate | default('', true) | string | trim %}
+          - "set firewall policer {{ policy_name | default('QOS_POLICY', true) }} if-exceeding bandwidth-limit {{ police_rate }}"
+          - "set firewall policer {{ policy_name | default('QOS_POLICY', true) }} then {{ exceed_action | default('discard', true) }}"
+{% endif %}
+      when:
+        - inventory_hostname in groups.get('vendor_juniper_junos', [])
+        - ((policy_name | default('QOS_POLICY', true) | string | trim) != '') or ((marking_dscp | default('', true) | string | trim) != '')
+
+{% for ap in (interface_apply | default([])) %}
+{% if ap is string %}
+{% set _tok = (ap | string).strip() %}
+{% set _parts = _tok.split() %}
+{% set _last = (_parts[-1] if (_parts | length) > 0 else '') %}
+{% set _dir = (_last if _last in ['in','out','inbound','outbound'] else (direction | default('out'))) %}
+{% set _iface_tok = (' '.join(_parts[:-1]) if _last in ['in','out','inbound','outbound'] else _tok) %}
+{% set _iface = (_iface_tok.split(':', 1)[1] if ':' in _iface_tok else _iface_tok) %}
+{% else %}
+{% set _iface = (ap.interface | default(ap.get('interface')) | default(ap.interface_name | default(ap.get('interface_name'))) | default(ap.get('name')) | string) %}
+{% set _dir = (ap.direction | default(ap.get('direction')) | default(direction | default('out')) | string) %}
+{% endif %}
+{% if _iface | trim %}
+    - name: Apply QoS policy on {{ _iface }} (Cisco IOS)
+      cisco.ios.ios_config:
+        parents:
+          - "interface {{ _iface }}"
+        lines:
+          - "service-policy {{ 'input' if _dir in ['in', 'inbound'] else 'output' }} {{ policy_name | default('QOS_POLICY', true) }}"
+      when:
+        - inventory_hostname in groups.get('vendor_cisco_ios', [])
+
+    - name: Apply traffic policy on {{ _iface }} (Huawei VRP)
+      community.network.ce_config:
+        lines:
+          - "interface {{ _iface | replace('TenGigabitEthernet', '10GE') | replace('GigabitEthernet', 'GE') }}"
+          - " traffic-policy {{ policy_name | default('QOS_POLICY', true) }} {{ 'inbound' if _dir in ['in', 'inbound'] else 'outbound' }}"
+          - " quit"
+      when:
+        - inventory_hostname in groups.get('vendor_huawei_vrp', [])
+
+    - name: Apply scheduler map on {{ _iface }} (Juniper Junos)
+      juniper.device.junos_config:
+        lines:
+          - "set class-of-service interfaces {{ _iface }} unit 0 scheduler-map {{ policy_name | default('QOS_POLICY', true) }}"
+{% if _dir in ['in', 'inbound'] %}
+          - "set interfaces {{ _iface }} unit 0 family inet filter input {{ policy_name | default('QOS_POLICY', true) }}"
+{% else %}
+          - "set interfaces {{ _iface }} unit 0 family inet filter output {{ policy_name | default('QOS_POLICY', true) }}"
+{% endif %}
+      when:
+        - inventory_hostname in groups.get('vendor_juniper_junos', [])
+{% endif %}
+{% endfor %}

@@ -1,0 +1,18 @@
+---
+# defaults/main.yml — junos_vlan role
+# All variables can be overridden in playbook extra_vars or host_vars.
+
+# VLAN to configure on the Junos device
+vlan_id: 100
+vlan_name: "DATA"
+vlan_description: "Data VLAN managed by Ansible"
+
+# Interface to put into access mode for this VLAN
+target_interface: "ge-0/0/1"
+
+# Set to true to delete the VLAN and remove interface config
+vlan_state: "present"   # present | absent
+
+# NETCONF confirm-commit timer (seconds). Junos will auto-rollback if
+# a confirm_commit is not received within this window.
+netconf_confirm_timeout: 120

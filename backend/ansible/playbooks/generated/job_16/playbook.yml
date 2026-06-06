@@ -1,0 +1,45 @@
+---
+- name: Configure VLANs on access switches
+  hosts: access_switches
+  gather_facts: yes
+  vars:
+    vlan_id: 200
+    vlan_name: TEST
+    interface_gi01: Gi0/1
+    interface_gi02: Gi0/2
+    interface_gi101: Gi1/0/1
+    interface_gi102: Gi1/0/2
+  tasks:
+    - name: Ensure VLAN exists
+      cisco.ios.ios_vlans:
+        vlans:
+          - name: '{{ vlan_name }}'
+            vlan_id: '{{ vlan_id }}'
+        state: merged
+
+    - name: Configure interfaces with access VLAN
+      cisco.ios.ios_l2_interfaces:
+        config:
+          - name: '{{ interface_gi01 }}'
+            mode: access
+            access.vlan: '{{ vlan_id }}'
+          - name: '{{ interface_gi02 }}'
+            mode: access
+            access.vlan: '{{ vlan_id }}'
+          - name: '{{ interface_gi101 }}'
+            mode: access
+            access.vlan: '{{ vlan_id }}'
+          - name: '{{ interface_gi102 }}'
+            mode: access
+            access.vlan: '{{ vlan_id }}'
+        state: merged
+
+    - name: Verify VLAN and interfaces
+      cisco.ios.ios_l2_interfaces:
+        state: gathered
+        gather_subset: interfaces
+      register: interfaces
+
+    - name: Display VLAN and interface details
+      debug:
+        var: interfaces

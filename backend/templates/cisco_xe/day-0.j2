@@ -1,0 +1,47 @@
+! ===== Day-0 Bootstrap: {{ hostname }} (Cisco IOS-XE) =====
+enable
+configure terminal
+!
+hostname {{ hostname }}
+!
+interface {{ mgmt_interface }}
+ ip address {{ mgmt_ip }} {{ subnet_mask }}
+ no shutdown
+ exit
+username {{ ssh_user }} privilege 15 secret {{ ssh_password }}
+!
+ip domain-name mgmt.local
+crypto key generate rsa modulus 2048
+!
+ip ssh version 2
+ip ssh time-out 60
+ip ssh authentication-retries 3
+!
+line vty 0 4
+ login local
+ transport input ssh
+ exit
+!
+service password-encryption
+!
+lldp run
+cdp run
+!
+{% for iface in discovery_interfaces | default([]) %}
+interface {{ iface }}
+ no shutdown
+ lldp transmit
+ lldp receive
+ cdp enable
+ exit
+!
+{% endfor %}
+netconf-yang
+restconf
+!
+ip http server
+ip http authentication local
+ip http secure-server
+!
+end
+write memory

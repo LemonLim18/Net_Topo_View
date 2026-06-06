@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import type { TopologyData } from '../../types';
+import { Toast } from '../utils/swal';
 // For temporary local development you can seed topology from the sample
 // data in `frontend/constants.ts` instead of connecting to the real
 // WebSocket. To enable, set `VITE_USE_LOCAL_TOPOLOGY=true` in a Vite
@@ -89,24 +90,40 @@ export const useWebSocket = ({
       ws.onmessage = (event) => {
         try {
           const message: WebSocketMessage = JSON.parse(event.data);
+          console.log('[WS] Message received:', message.type, 'keys:', Object.keys(message));
           
           switch (message.type) {
             case 'initial_topology':
             case 'topology_response':
               if (message.topology) {
+                const nodeCount = message.topology.nodes ? Object.keys(message.topology.nodes).length : 0;
+                console.log(`[WS] ${message.type}: ${nodeCount} nodes, seeds:`, message.topology.seeds);
+                if (nodeCount > 0) {
+                  console.log('[WS] Node names:', Object.keys(message.topology.nodes));
+                  // Log first node structure for debugging
+                  const firstKey = Object.keys(message.topology.nodes)[0];
+                  console.log('[WS] Sample node structure:', firstKey, JSON.stringify(message.topology.nodes[firstKey]).slice(0, 500));
+                } else {
+                  console.warn('[WS] Topology has 0 nodes! Raw:', JSON.stringify(message.topology).slice(0, 300));
+                }
                 setTopology(message.topology);
                 onTopologyUpdate?.(message.topology);
+              } else {
+                console.warn('[WS] initial_topology/topology_response with no topology field');
               }
               break;
             
             case 'topology_update':
               if (message.full_topology) {
+                const nodeCount = message.full_topology.nodes ? Object.keys(message.full_topology.nodes).length : 0;
+                console.log(`[WS] topology_update: ${nodeCount} nodes, trigger:`, message.trigger);
+                if (nodeCount > 0) {
+                  console.log('[WS] Updated node names:', Object.keys(message.full_topology.nodes));
+                }
                 setTopology(message.full_topology);
                 onTopologyUpdate?.(message.full_topology);
-                console.log('Topology updated:', {
-                  timestamp: message.timestamp,
-                  changes: message.changes?.length || 0,
-                });
+              } else {
+                console.warn('[WS] topology_update with no full_topology field');
               }
               break;
             
@@ -151,6 +168,7 @@ export const useWebSocket = ({
           }, reconnectInterval);
         } else if (reconnectAttemptsRef.current >= maxReconnectAttempts) {
           console.error('Max reconnection attempts reached');
+          Toast.error('Connection Lost', 'WebSocket reconnection failed. Please reload the page.');
           setStatus('error');
         }
       };
@@ -213,6 +231,7 @@ export const useWebSocket = ({
   return {
     status,
     topology,
+    setTopology,
     connect,
     disconnect,
     requestTopology,

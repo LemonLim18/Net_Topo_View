@@ -16,7 +16,7 @@ const NotificationToast: React.FC = () => {
     );
 
     return (
-        <div className="fixed top-20 right-4 z-50 flex flex-col gap-2 w-80 pointer-events-none">
+        <div className="fixed top-20 right-4 z-50 flex flex-col gap-3 w-96 pointer-events-none">
             {toasts.map(toast => (
                 <ToastItem key={toast.id} toast={toast} onClose={() => removeNotification(toast.id)} />
             ))}
@@ -38,24 +38,37 @@ const ToastItem: React.FC<{ toast: any, onClose: () => void }> = ({ toast, onClo
     };
 
     const icons = {
-        success: <CheckCircle className="w-5 h-5" />,
-        warning: <AlertTriangle className="w-5 h-5" />,
-        error: <AlertOctagon className="w-5 h-5" />,
-        info: <Info className="w-5 h-5" />
+        success: <CheckCircle className="w-6 h-6" />,
+        warning: <AlertTriangle className="w-6 h-6" />,
+        error: <AlertOctagon className="w-6 h-6" />,
+        info: <Info className="w-6 h-6" />
     };
 
     return (
-        <div className={`alert ${styles[toast.type as keyof typeof styles]} shadow-lg flex items-start p-3 text-sm animate-in slide-in-from-right pointer-events-auto`}>
-            <div className="flex-shrink-0 mt-0.5">
+        <div className={`alert ${styles[toast.type as keyof typeof styles]} shadow-2xl flex items-start p-5 text-sm animate-in slide-in-from-right pointer-events-auto relative overflow-hidden border border-white/10 backdrop-blur-md`}>
+            <div className="shrink-0 mt-0.5 mr-3">
                 {icons[toast.type as keyof typeof icons]}
             </div>
             <div className="flex-1 min-w-0">
-                <h3 className="font-bold leading-tight">{toast.title}</h3>
-                <div className="text-xs opacity-90 break-words mt-1">{toast.message}</div>
+                <h3 className="font-bold text-base leading-tight">{toast.title}</h3>
+                <p className="text-xs opacity-90 wrap-break-word mt-1.5 leading-relaxed">{toast.message}</p>
             </div>
-            <button className="btn btn-ghost btn-xs btn-square -mr-2 -mt-2" onClick={onClose}>
+            <button className="btn btn-ghost btn-xs btn-square -mr-3 -mt-3 text-current/70 hover:text-current hover:bg-black/10" onClick={onClose}>
                 <X className="w-4 h-4" />
             </button>
+            <div 
+                className="absolute bottom-0 left-0 h-1 bg-current opacity-30 transition-all duration-100 ease-linear"
+                style={{ 
+                    width: '100%',
+                    animation: `shrink ${TOAST_DURATION}ms linear forwards`
+                }}
+            />
+            <style>{`
+                @keyframes shrink {
+                    from { width: 100%; }
+                    to { width: 0%; }
+                }
+            `}</style>
         </div>
     );
 };

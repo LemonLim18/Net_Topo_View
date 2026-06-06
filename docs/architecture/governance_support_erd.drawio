@@ -1,0 +1,123 @@
+﻿<mxfile host="app.diagrams.net" modified="2026-05-07T07:57:16Z" agent="Codex" version="24.7.17">
+  <diagram id="governance-and-support-erd" name="Governance and Support ERD">
+    <mxGraphModel dx="1800" dy="1000" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="2350" pageHeight="1400" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="support_title" value="Governance and Support ERD (Current Implementation Focus)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#666666;fontSize=20;fontStyle=1;align=left;verticalAlign=middle;spacing=6;" vertex="1" parent="1">
+          <mxGeometry x="30" y="20" width="610" height="36" as="geometry" />
+        </mxCell>
+        <mxCell id="support_legend" value="Legend:
+Solid line = enforced FK
+Dashed line = logical or text reference" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#666666;fontSize=14;fontStyle=0;align=left;verticalAlign=middle;spacing=6;" vertex="1" parent="1">
+          <mxGeometry x="30" y="70" width="270" height="72" as="geometry" />
+        </mxCell>
+        <mxCell id="s_users" value="&lt;b&gt;USERS&lt;/b&gt;&lt;hr size=&apos;1&apos;/&gt;&lt;font face=&apos;Courier New&apos;&gt;PK id&lt;br/&gt;username&lt;br/&gt;password_hash&lt;br/&gt;role&lt;br/&gt;is_active&lt;br/&gt;created_at&lt;br/&gt;last_login&lt;/font&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#fce4ec;strokeColor=#333333;fontSize=12;align=left;verticalAlign=top;spacing=6;spacingTop=6;" vertex="1" parent="1">
+          <mxGeometry x="30" y="170" width="240" height="190" as="geometry" />
+        </mxCell>
+        <mxCell id="s_devices" value="&lt;b&gt;DEVICES&lt;/b&gt;&lt;hr size=&apos;1&apos;/&gt;&lt;font face=&apos;Courier New&apos;&gt;PK id&lt;br/&gt;hostname&lt;br/&gt;management_ip&lt;br/&gt;vendor&lt;br/&gt;model&lt;br/&gt;os_version&lt;br/&gt;netbox_id&lt;br/&gt;status&lt;br/&gt;role&lt;br/&gt;source&lt;br/&gt;created_at&lt;br/&gt;updated_at&lt;/font&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#e8f5e9;strokeColor=#333333;fontSize=12;align=left;verticalAlign=top;spacing=6;spacingTop=6;" vertex="1" parent="1">
+          <mxGeometry x="320" y="170" width="260" height="280" as="geometry" />
+        </mxCell>
+        <mxCell id="s_snapshots" value="&lt;b&gt;CONFIG_SNAPSHOTS&lt;/b&gt;&lt;hr size=&apos;1&apos;/&gt;&lt;font face=&apos;Courier New&apos;&gt;PK id&lt;br/&gt;FK device_id&lt;br/&gt;snapshot_type&lt;br/&gt;source_type&lt;br/&gt;checksum&lt;br/&gt;intent_id&lt;br/&gt;execution_id&lt;br/&gt;approved_by&lt;br/&gt;verified_by&lt;br/&gt;verified_at&lt;br/&gt;captured_at&lt;/font&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#e3f2fd;strokeColor=#333333;fontSize=12;align=left;verticalAlign=top;spacing=6;spacingTop=6;" vertex="1" parent="1">
+          <mxGeometry x="620" y="170" width="300" height="260" as="geometry" />
+        </mxCell>
+        <mxCell id="policies" value="&lt;b&gt;POLICIES&lt;/b&gt;&lt;hr size=&apos;1&apos;/&gt;&lt;font face=&apos;Courier New&apos;&gt;PK id&lt;br/&gt;policy_id&lt;br/&gt;name&lt;br/&gt;description&lt;br/&gt;category&lt;br/&gt;scope_json&lt;br/&gt;rules_json&lt;br/&gt;normalization_json&lt;br/&gt;thresholds_json&lt;br/&gt;enabled&lt;br/&gt;version&lt;br/&gt;created_by&lt;br/&gt;updated_by&lt;br/&gt;created_at&lt;br/&gt;updated_at&lt;/font&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#e3f2fd;strokeColor=#333333;fontSize=12;align=left;verticalAlign=top;spacing=6;spacingTop=6;" vertex="1" parent="1">
+          <mxGeometry x="980" y="170" width="310" height="270" as="geometry" />
+        </mxCell>
+        <mxCell id="policy_audit" value="&lt;b&gt;POLICY_AUDIT_LOG&lt;/b&gt;&lt;hr size=&apos;1&apos;/&gt;&lt;font face=&apos;Courier New&apos;&gt;PK id&lt;br/&gt;FK policy_id&lt;br/&gt;action&lt;br/&gt;old_value_json&lt;br/&gt;new_value_json&lt;br/&gt;changed_by&lt;br/&gt;timestamp&lt;/font&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#e3f2fd;strokeColor=#333333;fontSize=12;align=left;verticalAlign=top;spacing=6;spacingTop=6;" vertex="1" parent="1">
+          <mxGeometry x="1340" y="170" width="260" height="210" as="geometry" />
+        </mxCell>
+        <mxCell id="drift" value="&lt;b&gt;DRIFT_EVENTS&lt;/b&gt;&lt;hr size=&apos;1&apos;/&gt;&lt;font face=&apos;Courier New&apos;&gt;PK id&lt;br/&gt;FK device_id&lt;br/&gt;has_drift&lt;br/&gt;severity&lt;br/&gt;diff_text&lt;br/&gt;timestamp&lt;/font&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#e3f2fd;strokeColor=#333333;fontSize=12;align=left;verticalAlign=top;spacing=6;spacingTop=6;" vertex="1" parent="1">
+          <mxGeometry x="30" y="420" width="240" height="170" as="geometry" />
+        </mxCell>
+        <mxCell id="compliance" value="&lt;b&gt;COMPLIANCE_RESULTS&lt;/b&gt;&lt;hr size=&apos;1&apos;/&gt;&lt;font face=&apos;Courier New&apos;&gt;PK id&lt;br/&gt;FK device_id&lt;br/&gt;FK baseline_snapshot_id&lt;br/&gt;FK actual_snapshot_id&lt;br/&gt;status&lt;br/&gt;reason&lt;br/&gt;compliance_score&lt;br/&gt;severity&lt;br/&gt;drift_pct&lt;br/&gt;missing_lines_json&lt;br/&gt;extra_lines_json&lt;br/&gt;changed_lines_json&lt;br/&gt;violated_policies_json&lt;br/&gt;checked_at&lt;/font&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#e3f2fd;strokeColor=#333333;fontSize=12;align=left;verticalAlign=top;spacing=6;spacingTop=6;" vertex="1" parent="1">
+          <mxGeometry x="320" y="500" width="340" height="300" as="geometry" />
+        </mxCell>
+        <mxCell id="sec_audits" value="&lt;b&gt;SECURITY_AUDITS&lt;/b&gt;&lt;hr size=&apos;1&apos;/&gt;&lt;font face=&apos;Courier New&apos;&gt;PK id&lt;br/&gt;FK device_id&lt;br/&gt;score&lt;br/&gt;total_checks&lt;br/&gt;passed&lt;br/&gt;failed&lt;br/&gt;critical&lt;br/&gt;high&lt;br/&gt;medium&lt;br/&gt;low&lt;br/&gt;created_at&lt;/font&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#fdebd0;strokeColor=#333333;fontSize=12;align=left;verticalAlign=top;spacing=6;spacingTop=6;" vertex="1" parent="1">
+          <mxGeometry x="720" y="500" width="260" height="220" as="geometry" />
+        </mxCell>
+        <mxCell id="findings" value="&lt;b&gt;AUDIT_FINDINGS&lt;/b&gt;&lt;hr size=&apos;1&apos;/&gt;&lt;font face=&apos;Courier New&apos;&gt;PK id&lt;br/&gt;FK audit_id&lt;br/&gt;rule_id&lt;br/&gt;category&lt;br/&gt;severity&lt;br/&gt;status&lt;br/&gt;description&lt;br/&gt;evidence&lt;br/&gt;remediation&lt;/font&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#fdebd0;strokeColor=#333333;fontSize=12;align=left;verticalAlign=top;spacing=6;spacingTop=6;" vertex="1" parent="1">
+          <mxGeometry x="1030" y="500" width="310" height="260" as="geometry" />
+        </mxCell>
+        <mxCell id="sec_events" value="&lt;b&gt;SECURITY_EVENTS&lt;/b&gt;&lt;hr size=&apos;1&apos;/&gt;&lt;font face=&apos;Courier New&apos;&gt;PK id&lt;br/&gt;event_type&lt;br/&gt;severity&lt;br/&gt;source_ip&lt;br/&gt;dest_ip&lt;br/&gt;FK device_id&lt;br/&gt;description&lt;br/&gt;raw_data&lt;br/&gt;status&lt;br/&gt;created_at&lt;/font&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#fdebd0;strokeColor=#333333;fontSize=12;align=left;verticalAlign=top;spacing=6;spacingTop=6;" vertex="1" parent="1">
+          <mxGeometry x="30" y="640" width="260" height="220" as="geometry" />
+        </mxCell>
+        <mxCell id="thr_rules" value="&lt;b&gt;THRESHOLD_RULES&lt;/b&gt;&lt;hr size=&apos;1&apos;/&gt;&lt;font face=&apos;Courier New&apos;&gt;PK id&lt;br/&gt;name&lt;br/&gt;metric&lt;br/&gt;measurement&lt;br/&gt;field_key&lt;br/&gt;operator&lt;br/&gt;threshold&lt;br/&gt;severity&lt;br/&gt;device_filter&lt;br/&gt;cooldown_minutes&lt;br/&gt;enabled&lt;br/&gt;auto_remediate&lt;br/&gt;remediation_playbook&lt;br/&gt;created_at&lt;br/&gt;updated_at&lt;/font&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f4ecf7;strokeColor=#333333;fontSize=12;align=left;verticalAlign=top;spacing=6;spacingTop=6;" vertex="1" parent="1">
+          <mxGeometry x="320" y="860" width="340" height="280" as="geometry" />
+        </mxCell>
+        <mxCell id="thr_alerts" value="&lt;b&gt;THRESHOLD_ALERTS&lt;/b&gt;&lt;hr size=&apos;1&apos;/&gt;&lt;font face=&apos;Courier New&apos;&gt;PK id&lt;br/&gt;FK rule_id&lt;br/&gt;device&lt;br/&gt;metric&lt;br/&gt;value&lt;br/&gt;threshold&lt;br/&gt;severity&lt;br/&gt;status&lt;br/&gt;incident_id&lt;br/&gt;created_at&lt;br/&gt;resolved_at&lt;/font&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f4ecf7;strokeColor=#333333;fontSize=12;align=left;verticalAlign=top;spacing=6;spacingTop=6;" vertex="1" parent="1">
+          <mxGeometry x="720" y="840" width="310" height="230" as="geometry" />
+        </mxCell>
+        <mxCell id="incidents" value="&lt;b&gt;INCIDENTS&lt;/b&gt;&lt;hr size=&apos;1&apos;/&gt;&lt;font face=&apos;Courier New&apos;&gt;PK id&lt;br/&gt;anomaly_type&lt;br/&gt;severity&lt;br/&gt;affected_devices&lt;br/&gt;metrics_current&lt;br/&gt;metrics_baseline&lt;br/&gt;metrics_threshold&lt;br/&gt;detected_at&lt;br/&gt;logs&lt;br/&gt;configs&lt;br/&gt;telemetry_snapshot&lt;br/&gt;root_cause_summary&lt;br/&gt;root_cause_confidence&lt;br/&gt;possible_causes&lt;br/&gt;proposed_description&lt;br/&gt;proposed_playbook&lt;br/&gt;estimated_impact&lt;br/&gt;rollback_plan&lt;br/&gt;status&lt;br/&gt;approver&lt;br/&gt;resolved_at&lt;br/&gt;created_at&lt;br/&gt;updated_at&lt;/font&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#fce4ec;strokeColor=#333333;fontSize=12;align=left;verticalAlign=top;spacing=6;spacingTop=6;" vertex="1" parent="1">
+          <mxGeometry x="1080" y="840" width="360" height="320" as="geometry" />
+        </mxCell>
+        <mxCell id="ztp_jobs" value="&lt;b&gt;ZTP_PUBLISH_JOBS&lt;/b&gt;&lt;hr size=&apos;1&apos;/&gt;&lt;font face=&apos;Courier New&apos;&gt;PK id&lt;br/&gt;status&lt;br/&gt;mode&lt;br/&gt;target_server_ip&lt;br/&gt;credential_label&lt;br/&gt;requested_by&lt;br/&gt;payload_json&lt;br/&gt;summary_json&lt;br/&gt;manifest_json&lt;br/&gt;error_text&lt;br/&gt;total_items&lt;br/&gt;success_items&lt;br/&gt;failed_items&lt;br/&gt;created_at&lt;br/&gt;started_at&lt;br/&gt;finished_at&lt;br/&gt;updated_at&lt;/font&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#fff8e1;strokeColor=#333333;fontSize=12;align=left;verticalAlign=top;spacing=6;spacingTop=6;" vertex="1" parent="1">
+          <mxGeometry x="1460" y="440" width="330" height="270" as="geometry" />
+        </mxCell>
+        <mxCell id="ztp_items" value="&lt;b&gt;ZTP_PUBLISH_ITEMS&lt;/b&gt;&lt;hr size=&apos;1&apos;/&gt;&lt;font face=&apos;Courier New&apos;&gt;PK id&lt;br/&gt;FK job_id&lt;br/&gt;FK device_id&lt;br/&gt;hostname&lt;br/&gt;vendor&lt;br/&gt;management_ip&lt;br/&gt;management_mac&lt;br/&gt;filename&lt;br/&gt;remote_path&lt;br/&gt;status&lt;br/&gt;stage&lt;br/&gt;error_text&lt;br/&gt;details_json&lt;br/&gt;created_at&lt;br/&gt;updated_at&lt;/font&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#fff8e1;strokeColor=#333333;fontSize=12;align=left;verticalAlign=top;spacing=6;spacingTop=6;" vertex="1" parent="1">
+          <mxGeometry x="1840" y="440" width="320" height="270" as="geometry" />
+        </mxCell>
+        <mxCell id="ztp_map" value="&lt;b&gt;ZTP_DHCP_MAPPINGS&lt;/b&gt;&lt;hr size=&apos;1&apos;/&gt;&lt;font face=&apos;Courier New&apos;&gt;PK id&lt;br/&gt;FK device_id&lt;br/&gt;hostname&lt;br/&gt;vendor&lt;br/&gt;management_ip&lt;br/&gt;management_mac&lt;br/&gt;filename&lt;br/&gt;enabled&lt;br/&gt;created_at&lt;br/&gt;updated_at&lt;/font&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#fff8e1;strokeColor=#333333;fontSize=12;align=left;verticalAlign=top;spacing=6;spacingTop=6;" vertex="1" parent="1">
+          <mxGeometry x="1840" y="760" width="320" height="220" as="geometry" />
+        </mxCell>
+        <mxCell id="se1" value="device_id" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=none;strokeWidth=1.2;" edge="1" parent="1" source="s_snapshots" target="s_devices">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="se2" value="device_id" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=none;strokeWidth=1.2;" edge="1" parent="1" source="drift" target="s_devices">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="se3" value="device_id" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=none;strokeWidth=1.2;" edge="1" parent="1" source="compliance" target="s_devices">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="se4" value="baseline_snapshot_id" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=none;strokeWidth=1.2;" edge="1" parent="1" source="compliance" target="s_snapshots">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="se5" value="actual_snapshot_id" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=none;strokeWidth=1.2;" edge="1" parent="1" source="compliance" target="s_snapshots">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="se6" value="device_id" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=none;strokeWidth=1.2;" edge="1" parent="1" source="sec_audits" target="s_devices">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="se7" value="audit_id" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=none;strokeWidth=1.2;" edge="1" parent="1" source="findings" target="sec_audits">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="se8" value="device_id" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=none;strokeWidth=1.2;" edge="1" parent="1" source="sec_events" target="s_devices">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="se9" value="policy_id" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=none;strokeWidth=1.2;" edge="1" parent="1" source="policy_audit" target="policies">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="se10" value="rule_id" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=none;strokeWidth=1.2;" edge="1" parent="1" source="thr_alerts" target="thr_rules">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="se11" value="job_id" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=none;strokeWidth=1.2;" edge="1" parent="1" source="ztp_items" target="ztp_jobs">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="se12" value="device_id" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=none;strokeWidth=1.2;" edge="1" parent="1" source="ztp_items" target="s_devices">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="se13" value="device_id" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=none;strokeWidth=1.2;" edge="1" parent="1" source="ztp_map" target="s_devices">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="se14" value="created_by / updated_by" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=none;strokeWidth=1.2;dashed=1;strokeColor=#666666;" edge="1" parent="1" source="s_users" target="policies">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="se15" value="changed_by" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=none;strokeWidth=1.2;dashed=1;strokeColor=#666666;" edge="1" parent="1" source="s_users" target="policy_audit">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="se16" value="approver" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=none;strokeWidth=1.2;dashed=1;strokeColor=#666666;" edge="1" parent="1" source="s_users" target="incidents">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="se17" value="requested_by" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=none;strokeWidth=1.2;dashed=1;strokeColor=#666666;" edge="1" parent="1" source="s_users" target="ztp_jobs">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="se18" value="device" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=none;strokeWidth=1.2;dashed=1;strokeColor=#666666;" edge="1" parent="1" source="thr_alerts" target="s_devices">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="se19" value="incident_id" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=none;strokeWidth=1.2;dashed=1;strokeColor=#666666;" edge="1" parent="1" source="thr_alerts" target="incidents">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

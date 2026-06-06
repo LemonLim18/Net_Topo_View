@@ -1,0 +1,71 @@
+Short answer: use a dedicated /30 (or /31) point‑to‑point subnet for each core→distribution link and assign one address to each end. Example plan and config below.
+
+Example addressing plan (one /30 per link)
+
+Core ↔ Core
+10.0.0.0/30
+CORE-R1 Gi2 = 10.0.0.1/30
+CORE-R2 Gi2 = 10.0.0.2/30
+CORE-R1 ↔ DIST-SW1
+10.0.1.0/30
+CORE-R1 Gi3 = 10.0.1.1/30
+DIST-SW1 e0/1 = 10.0.1.2/30
+CORE-R1 ↔ DIST-SW2
+10.0.1.4/30
+CORE-R1 Gi4 = 10.0.1.5/30
+DIST-SW2 e0/1 = 10.0.1.6/30
+CORE-R1 ↔ HW-DIST1
+10.0.1.8/30
+CORE-R1 Gi5 = 10.0.1.9/30
+HW-DIST1 GE0/0/0 = 10.0.1.10/30
+CORE-R2 ↔ DIST-SW3
+10.0.2.0/30
+CORE-R2 Gi2 = 10.0.2.1/30
+DIST-SW3 e0/1 = 10.0.2.2/30
+CORE-R2 ↔ DIST-SW4
+10.0.2.4/30
+CORE-R2 Gi3 = 10.0.2.5/30
+DIST-SW4 e0/1 = 10.0.2.6/30
+CORE-R2 ↔ HW-DIST1 (dual‑homed)
+10.0.2.8/30
+CORE-R2 Gi4 = 10.0.2.9/30
+HW-DIST1 GE0/0/2 = 10.0.2.10/30
+Why this:
+
+Point‑to‑point /30s give two usable IPs per link and are simple/clear.
+Use a clear subnet block per link family (10.0.0.x for core-core, 10.0.1.x for CORE-R1 links, 10.0.2.x for CORE-R2 links) so troubleshooting and ACLs are easier.
+You may use /31 subnets to avoid wasting addresses if your platform supports RFC3021 (modern IOS-XE usually does). (/31 example: CORE-R1=10.0.1.0/31, DIST=10.0.1.1/31)
+Sample configuration snippets
+
+On CORE-R1:
+interface GigabitEthernet2
+description CORE↔CORE
+ip address 10.0.0.1 255.255.255.252
+no shutdown
+
+interface GigabitEthernet3
+description CORE↔DIST-SW1
+ip address 10.0.1.1 255.255.255.252
+no shutdown
+
+On DIST-SW1 (IOL L3):
+interface Ethernet0/1
+description UPLINK-TO-CORE-R1
+ip address 10.0.1.2 255.255.255.252
+no shutdown
+
+OSPF: advertise those interfaces (interface-level or network statements):
+router ospf 1
+router-id 192.168.1.101
+network 10.0.0.0 0.0.0.3 area 0
+network 10.0.1.0 0.0.0.3 area 0
+...
+
+Or place ip ospf 1 area 0 under each point‑to‑point interface.
+
+Notes and recommendations
+
+If you dual‑home HW‑DIST1 to both cores, use separate /30s as shown and prefer per‑link metrics or interface priority to control traffic.
+If you want to conserve IPv4 space, use /31 point‑to‑point subnets (requires platform support). Otherwise /30 is simplest.
+Keep a small documented spreadsheet of link → subnet → device/port mapping (helps NetBox population and Prometheus labels).
+Avoid putting VLAN/SVI IPs on these point‑to‑point links — keep SVIs on distribution for inter‑VLAN gateways.
