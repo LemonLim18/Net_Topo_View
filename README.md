@@ -40,7 +40,7 @@ The demo workflow below summarizes how CogniShield is presented end to end: Prox
 
 ### Architecture Diagram
 
-![CogniShield low-level architecture](docs/readme_assets/low-level-architecture.png)
+![CogniShield low-level architecture](docs/readme_assets/revised-low-level-diagram.png)
 
 ### EVE-NG Campus Lab Topology
 
