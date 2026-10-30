@@ -13,7 +13,7 @@ The platform was built to demonstrate how a campus network team can move from ma
 
 🎥 Watch on Youtube:
 
-[![Project Demo](https://img.youtube.com/vi/z5wq_9-uNWQ/maxresdefault.jpg)](https://www.youtube.com/watch?v=z5wq_9-uNWQ)
+[![Project Demo](docs/readme_assets/youtube-thumbnail.png)](https://www.youtube.com/watch?v=z5wq_9-uNWQ)
 
 
 ### System Demo Workflow
