@@ -9,24 +9,12 @@ The platform was built to demonstrate how a campus network team can move from ma
 
 ## Demo and Project Materials
 
-### Video Demo
+### Video Demonstration
 
-YouTube demo link:
+🎥 Watch on Youtube:
 
-[https://youtube.com/embed/1l6jAkJ3IVE](https://youtube.com/embed/1l6jAkJ3IVE)
+[![Project Demo](https://img.youtube.com/vi/z5wq_9-uNWQ/maxresdefault.jpg)](https://www.youtube.com/watch?v=z5wq_9-uNWQ)
 
-If your Markdown viewer supports HTML embeds:
-
-```html
-<iframe
-  width="960"
-  height="540"
-  src="https://youtube.com/embed/1l6jAkJ3IVE"
-  title="CogniShield Demo"
-  frameborder="0"
-  allowfullscreen>
-</iframe>
-```
 
 ### System Demo Workflow
 
